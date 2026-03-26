@@ -52,6 +52,11 @@ pub const rules = struct {
     pub const permissions = @import("rules/permissions.zig");
 };
 
+pub const config = @import("config.zig");
+pub const Config = config.Config;
+pub const OutputFormat = config.OutputFormat;
+pub const ColorMode = config.ColorMode;
+
 test {
     _ = @import("yaml/tokenizer.zig");
     _ = @import("yaml/types.zig");
@@ -69,4 +74,5 @@ test {
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
+    _ = @import("config.zig");
 }
