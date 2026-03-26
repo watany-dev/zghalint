@@ -1,11 +1,13 @@
 .{
     .name = .zghalint,
     .version = "0.1.0",
-    .fingerprint = 0xccb6b88828480b73,
     .minimum_zig_version = "0.14.0",
+    .fingerprint = 0xccb6b88831c9b737,
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "LICENSE",
     },
+    .dependencies = .{},
 }
