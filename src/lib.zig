@@ -30,6 +30,17 @@ pub const DiagnosticList = diagnostics.DiagnosticList;
 pub const Severity = diagnostics.Severity;
 pub const Category = diagnostics.Category;
 
+pub const output = struct {
+    pub const terminal = @import("output/terminal.zig");
+    pub const renderDiagnostic = terminal.renderDiagnostic;
+    pub const renderDiagnostics = terminal.renderDiagnostics;
+    pub const renderSummary = terminal.renderSummary;
+    pub const json = @import("output/json.zig");
+    pub const renderJson = json.renderJson;
+    pub const sarif = @import("output/sarif.zig");
+    pub const renderSarif = sarif.renderSarif;
+};
+
 pub const rules = struct {
     pub const engine = @import("rules/engine.zig");
     pub const Engine = engine.Engine;
@@ -55,4 +66,7 @@ test {
     _ = @import("rules/performance.zig");
     _ = @import("rules/best_practices.zig");
     _ = @import("rules/permissions.zig");
+    _ = @import("output/terminal.zig");
+    _ = @import("output/json.zig");
+    _ = @import("output/sarif.zig");
 }
