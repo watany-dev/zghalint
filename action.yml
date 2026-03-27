@@ -20,9 +20,34 @@ runs:
       shell: bash
       run: |
         VERSION=${GITHUB_ACTION_REF:-v0.1.0}
-        OS=linux; ARCH=x86_64
-        curl -L https://github.com/watany-dev/zghalint/releases/download/$VERSION/zghalint-$OS-$ARCH -o zghalint
-        chmod +x zghalint
+
+        case "$RUNNER_OS" in
+          Linux)  OS=linux ;;
+          macOS)  OS=macos ;;
+          Windows) OS=windows ;;
+          *) echo "::error::Unsupported OS: $RUNNER_OS"; exit 1 ;;
+        esac
+
+        case "$RUNNER_ARCH" in
+          X64)   ARCH=x86_64 ;;
+          ARM64) ARCH=aarch64 ;;
+          *) echo "::error::Unsupported architecture: $RUNNER_ARCH"; exit 1 ;;
+        esac
+
+        if [ "$OS" = "windows" ] && [ "$ARCH" = "aarch64" ]; then
+          echo "::error::Windows ARM64 is not supported"; exit 1
+        fi
+
+        EXT=""
+        if [ "$OS" = "windows" ]; then EXT=".exe"; fi
+
+        curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/zghalint-$OS-$ARCH$EXT" -o "zghalint$EXT"
+        chmod +x "zghalint$EXT"
     - name: Run zghalint
       shell: bash
-      run: ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }}
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }}
+        else
+          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }}
+        fi
