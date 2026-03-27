@@ -16,12 +16,12 @@ const CliArgs = struct {
     show_version: bool = false,
 
     fn deinit(self: *CliArgs) void {
-        self.files.deinit();
+        self.files.deinit(self.allocator);
     }
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
-    var args = CliArgs{ .files = std.ArrayList([]const u8).init(allocator), .allocator = allocator };
+    var args = CliArgs{ .files = .{}, .allocator = allocator };
     var iter = try std.process.argsWithAllocator(allocator);
     defer iter.deinit();
 
@@ -43,7 +43,7 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
                 args.color = ColorMode.fromString(color_str);
             }
         } else if (!std.mem.startsWith(u8, arg, "-")) {
-            try args.files.append(arg);
+            try args.files.append(allocator, arg);
         }
     }
 
@@ -70,7 +70,7 @@ fn printHelp(writer: anytype) !void {
 }
 
 fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
-    var files = std.ArrayList([]const u8).init(allocator);
+    var files = std.ArrayList([]const u8){};
     var dir = std.fs.cwd().openDir(".github/workflows", .{ .iterate = true }) catch return files;
     defer dir.close();
 
@@ -79,7 +79,7 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
         if (entry.kind == .file) {
             if (std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml")) {
                 const full_path = try std.fmt.allocPrint(allocator, ".github/workflows/{s}", .{entry.name});
-                try files.append(full_path);
+                try files.append(allocator, full_path);
             }
         }
     }
@@ -105,16 +105,18 @@ fn lintFile(
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
 ) !void {
+    var stderr_buf: [256]u8 = undefined;
+    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
+    const stderr = &stderr_bw.interface;
+
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err });
+        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
         return;
     };
     defer file.close();
 
     const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err });
+        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
         return;
     };
     defer allocator.free(source);
@@ -124,15 +126,13 @@ fn lintFile(
     defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("{s}: YAML parse error\n", .{file_path});
+        stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
         return;
     };
 
     // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(allocator, yaml_node) catch {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("{s}: workflow parse error\n", .{file_path});
+        stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
         return;
     };
 
@@ -159,12 +159,15 @@ fn lintFile(
 }
 
 fn outputTerminal(diag_list: *zghalint.DiagnosticList, allocator: std.mem.Allocator) !void {
-    const stdout = std.io.getStdOut().writer();
+    var buf: [4096]u8 = undefined;
+    var bw = std.fs.File.stdout().writer(&buf);
+    const stdout = &bw.interface;
     for (diag_list.items.items) |diag| {
         const formatted = try diag.format(allocator);
         defer allocator.free(formatted);
         try stdout.print("{s}\n", .{formatted});
     }
+    try stdout.flush();
 }
 
 fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
@@ -228,28 +231,35 @@ pub fn main() !u8 {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_bw = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_bw.interface;
+
+    var stderr_buf: [256]u8 = undefined;
+    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
+    const stderr = &stderr_bw.interface;
 
     var cli_args = parseArgs(allocator) catch {
-        try stderr.writeAll("error: failed to parse arguments\n");
+        stderr.writeAll("error: failed to parse arguments\n") catch {};
         return 2;
     };
     defer cli_args.deinit();
 
     if (cli_args.show_help) {
         try printHelp(stdout);
+        try stdout.flush();
         return 0;
     }
 
     if (cli_args.show_version) {
         try stdout.print("zghalint v{s}\n", .{version});
+        try stdout.flush();
         return 0;
     }
 
     // Load config
     var config = loadConfig(allocator, cli_args.config_path) catch {
-        try stderr.writeAll("error: failed to load config\n");
+        stderr.writeAll("error: failed to load config\n") catch {};
         return 2;
     };
     defer config.deinit();
@@ -262,21 +272,21 @@ pub fn main() !u8 {
     var owned_files: ?std.ArrayList([]const u8) = null;
     defer if (owned_files) |*of| {
         for (of.items) |p| allocator.free(p);
-        of.deinit();
+        of.deinit(allocator);
     };
 
     const files = if (cli_args.files.items.len > 0)
         cli_args.files.items
     else blk: {
         owned_files = collectDefaultFiles(allocator) catch {
-            try stderr.writeAll("error: failed to scan default workflow directory\n");
+            stderr.writeAll("error: failed to scan default workflow directory\n") catch {};
             return 2;
         };
         break :blk owned_files.?.items;
     };
 
     if (files.len == 0) {
-        try stderr.writeAll("No workflow files found.\n");
+        stderr.writeAll("No workflow files found.\n") catch {};
         return 0;
     }
 
@@ -287,7 +297,7 @@ pub fn main() !u8 {
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
         lintFile(allocator, file_path, &config, &all_diags) catch {
-            try stderr.print("error: internal error while linting '{s}'\n", .{file_path});
+            stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
         };
     }
 
@@ -298,11 +308,17 @@ pub fn main() !u8 {
         .terminal => outputTerminal(&all_diags, allocator) catch {
             return 2;
         },
-        .json => outputJson(&all_diags, stdout) catch {
-            return 2;
+        .json => {
+            outputJson(&all_diags, stdout) catch {
+                return 2;
+            };
+            try stdout.flush();
         },
-        .sarif => outputSarif(&all_diags, stdout) catch {
-            return 2;
+        .sarif => {
+            outputSarif(&all_diags, stdout) catch {
+                return 2;
+            };
+            try stdout.flush();
         },
     }
 
