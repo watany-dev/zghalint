@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: mlugg/setup-zig@a45da26e596797833bbed34ebfde3c291b18e02e # v2.0.1
         with:
-          version: 0.14.0
+          version: 0.15.0
       - run: zig fmt --check src/ build.zig
 
   build:
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: mlugg/setup-zig@a45da26e596797833bbed34ebfde3c291b18e02e # v2.0.1
         with:
-          version: 0.14.0
+          version: 0.15.0
       - run: zig build
 
   test:
@@ -40,5 +40,5 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: mlugg/setup-zig@a45da26e596797833bbed34ebfde3c291b18e02e # v2.0.1
         with:
-          version: 0.14.0
+          version: 0.15.0
       - run: zig build test --summary all

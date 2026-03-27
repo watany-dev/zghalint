@@ -35,7 +35,7 @@ jobs:
 
       - uses: mlugg/setup-zig@a45da26e596797833bbed34ebfde3c291b18e02e # v2.0.1
         with:
-          version: 0.14.0
+          version: 0.15.0
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}

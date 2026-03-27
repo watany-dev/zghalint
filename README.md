@@ -19,7 +19,7 @@ Zero external dependencies — even the YAML parser is built from scratch.
 
 ### Build from source
 
-Requires **Zig 0.14.0** or later.
+Requires **Zig 0.15.0** or later.
 
 ```bash
 git clone https://github.com/watany-dev/zghalint.git
