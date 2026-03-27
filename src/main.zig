@@ -8,6 +8,7 @@ const version = "0.1.0";
 
 const CliArgs = struct {
     files: std.ArrayList([]const u8),
+    allocator: std.mem.Allocator,
     config_path: ?[]const u8 = null,
     format: ?OutputFormat = null,
     color: ?ColorMode = null,
@@ -15,12 +16,12 @@ const CliArgs = struct {
     show_version: bool = false,
 
     fn deinit(self: *CliArgs) void {
-        self.files.deinit();
+        self.files.deinit(self.allocator);
     }
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
-    var args = CliArgs{ .files = std.ArrayList([]const u8).init(allocator) };
+    var args = CliArgs{ .files = .{}, .allocator = allocator };
     var iter = try std.process.argsWithAllocator(allocator);
     defer iter.deinit();
 
@@ -42,7 +43,7 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
                 args.color = ColorMode.fromString(color_str);
             }
         } else if (!std.mem.startsWith(u8, arg, "-")) {
-            try args.files.append(arg);
+            try args.files.append(allocator, arg);
         }
     }
 
@@ -69,7 +70,7 @@ fn printHelp(writer: anytype) !void {
 }
 
 fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
-    var files = std.ArrayList([]const u8).init(allocator);
+    var files: std.ArrayList([]const u8) = .{};
     var dir = std.fs.cwd().openDir(".github/workflows", .{ .iterate = true }) catch return files;
     defer dir.close();
 
@@ -78,7 +79,7 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
         if (entry.kind == .file) {
             if (std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml")) {
                 const full_path = try std.fmt.allocPrint(allocator, ".github/workflows/{s}", .{entry.name});
-                try files.append(full_path);
+                try files.append(allocator, full_path);
             }
         }
     }
@@ -105,14 +106,18 @@ fn lintFile(
     all_diags: *zghalint.DiagnosticList,
 ) !void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        const stderr = std.io.getStdErr().writer();
+        var stderr_local_buf: [4096]u8 = undefined;
+        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
+        const stderr = &stderr_local_writer.interface;
         try stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err });
         return;
     };
     defer file.close();
 
     const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        const stderr = std.io.getStdErr().writer();
+        var stderr_local_buf: [4096]u8 = undefined;
+        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
+        const stderr = &stderr_local_writer.interface;
         try stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err });
         return;
     };
@@ -123,14 +128,18 @@ fn lintFile(
     defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
-        const stderr = std.io.getStdErr().writer();
+        var stderr_local_buf: [4096]u8 = undefined;
+        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
+        const stderr = &stderr_local_writer.interface;
         try stderr.print("{s}: YAML parse error\n", .{file_path});
         return;
     };
 
     // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(allocator, yaml_node) catch {
-        const stderr = std.io.getStdErr().writer();
+        var stderr_local_buf: [4096]u8 = undefined;
+        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
+        const stderr = &stderr_local_writer.interface;
         try stderr.print("{s}: workflow parse error\n", .{file_path});
         return;
     };
@@ -158,7 +167,9 @@ fn lintFile(
 }
 
 fn outputTerminal(diag_list: *zghalint.DiagnosticList, allocator: std.mem.Allocator) !void {
-    const stdout = std.io.getStdOut().writer();
+    var buf: [4096]u8 = undefined;
+    var w = std.fs.File.stdout().writer(&buf);
+    const stdout = &w.interface;
     for (diag_list.items.items) |diag| {
         const formatted = try diag.format(allocator);
         defer allocator.free(formatted);
@@ -227,8 +238,12 @@ pub fn main() !u8 {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_writer.interface;
+    var stderr_buf: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+    const stderr = &stderr_writer.interface;
 
     var cli_args = parseArgs(allocator) catch {
         try stderr.writeAll("error: failed to parse arguments\n");
@@ -261,7 +276,7 @@ pub fn main() !u8 {
     var owned_files: ?std.ArrayList([]const u8) = null;
     defer if (owned_files) |*of| {
         for (of.items) |p| allocator.free(p);
-        of.deinit();
+        of.deinit(allocator);
     };
 
     const files = if (cli_args.files.items.len > 0)
