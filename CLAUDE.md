@@ -21,15 +21,16 @@ zig fmt src/ build.zig              # Auto-format
 
 ### Completion Requirements
 
-Before committing, **must** run all checks that CI will run:
+**各タスク完了時**、コミット前に以下の全CIチェックを必ず通すこと:
 ```bash
-zig fmt --check src/ build.zig && zig build test --summary all
+zig build && zig fmt --check src/ build.zig && zig build test --summary all
 ```
 
-1. `fmt --check` — Zig formatting check
-2. `build test` — All unit tests
+1. `build` — バイナリビルド成功
+2. `fmt --check` — Zig formatting check
+3. `build test` — All unit tests
 
-**Do not skip any of these steps.** CI failures on push are caused by missing checks locally.
+**これらのステップは絶対にスキップしないこと。** タスク単位でCIを通すのは最低限の品質基準である。
 
 ## Architecture
 

@@ -106,18 +106,14 @@ fn lintFile(
     all_diags: *zghalint.DiagnosticList,
 ) !void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        var stderr_local_buf: [4096]u8 = undefined;
-        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
-        const stderr = &stderr_local_writer.interface;
+        const stderr = std.io.getStdErr().writer();
         try stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err });
         return;
     };
     defer file.close();
 
     const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        var stderr_local_buf: [4096]u8 = undefined;
-        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
-        const stderr = &stderr_local_writer.interface;
+        const stderr = std.io.getStdErr().writer();
         try stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err });
         return;
     };
@@ -128,18 +124,14 @@ fn lintFile(
     defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
-        var stderr_local_buf: [4096]u8 = undefined;
-        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
-        const stderr = &stderr_local_writer.interface;
+        const stderr = std.io.getStdErr().writer();
         try stderr.print("{s}: YAML parse error\n", .{file_path});
         return;
     };
 
     // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(allocator, yaml_node) catch {
-        var stderr_local_buf: [4096]u8 = undefined;
-        var stderr_local_writer = std.fs.File.stderr().writer(&stderr_local_buf);
-        const stderr = &stderr_local_writer.interface;
+        const stderr = std.io.getStdErr().writer();
         try stderr.print("{s}: workflow parse error\n", .{file_path});
         return;
     };
@@ -167,9 +159,7 @@ fn lintFile(
 }
 
 fn outputTerminal(diag_list: *zghalint.DiagnosticList, allocator: std.mem.Allocator) !void {
-    var buf: [4096]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&buf);
-    const stdout = &w.interface;
+    const stdout = std.io.getStdOut().writer();
     for (diag_list.items.items) |diag| {
         const formatted = try diag.format(allocator);
         defer allocator.free(formatted);
@@ -238,12 +228,8 @@ pub fn main() !u8 {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var stdout_buf: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
-    const stdout = &stdout_writer.interface;
-    var stderr_buf: [4096]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
-    const stderr = &stderr_writer.interface;
+    const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
 
     var cli_args = parseArgs(allocator) catch {
         try stderr.writeAll("error: failed to parse arguments\n");
