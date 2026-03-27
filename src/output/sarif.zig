@@ -165,13 +165,13 @@ const test_rules = [_]Rule{
 };
 
 test "renderSarif empty diagnostics" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
+    try renderSarif(buf.writer(), list, &test_rules);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"version\":\"2.1.0\"") != null);
@@ -181,8 +181,8 @@ test "renderSarif empty diagnostics" {
 }
 
 test "renderSarif with diagnostic" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -203,7 +203,7 @@ test "renderSarif with diagnostic" {
         .fix_hint = "Use an environment variable instead",
     });
 
-    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
+    try renderSarif(buf.writer(), list, &test_rules);
     const output = buf.items;
 
     // Check SARIF structure
@@ -219,13 +219,13 @@ test "renderSarif with diagnostic" {
 }
 
 test "renderSarif rule descriptors" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
+    try renderSarif(buf.writer(), list, &test_rules);
     const output = buf.items;
 
     // All rules should appear in driver.rules
@@ -245,8 +245,8 @@ test "sarifLevel mapping" {
 }
 
 test "renderSarif multiple results" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -254,7 +254,7 @@ test "renderSarif multiple results" {
     list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "unpinned action", .file = "ci.yml", .span = Span.point(1, 1, 0) });
     list.append(.{ .rule_id = "BP001", .severity = .info, .message = "no timeout", .file = "ci.yml", .span = Span.point(5, 1, 40) });
 
-    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
+    try renderSarif(buf.writer(), list, &test_rules);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"SEC001\"") != null);
@@ -264,15 +264,15 @@ test "renderSarif multiple results" {
 }
 
 test "renderSarif unknown rule id has no ruleIndex" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
     list.append(.{ .rule_id = "UNKNOWN", .severity = .@"error", .message = "mystery", .span = Span.point(1, 1, 0) });
 
-    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
+    try renderSarif(buf.writer(), list, &test_rules);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"UNKNOWN\"") != null);

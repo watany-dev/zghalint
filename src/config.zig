@@ -48,14 +48,14 @@ pub const Config = struct {
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{
             .rule_overrides = std.StringHashMap(RuleOverride).init(allocator),
-            .ignore_patterns = std.ArrayList([]const u8){},
+            .ignore_patterns = std.ArrayList([]const u8).init(allocator),
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Config) void {
         self.rule_overrides.deinit();
-        self.ignore_patterns.deinit(self.allocator);
+        self.ignore_patterns.deinit();
     }
 
     pub fn isRuleEnabled(self: *const Config, rule_id: []const u8) bool {
@@ -140,7 +140,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                 for (seq.items) |item| {
                     switch (item) {
                         .scalar => |s| {
-                            config.ignore_patterns.append(config.allocator, s.value) catch return ConfigError.OutOfMemory;
+                            config.ignore_patterns.append(s.value) catch return ConfigError.OutOfMemory;
                         },
                         else => {},
                     }

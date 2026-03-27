@@ -181,9 +181,9 @@ fn writeNChars(writer: anytype, char: u8, count: u32) !void {
 const Span = @import("../yaml/types.zig").Span;
 
 test "renderDiagnostic with source and color" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
 
     const diag = Diagnostic{
         .rule_id = "SEC002",
@@ -235,9 +235,9 @@ test "renderDiagnostic with source and color" {
 }
 
 test "renderDiagnostic without color" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
 
     const diag = Diagnostic{
         .rule_id = "BP001",
@@ -260,9 +260,9 @@ test "renderDiagnostic without color" {
 }
 
 test "renderDiagnostic no source no hint" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer();
 
     const diag = Diagnostic{
         .rule_id = "PERF001",
@@ -287,10 +287,10 @@ test "renderSummary counts" {
     list.append(.{ .rule_id = "E2", .severity = .@"error", .message = "e", .span = Span.point(2, 1, 0) });
     list.append(.{ .rule_id = "W1", .severity = .warning, .message = "w", .span = Span.point(3, 1, 0) });
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
 
-    try renderSummary(buf.writer(std.testing.allocator), list, false);
+    try renderSummary(buf.writer(), list, false);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "3 issue(s)") != null);
@@ -302,10 +302,10 @@ test "renderSummary no issues" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
 
-    try renderSummary(buf.writer(std.testing.allocator), list, false);
+    try renderSummary(buf.writer(), list, false);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "No issues found") != null);
 }
 

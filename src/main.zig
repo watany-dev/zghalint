@@ -16,12 +16,12 @@ const CliArgs = struct {
     show_version: bool = false,
 
     fn deinit(self: *CliArgs) void {
-        self.files.deinit(self.allocator);
+        self.files.deinit();
     }
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
-    var args = CliArgs{ .files = .{}, .allocator = allocator };
+    var args = CliArgs{ .files = std.ArrayList([]const u8).init(allocator), .allocator = allocator };
     var iter = try std.process.argsWithAllocator(allocator);
     defer iter.deinit();
 
@@ -43,7 +43,7 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
                 args.color = ColorMode.fromString(color_str);
             }
         } else if (!std.mem.startsWith(u8, arg, "-")) {
-            try args.files.append(allocator, arg);
+            try args.files.append(arg);
         }
     }
 
@@ -70,7 +70,7 @@ fn printHelp(writer: anytype) !void {
 }
 
 fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
-    var files: std.ArrayList([]const u8) = .{};
+    var files = std.ArrayList([]const u8).init(allocator);
     var dir = std.fs.cwd().openDir(".github/workflows", .{ .iterate = true }) catch return files;
     defer dir.close();
 
@@ -79,7 +79,7 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
         if (entry.kind == .file) {
             if (std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml")) {
                 const full_path = try std.fmt.allocPrint(allocator, ".github/workflows/{s}", .{entry.name});
-                try files.append(allocator, full_path);
+                try files.append(full_path);
             }
         }
     }
@@ -276,7 +276,7 @@ pub fn main() !u8 {
     var owned_files: ?std.ArrayList([]const u8) = null;
     defer if (owned_files) |*of| {
         for (of.items) |p| allocator.free(p);
-        of.deinit(allocator);
+        of.deinit();
     };
 
     const files = if (cli_args.files.items.len > 0)
