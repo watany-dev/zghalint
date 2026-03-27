@@ -40,12 +40,12 @@ pub const Parser = struct {
             .tokenizer = tokenizer,
             .current = current,
             .source = source,
-            .errors = std.ArrayList(DiagnosticError).init(allocator),
+            .errors = std.ArrayList(DiagnosticError){},
         };
     }
 
     pub fn deinit(self: *Parser) void {
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
     }
 
     pub fn parse(self: *Parser) ParseError!Node {
@@ -110,7 +110,7 @@ pub const Parser = struct {
     }
 
     fn parseBlockMapping(self: *Parser, first_key_token: Token, min_indent: u32) ParseError!Node {
-        var entries = std.ArrayList(MappingEntry).init(self.allocator);
+        var entries: std.ArrayList(MappingEntry) = .{};
 
         const key_indent = first_key_token.column;
         var current_key = first_key_token;
@@ -132,7 +132,7 @@ pub const Parser = struct {
             } else try self.parseNode(key_indent + 1);
 
             const key_scalar = self.scalarFromToken(current_key);
-            try entries.append(.{
+            try entries.append(self.allocator, .{
                 .key = key_scalar,
                 .value = value,
                 .span = key_scalar.span,
@@ -159,7 +159,7 @@ pub const Parser = struct {
             break;
         }
 
-        const owned_entries = entries.toOwnedSlice() catch return ParseError.OutOfMemory;
+        const owned_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const span = if (owned_entries.len > 0)
             Span{
                 .start_line = owned_entries[0].key.span.start_line,
@@ -176,7 +176,7 @@ pub const Parser = struct {
     }
 
     fn parseBlockSequence(self: *Parser, min_indent: u32) ParseError!Node {
-        var items = std.ArrayList(Node).init(self.allocator);
+        var items: std.ArrayList(Node) = .{};
         const seq_indent = self.current.column;
         _ = min_indent;
 
@@ -188,12 +188,12 @@ pub const Parser = struct {
             if (self.current.kind == .newline or self.current.kind == .eof) {
                 self.skipNewlines();
                 if (self.current.kind != .eof and self.current.column > seq_indent) {
-                    try items.append(try self.parseNode(seq_indent + 1));
+                    try items.append(self.allocator, try self.parseNode(seq_indent + 1));
                 } else {
-                    try items.append(Node{ .null_value = self.spanFromToken(self.current) });
+                    try items.append(self.allocator, Node{ .null_value = self.spanFromToken(self.current) });
                 }
             } else {
-                try items.append(try self.parseNode(seq_indent + 1));
+                try items.append(self.allocator, try self.parseNode(seq_indent + 1));
             }
 
             self.skipNewlines();
@@ -203,7 +203,7 @@ pub const Parser = struct {
             }
         }
 
-        const owned_items = items.toOwnedSlice() catch return ParseError.OutOfMemory;
+        const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const span = Span.point(
             if (owned_items.len > 0) owned_items[0].getSpan().start_line else self.current.line,
             seq_indent,
@@ -214,7 +214,7 @@ pub const Parser = struct {
     }
 
     fn parseFlowMapping(self: *Parser) ParseError!Node {
-        var entries = std.ArrayList(MappingEntry).init(self.allocator);
+        var entries: std.ArrayList(MappingEntry) = .{};
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '{'
 
@@ -236,7 +236,7 @@ pub const Parser = struct {
             const value = try self.parseFlowValue();
 
             const key_scalar = self.scalarFromToken(key_token);
-            try entries.append(.{
+            try entries.append(self.allocator, .{
                 .key = key_scalar,
                 .value = value,
                 .span = key_scalar.span,
@@ -252,12 +252,12 @@ pub const Parser = struct {
             self.advance();
         }
 
-        const owned_entries = entries.toOwnedSlice() catch return ParseError.OutOfMemory;
+        const owned_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         return Node{ .mapping = .{ .entries = owned_entries, .span = start_span } };
     }
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
-        var items = std.ArrayList(Node).init(self.allocator);
+        var items: std.ArrayList(Node) = .{};
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '['
 
@@ -265,7 +265,7 @@ pub const Parser = struct {
             self.skipNewlinesAndComments();
             if (self.current.kind == .flow_sequence_end) break;
 
-            try items.append(try self.parseFlowValue());
+            try items.append(self.allocator, try self.parseFlowValue());
 
             if (self.current.kind == .flow_entry) {
                 self.advance();
@@ -276,7 +276,7 @@ pub const Parser = struct {
             self.advance();
         }
 
-        const owned_items = items.toOwnedSlice() catch return ParseError.OutOfMemory;
+        const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         return Node{ .sequence = .{ .items = owned_items, .span = start_span } };
     }
 

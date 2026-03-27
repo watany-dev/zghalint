@@ -86,17 +86,18 @@ pub const Diagnostic = struct {
 /// Collects diagnostics and provides sorting/access.
 pub const DiagnosticList = struct {
     items: std.ArrayList(Diagnostic),
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticList {
-        return .{ .items = std.ArrayList(Diagnostic).init(allocator) };
+        return .{ .items = std.ArrayList(Diagnostic){}, .allocator = allocator };
     }
 
     pub fn deinit(self: *DiagnosticList) void {
-        self.items.deinit();
+        self.items.deinit(self.allocator);
     }
 
     pub fn append(self: *DiagnosticList, diag: Diagnostic) void {
-        self.items.append(diag) catch {};
+        self.items.append(self.allocator, diag) catch {};
     }
 
     /// Sort diagnostics by file, then line, then column.
@@ -105,7 +106,7 @@ pub const DiagnosticList = struct {
     }
 
     pub fn toOwnedSlice(self: *DiagnosticList) ![]Diagnostic {
-        return self.items.toOwnedSlice();
+        return self.items.toOwnedSlice(self.allocator);
     }
 
     pub fn len(self: DiagnosticList) usize {
