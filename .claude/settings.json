@@ -1,0 +1,13 @@
+{
+  "effortLevel": "high",
+  "language": "japanese",
+  "permissions": {
+    "allow": [
+      "Bash(zig build:*)",
+      "Bash(zig fmt:*)",
+      "Bash(zig build test:*)",
+      "Bash(zig build run:*)",
+      "Bash(git:*)"
+    ]
+  }
+}
