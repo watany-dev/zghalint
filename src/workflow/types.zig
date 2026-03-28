@@ -1,4 +1,5 @@
 const std = @import("std");
+const yaml_types = @import("../yaml/types.zig");
 
 /// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
@@ -28,6 +29,8 @@ pub const Permissions = struct {
     statuses: ?PermissionLevel = null,
     read_all: bool = false,
     write_all: bool = false,
+    /// Span of the permissions value in the YAML source (for autofix)
+    value_span: ?yaml_types.Span = null,
 };
 
 /// Concurrency configuration

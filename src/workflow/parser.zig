@@ -347,7 +347,7 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
 fn parsePermissions(node: Node) ParseError!types.Permissions {
     switch (node) {
         .scalar => |s| {
-            var perms = types.Permissions{};
+            var perms = types.Permissions{ .value_span = s.span };
             if (std.mem.eql(u8, s.value, "read-all")) {
                 perms.read_all = true;
             } else if (std.mem.eql(u8, s.value, "write-all")) {
@@ -356,7 +356,7 @@ fn parsePermissions(node: Node) ParseError!types.Permissions {
             return perms;
         },
         .mapping => |m| {
-            var perms = types.Permissions{};
+            var perms = types.Permissions{ .value_span = m.span };
             for (m.entries) |entry| {
                 const level = parsePermissionLevel(entry.value) orelse continue;
                 setPermissionField(&perms, entry.key.value, level);

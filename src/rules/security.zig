@@ -14,6 +14,8 @@ pub const Job = workflow_types.Job;
 pub const Step = workflow_types.Step;
 pub const ActionRef = workflow_types.ActionRef;
 pub const Permissions = workflow_types.Permissions;
+pub const Fix = diagnostics.Fix;
+pub const Edit = diagnostics.Edit;
 pub const SecretsConfig = workflow_types.SecretsConfig;
 pub const EventType = workflow_types.EventType;
 pub const Rule = engine.Rule;
@@ -164,15 +166,32 @@ fn containsSecretPrefix(s: []const u8, prefix: []const u8) bool {
 // SEC004 - Excessive permissions (write-all)
 // ============================================================
 
+const write_all_replacement = "{contents: read}";
+
+fn makeWriteAllFix(list: *DiagnosticList, value_span: Span) ?Fix {
+    const edits = list.allocEdit(.{
+        .start_byte = value_span.start_byte,
+        .end_byte = value_span.end_byte,
+        .replacement = write_all_replacement,
+    }) orelse return null;
+    return .{
+        .description = "Replace 'write-all' with minimal permissions",
+        .safety = .safe,
+        .edits = edits,
+    };
+}
+
 fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
         if (perms.write_all) {
+            const span = perms.value_span orelse Span.point(0, 0, 0);
             list.append(.{
                 .rule_id = "SEC004",
                 .severity = .warning,
                 .message = "workflow uses 'permissions: write-all' which grants excessive permissions",
-                .span = Span.point(0, 0, 0),
+                .span = span,
                 .fix_hint = "specify only the permissions that are needed",
+                .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
             });
         }
     }
@@ -181,12 +200,14 @@ fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
 fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
     if (job.permissions) |perms| {
         if (perms.write_all) {
+            const span = perms.value_span orelse Span.point(0, 0, 0);
             list.append(.{
                 .rule_id = "SEC004",
                 .severity = .warning,
                 .message = "job uses 'permissions: write-all' which grants excessive permissions",
-                .span = Span.point(0, 0, 0),
+                .span = span,
                 .fix_hint = "specify only the permissions that are needed",
+                .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
             });
         }
     }
@@ -1326,6 +1347,80 @@ test "SEC004: specific permissions (no false positive)" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC004"));
+}
+
+test "SEC004: autofix replaces write-all with minimal permissions" {
+    const fix_engine = @import("../fix/engine.zig");
+    const source = "permissions: write-all\njobs:";
+    // "write-all" starts at byte 13, ends at 22
+    const value_span = Span{
+        .start_line = 1,
+        .start_col = 14,
+        .end_line = 1,
+        .end_col = 23,
+        .start_byte = 13,
+        .end_byte = 22,
+    };
+    const wf = Workflow{
+        .name = "CI",
+        .on = makeEmptyTrigger(),
+        .jobs = &.{},
+        .permissions = Permissions{ .write_all = true, .value_span = value_span },
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    checkExcessivePermissions(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(diag.fix != null);
+    const fix = diag.fix.?;
+    try testing.expectEqual(diagnostics.FixSafety.safe, fix.safety);
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+    try testing.expectEqualStrings("permissions: {contents: read}\njobs:", result.content);
+}
+
+test "SEC004: autofix at job level replaces write-all" {
+    const fix_engine = @import("../fix/engine.zig");
+    const source = "    permissions: write-all\n";
+    const value_span = Span{
+        .start_line = 1,
+        .start_col = 18,
+        .end_line = 1,
+        .end_col = 27,
+        .start_byte = 17,
+        .end_byte = 26,
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{ .write_all = true, .value_span = value_span } },
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    checkExcessivePermissionsJob(&jobs[0], &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix.?;
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+    try testing.expectEqualStrings("    permissions: {contents: read}\n", result.content);
+}
+
+test "SEC004: no fix when value_span is null" {
+    const wf = Workflow{
+        .name = "CI",
+        .on = makeEmptyTrigger(),
+        .jobs = &.{},
+        .permissions = Permissions{ .write_all = true },
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    checkExcessivePermissions(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix == null);
 }
 
 // --- SEC005: Dangerous pull_request_target ---
