@@ -119,8 +119,13 @@ fn lintFile(
     };
     defer allocator.free(source);
 
+    // Arena for YAML/workflow parsing (freed after diagnostics are collected)
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     // YAML parse
-    var yaml_parser = zghalint.yaml.Parser.init(allocator, source);
+    var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
     defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
@@ -130,7 +135,7 @@ fn lintFile(
     };
 
     // Workflow conversion
-    const workflow = zghalint.workflow.parseWorkflow(allocator, yaml_node) catch {
+    const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
         const stderr = std.io.getStdErr().writer();
         try stderr.print("{s}: workflow parse error\n", .{file_path});
         return;
