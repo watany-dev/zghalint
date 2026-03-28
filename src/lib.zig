@@ -50,6 +50,7 @@ pub const rules = struct {
     pub const performance = @import("rules/performance.zig");
     pub const best_practices = @import("rules/best_practices.zig");
     pub const permissions = @import("rules/permissions.zig");
+    pub const advisory = @import("rules/advisory.zig");
 };
 
 pub const config = @import("config.zig");
@@ -71,6 +72,7 @@ test {
     _ = @import("rules/performance.zig");
     _ = @import("rules/best_practices.zig");
     _ = @import("rules/permissions.zig");
+    _ = @import("rules/advisory.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");

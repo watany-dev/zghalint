@@ -3,6 +3,7 @@ const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
+const advisory = @import("advisory.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -859,6 +860,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_job = &checkUnpinnedImages,
+    },
+    .{
+        .id = "SC003",
+        .name = "known-vulnerable-action",
+        .description = "Action has known security advisories (CVE) in GitHub Advisory Database",
+        .severity = .warning,
+        .category = .dependency,
+        .check_step = &advisory.checkKnownVulnerableAction,
     },
 };
 
