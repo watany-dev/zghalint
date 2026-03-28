@@ -6,6 +6,13 @@ const ColorMode = zghalint.ColorMode;
 
 const version = "0.1.0";
 
+/// All lint rules used by the engine and SARIF output.
+const all_rules = zghalint.rules.security.security_rules ++
+    zghalint.rules.best_practices.rules ++
+    zghalint.rules.performance.rules ++
+    zghalint.rules.permissions.rules ++
+    [_]zghalint.rules.Rule{zghalint.rules.expressions.expression_rule};
+
 const CliArgs = struct {
     files: std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
@@ -136,13 +143,6 @@ fn lintFile(
         return;
     };
 
-    // Collect all rules
-    const all_rules = zghalint.rules.security.security_rules ++
-        zghalint.rules.best_practices.rules ++
-        zghalint.rules.performance.rules ++
-        zghalint.rules.permissions.rules ++
-        [_]zghalint.rules.Rule{zghalint.rules.expressions.expression_rule};
-
     // Run engine
     const engine = zghalint.rules.Engine.init(&all_rules);
     var diag_list = engine.run(allocator, &workflow);
@@ -170,53 +170,14 @@ fn outputTerminal(diag_list: *zghalint.DiagnosticList, allocator: std.mem.Alloca
     try stdout.flush();
 }
 
-fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
-    try writer.writeAll("[");
-    for (diag_list.items.items, 0..) |diag, i| {
-        if (i > 0) try writer.writeAll(",");
-        try writer.writeAll("{");
-        try writer.print("\"rule_id\":\"{s}\",", .{diag.rule_id});
-        try writer.print("\"severity\":\"{s}\",", .{diag.severity.toString()});
-        try writer.print("\"message\":\"{s}\",", .{diag.message});
-        try writer.print("\"file\":\"{s}\",", .{diag.file orelse "<unknown>"});
-        try writer.print("\"line\":{d},", .{diag.span.start_line});
-        try writer.print("\"column\":{d}", .{diag.span.start_col});
-        if (diag.fix_hint) |hint| {
-            try writer.print(",\"fix_hint\":\"{s}\"", .{hint});
-        }
-        try writer.writeAll("}");
-    }
-    try writer.writeAll("]\n");
+fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checked: usize) !void {
+    try zghalint.output.renderJson(writer, diag_list.*, files_checked);
+    try writer.writeAll("\n");
 }
 
 fn outputSarif(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
-    try writer.writeAll("{\"$schema\":\"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json\",\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"zghalint\",\"version\":\"");
-    try writer.writeAll(version);
-    try writer.writeAll("\"}},\"results\":[");
-
-    for (diag_list.items.items, 0..) |diag, i| {
-        if (i > 0) try writer.writeAll(",");
-        try writer.writeAll("{");
-        try writer.print("\"ruleId\":\"{s}\",", .{diag.rule_id});
-        try writer.print("\"level\":\"{s}\",", .{sarifLevel(diag.severity)});
-        try writer.print("\"message\":{{\"text\":\"{s}\"}},", .{diag.message});
-        try writer.writeAll("\"locations\":[{\"physicalLocation\":{");
-        try writer.print("\"artifactLocation\":{{\"uri\":\"{s}\"}},", .{diag.file orelse "<unknown>"});
-        try writer.print("\"region\":{{\"startLine\":{d},\"startColumn\":{d}}}", .{ diag.span.start_line, diag.span.start_col });
-        try writer.writeAll("}}]");
-        try writer.writeAll("}");
-    }
-
-    try writer.writeAll("]}]}\n");
-}
-
-fn sarifLevel(severity: zghalint.Severity) []const u8 {
-    return switch (severity) {
-        .@"error" => "error",
-        .warning => "warning",
-        .info => "note",
-        .hint => "note",
-    };
+    try zghalint.output.renderSarif(writer, diag_list.*, &all_rules);
+    try writer.writeAll("\n");
 }
 
 fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
@@ -309,7 +270,7 @@ pub fn main() !u8 {
             return 2;
         },
         .json => {
-            outputJson(&all_diags, stdout) catch {
+            outputJson(&all_diags, stdout, files.len) catch {
                 return 2;
             };
             try stdout.flush();
