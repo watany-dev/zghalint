@@ -13,6 +13,7 @@ pub const Job = workflow_types.Job;
 pub const Step = workflow_types.Step;
 pub const ActionRef = workflow_types.ActionRef;
 pub const Permissions = workflow_types.Permissions;
+pub const SecretsConfig = workflow_types.SecretsConfig;
 pub const EventType = workflow_types.EventType;
 pub const Rule = engine.Rule;
 
@@ -272,6 +273,29 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
 }
 
 // ============================================================
+// SEC010 - secrets: inherit in reusable workflow calls
+// ============================================================
+
+fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
+    // Only applies to reusable workflow calls (jobs with uses:)
+    if (job.uses == null) return;
+    if (job.secrets) |secrets| {
+        switch (secrets) {
+            .inherit => {
+                list.append(.{
+                    .rule_id = "SEC010",
+                    .severity = .warning,
+                    .message = "reusable workflow call uses 'secrets: inherit', which passes all secrets implicitly",
+                    .span = Span.point(0, 0, 0),
+                    .fix_hint = "explicitly specify only the secrets the called workflow needs instead of using 'inherit'",
+                });
+            },
+            .map => {},
+        }
+    }
+}
+
+// ============================================================
 // Shared helpers
 // ============================================================
 
@@ -407,6 +431,14 @@ pub const security_rules = [_]Rule{
         .severity = .info,
         .category = .security,
         .check_workflow = &checkMissingPermissions,
+    },
+    .{
+        .id = "SEC010",
+        .name = "secrets-inherit",
+        .description = "Reusable workflow calls should specify secrets explicitly instead of using inherit",
+        .severity = .warning,
+        .category = .security,
+        .check_job = &checkSecretsInherit,
     },
 };
 
@@ -895,6 +927,58 @@ test "SEC007: empty permissions block counts as defined" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC007"));
+}
+
+// --- SEC010: secrets: inherit ---
+
+test "SEC010: secrets inherit in reusable workflow call" {
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .inherit = {} }, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC010"));
+}
+
+test "SEC010: explicit secrets (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    var secrets_map = workflow_types.StringMap.init(testing.allocator);
+    secrets_map.put("deploy_key", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
+    defer secrets_map.deinit();
+    const jobs = [_]Job{
+        .{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .map = secrets_map }, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC010"));
+}
+
+test "SEC010: no secrets in reusable workflow call (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC010"));
+}
+
+test "SEC010: non-reusable job with no uses (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo hello" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC010"));
 }
 
 // --- Helper function tests ---
