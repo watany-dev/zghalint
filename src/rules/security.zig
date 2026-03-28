@@ -712,6 +712,43 @@ fn isIdentChar(c: u8) bool {
 }
 
 // ============================================================
+// SC001 - Unpinned container images (supply chain)
+// ============================================================
+
+fn isImagePinned(image: []const u8) bool {
+    return std.mem.indexOf(u8, image, "@sha256:") != null;
+}
+
+fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
+    if (job.container) |container| {
+        if (container.image) |image| {
+            if (!isImagePinned(image)) {
+                list.append(.{
+                    .rule_id = "SC001",
+                    .severity = .warning,
+                    .message = "container image is not pinned to a SHA256 digest",
+                    .span = Span.point(0, 0, 0),
+                    .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
+                });
+            }
+        }
+    }
+    for (job.services) |service| {
+        if (service.image) |image| {
+            if (!isImagePinned(image)) {
+                list.append(.{
+                    .rule_id = "SC001",
+                    .severity = .warning,
+                    .message = "service image is not pinned to a SHA256 digest",
+                    .span = Span.point(0, 0, 0),
+                    .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
+                });
+            }
+        }
+    }
+}
+
+// ============================================================
 // Public: All security rules
 // ============================================================
 
@@ -814,6 +851,14 @@ pub const security_rules = [_]Rule{
         .category = .security,
         .check_step = &checkBotConditionStep,
         .check_job = &checkBotConditionJob,
+    },
+    .{
+        .id = "SC001",
+        .name = "unpinned-images",
+        .description = "Container images should be pinned to a SHA256 digest for supply chain security",
+        .severity = .warning,
+        .category = .security,
+        .check_job = &checkUnpinnedImages,
     },
 };
 
@@ -2030,4 +2075,147 @@ test "isSecretsExpression: empty string" {
 
 test "isSecretsExpression: non-secrets expression" {
     try testing.expect(!isSecretsExpression("${{ github.actor }}"));
+}
+
+// ============================================================
+// SC001 tests
+// ============================================================
+
+test "SC001: unpinned container image with tag" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{ .image = "node:14" };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: unpinned container image with latest tag" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{ .image = "redis:latest" };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: unpinned container image without tag" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{ .image = "redis" };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: unpinned service image" {
+    const eng = engine.Engine.init(&security_rules);
+    const services = [_]workflow_types.Service{
+        .{ .name = "db", .image = "postgres:13" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .services = &services, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: both container and service unpinned" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{ .image = "node:14" };
+    const services = [_]workflow_types.Service{
+        .{ .name = "redis", .image = "redis:6" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .services = &services, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(countDiagnostics(&list, "SC001") == 2);
+}
+
+test "SC001: pinned container image (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{ .image = "node@sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: pinned service image (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const services = [_]workflow_types.Service{
+        .{ .name = "redis", .image = "redis@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .services = &services, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: job without container or services (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{.{ .run = "echo hello" }};
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: registry with digest is pinned (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{ .image = "ghcr.io/owner/image@sha256:a1b2c3d4e5f6" };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SC001"));
+}
+
+test "isImagePinned: sha256 digest returns true" {
+    try testing.expect(isImagePinned("node@sha256:a1b2c3d4e5f6"));
+}
+
+test "isImagePinned: tag returns false" {
+    try testing.expect(!isImagePinned("node:14"));
+}
+
+test "isImagePinned: latest tag returns false" {
+    try testing.expect(!isImagePinned("redis:latest"));
+}
+
+test "isImagePinned: bare image returns false" {
+    try testing.expect(!isImagePinned("redis"));
+}
+
+test "isImagePinned: sha256 in name but not digest format" {
+    try testing.expect(!isImagePinned("sha256-test:latest"));
+}
+
+test "isImagePinned: registry with digest" {
+    try testing.expect(isImagePinned("ghcr.io/owner/image@sha256:abc123"));
 }
