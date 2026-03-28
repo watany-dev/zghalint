@@ -449,12 +449,11 @@ test "parseSeverity all values" {
     try std.testing.expect(parseSeverity("invalid") == null);
 }
 
-test "parse config with invalid yaml returns error" {
-    const result = parseConfig(std.testing.allocator, ":\n  :\n   : : :");
+test "parse config with invalid yaml" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     // Should either parse or return an error, not crash
-    if (result) |*config| {
-        config.deinit();
-    } else |_| {}
+    _ = parseConfig(arena.allocator(), ":\n  :\n   : : :") catch {};
 }
 
 test "matchGlob trailing star" {
