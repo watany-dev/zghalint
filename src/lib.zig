@@ -53,6 +53,13 @@ pub const rules = struct {
     pub const advisory = @import("rules/advisory.zig");
 };
 
+pub const fix = struct {
+    pub const engine = @import("fix/engine.zig");
+    pub const applyFixes = engine.applyFixes;
+    pub const ApplyResult = engine.ApplyResult;
+    pub const collectFixes = engine.collectFixes;
+};
+
 pub const config = @import("config.zig");
 pub const Config = config.Config;
 pub const OutputFormat = config.OutputFormat;
@@ -76,5 +83,6 @@ test {
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
+    _ = @import("fix/engine.zig");
     _ = @import("config.zig");
 }
