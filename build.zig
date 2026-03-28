@@ -53,6 +53,11 @@ pub fn build(b: *std.Build) void {
     });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
+    // --- Coverage support: install test binary ---
+    const install_lib_tests = b.addInstallArtifact(lib_unit_tests, .{});
+    const test_bin_step = b.step("test-bin", "Install test binary for coverage measurement");
+    test_bin_step.dependOn(&install_lib_tests.step);
+
     // --- Executable tests ---
     const exe_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
