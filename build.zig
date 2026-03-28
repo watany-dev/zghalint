@@ -70,6 +70,18 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
 
+    // --- Benchmark tests ---
+    const bench_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    const run_bench_tests = b.addRunArtifact(bench_tests);
+    const bench_step = b.step("bench", "Run performance benchmarks");
+    bench_step.dependOn(&run_bench_tests.step);
+
     // --- Format check step ---
     const fmt_step = b.step("fmt", "Check source formatting");
     const fmt = b.addFmt(.{

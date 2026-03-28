@@ -115,7 +115,24 @@ fn checkCyclicNeeds(
         }
     }
 
-    // Kahn's algorithm: start with jobs that have no dependencies
+    // Build reverse adjacency list: dependents[dep_idx] contains indices of jobs that depend on dep_idx
+    var dependents = try allocator.alloc(std.ArrayList(usize), jobs.len);
+    defer {
+        for (dependents) |*list| list.deinit();
+        allocator.free(dependents);
+    }
+    for (dependents) |*list| {
+        list.* = std.ArrayList(usize).init(allocator);
+    }
+    for (jobs, 0..) |job, i| {
+        for (job.needs) |dep| {
+            if (job_indices.get(dep)) |dep_idx| {
+                try dependents[dep_idx].append(i);
+            }
+        }
+    }
+
+    // Kahn's algorithm with head-pointer queue (no shifting)
     var queue = std.ArrayList(usize).init(allocator);
     defer queue.deinit();
 
@@ -124,21 +141,17 @@ fn checkCyclicNeeds(
     }
 
     var visited: usize = 0;
-    while (queue.items.len > 0) {
-        const current = queue.orderedRemove(0);
+    var head: usize = 0;
+    while (head < queue.items.len) {
+        const current = queue.items[head];
+        head += 1;
         visited += 1;
 
-        // For each job that depends on current, decrease in-degree
-        for (jobs, 0..) |job, i| {
-            for (job.needs) |dep| {
-                if (job_indices.get(dep)) |dep_idx| {
-                    if (dep_idx == current) {
-                        in_degree[i] -= 1;
-                        if (in_degree[i] == 0) {
-                            try queue.append(i);
-                        }
-                    }
-                }
+        // Only iterate over jobs that actually depend on current
+        for (dependents[current].items) |i| {
+            in_degree[i] -= 1;
+            if (in_degree[i] == 0) {
+                try queue.append(i);
             }
         }
     }
