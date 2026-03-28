@@ -66,7 +66,7 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .message = "action reference is not pinned to a SHA",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
-            });
+            }) catch return;
         }
     }
 }
@@ -112,7 +112,7 @@ fn checkStringForSecrets(s: []const u8, list: *DiagnosticList) void {
                 .message = "potential hardcoded secret detected",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "use a GitHub secret (secrets.YOUR_SECRET) instead of hardcoding credentials",
-            });
+            }) catch return;
             return; // One diagnostic per string is enough
         }
     }
@@ -142,7 +142,7 @@ fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
                 .message = "workflow uses 'permissions: write-all' which grants excessive permissions",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "specify only the permissions that are needed",
-            });
+            }) catch return;
         }
     }
 }
@@ -156,7 +156,7 @@ fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
                 .message = "job uses 'permissions: write-all' which grants excessive permissions",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "specify only the permissions that are needed",
-            });
+            }) catch return;
         }
     }
 }
@@ -191,7 +191,7 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
                                     .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
                                     .span = Span.point(0, 0, 0),
                                     .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
-                                });
+                                }) catch return;
                             }
                         }
                     }
@@ -250,7 +250,7 @@ fn checkConditionForDangerousContext(cond: []const u8, list: *DiagnosticList) vo
                 .message = "untrusted context used in if: condition expression",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "validate the input before using it in a condition",
-            });
+            }) catch return;
         }
     }
 }
@@ -267,7 +267,7 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
             .message = "workflow does not define top-level permissions, defaults may be overly broad",
             .span = Span.point(0, 0, 0),
             .fix_hint = "add a top-level 'permissions:' block to restrict GITHUB_TOKEN scope",
-        });
+        }) catch return;
     }
 }
 
@@ -300,7 +300,7 @@ fn checkDangerousContextInString(s: []const u8, rule_id: []const u8, message: []
                         .message = message,
                         .span = Span.point(0, 0, 0),
                         .fix_hint = fix_hint,
-                    });
+                    }) catch return;
                     return; // One diagnostic per string
                 }
                 pos = j + 1;

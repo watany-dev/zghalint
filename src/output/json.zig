@@ -124,7 +124,7 @@ test "renderJson single diagnostic" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{
+    try list.append(.{
         .rule_id = "SEC002",
         .severity = .@"error",
         .message = "Potential script injection",
@@ -159,8 +159,8 @@ test "renderJson multiple diagnostics" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err", .file = "a.yml", .span = Span.point(1, 1, 0) });
-    list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn", .file = "a.yml", .span = Span.point(2, 1, 0), .fix_hint = "fix it" });
+    try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err", .file = "a.yml", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn", .file = "a.yml", .span = Span.point(2, 1, 0), .fix_hint = "fix it" });
 
     try renderJson(buf.writer(std.testing.allocator), list, 1);
     const output = buf.items;
@@ -178,7 +178,7 @@ test "renderJson null fix_hint" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "T1", .severity = .info, .message = "test", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "T1", .severity = .info, .message = "test", .span = Span.point(1, 1, 0) });
 
     try renderJson(buf.writer(std.testing.allocator), list, 0);
     const output = buf.items;
@@ -202,7 +202,7 @@ test "renderJson is valid JSON structure" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "R1", .severity = .@"error", .message = "msg", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "R1", .severity = .@"error", .message = "msg", .span = Span.point(1, 1, 0) });
 
     try renderJson(buf.writer(std.testing.allocator), list, 1);
     const output = buf.items;
@@ -236,7 +236,7 @@ test "renderJson with hint severity" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "H1", .severity = .hint, .message = "hint msg", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "H1", .severity = .hint, .message = "hint msg", .span = Span.point(1, 1, 0) });
 
     try renderJson(buf.writer(std.testing.allocator), list, 1);
     const output = buf.items;
@@ -252,7 +252,7 @@ test "renderJson with info severity" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "I1", .severity = .info, .message = "info msg", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "I1", .severity = .info, .message = "info msg", .span = Span.point(1, 1, 0) });
 
     try renderJson(buf.writer(std.testing.allocator), list, 1);
     const output = buf.items;

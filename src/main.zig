@@ -154,7 +154,7 @@ fn lintFile(
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
-        all_diags.append(d);
+        all_diags.append(d) catch {};
     }
 }
 
