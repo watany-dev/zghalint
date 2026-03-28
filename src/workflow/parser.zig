@@ -780,6 +780,78 @@ test "parseStringMap" {
     try testing.expectEqualStrings("qux", map.get("BAZ").?);
 }
 
+test "parseStrategy with fail-fast and max-parallel" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("fail-fast"), .value = mkScalar("false"), .span = mkSpan() },
+        .{ .key = mkScalarS("max-parallel"), .value = mkScalar("2"), .span = mkSpan() },
+    };
+
+    const strategy = try parseStrategy(mkMapping(&entries));
+    try testing.expect(!strategy.fail_fast);
+    try testing.expectEqual(@as(?u32, 2), strategy.max_parallel);
+}
+
+test "parseStep with timeout and continue-on-error" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var with_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("key"), .value = mkScalar("value"), .span = mkSpan() },
+    };
+    var env_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("FOO"), .value = mkScalar("bar"), .span = mkSpan() },
+    };
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo test"), .span = mkSpan() },
+        .{ .key = mkScalarS("timeout-minutes"), .value = mkScalar("10"), .span = mkSpan() },
+        .{ .key = mkScalarS("continue-on-error"), .value = mkScalar("true"), .span = mkSpan() },
+        .{ .key = mkScalarS("if"), .value = mkScalar("always()"), .span = mkSpan() },
+        .{ .key = mkScalarS("id"), .value = mkScalar("step1"), .span = mkSpan() },
+        .{ .key = mkScalarS("working-directory"), .value = mkScalar("./src"), .span = mkSpan() },
+        .{ .key = mkScalarS("with"), .value = mkMapping(&with_entries), .span = mkSpan() },
+        .{ .key = mkScalarS("env"), .value = mkMapping(&env_entries), .span = mkSpan() },
+    };
+
+    const step = try parseStep(arena.allocator(), mkMapping(&entries));
+    try testing.expectEqual(@as(?u32, 10), step.timeout_minutes);
+    try testing.expect(step.continue_on_error);
+    try testing.expectEqualStrings("always()", step.if_condition.?);
+    try testing.expectEqualStrings("step1", step.id.?);
+    try testing.expectEqualStrings("./src", step.working_directory.?);
+    try testing.expectEqualStrings("value", step.with.?.get("key").?);
+    try testing.expectEqualStrings("bar", step.env.?.get("FOO").?);
+}
+
+test "parseJob with timeout and strategy" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var step_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
+    };
+    var step_items = [_]Node{mkMapping(&step_entries)};
+
+    var strategy_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("fail-fast"), .value = mkScalar("true"), .span = mkSpan() },
+    };
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
+        .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
+        .{ .key = mkScalarS("timeout-minutes"), .value = mkScalar("30"), .span = mkSpan() },
+        .{ .key = mkScalarS("continue-on-error"), .value = mkScalar("true"), .span = mkSpan() },
+        .{ .key = mkScalarS("if"), .value = mkScalar("success()"), .span = mkSpan() },
+        .{ .key = mkScalarS("strategy"), .value = mkMapping(&strategy_entries), .span = mkSpan() },
+    };
+
+    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    try testing.expectEqual(@as(?u32, 30), job.timeout_minutes);
+    try testing.expect(job.continue_on_error);
+    try testing.expectEqualStrings("success()", job.if_condition.?);
+    try testing.expect(job.strategy.?.fail_fast);
+}
+
 test "parseWorkflow with env and concurrency" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
