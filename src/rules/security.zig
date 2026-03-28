@@ -55,6 +55,26 @@ const secret_prefixes = [_][]const u8{
 };
 
 // ============================================================
+// Cache-related setup actions (for SEC016 cache poisoning check)
+// ============================================================
+
+const cache_setup_actions = [_][]const u8{
+    "actions/setup-node",
+    "actions/setup-python",
+    "actions/setup-java",
+    "actions/setup-go",
+    "actions/setup-dotnet",
+};
+
+/// Keywords that suggest a deploy/release/publish job.
+const deploy_keywords = [_][]const u8{
+    "deploy",
+    "release",
+    "publish",
+    "prod",
+};
+
+// ============================================================
 // SEC001 - Unpinned action references
 // ============================================================
 
@@ -327,6 +347,31 @@ fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
+// ============================================================
+// SEC016 - Cache poisoning in release/deploy workflows
+// ============================================================
+
+fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
+    const has_release_trigger = isReleaseOrDeployTrigger(wf);
+
+    for (wf.jobs) |*job| {
+        const job_at_risk = has_release_trigger or isDeployJob(job);
+        if (!job_at_risk) continue;
+
+        for (job.steps) |*step| {
+            if (isCacheAction(step) or isSetupActionWithCache(step)) {
+                list.append(.{
+                    .rule_id = "SEC016",
+                    .severity = .warning,
+                    .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
+                    .span = Span.point(0, 0, 0),
+                    .fix_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope",
+                });
+            }
+        }
+    }
+}
+
 fn emitSEC012(list: *DiagnosticList) void {
     list.append(.{
         .rule_id = "SEC012",
@@ -364,6 +409,59 @@ fn checkStringForUnredactedSecrets(s: []const u8) bool {
     return false;
 }
 
+fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
+    for (wf.on.events) |event| {
+        if (event.event == .release) return true;
+    }
+    return false;
+}
+
+fn isDeployJob(job: *const Job) bool {
+    if (containsAnyKeyword(job.id)) return true;
+    if (job.name) |name| {
+        if (containsAnyKeyword(name)) return true;
+    }
+    return false;
+}
+
+fn containsAnyKeyword(s: []const u8) bool {
+    for (deploy_keywords) |keyword| {
+        if (containsIgnoreCase(s, keyword)) return true;
+    }
+    return false;
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (haystack.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn isCacheAction(step: *const Step) bool {
+    const action_ref = step.uses orelse return false;
+    const base = actionBaseName(action_ref.raw);
+    return std.mem.eql(u8, base, "actions/cache");
+}
+
+fn isSetupActionWithCache(step: *const Step) bool {
+    const action_ref = step.uses orelse return false;
+    const base = actionBaseName(action_ref.raw);
+    for (cache_setup_actions) |setup_action| {
+        if (std.mem.eql(u8, base, setup_action)) {
+            if (step.with) |with_map| {
+                if (with_map.get("cache")) |val| {
+                    if (val.len > 0) return true;
+                }
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
 /// Check if an expression contains toJSON(secrets...) or fromJSON(secrets...).
 fn exprHasSecretJsonCall(expr: []const u8) bool {
     const patterns = [_][]const u8{ "toJSON", "tojson", "toJson", "TOJSON", "fromJSON", "fromjson", "fromJson", "FROMJSON" };
@@ -390,6 +488,10 @@ fn exprHasSecretJsonCall(expr: []const u8) bool {
         }
     }
     return false;
+}
+
+fn actionBaseName(raw: []const u8) []const u8 {
+    return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
 }
 
 // ============================================================
@@ -545,6 +647,14 @@ pub const security_rules = [_]Rule{
         .category = .security,
         .check_step = &checkUnredactedSecrets,
     },
+    .{
+        .id = "SEC016",
+        .name = "cache-poisoning",
+        .description = "Cache usage in release/deploy workflows risks cache poisoning attacks",
+        .severity = .warning,
+        .category = .security,
+        .check_workflow = &checkCachePoisoning,
+    },
 };
 
 // ============================================================
@@ -557,6 +667,13 @@ const Trigger = workflow_types.Trigger;
 
 fn makeEmptyTrigger() Trigger {
     return .{ .events = &.{} };
+}
+
+fn makeReleaseTrigger() Trigger {
+    const events = &[_]EventConfig{
+        .{ .event = .release, .name = "release" },
+    };
+    return .{ .events = events };
 }
 
 fn makePRTargetTrigger() Trigger {
@@ -1321,4 +1438,151 @@ test "clean workflow passes all security rules" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+// --- SEC016: Cache poisoning ---
+
+test "SEC016: release trigger + actions/cache" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: release trigger + setup-node with cache" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("cache", "npm") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@v4"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: deploy job name + actions/cache" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "deploy-prod", .name = "Deploy to Production", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: regular CI workflow with cache (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .name = "Build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: release trigger but no cache (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "make build" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: deploy job without cache (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "deploy", .name = "Deploy", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CD", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: setup-node without cache input in release (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: case-insensitive deploy job name" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "job1", .name = "DEPLOY to Prod", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CD", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: publish job id triggers rule" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "publish-npm", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: emits one diagnostic per offending step" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC016"));
 }
