@@ -158,16 +158,8 @@ fn lintFile(
     }
 }
 
-fn outputTerminal(diag_list: *zghalint.DiagnosticList, allocator: std.mem.Allocator) !void {
-    var buf: [4096]u8 = undefined;
-    var bw = std.fs.File.stdout().writer(&buf);
-    const stdout = &bw.interface;
-    for (diag_list.items.items) |diag| {
-        const formatted = try diag.format(allocator);
-        defer allocator.free(formatted);
-        try stdout.print("{s}\n", .{formatted});
-    }
-    try stdout.flush();
+fn outputTerminal(diag_list: *zghalint.DiagnosticList, writer: anytype, use_color: bool) !void {
+    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, null, use_color);
 }
 
 fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checked: usize) !void {
@@ -264,10 +256,20 @@ pub fn main() !u8 {
 
     all_diags.sort();
 
+    // Determine color usage
+    const use_color = switch (config.color_mode) {
+        .always => true,
+        .never => false,
+        .auto => std.posix.isatty(std.fs.File.stdout().handle),
+    };
+
     // Output
     switch (config.output_format) {
-        .terminal => outputTerminal(&all_diags, allocator) catch {
-            return 2;
+        .terminal => {
+            outputTerminal(&all_diags, stdout, use_color) catch {
+                return 2;
+            };
+            try stdout.flush();
         },
         .json => {
             outputJson(&all_diags, stdout, files.len) catch {
