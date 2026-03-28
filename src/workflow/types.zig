@@ -255,6 +255,7 @@ pub const Service = struct {
 /// A workflow job
 pub const Job = struct {
     id: []const u8,
+    span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     name: ?[]const u8 = null,
     runs_on: ?[]const u8 = null,
     needs: []const []const u8 = &.{},

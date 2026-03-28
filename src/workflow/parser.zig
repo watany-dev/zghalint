@@ -250,6 +250,7 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
     };
 
     var job = types.Job{ .id = id };
+    job.span = m.span;
     job.name = m.getScalar("name");
     job.runs_on = m.getScalar("runs-on");
     job.if_condition = m.getScalar("if");
