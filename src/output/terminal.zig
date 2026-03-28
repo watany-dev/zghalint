@@ -322,3 +322,110 @@ test "getSourceLine last line no newline" {
     const src = "first\nsecond";
     try std.testing.expectEqualStrings("second", getSourceLine(src, 2).?);
 }
+
+test "renderDiagnostics renders multiple items with summary" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err msg", .file = "a.yml", .span = Span.point(1, 1, 0) });
+    list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn msg", .file = "a.yml", .span = Span.point(2, 1, 0) });
+
+    try renderDiagnostics(writer, list, null, false);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "err msg") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "warn msg") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "2 issue(s)") != null);
+}
+
+test "renderSummary with all severity types" {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
+    list.append(.{ .rule_id = "W1", .severity = .warning, .message = "w", .span = Span.point(2, 1, 0) });
+    list.append(.{ .rule_id = "I1", .severity = .info, .message = "i", .span = Span.point(3, 1, 0) });
+    list.append(.{ .rule_id = "H1", .severity = .hint, .message = "h", .span = Span.point(4, 1, 0) });
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    try renderSummary(buf.writer(std.testing.allocator), list, false);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "4 issue(s)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1 error(s)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1 warning(s)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1 info") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1 hint(s)") != null);
+}
+
+test "renderSummary with color" {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    try renderSummary(buf.writer(std.testing.allocator), list, true);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "1 error(s)") != null);
+}
+
+test "renderDiagnostic with source but start_line zero" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    const diag = Diagnostic{
+        .rule_id = "T1",
+        .severity = .warning,
+        .message = "test",
+        .span = Span.point(0, 0, 0),
+    };
+
+    try renderDiagnostic(writer, diag, "some source", false);
+    const output = buf.items;
+    // Should not crash, source context skipped when line is 0
+    try std.testing.expect(std.mem.indexOf(u8, output, "warning[T1]") != null);
+}
+
+test "renderDiagnostic multi-char caret span" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    const diag = Diagnostic{
+        .rule_id = "T1",
+        .severity = .@"error",
+        .message = "test",
+        .file = "f.yml",
+        .span = .{
+            .start_line = 1,
+            .start_col = 1,
+            .end_line = 1,
+            .end_col = 4,
+            .start_byte = 0,
+            .end_byte = 3,
+        },
+    };
+
+    try renderDiagnostic(writer, diag, "abcdef", true);
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "^^^") != null);
+}
+
+test "severityColor returns correct codes" {
+    try std.testing.expectEqualStrings(Color.bold_red, severityColor(.@"error"));
+    try std.testing.expectEqualStrings(Color.bold_yellow, severityColor(.warning));
+    try std.testing.expectEqualStrings(Color.bold_blue, severityColor(.info));
+    try std.testing.expectEqualStrings(Color.bold_gray, severityColor(.hint));
+}

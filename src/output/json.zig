@@ -211,3 +211,51 @@ test "renderJson is valid JSON structure" {
     try std.testing.expect(output[0] == '{');
     try std.testing.expect(output[output.len - 1] == '}');
 }
+
+test "writeJsonString escapes tabs and carriage returns" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    try writeJsonString(buf.writer(std.testing.allocator), "col1\tcol2\rend");
+    try std.testing.expectEqualStrings("\"col1\\tcol2\\rend\"", buf.items);
+}
+
+test "writeJsonString escapes control characters" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    // Test with a control char (0x01 = SOH)
+    try writeJsonString(buf.writer(std.testing.allocator), "\x01");
+    try std.testing.expectEqualStrings("\"\\u0001\"", buf.items);
+}
+
+test "renderJson with hint severity" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    list.append(.{ .rule_id = "H1", .severity = .hint, .message = "hint msg", .span = Span.point(1, 1, 0) });
+
+    try renderJson(buf.writer(std.testing.allocator), list, 1);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"hints\":1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"severity\":\"hint\"") != null);
+}
+
+test "renderJson with info severity" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    list.append(.{ .rule_id = "I1", .severity = .info, .message = "info msg", .span = Span.point(1, 1, 0) });
+
+    try renderJson(buf.writer(std.testing.allocator), list, 1);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"infos\":1") != null);
+}

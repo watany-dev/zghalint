@@ -148,7 +148,12 @@ test "severity toString" {
 test "category toString" {
     try std.testing.expectEqualStrings("syntax", Category.syntax.toString());
     try std.testing.expectEqualStrings("security", Category.security.toString());
+    try std.testing.expectEqualStrings("performance", Category.performance.toString());
     try std.testing.expectEqualStrings("best_practice", Category.best_practice.toString());
+    try std.testing.expectEqualStrings("expression", Category.expression.toString());
+    try std.testing.expectEqualStrings("dependency", Category.dependency.toString());
+    try std.testing.expectEqualStrings("permissions", Category.permissions.toString());
+    try std.testing.expectEqualStrings("runner", Category.runner.toString());
     try std.testing.expectEqualStrings("reusable_workflow", Category.reusable_workflow.toString());
 }
 
