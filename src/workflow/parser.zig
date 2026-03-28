@@ -326,8 +326,21 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
     step.if_condition = m.getScalar("if");
     step.working_directory = m.getScalar("working-directory");
 
-    if (m.getScalar("uses")) |uses_str| {
-        step.uses = types.ActionRef.parse(uses_str);
+    // Parse uses: and capture span info for autofix
+    if (m.get("uses")) |uses_node| {
+        switch (uses_node) {
+            .scalar => |s| {
+                step.uses = types.ActionRef.parse(s.value);
+                step.uses_value_end_byte = s.span.end_byte;
+            },
+            else => {},
+        }
+        for (m.entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, "uses")) {
+                step.uses_key_col = entry.key.span.start_col;
+                break;
+            }
+        }
     }
     if (m.getScalar("timeout-minutes")) |t| {
         step.timeout_minutes = std.fmt.parseInt(u32, t, 10) catch null;
@@ -335,8 +348,18 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
     if (m.getScalar("continue-on-error")) |v| {
         step.continue_on_error = std.mem.eql(u8, v, "true");
     }
-    if (m.get("with")) |n| {
-        step.with = try parseStringMap(allocator, n);
+    // Parse with: and capture last entry's value end byte for autofix
+    if (m.get("with")) |with_node| {
+        step.with = try parseStringMap(allocator, with_node);
+        switch (with_node) {
+            .mapping => |with_mapping| {
+                if (with_mapping.entries.len > 0) {
+                    const last = with_mapping.entries[with_mapping.entries.len - 1];
+                    step.with_last_entry_end_byte = last.value.getSpan().end_byte;
+                }
+            },
+            else => {},
+        }
     }
     if (m.get("env")) |n| {
         step.env = try parseStringMap(allocator, n);

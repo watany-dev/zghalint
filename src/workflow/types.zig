@@ -225,6 +225,12 @@ pub const Step = struct {
     continue_on_error: bool = false,
     timeout_minutes: ?u32 = null,
     working_directory: ?[]const u8 = null,
+    /// Column of the `uses:` key in source YAML (for autofix indentation).
+    uses_key_col: ?u32 = null,
+    /// End byte of the `uses:` value in source YAML (insertion point when no `with:` exists).
+    uses_value_end_byte: ?usize = null,
+    /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
+    with_last_entry_end_byte: ?usize = null,
 };
 
 /// Secrets configuration for reusable workflow jobs

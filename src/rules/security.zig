@@ -866,6 +866,90 @@ fn containsActorBotCheck(expr: []const u8) bool {
 }
 
 // ============================================================
+// SEC015 - Artipacked: credential leak via upload-artifact
+// ============================================================
+
+fn isUploadArtifactAction(ref: ActionRef) bool {
+    const owner = ref.owner orelse return false;
+    const repo = ref.repo orelse return false;
+    return std.mem.eql(u8, owner, "actions") and std.mem.eql(u8, repo, "upload-artifact");
+}
+
+fn hasPersistCredentialsFalse(step: *const Step) bool {
+    const with_map = step.with orelse return false;
+    const val = with_map.get("persist-credentials") orelse return false;
+    return std.mem.eql(u8, val, "false");
+}
+
+fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
+    // Check if the job has any upload-artifact step
+    var has_upload = false;
+    for (job.steps) |*step| {
+        if (step.uses) |ref| {
+            if (isUploadArtifactAction(ref)) {
+                has_upload = true;
+                break;
+            }
+        }
+    }
+    if (!has_upload) return;
+
+    // Emit one diagnostic per vulnerable checkout step
+    for (job.steps) |*step| {
+        if (step.uses) |ref| {
+            if (isCheckoutAction(ref) and !hasPersistCredentialsFalse(step)) {
+                var diag = Diagnostic{
+                    .rule_id = "SEC015",
+                    .severity = .warning,
+                    .message = "actions/checkout persists credentials by default; combined with upload-artifact, the GITHUB_TOKEN may leak via uploaded artifacts",
+                    .span = Span.point(0, 0, 0),
+                    .fix_hint = "add 'persist-credentials: false' to the checkout step's 'with:' block",
+                };
+
+                // Attach autofix when span info is available
+                if (step.uses_value_end_byte != null) {
+                    diag.fix = buildPersistCredentialsFix(list, step);
+                }
+
+                list.append(diag);
+            }
+        }
+    }
+}
+
+fn buildPersistCredentialsFix(list: *DiagnosticList, step: *const Step) ?diagnostics.Fix {
+    const alloc = list.fixAllocator();
+    const col = step.uses_key_col orelse 6;
+
+    // Only generate Fix when persist-credentials is absent.
+    // When persist-credentials: true, fall back to fix_hint only.
+    const has_persist = if (step.with) |w| w.get("persist-credentials") != null else false;
+    if (has_persist) return null;
+
+    // Build indentation strings
+    const indent = alloc.alloc(u8, col) catch return null;
+    @memset(indent, ' ');
+    const indent2 = alloc.alloc(u8, col + 2) catch return null;
+    @memset(indent2, ' ');
+
+    if (step.with == null) {
+        // No with: block — insert with: and persist-credentials: false after uses: value
+        const insert_at = step.uses_value_end_byte orelse return null;
+        const replacement = std.fmt.allocPrint(alloc, "\n{s}with:\n{s}persist-credentials: false", .{ indent, indent2 }) catch return null;
+        const edits = alloc.alloc(diagnostics.Edit, 1) catch return null;
+        edits[0] = .{ .start_byte = insert_at, .end_byte = insert_at, .replacement = replacement };
+        return .{ .description = "add persist-credentials: false to checkout step", .safety = .safe, .edits = edits };
+    } else {
+        // with: exists — append persist-credentials: false after last entry
+        const insert_at = step.with_last_entry_end_byte orelse return null;
+        const replacement = std.fmt.allocPrint(alloc, "\n{s}persist-credentials: false", .{indent2}) catch return null;
+        const edits = alloc.alloc(diagnostics.Edit, 1) catch return null;
+        edits[0] = .{ .start_byte = insert_at, .end_byte = insert_at, .replacement = replacement };
+        return .{ .description = "add persist-credentials: false to checkout step", .safety = .safe, .edits = edits };
+    }
+}
+
+// ============================================================
 // Shared helpers
 // ============================================================
 
@@ -1095,6 +1179,14 @@ pub const security_rules = [_]Rule{
         .category = .security,
         .check_step = &checkBotConditionStep,
         .check_job = &checkBotConditionJob,
+    },
+    .{
+        .id = "SEC015",
+        .name = "artipacked",
+        .description = "Checkout with persisted credentials followed by upload-artifact can leak GITHUB_TOKEN",
+        .severity = .warning,
+        .category = .security,
+        .check_job = &checkArtipacked,
     },
     .{
         .id = "SC001",
@@ -2873,4 +2965,381 @@ test "exprIsWholeSecretsRef: toJSON(secrets.X)" {
 
 test "exprIsWholeSecretsRef: empty string" {
     try testing.expect(!exprIsWholeSecretsRef(""));
+}
+
+// ============================================================
+// SEC015 tests - Artipacked
+// ============================================================
+
+test "SEC015: checkout + upload-artifact triggers rule" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: checkout with other with: keys (no persist-credentials) + upload-artifact" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("fetch-depth", "0") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: persist-credentials: true is vulnerable" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("persist-credentials", "true") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: SHA-pinned versions still detected" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: multiple checkout steps emit one diagnostic per checkout" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "make build" },
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC015"));
+}
+
+test "SEC015: checkout + persist-credentials: false (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("persist-credentials", "false") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: checkout only without upload-artifact (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "make test" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: upload-artifact only without checkout (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "make build" },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: checkout and upload in different jobs (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps1 = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+    };
+    const steps2 = [_]Step{
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps1, .permissions = Permissions{} },
+        .{ .id = "upload", .steps = &steps2, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: fix is safe and attached when span info present" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .uses_key_col = 8,
+            .uses_value_end_byte = 50,
+        },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    // Find the SEC015 diagnostic and verify fix
+    var found_fix = false;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
+            try testing.expect(d.fix != null);
+            const fix = d.fix.?;
+            try testing.expect(fix.safety == .safe);
+            try testing.expect(fix.edits.len == 1);
+            try testing.expectEqual(@as(usize, 50), fix.edits[0].start_byte);
+            try testing.expectEqual(@as(usize, 50), fix.edits[0].end_byte);
+            // Verify replacement contains with: and persist-credentials: false
+            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") != null);
+            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
+            found_fix = true;
+            break;
+        }
+    }
+    try testing.expect(found_fix);
+}
+
+test "SEC015: fix inserts into existing with: block" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("fetch-depth", "0") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .with = with,
+            .uses_key_col = 8,
+            .uses_value_end_byte = 50,
+            .with_last_entry_end_byte = 80,
+        },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
+            try testing.expect(d.fix != null);
+            const fix = d.fix.?;
+            try testing.expectEqual(@as(usize, 80), fix.edits[0].start_byte);
+            // Should NOT contain "with:" since with already exists
+            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") == null);
+            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
+            break;
+        }
+    }
+}
+
+test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("persist-credentials", "true") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .with = with,
+            .uses_key_col = 8,
+            .uses_value_end_byte = 50,
+            .with_last_entry_end_byte = 80,
+        },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
+            try testing.expect(d.fix == null);
+            try testing.expect(d.fix_hint != null);
+            break;
+        }
+    }
+}
+
+test "SEC015: no fix when span info absent (manually constructed step)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
+            try testing.expect(d.fix == null);
+            try testing.expect(d.fix_hint != null);
+            break;
+        }
+    }
+}
+
+test "SEC015: isUploadArtifactAction helper" {
+    try testing.expect(isUploadArtifactAction(ActionRef.parse("actions/upload-artifact@v4")));
+    try testing.expect(isUploadArtifactAction(ActionRef.parse("actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808")));
+    try testing.expect(!isUploadArtifactAction(ActionRef.parse("actions/checkout@v4")));
+    try testing.expect(!isUploadArtifactAction(ActionRef.parse("actions/download-artifact@v4")));
+    try testing.expect(!isUploadArtifactAction(ActionRef.parse("./actions/upload-artifact")));
+}
+
+test "SEC015: hasPersistCredentialsFalse helper" {
+    // No with: map
+    const step_no_with = Step{};
+    try testing.expect(!hasPersistCredentialsFalse(&step_no_with));
+
+    // with: map without persist-credentials
+    var with1 = workflow_types.StringMap.init(testing.allocator);
+    with1.put("fetch-depth", "0") catch unreachable;
+    defer with1.deinit();
+    const step_no_pc = Step{ .with = with1 };
+    try testing.expect(!hasPersistCredentialsFalse(&step_no_pc));
+
+    // persist-credentials: false
+    var with2 = workflow_types.StringMap.init(testing.allocator);
+    with2.put("persist-credentials", "false") catch unreachable;
+    defer with2.deinit();
+    const step_false = Step{ .with = with2 };
+    try testing.expect(hasPersistCredentialsFalse(&step_false));
+
+    // persist-credentials: true
+    var with3 = workflow_types.StringMap.init(testing.allocator);
+    with3.put("persist-credentials", "true") catch unreachable;
+    defer with3.deinit();
+    const step_true = Step{ .with = with3 };
+    try testing.expect(!hasPersistCredentialsFalse(&step_true));
+}
+
+test "SEC015: integration - YAML parse to fix apply" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    // Use arena for parser allocations (jobs, steps, etc.)
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - run: make build
+        \\      - uses: actions/upload-artifact@v4
+        \\        with:
+        \\          name: dist
+        \\          path: ./dist
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    const eng = engine.Engine.init(&security_rules);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    // Should detect SEC015
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+
+    // Should have a fix attached
+    var fix_found = false;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
+            try testing.expect(d.fix != null);
+            const fix = d.fix.?;
+            try testing.expect(fix.safety == .safe);
+            try testing.expect(fix.edits.len == 1);
+
+            // Apply the fix
+            const fixes = [_]diagnostics.Fix{fix};
+            const result = try fix_engine.applyFixes(testing.allocator, source, &fixes);
+            defer result.deinit(testing.allocator);
+
+            // Verify the output contains persist-credentials: false
+            try testing.expect(std.mem.indexOf(u8, result.content, "persist-credentials: false") != null);
+            // Verify with: was inserted
+            try testing.expect(std.mem.indexOf(u8, result.content, "with:\n") != null);
+            try testing.expectEqual(@as(usize, 1), result.edits_applied);
+
+            fix_found = true;
+            break;
+        }
+    }
+    try testing.expect(fix_found);
 }

@@ -119,23 +119,25 @@ pub const Diagnostic = struct {
 pub const DiagnosticList = struct {
     items: std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-    /// Tracks heap-allocated edit slices so they can be freed on deinit.
-    edit_allocs: std.ArrayList([]Edit),
+    /// Arena for Fix-related heap allocations (Edit slices, replacement strings).
+    fix_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticList {
         return .{
             .items = std.ArrayList(Diagnostic).init(allocator),
             .allocator = allocator,
-            .edit_allocs = std.ArrayList([]Edit).init(allocator),
+            .fix_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
     pub fn deinit(self: *DiagnosticList) void {
-        for (self.edit_allocs.items) |edits| {
-            self.allocator.free(edits);
-        }
-        self.edit_allocs.deinit();
+        self.fix_arena.deinit();
         self.items.deinit();
+    }
+
+    /// Returns an allocator for Fix edits/strings. Lifetime matches DiagnosticList.
+    pub fn fixAllocator(self: *DiagnosticList) std.mem.Allocator {
+        return self.fix_arena.allocator();
     }
 
     pub fn append(self: *DiagnosticList, diag: Diagnostic) void {
@@ -145,12 +147,9 @@ pub const DiagnosticList = struct {
     /// Allocate a single Edit on the heap, tracked for cleanup on deinit.
     /// Returns a slice suitable for use in Fix.edits, or null on OOM.
     pub fn allocEdit(self: *DiagnosticList, edit: Edit) ?[]const Edit {
-        const edits = self.allocator.alloc(Edit, 1) catch return null;
+        const alloc = self.fix_arena.allocator();
+        const edits = alloc.alloc(Edit, 1) catch return null;
         edits[0] = edit;
-        self.edit_allocs.append(edits) catch {
-            self.allocator.free(edits);
-            return null;
-        };
         return edits;
     }
 
