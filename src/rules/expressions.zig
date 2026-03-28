@@ -527,6 +527,9 @@ fn validateNode(allocator: std.mem.Allocator, node: *const ExprNode, span: Span,
         .context_access => validateContextAccess(allocator, node.value, span, list),
         .function_call => validateFunctionCall(allocator, node, span, list),
         .binary_op, .unary_op => {
+            if (node.kind == .binary_op) {
+                checkUnsoundCondition(allocator, node, span, list);
+            }
             for (node.children) |*child| {
                 validateNode(allocator, child, span, list);
             }
@@ -643,6 +646,31 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
     // Validate arguments recursively
     for (node.children) |*child| {
         validateNode(allocator, child, span, list);
+    }
+}
+
+// ============================================================
+// EXPR007: unsound-condition — bare literal in logical operator
+// ============================================================
+
+fn checkUnsoundCondition(allocator: std.mem.Allocator, node: *const ExprNode, span: Span, list: *DiagnosticList) void {
+    if (!std.mem.eql(u8, node.value, "||") and !std.mem.eql(u8, node.value, "&&")) return;
+
+    for (node.children) |*child| {
+        if (child.kind == .string_literal or child.kind == .number_literal) {
+            const msg = std.fmt.allocPrint(
+                allocator,
+                "unsound condition: bare literal {s} as operand of '{s}' is always truthy",
+                .{ child.value, node.value },
+            ) catch "unsound condition: bare literal in logical operator";
+            list.append(.{
+                .rule_id = "EXPR007",
+                .severity = .warning,
+                .message = msg,
+                .span = span,
+                .fix_hint = "use an explicit comparison, e.g. github.event_name == 'push' || github.event_name == 'pull_request'",
+            });
+        }
     }
 }
 
@@ -1385,4 +1413,133 @@ test "validate: toJSON wrong args" {
     validateExpression(arena.allocator(), "toJSON(github.event, 'extra')", Span.point(1, 1, 0), &list);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
+}
+
+// --- EXPR007: unsound-condition tests ---
+
+test "validate EXPR007: bare string literal right of ||" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request'", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+    try std.testing.expectEqual(Severity.warning, list.get(0).severity);
+}
+
+test "validate EXPR007: bare string literal right of &&" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event_name != 'push' && 'pull_request'", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+}
+
+test "validate EXPR007: bare string literal left of ||" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+}
+
+test "validate EXPR007: bare number literal right of ||" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+}
+
+test "validate EXPR007: no false positive for proper comparison" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event_name == 'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "validate EXPR007: no false positive for function call operands" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "success() || failure()", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "validate EXPR007: no false positive for boolean literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "true || github.event_name == 'push'", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "validate EXPR007: multiple bare literals in chained ||" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request' || 'workflow_dispatch'", Span.point(1, 1, 0), &list);
+    var expr007_count: usize = 0;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR007")) expr007_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), expr007_count);
+}
+
+test "checkStep EXPR007: if condition with bare literal" {
+    const step = Step{
+        .if_condition = "github.event_name == 'push' || 'pull_request'",
+        .run = "echo deploy",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    var found = false;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "checkJob EXPR007: if condition with bare literal" {
+    const job = Job{
+        .id = "deploy",
+        .if_condition = "github.event_name == 'push' || 'pull_request'",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkJob(&job, &list);
+    var found = false;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }
