@@ -324,6 +324,100 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
 }
 
 // ============================================================
+// SEC008 - Dangerous writes to GITHUB_ENV / GITHUB_PATH
+// ============================================================
+
+const github_env_targets = [_][]const u8{
+    "GITHUB_ENV",
+    "GITHUB_PATH",
+};
+
+/// Check whether `s` contains `>> $GITHUB_ENV` / `>> $GITHUB_PATH` (with
+/// optional quotes or braces around the variable).
+fn containsGithubEnvWrite(s: []const u8) bool {
+    var i: usize = 0;
+    while (i + 1 < s.len) : (i += 1) {
+        if (s[i] == '>' and s[i + 1] == '>') {
+            var j = i + 2;
+            // skip whitespace after >>
+            while (j < s.len and (s[j] == ' ' or s[j] == '\t')) : (j += 1) {}
+            if (j >= s.len) continue;
+            // optional leading quote
+            const has_quote = s[j] == '"';
+            if (has_quote) j += 1;
+            if (j >= s.len) continue;
+            // expect '$'
+            if (s[j] != '$') continue;
+            j += 1;
+            if (j >= s.len) continue;
+            // optional brace: ${GITHUB_ENV}
+            const has_brace = s[j] == '{';
+            if (has_brace) j += 1;
+            if (j >= s.len) continue;
+            for (github_env_targets) |target| {
+                if (j + target.len <= s.len and std.mem.eql(u8, s[j .. j + target.len], target)) {
+                    var k = j + target.len;
+                    if (has_brace) {
+                        if (k < s.len and s[k] == '}') {
+                            k += 1;
+                        } else continue;
+                    }
+                    if (has_quote) {
+                        if (k < s.len and s[k] == '"') {
+                            k += 1;
+                        } else continue;
+                    }
+                    // ensure end-of-string or non-identifier char
+                    if (k >= s.len or !isIdentChar(s[k])) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/// Return true if `s` contains any `${{ dangerous_context }}` expression.
+fn hasDangerousContextExpression(s: []const u8) bool {
+    var pos: usize = 0;
+    while (pos + 4 < s.len) : (pos += 1) {
+        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
+            const expr_start = pos + 3;
+            var depth: u32 = 1;
+            var j = expr_start;
+            while (j + 1 < s.len) : (j += 1) {
+                if (s[j] == '}' and s[j + 1] == '}') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            if (depth == 0) {
+                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
+                if (containsDangerousContext(expr)) {
+                    return true;
+                }
+                pos = j + 1;
+            }
+        }
+    }
+    return false;
+}
+
+fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
+    const run_body = step.run orelse return;
+    if (!containsGithubEnvWrite(run_body)) return;
+    if (!hasDangerousContextExpression(run_body)) return;
+    list.append(.{
+        .rule_id = "SEC008",
+        .severity = .@"error",
+        .message = "untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment variable injection",
+        .span = Span.point(0, 0, 0),
+        .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
+    });
+}
+
+// ============================================================
 // SEC010 - secrets: inherit in reusable workflow calls
 // ============================================================
 
@@ -944,6 +1038,14 @@ pub const security_rules = [_]Rule{
         .severity = .info,
         .category = .security,
         .check_workflow = &checkMissingPermissions,
+    },
+    .{
+        .id = "SEC008",
+        .name = "github-env-injection",
+        .description = "Untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment injection",
+        .severity = .@"error",
+        .category = .security,
+        .check_step = &checkGithubEnvInjection,
     },
     .{
         .id = "SEC010",
@@ -1578,6 +1680,120 @@ test "SEC007: empty permissions block counts as defined" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC007"));
+}
+
+// --- SEC008: github-env injection ---
+
+test "SEC008: dangerous context written to GITHUB_ENV" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo \"VAR=${{ github.event.issue.title }}\" >> $GITHUB_ENV" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: dangerous context written to GITHUB_PATH" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo \"${{ github.head_ref }}\" >> $GITHUB_PATH" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: quoted GITHUB_ENV target" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo \"X=${{ github.event.comment.body }}\" >> \"$GITHUB_ENV\"" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: braced GITHUB_ENV target" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo \"X=${{ github.event.pull_request.title }}\" >> ${GITHUB_ENV}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: safe value to GITHUB_ENV (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo \"VAR=safe\" >> $GITHUB_ENV" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: dangerous context without env write (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ github.event.issue.title }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: no run block (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: safe context to GITHUB_ENV (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo \"SHA=${{ github.sha }}\" >> $GITHUB_ENV" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
 // --- SEC010: secrets: inherit ---
