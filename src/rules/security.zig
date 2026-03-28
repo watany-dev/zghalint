@@ -633,6 +633,70 @@ fn isSecretsExpression(value: []const u8) bool {
 }
 
 // ============================================================
+// SEC019 - Secrets used outside env: block
+// ============================================================
+
+/// Check if a string contains ${{ secrets.* }} expressions (excluding secrets.GITHUB_TOKEN).
+fn checkStringForSecretsOutsideEnv(s: []const u8) bool {
+    var pos: usize = 0;
+    while (pos + 4 < s.len) : (pos += 1) {
+        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
+            // Find closing }}
+            const expr_start = pos + 3;
+            var depth: u32 = 1;
+            var j = expr_start;
+            while (j + 1 < s.len) : (j += 1) {
+                if (s[j] == '}' and s[j + 1] == '}') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            if (depth == 0) {
+                const inner = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
+                if (std.mem.startsWith(u8, inner, "secrets.")) {
+                    const secret_name = inner["secrets.".len..];
+                    if (!std.mem.eql(u8, secret_name, "GITHUB_TOKEN")) {
+                        return true;
+                    }
+                }
+                pos = j + 1;
+            }
+        }
+    }
+    return false;
+}
+
+fn emitSEC019(list: *DiagnosticList) void {
+    list.append(.{
+        .rule_id = "SEC019",
+        .severity = .info,
+        .message = "secret used directly in run:/with: instead of being bound through env:",
+        .span = Span.point(0, 0, 0),
+        .fix_hint = "bind the secret to an env: variable first, then reference the env var in run:/with:",
+    });
+}
+
+fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
+    // Check run: block
+    if (step.run) |run_body| {
+        if (checkStringForSecretsOutsideEnv(run_body)) {
+            emitSEC019(list);
+            return;
+        }
+    }
+    // Check with: values
+    if (step.with) |with_map| {
+        for (with_map.values()) |val| {
+            if (checkStringForSecretsOutsideEnv(val)) {
+                emitSEC019(list);
+                return;
+            }
+        }
+    }
+    // NOTE: Do NOT check step.env — that's the correct pattern
+}
+
+// ============================================================
 // SEC016 - Cache poisoning in release/deploy workflows
 // ============================================================
 
@@ -1187,6 +1251,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_job = &checkArtipacked,
+    },
+    .{
+        .id = "SEC019",
+        .name = "secrets-outside-env",
+        .description = "Secrets should be bound to env: variables instead of used directly in run:/with:",
+        .severity = .info,
+        .category = .security,
+        .check_step = &checkSecretsOutsideEnv,
     },
     .{
         .id = "SC001",
@@ -3342,4 +3414,127 @@ test "SEC015: integration - YAML parse to fix apply" {
         }
     }
     try testing.expect(fix_found);
+}
+
+// --- SEC019: Secrets outside env ---
+
+test "SEC019: secret in run block" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ secrets.MY_TOKEN }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: secret in with value" {
+    const eng = engine.Engine.init(&security_rules);
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("token", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .with = with_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: secret in env value is allowed" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("MY_TOKEN", "${{ secrets.MY_TOKEN }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .env = env_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: GITHUB_TOKEN in with is allowed" {
+    const eng = engine.Engine.init(&security_rules);
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("token", "${{ secrets.GITHUB_TOKEN }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .with = with_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: GITHUB_TOKEN in run is allowed" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ secrets.GITHUB_TOKEN }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: no secrets usage" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo hello" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: secret with whitespace in expression" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{  secrets.MY_TOKEN  }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: one diagnostic per step" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "${{ secrets.A }} ${{ secrets.B }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC019"));
 }
