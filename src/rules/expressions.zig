@@ -643,6 +643,19 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
         }
     }
 
+    // EXPR006: contains() with string literal may cause unsound substring matching
+    if (std.mem.eql(u8, name, "contains") and node.children.len == 2) {
+        if (node.children[1].kind == .string_literal) {
+            list.append(.{
+                .rule_id = "EXPR006",
+                .severity = .warning,
+                .message = "contains() uses substring matching which may match unintended values",
+                .span = span,
+                .fix_hint = "use exact comparison (== ) or startsWith()/endsWith() for precise matching",
+            });
+        }
+    }
+
     // Validate arguments recursively
     for (node.children) |*child| {
         validateNode(allocator, child, span, list);
@@ -1033,7 +1046,8 @@ test "validate: valid function contains" {
     defer list.deinit();
 
     validateExpression(arena.allocator(), "contains(github.event_name, 'push')", Span.point(1, 1, 0), &list);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
 
 test "validate: valid function success" {
@@ -1063,7 +1077,8 @@ test "validate: valid complex expression" {
     defer list.deinit();
 
     validateExpression(arena.allocator(), "github.event_name == 'push' && contains(github.ref, 'main')", Span.point(1, 1, 0), &list);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
 
 test "validate: valid contexts env, secrets, matrix, steps, needs, inputs, vars, strategy, job, jobs" {
@@ -1324,7 +1339,9 @@ test "validate: all valid functions with correct args" {
     for (exprs) |expr| {
         validateExpression(arena.allocator(), expr, span, &list);
     }
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    // contains('hello', 'ell') triggers EXPR006
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
 
 test "validate: all valid github properties" {
@@ -1391,7 +1408,8 @@ test "validate: nested function calls" {
     defer list.deinit();
 
     validateExpression(arena.allocator(), "contains(toJSON(github.event), 'push')", Span.point(1, 1, 0), &list);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
 
 test "validate: complex logical expression" {
@@ -1413,6 +1431,110 @@ test "validate: toJSON wrong args" {
     validateExpression(arena.allocator(), "toJSON(github.event, 'extra')", Span.point(1, 1, 0), &list);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
+}
+
+// --- EXPR006: unsound-contains tests ---
+
+test "EXPR006: contains with string literal second arg" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "contains(github.ref, 'main')", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    try std.testing.expectEqual(Severity.warning, list.get(0).severity);
+    try std.testing.expect(list.get(0).fix_hint != null);
+}
+
+test "EXPR006: contains in complex expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "contains(github.ref, 'main') && github.event_name == 'push'", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+}
+
+test "EXPR006: contains nested in not" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "!contains(github.ref, 'release')", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+}
+
+test "EXPR006: multiple contains calls" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "contains(github.ref, 'main') || contains(github.actor, 'bot')", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 2), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    try std.testing.expectEqualStrings("EXPR006", list.get(1).rule_id);
+}
+
+test "EXPR006: no warning for startsWith" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "startsWith(github.ref, 'refs/heads/main')", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "EXPR006: no warning for exact comparison" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.ref == 'refs/heads/main'", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "EXPR006: no warning for non-literal second arg" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "contains(github.ref, github.base_ref)", Span.point(1, 1, 0), &list);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "EXPR006: checkStep contains in if condition" {
+    const step = Step{
+        .if_condition = "contains(github.ref, 'main')",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+}
+
+test "EXPR006: checkJob contains in if condition" {
+    const job = Job{
+        .id = "deploy",
+        .if_condition = "contains(github.ref, 'main')",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkJob(&job, &list);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
 
 // --- EXPR007: unsound-condition tests ---
