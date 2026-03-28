@@ -288,6 +288,12 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
     if (m.get("secrets")) |n| {
         job.secrets = try parseSecretsConfig(allocator, n);
     }
+    if (m.get("container")) |n| {
+        job.container = try parseContainer(n);
+    }
+    if (m.get("services")) |n| {
+        job.services = try parseServices(allocator, n);
+    }
 
     return job;
 }
@@ -452,6 +458,60 @@ fn parseSecretsConfig(allocator: std.mem.Allocator, node: Node) ParseError!types
         },
         else => return error.InvalidValue,
     }
+}
+
+fn parseCredentials(node: Node) ParseError!types.Credentials {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return error.InvalidValue,
+    };
+    return .{
+        .username = m.getScalar("username"),
+        .password = m.getScalar("password"),
+    };
+}
+
+fn parseContainer(node: Node) ParseError!types.Container {
+    switch (node) {
+        .scalar => |s| {
+            return .{ .image = s.value };
+        },
+        .mapping => |m| {
+            return .{
+                .image = m.getScalar("image"),
+                .credentials = if (m.get("credentials")) |n| try parseCredentials(n) else null,
+            };
+        },
+        else => return error.InvalidValue,
+    }
+}
+
+fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const types.Service {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return error.InvalidValue,
+    };
+
+    const services = try allocator.alloc(types.Service, m.entries.len);
+    for (m.entries, 0..) |entry, i| {
+        switch (entry.value) {
+            .mapping => |vm| {
+                services[i] = .{
+                    .name = entry.key.value,
+                    .image = vm.getScalar("image"),
+                    .credentials = if (vm.get("credentials")) |n| try parseCredentials(n) else null,
+                };
+            },
+            .scalar => |s| {
+                services[i] = .{
+                    .name = entry.key.value,
+                    .image = s.value,
+                };
+            },
+            else => return error.InvalidValue,
+        }
+    }
+    return services;
 }
 
 fn parseStringMap(allocator: std.mem.Allocator, node: Node) ParseError!types.StringMap {
@@ -811,4 +871,89 @@ test "parseWorkflow with env and concurrency" {
     const wf = try parseWorkflow(arena.allocator(), mkMapping(&root_entries));
     try testing.expectEqualStrings("true", wf.env.?.get("CI").?);
     try testing.expectEqualStrings("my-group", wf.concurrency.?.group);
+}
+
+test "parseJob with container as scalar" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var step_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
+    };
+    var step_items = [_]Node{mkMapping(&step_entries)};
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
+        .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
+        .{ .key = mkScalarS("container"), .value = mkScalar("node:14"), .span = mkSpan() },
+    };
+
+    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    try testing.expectEqualStrings("node:14", job.container.?.image.?);
+    try testing.expect(job.container.?.credentials == null);
+}
+
+test "parseJob with container credentials" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var step_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
+    };
+    var step_items = [_]Node{mkMapping(&step_entries)};
+
+    var cred_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("username"), .value = mkScalar("myuser"), .span = mkSpan() },
+        .{ .key = mkScalarS("password"), .value = mkScalar("mypassword"), .span = mkSpan() },
+    };
+    var container_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("image"), .value = mkScalar("node:14"), .span = mkSpan() },
+        .{ .key = mkScalarS("credentials"), .value = mkMapping(&cred_entries), .span = mkSpan() },
+    };
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
+        .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
+        .{ .key = mkScalarS("container"), .value = mkMapping(&container_entries), .span = mkSpan() },
+    };
+
+    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    try testing.expectEqualStrings("node:14", job.container.?.image.?);
+    try testing.expectEqualStrings("myuser", job.container.?.credentials.?.username.?);
+    try testing.expectEqualStrings("mypassword", job.container.?.credentials.?.password.?);
+}
+
+test "parseJob with service credentials" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var step_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
+    };
+    var step_items = [_]Node{mkMapping(&step_entries)};
+
+    var cred_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("username"), .value = mkScalar("${{ secrets.REDIS_USER }}"), .span = mkSpan() },
+        .{ .key = mkScalarS("password"), .value = mkScalar("${{ secrets.REDIS_PASS }}"), .span = mkSpan() },
+    };
+    var svc_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("image"), .value = mkScalar("redis"), .span = mkSpan() },
+        .{ .key = mkScalarS("credentials"), .value = mkMapping(&cred_entries), .span = mkSpan() },
+    };
+    var services_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("redis"), .value = mkMapping(&svc_entries), .span = mkSpan() },
+    };
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
+        .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
+        .{ .key = mkScalarS("services"), .value = mkMapping(&services_entries), .span = mkSpan() },
+    };
+
+    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    try testing.expectEqual(@as(usize, 1), job.services.len);
+    try testing.expectEqualStrings("redis", job.services[0].name);
+    try testing.expectEqualStrings("redis", job.services[0].image.?);
+    try testing.expectEqualStrings("${{ secrets.REDIS_USER }}", job.services[0].credentials.?.username.?);
+    try testing.expectEqualStrings("${{ secrets.REDIS_PASS }}", job.services[0].credentials.?.password.?);
 }

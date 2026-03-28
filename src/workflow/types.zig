@@ -230,6 +230,25 @@ pub const SecretsConfig = union(enum) {
     map: StringMap,
 };
 
+/// Docker registry credentials for container/service images
+pub const Credentials = struct {
+    username: ?[]const u8 = null,
+    password: ?[]const u8 = null,
+};
+
+/// Container configuration for a job
+pub const Container = struct {
+    image: ?[]const u8 = null,
+    credentials: ?Credentials = null,
+};
+
+/// Service container configuration
+pub const Service = struct {
+    name: []const u8,
+    image: ?[]const u8 = null,
+    credentials: ?Credentials = null,
+};
+
 /// A workflow job
 pub const Job = struct {
     id: []const u8,
@@ -244,6 +263,8 @@ pub const Job = struct {
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
     continue_on_error: bool = false,
+    container: ?Container = null,
+    services: []const Service = &.{},
     /// Reusable workflow reference (mutually exclusive with steps)
     uses: ?[]const u8 = null,
     with: ?StringMap = null,

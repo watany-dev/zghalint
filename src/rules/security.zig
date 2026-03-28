@@ -357,6 +357,54 @@ fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
 }
 
 // ============================================================
+// SEC013 - Hardcoded container credentials
+// ============================================================
+
+fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) void {
+    if (job.container) |container| {
+        checkCredentialsForHardcoded(container.credentials, list);
+    }
+    for (job.services) |service| {
+        checkCredentialsForHardcoded(service.credentials, list);
+    }
+}
+
+fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, list: *DiagnosticList) void {
+    const credentials = creds orelse return;
+    if (credentials.username) |username| {
+        if (!isSecretsExpression(username)) {
+            list.append(.{
+                .rule_id = "SEC013",
+                .severity = .@"error",
+                .message = "hardcoded credentials in container configuration",
+                .span = Span.point(0, 0, 0),
+                .fix_hint = "use ${{ secrets.YOUR_SECRET }} for container credentials instead of plaintext values",
+            });
+        }
+    }
+    if (credentials.password) |password| {
+        if (!isSecretsExpression(password)) {
+            list.append(.{
+                .rule_id = "SEC013",
+                .severity = .@"error",
+                .message = "hardcoded credentials in container configuration",
+                .span = Span.point(0, 0, 0),
+                .fix_hint = "use ${{ secrets.YOUR_SECRET }} for container credentials instead of plaintext values",
+            });
+        }
+    }
+}
+
+fn isSecretsExpression(value: []const u8) bool {
+    const trimmed = std.mem.trim(u8, value, " \t\n\r");
+    if (trimmed.len < 5) return false;
+    if (!std.mem.startsWith(u8, trimmed, "${{")) return false;
+    if (!std.mem.endsWith(u8, trimmed, "}}")) return false;
+    const inner = std.mem.trim(u8, trimmed[3 .. trimmed.len - 2], " \t");
+    return std.mem.startsWith(u8, inner, "secrets.");
+}
+
+// ============================================================
 // SEC016 - Cache poisoning in release/deploy workflows
 // ============================================================
 
@@ -741,6 +789,14 @@ pub const security_rules = [_]Rule{
         .severity = .@"error",
         .category = .security,
         .check_step = &checkUnredactedSecrets,
+    },
+    .{
+        .id = "SEC013",
+        .name = "hardcoded-container-credentials",
+        .description = "Container credentials should use GitHub Secrets, not plaintext values",
+        .severity = .@"error",
+        .category = .security,
+        .check_job = &checkHardcodedContainerCredentials,
     },
     .{
         .id = "SEC016",
@@ -1832,4 +1888,146 @@ test "SEC016: emits one diagnostic per offending step" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC016"));
+}
+
+// ============================================================
+// SEC013 tests
+// ============================================================
+
+test "SEC013: plaintext credentials in container" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "myuser", .password = "mypassword" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC013"));
+    try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC013"));
+}
+
+test "SEC013: plaintext credentials in service" {
+    const eng = engine.Engine.init(&security_rules);
+    const services = [_]workflow_types.Service{
+        .{ .name = "redis", .image = "redis", .credentials = .{ .username = "svcuser", .password = "svcpass" } },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .services = &services, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC013"));
+    try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC013"));
+}
+
+test "SEC013: plaintext password only" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "${{ secrets.DOCKER_USER }}", .password = "hardcoded_pass" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC013"));
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC013"));
+}
+
+test "SEC013: diagnostics from both container and service" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "user1", .password = "pass1" },
+    };
+    const services = [_]workflow_types.Service{
+        .{ .name = "db", .image = "postgres", .credentials = .{ .username = "dbuser", .password = "dbpass" } },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .services = &services, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 4), countDiagnostics(&list, "SEC013"));
+}
+
+test "SEC013: secrets expression credentials (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "${{ secrets.DOCKER_USER }}", .password = "${{ secrets.DOCKER_PASS }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
+test "SEC013: container without credentials (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const container = workflow_types.Container{ .image = "node:14" };
+    const jobs = [_]Job{
+        .{ .id = "build", .container = container, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
+test "SEC013: job without container or services (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{.{ .run = "echo hello" }};
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
+test "SEC013: service with secrets credentials (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const services = [_]workflow_types.Service{
+        .{ .name = "redis", .image = "redis", .credentials = .{ .username = "${{ secrets.REDIS_USER }}", .password = "${{ secrets.REDIS_PASS }}" } },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .services = &services, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
+test "isSecretsExpression: valid secrets reference" {
+    try testing.expect(isSecretsExpression("${{ secrets.DOCKER_USER }}"));
+}
+
+test "isSecretsExpression: with extra whitespace" {
+    try testing.expect(isSecretsExpression("${{  secrets.DOCKER_USER  }}"));
+}
+
+test "isSecretsExpression: plaintext value" {
+    try testing.expect(!isSecretsExpression("myuser"));
+}
+
+test "isSecretsExpression: empty string" {
+    try testing.expect(!isSecretsExpression(""));
+}
+
+test "isSecretsExpression: non-secrets expression" {
+    try testing.expect(!isSecretsExpression("${{ github.actor }}"));
 }
