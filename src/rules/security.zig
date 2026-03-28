@@ -38,6 +38,15 @@ const dangerous_contexts = [_][]const u8{
 };
 
 // ============================================================
+// Actor contexts that are spoofable identity checks
+// ============================================================
+
+const actor_contexts = [_][]const u8{
+    "github.actor",
+    "github.triggering_actor",
+};
+
+// ============================================================
 // Secret patterns (prefixes that indicate hardcoded secrets)
 // ============================================================
 
@@ -495,6 +504,92 @@ fn actionBaseName(raw: []const u8) []const u8 {
 }
 
 // ============================================================
+// SEC014 - Spoofable bot actor check in conditions
+// ============================================================
+
+fn checkBotConditionStep(step: *const Step, list: *DiagnosticList) void {
+    const cond = step.if_condition orelse return;
+    checkConditionForBotActorCheck(cond, list);
+}
+
+fn checkBotConditionJob(job: *const Job, list: *DiagnosticList) void {
+    const cond = job.if_condition orelse return;
+    checkConditionForBotActorCheck(cond, list);
+}
+
+/// Check if an if-condition compares github.actor / github.triggering_actor
+/// against a bot account name (containing "[bot]"). This is spoofable.
+fn checkConditionForBotActorCheck(cond: []const u8, list: *DiagnosticList) void {
+    // Check for ${{ expr }} wrapped patterns
+    var has_expr = false;
+    var pos: usize = 0;
+    while (pos + 4 < cond.len) : (pos += 1) {
+        if (cond[pos] == '$' and pos + 1 < cond.len and cond[pos + 1] == '{' and pos + 2 < cond.len and cond[pos + 2] == '{') {
+            has_expr = true;
+            break;
+        }
+    }
+
+    if (has_expr) {
+        checkBotActorInString(cond, list);
+    } else {
+        // Bare expression
+        if (containsActorBotCheck(cond)) {
+            list.append(.{
+                .rule_id = "SEC014",
+                .severity = .warning,
+                .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
+                .span = Span.point(0, 0, 0),
+                .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
+            });
+        }
+    }
+}
+
+/// Scan a string for ${{ expr }} patterns that contain actor + [bot] checks.
+fn checkBotActorInString(s: []const u8, list: *DiagnosticList) void {
+    var pos: usize = 0;
+    while (pos + 4 < s.len) : (pos += 1) {
+        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
+            const expr_start = pos + 3;
+            var depth: u32 = 1;
+            var j = expr_start;
+            while (j + 1 < s.len) : (j += 1) {
+                if (s[j] == '}' and s[j + 1] == '}') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            if (depth == 0) {
+                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
+                if (containsActorBotCheck(expr)) {
+                    list.append(.{
+                        .rule_id = "SEC014",
+                        .severity = .warning,
+                        .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
+                        .span = Span.point(0, 0, 0),
+                        .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
+                    });
+                    return;
+                }
+                pos = j + 1;
+            }
+        }
+    }
+}
+
+/// Returns true if the expression contains both an actor context reference
+/// AND a string literal with "[bot]".
+fn containsActorBotCheck(expr: []const u8) bool {
+    const has_actor = for (actor_contexts) |ctx| {
+        if (stringContainsContext(expr, ctx)) break true;
+    } else false;
+    if (!has_actor) return false;
+
+    return std.mem.indexOf(u8, expr, "[bot]") != null;
+}
+
+// ============================================================
 // Shared helpers
 // ============================================================
 
@@ -654,6 +749,15 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_workflow = &checkCachePoisoning,
+    },
+    .{
+        .id = "SEC014",
+        .name = "bot-conditions",
+        .description = "Bot account checks using github.actor are spoofable",
+        .severity = .warning,
+        .category = .security,
+        .check_step = &checkBotConditionStep,
+        .check_job = &checkBotConditionJob,
     },
 };
 
@@ -1424,6 +1528,149 @@ test "multiple security rules fire together" {
     try testing.expect(hasDiagnostic(&list, "SEC002"));
     try testing.expect(hasDiagnostic(&list, "SEC007"));
 }
+
+// --- SEC014: Bot conditions ---
+
+test "SEC014: github.actor == dependabot[bot] in step condition" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo skip", .if_condition = "github.actor == 'dependabot[bot]'" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: github.actor != renovate[bot] in step condition" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test", .if_condition = "github.actor != 'renovate[bot]'" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: github.actor == github-actions[bot] in job condition" {
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .if_condition = "github.actor == 'github-actions[bot]'", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: wrapped in dollar-brace expression" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo skip", .if_condition = "${{ github.actor == 'dependabot[bot]' }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: github.triggering_actor with bot check" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo skip", .if_condition = "github.triggering_actor == 'dependabot[bot]'" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: github.actor without bot pattern (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test", .if_condition = "github.actor == 'octocat'" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: bot pattern without github.actor (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test", .if_condition = "contains(github.event.comment.body, 'dependabot[bot]')" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: safe condition with github.ref (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: no condition (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC014"));
+}
+
+test "containsActorBotCheck detects actor with bot pattern" {
+    try testing.expect(containsActorBotCheck("github.actor == 'dependabot[bot]'"));
+}
+
+test "containsActorBotCheck detects triggering_actor with bot" {
+    try testing.expect(containsActorBotCheck("github.triggering_actor == 'renovate[bot]'"));
+}
+
+test "containsActorBotCheck rejects actor without bot" {
+    try testing.expect(!containsActorBotCheck("github.actor == 'octocat'"));
+}
+
+test "containsActorBotCheck rejects bot without actor" {
+    try testing.expect(!containsActorBotCheck("some_var == 'dependabot[bot]'"));
+}
+
+// --- Integration tests ---
 
 test "clean workflow passes all security rules" {
     const eng = engine.Engine.init(&security_rules);
