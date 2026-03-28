@@ -279,3 +279,49 @@ test "renderSarif unknown rule id has no ruleIndex" {
     // Should not have ruleIndex for unknown rule
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":") == null);
 }
+
+test "writeJsonString escapes control chars" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    try writeJsonString(buf.writer(std.testing.allocator), "a\tb\rc\nd\\e\"f");
+    const output = buf.items;
+    try std.testing.expectEqualStrings("\"a\\tb\\rc\\nd\\\\e\\\"f\"", output);
+}
+
+test "writeJsonString escapes low control characters" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    try writeJsonString(buf.writer(std.testing.allocator), "\x01\x02");
+    try std.testing.expectEqualStrings("\"\\u0001\\u0002\"", buf.items);
+}
+
+test "renderSarif with no file" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "test msg", .span = Span.point(1, 1, 0) });
+
+    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"<unknown>\"") != null);
+}
+
+test "renderSarif empty rules array" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const empty_rules: []const Rule = &.{};
+    try renderSarif(buf.writer(std.testing.allocator), list, empty_rules);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"rules\":[]") != null);
+}
