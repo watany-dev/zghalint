@@ -326,6 +326,118 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
 }
 
 // ============================================================
+// SEC011 - Overprovisioned secrets (entire secrets context exposed)
+// ============================================================
+
+fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
+    // Check run: block
+    if (step.run) |run_body| {
+        if (checkStringForOverprovisionedSecrets(run_body)) {
+            emitSEC011(list);
+            return;
+        }
+    }
+    // Check with: values
+    if (step.with) |with_map| {
+        for (with_map.values()) |val| {
+            if (checkStringForOverprovisionedSecrets(val)) {
+                emitSEC011(list);
+                return;
+            }
+        }
+    }
+    // Check env: values
+    if (step.env) |env_map| {
+        for (env_map.values()) |val| {
+            if (checkStringForOverprovisionedSecrets(val)) {
+                emitSEC011(list);
+                return;
+            }
+        }
+    }
+}
+
+fn emitSEC011(list: *DiagnosticList) void {
+    list.append(.{
+        .rule_id = "SEC011",
+        .severity = .warning,
+        .message = "entire secrets context is exposed; reference only the specific secrets you need",
+        .span = Span.point(0, 0, 0),
+        .fix_hint = "replace ${{ secrets }} or toJSON(secrets) with individual references like ${{ secrets.MY_TOKEN }}",
+    });
+}
+
+/// Check if a string contains ${{ ... }} expressions that reference the entire secrets context.
+fn checkStringForOverprovisionedSecrets(s: []const u8) bool {
+    var pos: usize = 0;
+    while (pos + 4 < s.len) : (pos += 1) {
+        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
+            // Find closing }}
+            const expr_start = pos + 3;
+            var depth: u32 = 1;
+            var j = expr_start;
+            while (j + 1 < s.len) : (j += 1) {
+                if (s[j] == '}' and s[j + 1] == '}') {
+                    depth -= 1;
+                    if (depth == 0) break;
+                }
+            }
+            if (depth == 0) {
+                const expr = s[expr_start..j];
+                if (exprIsWholeSecretsRef(expr)) {
+                    return true;
+                }
+                pos = j + 1;
+            }
+        }
+    }
+    return false;
+}
+
+/// Check if an expression references the entire secrets context (not an individual secret).
+/// Returns true for: "secrets", "toJSON(secrets)", "fromJSON(secrets)" etc.
+/// Returns false for: "secrets.TOKEN", "toJSON(secrets.X)", "env.secrets", etc.
+fn exprIsWholeSecretsRef(expr: []const u8) bool {
+    const trimmed = std.mem.trim(u8, expr, " \t\n\r");
+    if (trimmed.len == 0) return false;
+
+    // Check for bare "secrets" reference
+    if (std.mem.eql(u8, trimmed, "secrets")) return true;
+
+    // Check for toJSON(secrets) / fromJSON(secrets) patterns
+    const patterns = [_][]const u8{ "toJSON", "tojson", "toJson", "TOJSON", "fromJSON", "fromjson", "fromJson", "FROMJSON" };
+    for (patterns) |func_name| {
+        var i: usize = 0;
+        while (i + func_name.len <= trimmed.len) : (i += 1) {
+            if (std.mem.eql(u8, trimmed[i .. i + func_name.len], func_name)) {
+                // Find the opening paren after optional whitespace
+                var k = i + func_name.len;
+                while (k < trimmed.len and (trimmed[k] == ' ' or trimmed[k] == '\t')) : (k += 1) {}
+                if (k < trimmed.len and trimmed[k] == '(') {
+                    // Skip whitespace after '('
+                    var arg_start = k + 1;
+                    while (arg_start < trimmed.len and (trimmed[arg_start] == ' ' or trimmed[arg_start] == '\t')) : (arg_start += 1) {}
+                    if (arg_start + 7 <= trimmed.len and std.mem.eql(u8, trimmed[arg_start .. arg_start + 7], "secrets")) {
+                        // Must be followed by ')' or whitespace then ')' — NOT '.' (individual secret)
+                        const after = arg_start + 7;
+                        if (after >= trimmed.len) return true;
+                        if (trimmed[after] == ')') return true;
+                        if (trimmed[after] == ' ' or trimmed[after] == '\t') {
+                            // Skip whitespace, expect ')'
+                            var m = after;
+                            while (m < trimmed.len and (trimmed[m] == ' ' or trimmed[m] == '\t')) : (m += 1) {}
+                            if (m < trimmed.len and trimmed[m] == ')') return true;
+                        }
+                        // '.' means individual secret — not a match
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// ============================================================
 // SEC012 - Unredacted secrets via toJSON/fromJSON
 // ============================================================
 
@@ -819,6 +931,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_job = &checkSecretsInherit,
+    },
+    .{
+        .id = "SEC011",
+        .name = "overprovisioned-secrets",
+        .description = "Entire secrets context should not be exposed; reference individual secrets instead",
+        .severity = .warning,
+        .category = .security,
+        .check_step = &checkOverprovisionedSecrets,
     },
     .{
         .id = "SEC012",
@@ -2227,4 +2347,219 @@ test "isImagePinned: sha256 in name but not digest format" {
 
 test "isImagePinned: registry with digest" {
     try testing.expect(isImagePinned("ghcr.io/owner/image@sha256:abc123"));
+}
+
+// ============================================================
+// SEC011 tests
+// ============================================================
+
+test "SEC011: bare secrets in run block" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ secrets }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: bare secrets with extra whitespace" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{  secrets  }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: toJSON(secrets) in run block" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ toJSON(secrets) }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: tojson(secrets) lowercase" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ tojson(secrets) }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: fromJSON(secrets) in run block" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ fromJSON(secrets) }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: bare secrets in with value" {
+    const eng = engine.Engine.init(&security_rules);
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("data", "${{ secrets }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .with = with_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: bare secrets in env value" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ALL_SECRETS", "${{ secrets }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .env = env_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: toJSON with whitespace in parens" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ toJSON( secrets ) }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: individual secret is allowed" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ secrets.MY_TOKEN }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: toJSON(secrets.TOKEN) is allowed" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ toJSON(secrets.MY_TOKEN) }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: toJSON(github) is allowed" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo ${{ toJSON(github) }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: no expression is allowed" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo hello world" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC011"));
+}
+
+test "SEC011: one diagnostic per step" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ALL", "${{ toJSON(secrets) }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .run = "echo ${{ secrets }}", .env = env_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC011"));
+}
+
+test "exprIsWholeSecretsRef: bare secrets" {
+    try testing.expect(exprIsWholeSecretsRef("secrets"));
+}
+
+test "exprIsWholeSecretsRef: secrets with dot" {
+    try testing.expect(!exprIsWholeSecretsRef("secrets.TOKEN"));
+}
+
+test "exprIsWholeSecretsRef: toJSON(secrets)" {
+    try testing.expect(exprIsWholeSecretsRef("toJSON(secrets)"));
+}
+
+test "exprIsWholeSecretsRef: toJSON(secrets.X)" {
+    try testing.expect(!exprIsWholeSecretsRef("toJSON(secrets.X)"));
+}
+
+test "exprIsWholeSecretsRef: empty string" {
+    try testing.expect(!exprIsWholeSecretsRef(""));
 }
