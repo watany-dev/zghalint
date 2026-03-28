@@ -69,7 +69,12 @@ jobs:
             $(find zig-out/bin/ -type f -executable | head -1)
       - name: Check coverage threshold (95%)
         run: |
-          JSON=$(find coverage/ -name "coverage.json" -path "*/zig-out/*" | head -1)
+          JSON=$(find coverage/ -maxdepth 2 -name "coverage.json" | head -1)
+          if [ -z "$JSON" ]; then
+            echo "::error::coverage.json not found"
+            find coverage/ -type f || true
+            exit 1
+          fi
           COVERED=$(jq -r '.percent_covered' "$JSON")
           echo "Coverage: ${COVERED}%"
           if [ "$(echo "$COVERED < 95" | bc -l)" -eq 1 ]; then
