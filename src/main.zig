@@ -112,7 +112,7 @@ fn lintFile(
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
 ) !void {
-    var stderr_buf: [256]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
 
@@ -188,7 +188,7 @@ pub fn main() !u8 {
     var stdout_bw = std.fs.File.stdout().writer(&stdout_buf);
     const stdout = &stdout_bw.interface;
 
-    var stderr_buf: [256]u8 = undefined;
+    var stderr_buf: [1024]u8 = undefined;
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
 
