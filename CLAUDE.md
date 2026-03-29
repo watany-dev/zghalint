@@ -17,7 +17,7 @@ zig fmt src/ build.zig              # Auto-format
 
 ### Prerequisites
 
-- Zig 0.15.0 or later
+- Zig 0.15.2 or later
 
 ### Completion Requirements
 

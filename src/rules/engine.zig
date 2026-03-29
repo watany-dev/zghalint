@@ -82,7 +82,7 @@ fn warnMissingName(wf: *const Workflow, list: *DiagnosticList) void {
             .severity = .warning,
             .message = "workflow is missing a name",
             .span = Span.point(1, 1, 0),
-        });
+        }) catch return;
     }
 }
 
@@ -93,7 +93,7 @@ fn warnMissingJobName(job: *const Job, list: *DiagnosticList) void {
             .severity = .info,
             .message = "job is missing a display name",
             .span = Span.point(0, 0, 0),
-        });
+        }) catch return;
     }
 }
 
@@ -106,7 +106,7 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .message = "action reference is not pinned to a SHA",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "pin to a full commit SHA",
-            });
+            }) catch return;
         }
     }
 }

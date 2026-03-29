@@ -12,6 +12,13 @@ const FixMode = enum {
     all,
 };
 
+/// All lint rules used by the engine and SARIF output.
+const all_rules = zghalint.rules.security.security_rules ++
+    zghalint.rules.best_practices.rules ++
+    zghalint.rules.performance.rules ++
+    zghalint.rules.permissions.rules ++
+    [_]zghalint.rules.Rule{zghalint.rules.expressions.expression_rule};
+
 const CliArgs = struct {
     files: std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
@@ -23,12 +30,12 @@ const CliArgs = struct {
     fix_mode: FixMode = .off,
 
     fn deinit(self: *CliArgs) void {
-        self.files.deinit();
+        self.files.deinit(self.allocator);
     }
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
-    var args = CliArgs{ .files = std.ArrayList([]const u8).init(allocator), .allocator = allocator };
+    var args = CliArgs{ .files = .{}, .allocator = allocator };
     var iter = try std.process.argsWithAllocator(allocator);
     defer iter.deinit();
 
@@ -54,7 +61,7 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
         } else if (std.mem.eql(u8, arg, "--fix-unsafe")) {
             args.fix_mode = .all;
         } else if (!std.mem.startsWith(u8, arg, "-")) {
-            try args.files.append(arg);
+            try args.files.append(allocator, arg);
         }
     }
 
@@ -83,7 +90,7 @@ fn printHelp(writer: anytype) !void {
 }
 
 fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
-    var files = std.ArrayList([]const u8).init(allocator);
+    var files = std.ArrayList([]const u8){};
     var dir = std.fs.cwd().openDir(".github/workflows", .{ .iterate = true }) catch return files;
     defer dir.close();
 
@@ -92,7 +99,7 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
         if (entry.kind == .file) {
             if (std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml")) {
                 const full_path = try std.fmt.allocPrint(allocator, ".github/workflows/{s}", .{entry.name});
-                try files.append(full_path);
+                try files.append(allocator, full_path);
             }
         }
     }
@@ -118,16 +125,18 @@ fn lintFile(
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
 ) !void {
+    var stderr_buf: [1024]u8 = undefined;
+    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
+    const stderr = &stderr_bw.interface;
+
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err });
+        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
         return;
     };
     defer file.close();
 
     const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err });
+        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
         return;
     };
     defer allocator.free(source);
@@ -142,24 +151,15 @@ fn lintFile(
     defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("{s}: YAML parse error\n", .{file_path});
+        stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
         return;
     };
 
     // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("{s}: workflow parse error\n", .{file_path});
+        stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
         return;
     };
-
-    // Collect all rules
-    const all_rules = zghalint.rules.security.security_rules ++
-        zghalint.rules.best_practices.rules ++
-        zghalint.rules.performance.rules ++
-        zghalint.rules.permissions.rules ++
-        [_]zghalint.rules.Rule{zghalint.rules.expressions.expression_rule};
 
     // Run engine
     const engine = zghalint.rules.Engine.init(&all_rules);
@@ -172,66 +172,22 @@ fn lintFile(
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
-        all_diags.append(d);
+        all_diags.append(d) catch {};
     }
 }
 
-fn outputTerminal(diag_list: *zghalint.DiagnosticList, allocator: std.mem.Allocator) !void {
-    const stdout = std.io.getStdOut().writer();
-    for (diag_list.items.items) |diag| {
-        const formatted = try diag.format(allocator);
-        defer allocator.free(formatted);
-        try stdout.print("{s}\n", .{formatted});
-    }
+fn outputTerminal(diag_list: *zghalint.DiagnosticList, writer: anytype, use_color: bool) !void {
+    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, null, use_color);
 }
 
-fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
-    try writer.writeAll("[");
-    for (diag_list.items.items, 0..) |diag, i| {
-        if (i > 0) try writer.writeAll(",");
-        try writer.writeAll("{");
-        try writer.print("\"rule_id\":\"{s}\",", .{diag.rule_id});
-        try writer.print("\"severity\":\"{s}\",", .{diag.severity.toString()});
-        try writer.print("\"message\":\"{s}\",", .{diag.message});
-        try writer.print("\"file\":\"{s}\",", .{diag.file orelse "<unknown>"});
-        try writer.print("\"line\":{d},", .{diag.span.start_line});
-        try writer.print("\"column\":{d}", .{diag.span.start_col});
-        if (diag.fix_hint) |hint| {
-            try writer.print(",\"fix_hint\":\"{s}\"", .{hint});
-        }
-        try writer.writeAll("}");
-    }
-    try writer.writeAll("]\n");
+fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checked: usize) !void {
+    try zghalint.output.renderJson(writer, diag_list.*, files_checked);
+    try writer.writeAll("\n");
 }
 
 fn outputSarif(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
-    try writer.writeAll("{\"$schema\":\"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json\",\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"zghalint\",\"version\":\"");
-    try writer.writeAll(version);
-    try writer.writeAll("\"}},\"results\":[");
-
-    for (diag_list.items.items, 0..) |diag, i| {
-        if (i > 0) try writer.writeAll(",");
-        try writer.writeAll("{");
-        try writer.print("\"ruleId\":\"{s}\",", .{diag.rule_id});
-        try writer.print("\"level\":\"{s}\",", .{sarifLevel(diag.severity)});
-        try writer.print("\"message\":{{\"text\":\"{s}\"}},", .{diag.message});
-        try writer.writeAll("\"locations\":[{\"physicalLocation\":{");
-        try writer.print("\"artifactLocation\":{{\"uri\":\"{s}\"}},", .{diag.file orelse "<unknown>"});
-        try writer.print("\"region\":{{\"startLine\":{d},\"startColumn\":{d}}}", .{ diag.span.start_line, diag.span.start_col });
-        try writer.writeAll("}}]");
-        try writer.writeAll("}");
-    }
-
-    try writer.writeAll("]}]}\n");
-}
-
-fn sarifLevel(severity: zghalint.Severity) []const u8 {
-    return switch (severity) {
-        .@"error" => "error",
-        .warning => "warning",
-        .info => "note",
-        .hint => "note",
-    };
+    try zghalint.output.renderSarif(writer, diag_list.*, &all_rules);
+    try writer.writeAll("\n");
 }
 
 fn applyFixesForFile(
@@ -241,14 +197,14 @@ fn applyFixesForFile(
     include_unsafe: bool,
 ) !usize {
     // Collect diagnostics for this file that have fixes
-    var file_diags = std.ArrayList(zghalint.Diagnostic).init(allocator);
-    defer file_diags.deinit();
+    var file_diags = std.ArrayList(zghalint.Diagnostic){};
+    defer file_diags.deinit(allocator);
 
     for (all_diags.items.items) |d| {
         if (d.fix != null) {
             const f = d.file orelse continue;
             if (std.mem.eql(u8, f, file_path)) {
-                try file_diags.append(d);
+                try file_diags.append(allocator, d);
             }
         }
     }
@@ -293,28 +249,35 @@ pub fn main() !u8 {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_bw = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_bw.interface;
+
+    var stderr_buf: [1024]u8 = undefined;
+    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
+    const stderr = &stderr_bw.interface;
 
     var cli_args = parseArgs(allocator) catch {
-        try stderr.writeAll("error: failed to parse arguments\n");
+        stderr.writeAll("error: failed to parse arguments\n") catch {};
         return 2;
     };
     defer cli_args.deinit();
 
     if (cli_args.show_help) {
         try printHelp(stdout);
+        try stdout.flush();
         return 0;
     }
 
     if (cli_args.show_version) {
         try stdout.print("zghalint v{s}\n", .{version});
+        try stdout.flush();
         return 0;
     }
 
     // Load config
     var config = loadConfig(allocator, cli_args.config_path) catch {
-        try stderr.writeAll("error: failed to load config\n");
+        stderr.writeAll("error: failed to load config\n") catch {};
         return 2;
     };
     defer config.deinit();
@@ -327,21 +290,21 @@ pub fn main() !u8 {
     var owned_files: ?std.ArrayList([]const u8) = null;
     defer if (owned_files) |*of| {
         for (of.items) |p| allocator.free(p);
-        of.deinit();
+        of.deinit(allocator);
     };
 
     const files = if (cli_args.files.items.len > 0)
         cli_args.files.items
     else blk: {
         owned_files = collectDefaultFiles(allocator) catch {
-            try stderr.writeAll("error: failed to scan default workflow directory\n");
+            stderr.writeAll("error: failed to scan default workflow directory\n") catch {};
             return 2;
         };
         break :blk owned_files.?.items;
     };
 
     if (files.len == 0) {
-        try stderr.writeAll("No workflow files found.\n");
+        stderr.writeAll("No workflow files found.\n") catch {};
         return 0;
     }
 
@@ -356,7 +319,7 @@ pub fn main() !u8 {
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
         lintFile(allocator, file_path, &config, &all_diags) catch {
-            try stderr.print("error: internal error while linting '{s}'\n", .{file_path});
+            stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
         };
     }
 
@@ -367,28 +330,44 @@ pub fn main() !u8 {
         for (files) |file_path| {
             if (config.isIgnored(file_path)) continue;
             const fixed = applyFixesForFile(allocator, file_path, &all_diags, include_unsafe) catch |err| {
-                try stderr.print("error: failed to apply fixes to '{s}': {}\n", .{ file_path, err });
+                stderr.print("error: failed to apply fixes to '{s}': {}\n", .{ file_path, err }) catch {};
                 continue;
             };
             total_fixed += fixed;
         }
         if (total_fixed > 0) {
-            try stderr.print("Applied {d} fix(es).\n", .{total_fixed});
+            stderr.print("Applied {d} fix(es).\n", .{total_fixed}) catch {};
         }
     }
 
     all_diags.sort();
 
+    // Determine color usage
+    const use_color = switch (config.color_mode) {
+        .always => true,
+        .never => false,
+        .auto => std.posix.isatty(std.fs.File.stdout().handle),
+    };
+
     // Output
     switch (config.output_format) {
-        .terminal => outputTerminal(&all_diags, allocator) catch {
-            return 2;
+        .terminal => {
+            outputTerminal(&all_diags, stdout, use_color) catch {
+                return 2;
+            };
+            try stdout.flush();
         },
-        .json => outputJson(&all_diags, stdout) catch {
-            return 2;
+        .json => {
+            outputJson(&all_diags, stdout, files.len) catch {
+                return 2;
+            };
+            try stdout.flush();
         },
-        .sarif => outputSarif(&all_diags, stdout) catch {
-            return 2;
+        .sarif => {
+            outputSarif(&all_diags, stdout) catch {
+                return 2;
+            };
+            try stdout.flush();
         },
     }
 

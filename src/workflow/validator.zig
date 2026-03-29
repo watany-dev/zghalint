@@ -16,16 +16,16 @@ pub const ValidationResult = struct {
 
 /// Validate a parsed Workflow for structural correctness
 pub fn validate(allocator: std.mem.Allocator, workflow: types.Workflow) !ValidationResult {
-    var errors = std.ArrayList(ValidationError).init(allocator);
+    var errors = std.ArrayList(ValidationError){};
 
     // on field is required (enforced by parser, but check events non-empty)
     if (workflow.on.events.len == 0) {
-        try errors.append(.{ .message = "'on' must specify at least one event" });
+        try errors.append(allocator, .{ .message = "'on' must specify at least one event" });
     }
 
     // jobs must be non-empty
     if (workflow.jobs.len == 0) {
-        try errors.append(.{ .message = "'jobs' must contain at least one job" });
+        try errors.append(allocator, .{ .message = "'jobs' must contain at least one job" });
     }
 
     // Validate each job
@@ -36,7 +36,7 @@ pub fn validate(allocator: std.mem.Allocator, workflow: types.Workflow) !Validat
     // Check for circular dependencies in needs
     try checkCyclicNeeds(allocator, &errors, workflow.jobs);
 
-    return .{ .errors = try errors.toOwnedSlice() };
+    return .{ .errors = try errors.toOwnedSlice(allocator) };
 }
 
 fn validateJob(allocator: std.mem.Allocator, errors: *std.ArrayList(ValidationError), job: types.Job) !void {
@@ -46,16 +46,16 @@ fn validateJob(allocator: std.mem.Allocator, errors: *std.ArrayList(ValidationEr
     // Each job must have steps or uses, but not both
     if (has_steps and has_uses) {
         const msg = try std.fmt.allocPrint(allocator, "job '{s}' must not have both 'steps' and 'uses'", .{job.id});
-        try errors.append(.{ .message = msg, .context = job.id });
+        try errors.append(allocator, .{ .message = msg, .context = job.id });
     } else if (!has_steps and !has_uses) {
         const msg = try std.fmt.allocPrint(allocator, "job '{s}' must have either 'steps' or 'uses'", .{job.id});
-        try errors.append(.{ .message = msg, .context = job.id });
+        try errors.append(allocator, .{ .message = msg, .context = job.id });
     }
 
     // runs-on is required for non-reusable workflow jobs
     if (!has_uses and job.runs_on == null) {
         const msg = try std.fmt.allocPrint(allocator, "job '{s}' requires 'runs-on'", .{job.id});
-        try errors.append(.{ .message = msg, .context = job.id });
+        try errors.append(allocator, .{ .message = msg, .context = job.id });
     }
 
     // Validate each step
@@ -77,10 +77,10 @@ fn validateStep(
     // Each step must have uses or run, but not both
     if (has_uses and has_run) {
         const msg = try std.fmt.allocPrint(allocator, "job '{s}' step {d} must not have both 'uses' and 'run'", .{ job_id, step_index });
-        try errors.append(.{ .message = msg, .context = job_id });
+        try errors.append(allocator, .{ .message = msg, .context = job_id });
     } else if (!has_uses and !has_run) {
         const msg = try std.fmt.allocPrint(allocator, "job '{s}' step {d} must have either 'uses' or 'run'", .{ job_id, step_index });
-        try errors.append(.{ .message = msg, .context = job_id });
+        try errors.append(allocator, .{ .message = msg, .context = job_id });
     }
 }
 
@@ -110,17 +110,17 @@ fn checkCyclicNeeds(
                 in_degree[i] += 1;
             } else {
                 const msg = try std.fmt.allocPrint(allocator, "job '{s}' depends on unknown job '{s}'", .{ job.id, dep });
-                try errors.append(.{ .message = msg, .context = job.id });
+                try errors.append(allocator, .{ .message = msg, .context = job.id });
             }
         }
     }
 
     // Kahn's algorithm: start with jobs that have no dependencies
-    var queue = std.ArrayList(usize).init(allocator);
-    defer queue.deinit();
+    var queue = std.ArrayList(usize){};
+    defer queue.deinit(allocator);
 
     for (in_degree, 0..) |deg, i| {
-        if (deg == 0) try queue.append(i);
+        if (deg == 0) try queue.append(allocator, i);
     }
 
     var visited: usize = 0;
@@ -135,7 +135,7 @@ fn checkCyclicNeeds(
                     if (dep_idx == current) {
                         in_degree[i] -= 1;
                         if (in_degree[i] == 0) {
-                            try queue.append(i);
+                            try queue.append(allocator, i);
                         }
                     }
                 }
@@ -144,7 +144,7 @@ fn checkCyclicNeeds(
     }
 
     if (visited != jobs.len) {
-        try errors.append(.{ .message = "circular dependency detected in job 'needs'" });
+        try errors.append(allocator, .{ .message = "circular dependency detected in job 'needs'" });
     }
 }
 

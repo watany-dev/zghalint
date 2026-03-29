@@ -55,7 +55,7 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
         .span = job.span,
         .fix_hint = "Add 'timeout-minutes' to the job (e.g., timeout-minutes: 30).",
         .fix = fix,
-    });
+    }) catch return;
 }
 
 // ── BP002: Missing step name ──
@@ -68,7 +68,7 @@ fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
             .message = "Step is missing a 'name' field. Named steps improve workflow readability.",
             .span = Span.point(0, 0, 0),
             .fix_hint = "Add a descriptive 'name' to this step.",
-        });
+        }) catch return;
     }
 }
 
@@ -122,7 +122,7 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
                 .message = "Using deprecated action version. Consider upgrading.",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "Upgrade to a newer version.",
-            });
+            }) catch return;
             return;
         }
     }
@@ -141,7 +141,7 @@ fn checkCrossPlatformShell(job: *const Job, diag_list: *DiagnosticList) void {
                 .message = "Step with 'run' does not specify 'shell' in a job targeting Windows. Default shells differ across platforms.",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "Add 'shell: bash' or 'shell: pwsh' to ensure consistent behavior.",
-            });
+            }) catch return;
         }
     }
 }
@@ -180,7 +180,7 @@ fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
             .message = "Workflow has 'push' trigger but no 'concurrency' setting. Rapid pushes may queue redundant runs.",
             .span = Span.point(0, 0, 0),
             .fix_hint = "Add a 'concurrency' group to cancel or queue redundant workflow runs.",
-        });
+        }) catch return;
     }
 }
 

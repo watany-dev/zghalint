@@ -53,6 +53,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
+    // --- Coverage support: install test binary (LLVM backend for kcov compatibility) ---
+    const cov_unit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = true,
+    });
+    const install_cov_tests = b.addInstallArtifact(cov_unit_tests, .{});
+    const test_bin_step = b.step("test-bin", "Install test binary for coverage measurement");
+    test_bin_step.dependOn(&install_cov_tests.step);
+
     // --- Executable tests ---
     const exe_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -99,7 +99,7 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .message = "action reference is not pinned to a SHA",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
-            });
+            }) catch return;
         }
     }
 }
@@ -145,7 +145,7 @@ fn checkStringForSecrets(s: []const u8, list: *DiagnosticList) void {
                 .message = "potential hardcoded secret detected",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "use a GitHub secret (secrets.YOUR_SECRET) instead of hardcoding credentials",
-            });
+            }) catch return;
             return; // One diagnostic per string is enough
         }
     }
@@ -192,7 +192,7 @@ fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
                 .span = span,
                 .fix_hint = "specify only the permissions that are needed",
                 .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
-            });
+            }) catch return;
         }
     }
 }
@@ -208,7 +208,7 @@ fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
                 .span = span,
                 .fix_hint = "specify only the permissions that are needed",
                 .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
-            });
+            }) catch return;
         }
     }
 }
@@ -243,7 +243,7 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
                                     .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
                                     .span = Span.point(0, 0, 0),
                                     .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
-                                });
+                                }) catch return;
                             }
                         }
                     }
@@ -302,7 +302,7 @@ fn checkConditionForDangerousContext(cond: []const u8, list: *DiagnosticList) vo
                 .message = "untrusted context used in if: condition expression",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "validate the input before using it in a condition",
-            });
+            }) catch return;
         }
     }
 }
@@ -319,7 +319,7 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
             .message = "workflow does not define top-level permissions, defaults may be overly broad",
             .span = Span.point(0, 0, 0),
             .fix_hint = "add a top-level 'permissions:' block to restrict GITHUB_TOKEN scope",
-        });
+        }) catch return;
     }
 }
 
@@ -414,7 +414,7 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
         .message = "untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment variable injection",
         .span = Span.point(0, 0, 0),
         .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
-    });
+    }) catch return;
 }
 
 // ============================================================
@@ -433,7 +433,7 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
                     .message = "reusable workflow call uses 'secrets: inherit', which passes all secrets implicitly",
                     .span = Span.point(0, 0, 0),
                     .fix_hint = "explicitly specify only the secrets the called workflow needs instead of using 'inherit'",
-                });
+                }) catch return;
             },
             .map => {},
         }
@@ -479,7 +479,7 @@ fn emitSEC011(list: *DiagnosticList) void {
         .message = "entire secrets context is exposed; reference only the specific secrets you need",
         .span = Span.point(0, 0, 0),
         .fix_hint = "replace ${{ secrets }} or toJSON(secrets) with individual references like ${{ secrets.MY_TOKEN }}",
-    });
+    }) catch return;
 }
 
 /// Check if a string contains ${{ ... }} expressions that reference the entire secrets context.
@@ -607,7 +607,7 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, list: *Diagn
                 .message = "hardcoded credentials in container configuration",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "use ${{ secrets.YOUR_SECRET }} for container credentials instead of plaintext values",
-            });
+            }) catch return;
         }
     }
     if (credentials.password) |password| {
@@ -618,7 +618,7 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, list: *Diagn
                 .message = "hardcoded credentials in container configuration",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "use ${{ secrets.YOUR_SECRET }} for container credentials instead of plaintext values",
-            });
+            }) catch return;
         }
     }
 }
@@ -673,7 +673,7 @@ fn emitSEC019(list: *DiagnosticList) void {
         .message = "secret used directly in run:/with: instead of being bound through env:",
         .span = Span.point(0, 0, 0),
         .fix_hint = "bind the secret to an env: variable first, then reference the env var in run:/with:",
-    });
+    }) catch return;
 }
 
 fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
@@ -715,7 +715,7 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
                     .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
                     .span = Span.point(0, 0, 0),
                     .fix_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope",
-                });
+                }) catch return;
             }
         }
     }
@@ -728,7 +728,7 @@ fn emitSEC012(list: *DiagnosticList) void {
         .message = "secret exposed via toJSON()/fromJSON() bypasses masking",
         .span = Span.point(0, 0, 0),
         .fix_hint = "avoid passing secrets through toJSON()/fromJSON(); assign individual secret values to environment variables instead",
-    });
+    }) catch return;
 }
 
 /// Check if a string contains ${{ ... }} expressions with toJSON(secrets...) or fromJSON(secrets...) patterns.
@@ -881,7 +881,7 @@ fn checkConditionForBotActorCheck(cond: []const u8, list: *DiagnosticList) void 
                 .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
-            });
+            }) catch return;
         }
     }
 }
@@ -909,7 +909,7 @@ fn checkBotActorInString(s: []const u8, list: *DiagnosticList) void {
                         .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
                         .span = Span.point(0, 0, 0),
                         .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
-                    });
+                    }) catch return;
                     return;
                 }
                 pos = j + 1;
@@ -1042,7 +1042,7 @@ fn checkDangerousContextInString(s: []const u8, rule_id: []const u8, message: []
                         .message = message,
                         .span = Span.point(0, 0, 0),
                         .fix_hint = fix_hint,
-                    });
+                    }) catch return;
                     return; // One diagnostic per string
                 }
                 pos = j + 1;
@@ -1105,7 +1105,7 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .message = "container image is not pinned to a SHA256 digest",
                     .span = Span.point(0, 0, 0),
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
-                });
+                }) catch return;
             }
         }
     }
@@ -1118,7 +1118,7 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .message = "service image is not pinned to a SHA256 digest",
                     .span = Span.point(0, 0, 0),
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
-                });
+                }) catch return;
             }
         }
     }

@@ -13,18 +13,18 @@ pub fn collectFixes(
     diags: []const Diagnostic,
     include_unsafe: bool,
 ) ![]const Fix {
-    var list = std.ArrayList(Fix).init(allocator);
-    defer list.deinit();
+    var list = std.ArrayList(Fix){};
+    defer list.deinit(allocator);
 
     for (diags) |d| {
         if (d.fix) |f| {
             if (include_unsafe or f.safety == .safe) {
-                try list.append(f);
+                try list.append(allocator, f);
             }
         }
     }
 
-    return list.toOwnedSlice();
+    return list.toOwnedSlice(allocator);
 }
 
 const FlatEdits = struct {
