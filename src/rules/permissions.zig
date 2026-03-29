@@ -34,7 +34,7 @@ fn checkPermissionsScope(perms: Permissions, diag_list: *DiagnosticList) void {
             .message = "Overly broad 'write-all' permissions. Apply principle of least privilege.",
             .span = Span.point(0, 0, 0),
             .fix_hint = "Replace 'write-all' with specific permissions needed.",
-        });
+        }) catch return;
         return;
     }
 
@@ -61,7 +61,7 @@ fn checkPermissionsScope(perms: Permissions, diag_list: *DiagnosticList) void {
                     .message = "Broad write permission detected. Ensure this is necessary.",
                     .span = Span.point(0, 0, 0),
                     .fix_hint = "Consider if 'read' permission would suffice instead of 'write'.",
-                });
+                }) catch return;
             }
         }
     }
@@ -85,7 +85,7 @@ fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
                 .message = "Job uses third-party actions without job-level 'permissions'. Define explicit permissions to limit token scope.",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "Add a 'permissions' block to this job to restrict the GITHUB_TOKEN scope.",
-            });
+            }) catch return;
             return;
         }
     }

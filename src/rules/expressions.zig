@@ -516,7 +516,7 @@ pub fn validateExpression(allocator: std.mem.Allocator, expr: []const u8, base_s
             .severity = .@"error",
             .message = msg,
             .span = base_span,
-        });
+        }) catch return;
         return;
     };
     validateNode(allocator, &node, base_span, list);
@@ -556,7 +556,7 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
             .severity = .@"error",
             .message = msg,
             .span = span,
-        });
+        }) catch return;
         return;
     }
 
@@ -581,7 +581,7 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
                     .severity = .warning,
                     .message = msg,
                     .span = span,
-                });
+                }) catch return;
             }
         } else if (std.mem.eql(u8, top_level, "runner")) {
             var known = false;
@@ -598,7 +598,7 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
                     .severity = .warning,
                     .message = msg,
                     .span = span,
-                });
+                }) catch return;
             }
         }
     }
@@ -623,7 +623,7 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
             .severity = .@"error",
             .message = msg,
             .span = span,
-        });
+        }) catch return;
     } else {
         const f = found.?;
         if (arg_count < f.min_args or arg_count > f.max_args) {
@@ -636,7 +636,7 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
                 .severity = .@"error",
                 .message = msg,
                 .span = span,
-            });
+            }) catch return;
         }
     }
 
@@ -667,7 +667,7 @@ pub fn findAndValidateExpressions(allocator: std.mem.Allocator, text: []const u8
                     .severity = .@"error",
                     .message = "unclosed expression: missing }}",
                     .span = base_span,
-                });
+                }) catch return;
                 return;
             }
         } else {

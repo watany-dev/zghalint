@@ -187,7 +187,7 @@ test "renderSarif with diagnostic" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{
+    try list.append(.{
         .rule_id = "SEC002",
         .severity = .@"error",
         .message = "Potential script injection via github.event.issue.title",
@@ -251,8 +251,8 @@ test "renderSarif multiple results" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "unpinned action", .file = "ci.yml", .span = Span.point(1, 1, 0) });
-    list.append(.{ .rule_id = "BP001", .severity = .info, .message = "no timeout", .file = "ci.yml", .span = Span.point(5, 1, 40) });
+    try list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "unpinned action", .file = "ci.yml", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "BP001", .severity = .info, .message = "no timeout", .file = "ci.yml", .span = Span.point(5, 1, 40) });
 
     try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;
@@ -270,7 +270,7 @@ test "renderSarif unknown rule id has no ruleIndex" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "UNKNOWN", .severity = .@"error", .message = "mystery", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "UNKNOWN", .severity = .@"error", .message = "mystery", .span = Span.point(1, 1, 0) });
 
     try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;
@@ -304,7 +304,7 @@ test "renderSarif with no file" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "test msg", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "test msg", .span = Span.point(1, 1, 0) });
 
     try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;

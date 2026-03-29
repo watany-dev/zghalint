@@ -96,8 +96,8 @@ pub const DiagnosticList = struct {
         self.items.deinit(self.allocator);
     }
 
-    pub fn append(self: *DiagnosticList, diag: Diagnostic) void {
-        self.items.append(self.allocator, diag) catch {};
+    pub fn append(self: *DiagnosticList, diag: Diagnostic) std.mem.Allocator.Error!void {
+        try self.items.append(self.allocator, diag);
     }
 
     /// Sort diagnostics by file, then line, then column.
@@ -212,13 +212,13 @@ test "diagnostic list append and len" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{
+    try list.append(.{
         .rule_id = "T001",
         .severity = .warning,
         .message = "test",
         .span = Span.point(1, 1, 0),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "T002",
         .severity = .@"error",
         .message = "test2",
@@ -234,28 +234,28 @@ test "diagnostic list sort by file then line then col" {
     defer list.deinit();
 
     // Add in unsorted order
-    list.append(.{
+    try list.append(.{
         .rule_id = "R3",
         .severity = .info,
         .message = "third",
         .file = "b.yml",
         .span = Span.point(1, 1, 0),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "R1",
         .severity = .@"error",
         .message = "first",
         .file = "a.yml",
         .span = Span.point(5, 3, 50),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "R2",
         .severity = .warning,
         .message = "second",
         .file = "a.yml",
         .span = Span.point(5, 1, 40),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "R0",
         .severity = .hint,
         .message = "zeroth",
@@ -276,7 +276,7 @@ test "diagnostic list toOwnedSlice" {
     var list = DiagnosticList.init(std.testing.allocator);
     // Don't defer deinit — toOwnedSlice transfers ownership
 
-    list.append(.{
+    try list.append(.{
         .rule_id = "T001",
         .severity = .warning,
         .message = "test",

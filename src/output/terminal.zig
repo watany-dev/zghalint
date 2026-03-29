@@ -283,9 +283,9 @@ test "renderSummary counts" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
-    list.append(.{ .rule_id = "E2", .severity = .@"error", .message = "e", .span = Span.point(2, 1, 0) });
-    list.append(.{ .rule_id = "W1", .severity = .warning, .message = "w", .span = Span.point(3, 1, 0) });
+    try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "E2", .severity = .@"error", .message = "e", .span = Span.point(2, 1, 0) });
+    try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "w", .span = Span.point(3, 1, 0) });
 
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
@@ -331,8 +331,8 @@ test "renderDiagnostics renders multiple items with summary" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err msg", .file = "a.yml", .span = Span.point(1, 1, 0) });
-    list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn msg", .file = "a.yml", .span = Span.point(2, 1, 0) });
+    try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err msg", .file = "a.yml", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn msg", .file = "a.yml", .span = Span.point(2, 1, 0) });
 
     try renderDiagnostics(writer, list, null, false);
     const output = buf.items;
@@ -346,10 +346,10 @@ test "renderSummary with all severity types" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
-    list.append(.{ .rule_id = "W1", .severity = .warning, .message = "w", .span = Span.point(2, 1, 0) });
-    list.append(.{ .rule_id = "I1", .severity = .info, .message = "i", .span = Span.point(3, 1, 0) });
-    list.append(.{ .rule_id = "H1", .severity = .hint, .message = "h", .span = Span.point(4, 1, 0) });
+    try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "w", .span = Span.point(2, 1, 0) });
+    try list.append(.{ .rule_id = "I1", .severity = .info, .message = "i", .span = Span.point(3, 1, 0) });
+    try list.append(.{ .rule_id = "H1", .severity = .hint, .message = "h", .span = Span.point(4, 1, 0) });
 
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
@@ -368,7 +368,7 @@ test "renderSummary with color" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
 
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);

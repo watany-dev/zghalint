@@ -59,7 +59,7 @@ fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
                 .message = "Job uses " ++ ca.setup_action ++ " without caching. Add actions/cache or set 'cache' input.",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "Add 'cache: true' to the setup action's 'with' inputs, or add a separate actions/cache step.",
-            });
+            }) catch return;
         }
     }
 }
@@ -88,7 +88,7 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
             .message = "Multiple actions/checkout steps without 'path' in the same job. This checks out to the same directory repeatedly.",
             .span = Span.point(0, 0, 0),
             .fix_hint = "Remove redundant checkout steps or specify different 'path' values.",
-        });
+        }) catch return;
     }
 }
 
@@ -106,7 +106,7 @@ fn checkFailFastDisabled(job: *const Job, diag_list: *DiagnosticList) void {
         .message = "Strategy has fail-fast: false. Failed matrix jobs will continue running, wasting CI resources.",
         .span = Span.point(0, 0, 0),
         .fix_hint = "Consider removing 'fail-fast: false' to cancel remaining jobs on first failure.",
-    });
+    }) catch return;
 }
 
 /// Extract the base name (owner/repo) from an action reference string like "actions/checkout@v4".
