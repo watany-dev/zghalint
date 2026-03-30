@@ -124,9 +124,11 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
 
     // Use GITHUB_TOKEN if available for higher rate limits
     const auth_value = blk: {
-        const token = std.posix.getenv("GITHUB_TOKEN") orelse break :blk null;
+        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
+        defer allocator.free(token);
         break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
     };
+    defer if (auth_value) |auth| allocator.free(auth);
     if (auth_value) |auth| {
         headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
         header_count += 1;
