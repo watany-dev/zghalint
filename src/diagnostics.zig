@@ -124,7 +124,7 @@ pub const DiagnosticList = struct {
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticList {
         return .{
-            .items = std.ArrayList(Diagnostic).init(allocator),
+            .items = .{},
             .allocator = allocator,
             .fix_arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -132,7 +132,7 @@ pub const DiagnosticList = struct {
 
     pub fn deinit(self: *DiagnosticList) void {
         self.fix_arena.deinit();
-        self.items.deinit();
+        self.items.deinit(self.allocator);
     }
 
     /// Returns an allocator for Fix edits/strings. Lifetime matches DiagnosticList.
@@ -140,8 +140,8 @@ pub const DiagnosticList = struct {
         return self.fix_arena.allocator();
     }
 
-    pub fn append(self: *DiagnosticList, diag: Diagnostic) void {
-        self.items.append(diag) catch {};
+    pub fn append(self: *DiagnosticList, diag: Diagnostic) std.mem.Allocator.Error!void {
+        try self.items.append(self.allocator, diag);
     }
 
     /// Allocate a single Edit on the heap, tracked for cleanup on deinit.
@@ -159,7 +159,7 @@ pub const DiagnosticList = struct {
     }
 
     pub fn toOwnedSlice(self: *DiagnosticList) ![]Diagnostic {
-        return self.items.toOwnedSlice();
+        return self.items.toOwnedSlice(self.allocator);
     }
 
     pub fn len(self: DiagnosticList) usize {
@@ -201,7 +201,12 @@ test "severity toString" {
 test "category toString" {
     try std.testing.expectEqualStrings("syntax", Category.syntax.toString());
     try std.testing.expectEqualStrings("security", Category.security.toString());
+    try std.testing.expectEqualStrings("performance", Category.performance.toString());
     try std.testing.expectEqualStrings("best_practice", Category.best_practice.toString());
+    try std.testing.expectEqualStrings("expression", Category.expression.toString());
+    try std.testing.expectEqualStrings("dependency", Category.dependency.toString());
+    try std.testing.expectEqualStrings("permissions", Category.permissions.toString());
+    try std.testing.expectEqualStrings("runner", Category.runner.toString());
     try std.testing.expectEqualStrings("reusable_workflow", Category.reusable_workflow.toString());
 }
 
@@ -260,13 +265,13 @@ test "diagnostic list append and len" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{
+    try list.append(.{
         .rule_id = "T001",
         .severity = .warning,
         .message = "test",
         .span = Span.point(1, 1, 0),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "T002",
         .severity = .@"error",
         .message = "test2",
@@ -282,28 +287,28 @@ test "diagnostic list sort by file then line then col" {
     defer list.deinit();
 
     // Add in unsorted order
-    list.append(.{
+    try list.append(.{
         .rule_id = "R3",
         .severity = .info,
         .message = "third",
         .file = "b.yml",
         .span = Span.point(1, 1, 0),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "R1",
         .severity = .@"error",
         .message = "first",
         .file = "a.yml",
         .span = Span.point(5, 3, 50),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "R2",
         .severity = .warning,
         .message = "second",
         .file = "a.yml",
         .span = Span.point(5, 1, 40),
     });
-    list.append(.{
+    try list.append(.{
         .rule_id = "R0",
         .severity = .hint,
         .message = "zeroth",
@@ -324,7 +329,7 @@ test "diagnostic list toOwnedSlice" {
     var list = DiagnosticList.init(std.testing.allocator);
     // Don't defer deinit — toOwnedSlice transfers ownership
 
-    list.append(.{
+    try list.append(.{
         .rule_id = "T001",
         .severity = .warning,
         .message = "test",

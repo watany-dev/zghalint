@@ -165,13 +165,13 @@ const test_rules = [_]Rule{
 };
 
 test "renderSarif empty diagnostics" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    try renderSarif(buf.writer(), list, &test_rules);
+    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"version\":\"2.1.0\"") != null);
@@ -181,13 +181,13 @@ test "renderSarif empty diagnostics" {
 }
 
 test "renderSarif with diagnostic" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{
+    try list.append(.{
         .rule_id = "SEC002",
         .severity = .@"error",
         .message = "Potential script injection via github.event.issue.title",
@@ -203,7 +203,7 @@ test "renderSarif with diagnostic" {
         .fix_hint = "Use an environment variable instead",
     });
 
-    try renderSarif(buf.writer(), list, &test_rules);
+    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;
 
     // Check SARIF structure
@@ -219,13 +219,13 @@ test "renderSarif with diagnostic" {
 }
 
 test "renderSarif rule descriptors" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    try renderSarif(buf.writer(), list, &test_rules);
+    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;
 
     // All rules should appear in driver.rules
@@ -245,16 +245,16 @@ test "sarifLevel mapping" {
 }
 
 test "renderSarif multiple results" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "unpinned action", .file = "ci.yml", .span = Span.point(1, 1, 0) });
-    list.append(.{ .rule_id = "BP001", .severity = .info, .message = "no timeout", .file = "ci.yml", .span = Span.point(5, 1, 40) });
+    try list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "unpinned action", .file = "ci.yml", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "BP001", .severity = .info, .message = "no timeout", .file = "ci.yml", .span = Span.point(5, 1, 40) });
 
-    try renderSarif(buf.writer(), list, &test_rules);
+    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"SEC001\"") != null);
@@ -264,18 +264,64 @@ test "renderSarif multiple results" {
 }
 
 test "renderSarif unknown rule id has no ruleIndex" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    list.append(.{ .rule_id = "UNKNOWN", .severity = .@"error", .message = "mystery", .span = Span.point(1, 1, 0) });
+    try list.append(.{ .rule_id = "UNKNOWN", .severity = .@"error", .message = "mystery", .span = Span.point(1, 1, 0) });
 
-    try renderSarif(buf.writer(), list, &test_rules);
+    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"UNKNOWN\"") != null);
     // Should not have ruleIndex for unknown rule
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":") == null);
+}
+
+test "writeJsonString escapes control chars" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    try writeJsonString(buf.writer(std.testing.allocator), "a\tb\rc\nd\\e\"f");
+    const output = buf.items;
+    try std.testing.expectEqualStrings("\"a\\tb\\rc\\nd\\\\e\\\"f\"", output);
+}
+
+test "writeJsonString escapes low control characters" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    try writeJsonString(buf.writer(std.testing.allocator), "\x01\x02");
+    try std.testing.expectEqualStrings("\"\\u0001\\u0002\"", buf.items);
+}
+
+test "renderSarif with no file" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{ .rule_id = "SEC001", .severity = .warning, .message = "test msg", .span = Span.point(1, 1, 0) });
+
+    try renderSarif(buf.writer(std.testing.allocator), list, &test_rules);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"<unknown>\"") != null);
+}
+
+test "renderSarif empty rules array" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const empty_rules: []const Rule = &.{};
+    try renderSarif(buf.writer(std.testing.allocator), list, empty_rules);
+    const output = buf.items;
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"rules\":[]") != null);
 }

@@ -95,7 +95,7 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
             .message = adv.diagnostic_message,
             .span = Span.point(0, 0, 0),
             .fix_hint = adv.diagnostic_hint,
-        });
+        }) catch return;
         return; // One diagnostic per step
     }
 }
@@ -110,7 +110,8 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();
 
-    var response_body = std.ArrayList(u8).init(allocator);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
 
     // Build extra headers
     var headers_buf: [3]std.http.Header = undefined;
@@ -123,9 +124,11 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
 
     // Use GITHUB_TOKEN if available for higher rate limits
     const auth_value = blk: {
-        const token = std.posix.getenv("GITHUB_TOKEN") orelse break :blk null;
+        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
+        defer allocator.free(token);
         break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
     };
+    defer if (auth_value) |auth| allocator.free(auth);
     if (auth_value) |auth| {
         headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
         header_count += 1;
@@ -133,14 +136,17 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
 
     const result = client.fetch(.{
         .location = .{ .url = api_url },
-        .response_storage = .{ .dynamic = &response_body },
+        .response_writer = &aw.writer,
         .headers = .{ .user_agent = .{ .override = "zghalint/0.1.0" } },
         .extra_headers = headers_buf[0..header_count],
     }) catch return error.FetchFailed;
 
     if (result.status != .ok) return error.HttpError;
 
-    return parseAdvisories(allocator, response_body.items);
+    var response_list = aw.toArrayList();
+    defer response_list.deinit(allocator);
+
+    return parseAdvisories(allocator, response_list.items);
 }
 
 // ============================================================
@@ -158,7 +164,7 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
         else => return error.UnexpectedFormat,
     };
 
-    var result = std.ArrayList(Advisory).init(allocator);
+    var result = std.ArrayList(Advisory){};
 
     for (items) |item| {
         const obj = switch (item) {
@@ -202,7 +208,7 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
             else
                 std.fmt.allocPrint(allocator, "check https://github.com/advisories/{s} for remediation", .{ghsa_id}) catch continue;
 
-            result.append(.{
+            result.append(allocator, .{
                 .ghsa_id = ghsa_id,
                 .action_slug = action_name,
                 .summary = summary,
@@ -215,7 +221,7 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
         }
     }
 
-    return result.toOwnedSlice() catch return error.OutOfMemory;
+    return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
 fn getJsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {

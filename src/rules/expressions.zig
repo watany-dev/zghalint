@@ -392,15 +392,15 @@ pub const ExprParser = struct {
 
     fn parseFunctionCall(self: *ExprParser, name: []const u8) ParseError!ExprNode {
         self.advance(); // skip '('
-        var args = std.ArrayList(ExprNode).init(self.allocator);
+        var args = std.ArrayList(ExprNode){};
 
         if (self.current.kind != .close_paren) {
             const first_arg = try self.parseOr();
-            args.append(first_arg) catch return ParseError.OutOfMemory;
+            args.append(self.allocator, first_arg) catch return ParseError.OutOfMemory;
             while (self.current.kind == .comma) {
                 self.advance();
                 const arg = try self.parseOr();
-                args.append(arg) catch return ParseError.OutOfMemory;
+                args.append(self.allocator, arg) catch return ParseError.OutOfMemory;
             }
         }
 
@@ -410,22 +410,22 @@ pub const ExprParser = struct {
         }
         self.advance();
 
-        const children = args.toOwnedSlice() catch return ParseError.OutOfMemory;
+        const children = args.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         return ExprNode{ .kind = .function_call, .value = name, .children = children };
     }
 
     fn parseContextAccess(self: *ExprParser, first: []const u8) ParseError!ExprNode {
-        var parts = std.ArrayList(u8).init(self.allocator);
-        parts.appendSlice(first) catch return ParseError.OutOfMemory;
+        var parts = std.ArrayList(u8){};
+        parts.appendSlice(self.allocator, first) catch return ParseError.OutOfMemory;
 
         while (self.current.kind == .dot) {
-            parts.append('.') catch return ParseError.OutOfMemory;
+            parts.append(self.allocator, '.') catch return ParseError.OutOfMemory;
             self.advance();
             if (self.current.kind == .identifier) {
-                parts.appendSlice(self.current.value) catch return ParseError.OutOfMemory;
+                parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
                 self.advance();
             } else if (self.current.kind == .star) {
-                parts.append('*') catch return ParseError.OutOfMemory;
+                parts.append(self.allocator, '*') catch return ParseError.OutOfMemory;
                 self.advance();
             } else {
                 self.error_message = "expected property name after '.'";
@@ -437,9 +437,9 @@ pub const ExprParser = struct {
         while (self.current.kind == .open_bracket) {
             self.advance();
             if (self.current.kind == .string_literal) {
-                parts.append('[') catch return ParseError.OutOfMemory;
-                parts.appendSlice(self.current.value) catch return ParseError.OutOfMemory;
-                parts.append(']') catch return ParseError.OutOfMemory;
+                parts.append(self.allocator, '[') catch return ParseError.OutOfMemory;
+                parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
+                parts.append(self.allocator, ']') catch return ParseError.OutOfMemory;
                 self.advance();
             } else {
                 self.error_message = "expected string in bracket access";
@@ -452,7 +452,7 @@ pub const ExprParser = struct {
             self.advance();
         }
 
-        const path = parts.toOwnedSlice() catch return ParseError.OutOfMemory;
+        const path = parts.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         return ExprNode{ .kind = .context_access, .value = path, .children = &.{} };
     }
 };
@@ -516,7 +516,7 @@ pub fn validateExpression(allocator: std.mem.Allocator, expr: []const u8, base_s
             .severity = .@"error",
             .message = msg,
             .span = base_span,
-        });
+        }) catch return;
         return;
     };
     validateNode(allocator, &node, base_span, list);
@@ -559,7 +559,7 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
             .severity = .@"error",
             .message = msg,
             .span = span,
-        });
+        }) catch return;
         return;
     }
 
@@ -584,7 +584,7 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
                     .severity = .warning,
                     .message = msg,
                     .span = span,
-                });
+                }) catch return;
             }
         } else if (std.mem.eql(u8, top_level, "runner")) {
             var known = false;
@@ -601,7 +601,7 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
                     .severity = .warning,
                     .message = msg,
                     .span = span,
-                });
+                }) catch return;
             }
         }
     }
@@ -626,7 +626,7 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
             .severity = .@"error",
             .message = msg,
             .span = span,
-        });
+        }) catch return;
     } else {
         const f = found.?;
         if (arg_count < f.min_args or arg_count > f.max_args) {
@@ -639,7 +639,7 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
                 .severity = .@"error",
                 .message = msg,
                 .span = span,
-            });
+            }) catch return;
         }
     }
 
@@ -652,7 +652,7 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
                 .message = "contains() uses substring matching which may match unintended values",
                 .span = span,
                 .fix_hint = "use exact comparison (== ) or startsWith()/endsWith() for precise matching",
-            });
+            }) catch return;
         }
     }
 
@@ -682,7 +682,7 @@ fn checkUnsoundCondition(allocator: std.mem.Allocator, node: *const ExprNode, sp
                 .message = msg,
                 .span = span,
                 .fix_hint = "use an explicit comparison, e.g. github.event_name == 'push' || github.event_name == 'pull_request'",
-            });
+            }) catch return;
         }
     }
 }
@@ -708,7 +708,7 @@ pub fn findAndValidateExpressions(allocator: std.mem.Allocator, text: []const u8
                     .severity = .@"error",
                     .message = "unclosed expression: missing }}",
                     .span = base_span,
-                });
+                }) catch return;
                 return;
             }
         } else {
