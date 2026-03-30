@@ -2,3 +2,4 @@
 zig-out/
 zig-linux-x86_64-*/
 *.o
+coverage/

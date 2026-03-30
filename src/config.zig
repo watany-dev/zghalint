@@ -48,14 +48,14 @@ pub const Config = struct {
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{
             .rule_overrides = std.StringHashMap(RuleOverride).init(allocator),
-            .ignore_patterns = std.ArrayList([]const u8).init(allocator),
+            .ignore_patterns = .{},
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Config) void {
         self.rule_overrides.deinit();
-        self.ignore_patterns.deinit();
+        self.ignore_patterns.deinit(self.allocator);
     }
 
     pub fn isRuleEnabled(self: *const Config, rule_id: []const u8) bool {
@@ -140,7 +140,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                 for (seq.items) |item| {
                     switch (item) {
                         .scalar => |s| {
-                            config.ignore_patterns.append(s.value) catch return ConfigError.OutOfMemory;
+                            config.ignore_patterns.append(allocator, s.value) catch return ConfigError.OutOfMemory;
                         },
                         else => {},
                     }
@@ -425,4 +425,45 @@ test "rule override with enabled only" {
     try std.testing.expect(!config.isRuleEnabled("BP001"));
     // No severity override, should return default
     try std.testing.expectEqual(Severity.warning, config.getEffectiveSeverity("BP001", .warning));
+}
+
+test "matchGlob with question mark wildcard" {
+    try std.testing.expect(matchGlob("c?.yml", "ci.yml"));
+    try std.testing.expect(matchGlob("c?.yml", "cd.yml"));
+    try std.testing.expect(!matchGlob("c?.yml", "cab.yml"));
+    try std.testing.expect(!matchGlob("c?.yml", "c.yml"));
+}
+
+test "parseBool with no value" {
+    try std.testing.expect(!parseBool("no"));
+    try std.testing.expect(!parseBool("false"));
+    try std.testing.expect(parseBool("true"));
+    try std.testing.expect(parseBool("yes"));
+}
+
+test "parseSeverity all values" {
+    try std.testing.expectEqual(Severity.@"error", parseSeverity("error").?);
+    try std.testing.expectEqual(Severity.warning, parseSeverity("warning").?);
+    try std.testing.expectEqual(Severity.info, parseSeverity("info").?);
+    try std.testing.expectEqual(Severity.hint, parseSeverity("hint").?);
+    try std.testing.expect(parseSeverity("invalid") == null);
+}
+
+test "parse config with invalid yaml" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Should either parse or return an error, not crash
+    _ = parseConfig(arena.allocator(), ":\n  :\n   : : :") catch {};
+}
+
+test "matchGlob trailing star" {
+    try std.testing.expect(matchGlob("src/*", "src/main.zig"));
+    try std.testing.expect(matchGlob("**", "anything"));
+    try std.testing.expect(matchGlob("*", ""));
+}
+
+test "isIgnored with no patterns returns false" {
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+    try std.testing.expect(!config.isIgnored("anything.yml"));
 }
