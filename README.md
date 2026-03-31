@@ -8,11 +8,13 @@ Zero external dependencies — even the YAML parser is built from scratch.
 
 ## Features
 
-- **Security** — Script injection, unpinned actions, hardcoded secrets, dangerous triggers
-- **Performance** — Missing caching, redundant checkout detection
-- **Best Practices** — Timeouts, naming, deprecated actions, concurrency
-- **Expression Validation** — `${{ }}` syntax, context access, function calls
+- **Security** — Script injection, unpinned actions, hardcoded secrets, environment injection, dangerous triggers
+- **Supply Chain** — Known vulnerable actions (CVE), archived repos, unpinned images, ref confusion
+- **Performance** — Missing caching, redundant checkout, fail-fast detection
+- **Best Practices** — Timeouts, naming, deprecated actions, concurrency, obfuscation detection
+- **Expression Validation** — `${{ }}` syntax, context access, function calls, argument validation
 - **Permissions** — Overly broad scopes, missing job-level permissions
+- **Dependencies** — Dependabot configuration validation
 - **Multiple Output Formats** — Terminal (colored), JSON, SARIF 2.1.0 (GitHub Code Scanning)
 
 ## Installation
@@ -83,25 +85,35 @@ zghalint --format sarif .github/workflows/*.yml > results.sarif
 
 ## Rules
 
-| ID | Name | Category | Severity | Description |
-|----|------|----------|----------|-------------|
-| SEC001 | unpinned-action | security | warning | Action references should be pinned to a full SHA |
-| SEC002 | script-injection | security | error | Untrusted GitHub context used in `run:` block risks script injection |
-| SEC003 | hardcoded-secret | security | error | Hardcoded secrets should use GitHub Secrets |
-| SEC004 | excessive-permissions | security | warning | Avoid write-all permissions, specify only needed scopes |
-| SEC005 | dangerous-pr-target | security | error | `pull_request_target` with checkout of PR head is dangerous |
-| SEC006 | untrusted-input-condition | security | error | Untrusted context in `if:` condition expression |
-| SEC007 | missing-permissions | security | info | Workflow should define top-level permissions |
-| PERF001 | cache-not-used | performance | warning | Job uses a language setup action without caching enabled |
-| PERF002 | redundant-checkout | performance | warning | Multiple `actions/checkout` without path in the same job |
-| BP001 | missing-timeout | best_practice | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
-| BP002 | missing-step-name | best_practice | info | Step is missing a `name` field |
-| BP003 | deprecated-action-version | best_practice | warning | Using a known deprecated action version |
-| BP004 | cross-platform-shell | best_practice | warning | Run step without `shell` in a Windows-targeting job |
-| BP005 | push-without-concurrency | best_practice | info | Push trigger without concurrency setting |
-| PERM001 | broad-permissions | permissions | warning | Overly broad permission scope detected |
-| PERM002 | missing-job-permissions | permissions | warning | Job with third-party actions lacks explicit permissions |
-| EXPR | expression-validator | expression | error | Validates `${{ }}` expression syntax and context access |
+zghalint includes **38 rules** across 7 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+
+### Security (17 rules)
+
+Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, and more.
+
+### Supply Chain (5 rules)
+
+Unpinned container images, known CVEs, archived repositories, stale SHA refs, ref confusion attacks.
+
+### Performance (3 rules)
+
+Missing caching, redundant checkout, fail-fast disabled.
+
+### Best Practices (6 rules)
+
+Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection.
+
+### Permissions (2 rules)
+
+Overly broad scopes, missing job-level permissions.
+
+### Expression Validation (7 rules)
+
+`${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions.
+
+### Dependencies (2 rules)
+
+Dependabot cooldown configuration, insecure external code execution settings.
 
 ## Configuration
 
