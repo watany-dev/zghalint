@@ -1125,6 +1125,42 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
 }
 
 // ============================================================
+// SEC017 - Insecure workflow commands
+// ============================================================
+
+fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, list: *DiagnosticList) void {
+    if (env_map.get("ACTIONS_ALLOW_UNSECURE_COMMANDS")) |val| {
+        if (std.mem.eql(u8, val, "true")) {
+            list.append(.{
+                .rule_id = "SEC017",
+                .severity = .warning,
+                .message = "insecure workflow commands are enabled via ACTIONS_ALLOW_UNSECURE_COMMANDS",
+                .span = Span.point(0, 0, 0),
+                .fix_hint = "remove ACTIONS_ALLOW_UNSECURE_COMMANDS or set it to false; use environment files instead of set-env/add-path",
+            });
+        }
+    }
+}
+
+fn checkInsecureCommandsStep(step: *const Step, list: *DiagnosticList) void {
+    if (step.env) |env_map| {
+        checkEnvForInsecureCommands(env_map, list);
+    }
+}
+
+fn checkInsecureCommandsJob(job: *const Job, list: *DiagnosticList) void {
+    if (job.env) |env_map| {
+        checkEnvForInsecureCommands(env_map, list);
+    }
+}
+
+fn checkInsecureCommandsWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
+    if (wf.env) |env_map| {
+        checkEnvForInsecureCommands(env_map, list);
+    }
+}
+
+// ============================================================
 // Public: All security rules
 // ============================================================
 
@@ -1267,6 +1303,16 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_job = &checkUnpinnedImages,
+    },
+    .{
+        .id = "SEC017",
+        .name = "insecure-commands",
+        .description = "ACTIONS_ALLOW_UNSECURE_COMMANDS re-enables deprecated insecure workflow commands",
+        .severity = .warning,
+        .category = .security,
+        .check_workflow = &checkInsecureCommandsWorkflow,
+        .check_job = &checkInsecureCommandsJob,
+        .check_step = &checkInsecureCommandsStep,
     },
     .{
         .id = "SC003",
@@ -3537,4 +3583,96 @@ test "SEC019: one diagnostic per step" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC019"));
+}
+
+// --- SEC017: Insecure commands ---
+
+test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    const steps = [_]Step{
+        .{ .run = "echo test", .env = env_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC017"));
+}
+
+test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    const jobs = [_]Job{
+        .{ .id = "build", .env = env_map, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC017"));
+}
+
+test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &.{}, .permissions = Permissions{}, .env = env_map };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC017"));
+}
+
+test "SEC017: value is false (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "false") catch unreachable;
+    const steps = [_]Step{
+        .{ .run = "echo test", .env = env_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC017"));
+}
+
+test "SEC017: key absent (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("SOME_OTHER_VAR", "true") catch unreachable;
+    const steps = [_]Step{
+        .{ .run = "echo test", .env = env_map },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC017"));
+}
+
+test "SEC017: no env (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC017"));
 }
