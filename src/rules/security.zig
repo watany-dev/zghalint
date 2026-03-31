@@ -1164,6 +1164,186 @@ fn checkInsecureCommandsWorkflow(wf: *const Workflow, list: *DiagnosticList) voi
 }
 
 // ============================================================
+// BP007 - Obfuscated command execution
+// ============================================================
+
+fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
+    const run_body = step.run orelse return;
+    if (containsBase64PipeExec(run_body) or
+        containsEvalVarExpansion(run_body) or
+        containsCurlWgetPipeShell(run_body) or
+        containsVarAsCommand(run_body))
+    {
+        list.append(.{
+            .rule_id = "BP007",
+            .severity = .warning,
+            .message = "potentially obfuscated command execution detected",
+            .span = Span.point(0, 0, 0),
+            .fix_hint = "avoid indirect command execution; use explicit, readable commands",
+        }) catch return;
+    }
+}
+
+const exec_targets = [_][]const u8{ "bash", "sh", "zsh", "eval", "source" };
+const shell_targets = [_][]const u8{ "bash", "sh", "zsh" };
+
+fn containsBase64PipeExec(s: []const u8) bool {
+    const needle = "base64";
+    var i: usize = 0;
+    while (i + needle.len <= s.len) : (i += 1) {
+        if (!std.mem.eql(u8, s[i .. i + needle.len], needle)) continue;
+        const before_ok = i == 0 or !isIdentChar(s[i - 1]);
+        const after_ok = (i + needle.len >= s.len) or !isIdentChar(s[i + needle.len]);
+        if (!before_ok or !after_ok) continue;
+
+        // Scan for decode flag and pipe
+        var j = i + needle.len;
+        var has_decode = false;
+        while (j < s.len and s[j] != '|') : (j += 1) {
+            if (s[j] == '-') {
+                // Check -d
+                if (j + 1 < s.len and s[j + 1] == 'd' and
+                    (j + 2 >= s.len or !isIdentChar(s[j + 2])))
+                {
+                    has_decode = true;
+                }
+                // Check --decode
+                if (j + 1 < s.len and s[j + 1] == '-') {
+                    const decode_str = "--decode";
+                    if (j + decode_str.len <= s.len and
+                        std.mem.eql(u8, s[j .. j + decode_str.len], decode_str) and
+                        (j + decode_str.len >= s.len or !isIdentChar(s[j + decode_str.len])))
+                    {
+                        has_decode = true;
+                    }
+                }
+            }
+        }
+        if (!has_decode or j >= s.len or s[j] != '|') continue;
+
+        // Skip whitespace after pipe
+        var k = j + 1;
+        while (k < s.len and (s[k] == ' ' or s[k] == '\t' or s[k] == '\n')) : (k += 1) {}
+        // Check for exec target
+        for (exec_targets) |target| {
+            if (k + target.len <= s.len and
+                std.mem.eql(u8, s[k .. k + target.len], target) and
+                (k + target.len >= s.len or !isIdentChar(s[k + target.len])))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn containsEvalVarExpansion(s: []const u8) bool {
+    const needle = "eval";
+    var i: usize = 0;
+    while (i + needle.len <= s.len) : (i += 1) {
+        if (!std.mem.eql(u8, s[i .. i + needle.len], needle)) continue;
+        const before_ok = i == 0 or !isIdentChar(s[i - 1]);
+        if (!before_ok) continue;
+        var j = i + needle.len;
+        // Must be followed by whitespace
+        if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
+        // Skip whitespace
+        while (j < s.len and (s[j] == ' ' or s[j] == '\t')) : (j += 1) {}
+        if (j >= s.len) continue;
+        // Skip optional quote
+        if (s[j] == '"' or s[j] == '\'') j += 1;
+        if (j >= s.len) continue;
+        // Check for $ (variable expansion)
+        if (s[j] == '$') {
+            // Exclude ${{ (GitHub Actions expression)
+            if (j + 2 < s.len and s[j + 1] == '{' and s[j + 2] == '{') continue;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn containsCurlWgetPipeShell(s: []const u8) bool {
+    const downloaders = [_][]const u8{ "curl", "wget" };
+    for (downloaders) |downloader| {
+        var i: usize = 0;
+        while (i + downloader.len <= s.len) : (i += 1) {
+            if (!std.mem.eql(u8, s[i .. i + downloader.len], downloader)) continue;
+            const before_ok = i == 0 or !isIdentChar(s[i - 1]);
+            const after_ok = (i + downloader.len >= s.len) or !isIdentChar(s[i + downloader.len]);
+            if (!before_ok or !after_ok) continue;
+
+            // Scan forward for | followed by shell
+            var j = i + downloader.len;
+            while (j < s.len) : (j += 1) {
+                if (s[j] == '|') {
+                    // Skip whitespace after pipe
+                    var k = j + 1;
+                    while (k < s.len and (s[k] == ' ' or s[k] == '\t' or s[k] == '\n')) : (k += 1) {}
+                    // Check for shell target
+                    for (shell_targets) |shell| {
+                        if (k + shell.len <= s.len and
+                            std.mem.eql(u8, s[k .. k + shell.len], shell) and
+                            (k + shell.len >= s.len or !isIdentChar(s[k + shell.len])))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn isAllUppercase(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |c| {
+        if (std.ascii.isLower(c)) return false;
+    }
+    return true;
+}
+
+fn containsVarAsCommand(s: []const u8) bool {
+    var line_start: usize = 0;
+    while (line_start < s.len) {
+        // Find end of current line
+        var line_end = line_start;
+        while (line_end < s.len and s[line_end] != '\n') : (line_end += 1) {}
+
+        // Skip leading whitespace
+        var pos = line_start;
+        while (pos < line_end and (s[pos] == ' ' or s[pos] == '\t')) : (pos += 1) {}
+
+        if (pos < line_end and s[pos] == '$') {
+            // Exclude ${{ (GitHub Actions expression)
+            if (pos + 2 < line_end and s[pos + 1] == '{' and s[pos + 2] == '{') {
+                // skip
+            } else if (pos + 1 < line_end and s[pos + 1] == '(') {
+                // $(...) command substitution, skip
+            } else if (pos + 1 < line_end and s[pos + 1] == '{') {
+                // ${VAR} form
+                var k = pos + 2;
+                const var_start = k;
+                while (k < line_end and (std.ascii.isAlphabetic(s[k]) or s[k] == '_' or std.ascii.isDigit(s[k]))) : (k += 1) {}
+                if (k < line_end and s[k] == '}' and k > var_start) {
+                    if (isAllUppercase(s[var_start..k])) return true;
+                }
+            } else if (pos + 1 < line_end and (std.ascii.isAlphabetic(s[pos + 1]) or s[pos + 1] == '_')) {
+                // $VAR form
+                var k = pos + 1;
+                const var_start = k;
+                while (k < line_end and (std.ascii.isAlphanumeric(s[k]) or s[k] == '_')) : (k += 1) {}
+                if (k > var_start and isAllUppercase(s[var_start..k])) return true;
+            }
+        }
+
+        line_start = if (line_end < s.len) line_end + 1 else s.len;
+    }
+    return false;
+}
+
+// ============================================================
 // Public: All security rules
 // ============================================================
 
@@ -1348,6 +1528,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .dependency,
         .check_step = &refconfusion.checkRefConfusion,
+    },
+    .{
+        .id = "BP007",
+        .name = "obfuscation",
+        .description = "Obfuscated or indirect command execution patterns detected in run: block",
+        .severity = .warning,
+        .category = .security,
+        .check_step = &checkObfuscatedExecution,
     },
 };
 
@@ -3702,4 +3890,232 @@ test "SEC017: no env (no false positive)" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
+}
+
+// ============================================================
+// BP007 tests
+// ============================================================
+
+test "BP007: base64 -d piped to bash" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo payload | base64 -d | bash" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: base64 --decode piped to sh" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "base64 --decode secret.txt | sh" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: eval with variable expansion" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "eval $CMD" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: eval with quoted variable" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "eval \"$SCRIPT\"" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: eval with braced variable" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "eval ${COMMAND}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: curl piped to bash" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "curl -s https://example.com/install.sh | bash" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: wget piped to sh" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "wget -qO- https://example.com/setup.sh | sh" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: variable as command at line start" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "export CMD=\"malicious\"\n$CMD" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on normal command" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo hello world" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on base64 decode to file" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "base64 -d file.txt > output.bin" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on eval with literal string" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "eval \"echo hello\"" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on curl saving to file" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "curl -o script.sh https://example.com/script.sh" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on wget download" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "wget https://example.com/file.tar.gz" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on echo with variable" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo $VARIABLE" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on npm install" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "npm install" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on GitHub Actions expression" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "${{ github.token }}" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
