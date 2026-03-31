@@ -17,7 +17,8 @@ const all_rules = zghalint.rules.security.security_rules ++
     zghalint.rules.best_practices.rules ++
     zghalint.rules.performance.rules ++
     zghalint.rules.permissions.rules ++
-    [_]zghalint.rules.Rule{zghalint.rules.expressions.expression_rule};
+    [_]zghalint.rules.Rule{zghalint.rules.expressions.expression_rule} ++
+    zghalint.rules.dependabot.rules;
 
 const CliArgs = struct {
     files: std.ArrayList([]const u8),
@@ -75,7 +76,7 @@ fn printHelp(writer: anytype) !void {
         \\GitHub Actions workflow linter
         \\
         \\Arguments:
-        \\  [FILES...]  Workflow files to lint (default: .github/workflows/*.yml)
+        \\  [FILES...]  Files to lint (default: .github/workflows/*.yml, .github/dependabot.yml)
         \\
         \\Options:
         \\  --config <path>   Path to config file (default: .zghalint.yml)
@@ -104,7 +105,68 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
         }
     }
 
+    // Also check for .github/dependabot.yml and .github/dependabot.yaml
+    inline for ([_][]const u8{ ".github/dependabot.yml", ".github/dependabot.yaml" }) |dep_path| {
+        if (std.fs.cwd().access(dep_path, .{})) |_| {
+            const path_copy = try std.fmt.allocPrint(allocator, "{s}", .{dep_path});
+            try files.append(allocator, path_copy);
+        } else |_| {}
+    }
+
     return files;
+}
+
+fn isDependabotFile(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, "dependabot.yml") or
+        std.mem.endsWith(u8, path, "dependabot.yaml");
+}
+
+fn lintDependabotFile(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    config: *const Config,
+    all_diags: *zghalint.DiagnosticList,
+) !void {
+    var stderr_buf: [1024]u8 = undefined;
+    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
+    const stderr = &stderr_bw.interface;
+
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
+        return;
+    };
+    defer file.close();
+
+    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
+        return;
+    };
+    defer allocator.free(source);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
+    defer yaml_parser.deinit();
+
+    const yaml_node = yaml_parser.parse() catch {
+        stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
+        return;
+    };
+
+    var diag_list = zghalint.DiagnosticList.init(allocator);
+    defer diag_list.deinit();
+
+    zghalint.rules.dependabot.lintDependabot(yaml_node, &diag_list);
+
+    for (diag_list.items.items) |diag| {
+        if (!config.isRuleEnabled(diag.rule_id)) continue;
+        var d = diag;
+        d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
+        d.file = file_path;
+        all_diags.append(d) catch {};
+    }
 }
 
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
@@ -318,9 +380,15 @@ pub fn main() !u8 {
 
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
-        lintFile(allocator, file_path, &config, &all_diags) catch {
-            stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
-        };
+        if (isDependabotFile(file_path)) {
+            lintDependabotFile(allocator, file_path, &config, &all_diags) catch {
+                stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
+            };
+        } else {
+            lintFile(allocator, file_path, &config, &all_diags) catch {
+                stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
+            };
+        }
     }
 
     // Apply fixes if requested
