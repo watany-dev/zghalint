@@ -370,11 +370,13 @@ pub fn main() !u8 {
         return 0;
     }
 
-    // Initialize advisory database (network call, graceful offline skip)
+    // Initialize network-dependent rule databases (graceful offline skip)
     zghalint.rules.advisory.initAdvisories(allocator);
     defer zghalint.rules.advisory.deinitAdvisories();
     zghalint.rules.archived.initArchived(allocator);
     defer zghalint.rules.archived.deinitArchived();
+    zghalint.rules.stale_refs.initStaleRefs(allocator);
+    defer zghalint.rules.stale_refs.deinitStaleRefs();
 
     // Lint each file
     var all_diags = zghalint.DiagnosticList.init(allocator);

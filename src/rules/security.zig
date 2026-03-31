@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
 const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
+const stale_refs = @import("stale_refs.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -1330,6 +1331,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .dependency,
         .check_step = &archived.checkArchivedAction,
+    },
+    .{
+        .id = "SC005",
+        .name = "stale-action-refs",
+        .description = "SHA-pinned action does not correspond to any known Git tag",
+        .severity = .info,
+        .category = .dependency,
+        .check_step = &stale_refs.checkStaleActionRef,
     },
 };
 

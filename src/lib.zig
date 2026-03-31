@@ -53,6 +53,7 @@ pub const rules = struct {
     pub const advisory = @import("rules/advisory.zig");
     pub const dependabot = @import("rules/dependabot.zig");
     pub const archived = @import("rules/archived.zig");
+    pub const stale_refs = @import("rules/stale_refs.zig");
 };
 
 pub const fix = struct {
@@ -84,6 +85,7 @@ test {
     _ = @import("rules/advisory.zig");
     _ = @import("rules/dependabot.zig");
     _ = @import("rules/archived.zig");
+    _ = @import("rules/stale_refs.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
