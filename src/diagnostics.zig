@@ -47,6 +47,37 @@ pub const Category = enum {
     }
 };
 
+/// Safety classification for automatic fixes.
+pub const FixSafety = enum {
+    /// Semantics-preserving mechanical fix (e.g. SHA pinning, quote style).
+    safe,
+    /// Fix that may change behavior (e.g. permission changes).
+    unsafe,
+
+    pub fn toString(self: FixSafety) []const u8 {
+        return switch (self) {
+            .safe => "safe",
+            .unsafe => "unsafe",
+        };
+    }
+};
+
+/// A single text edit: replace bytes [start_byte..end_byte) with replacement.
+/// - start_byte == end_byte → insertion
+/// - replacement.len == 0  → deletion
+pub const Edit = struct {
+    start_byte: usize,
+    end_byte: usize,
+    replacement: []const u8,
+};
+
+/// An automatic fix composed of one or more edits.
+pub const Fix = struct {
+    description: []const u8,
+    safety: FixSafety,
+    edits: []const Edit,
+};
+
 /// A single diagnostic message produced by a lint rule.
 pub const Diagnostic = struct {
     rule_id: []const u8,
@@ -55,6 +86,7 @@ pub const Diagnostic = struct {
     file: ?[]const u8 = null,
     span: Span,
     fix_hint: ?[]const u8 = null,
+    fix: ?Fix = null,
 
     /// Format as "file:line:col: severity [rule_id]: message"
     pub fn format(self: Diagnostic, allocator: std.mem.Allocator) ![]const u8 {
@@ -87,17 +119,38 @@ pub const Diagnostic = struct {
 pub const DiagnosticList = struct {
     items: std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
+    /// Arena for Fix-related heap allocations (Edit slices, replacement strings).
+    fix_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticList {
-        return .{ .items = .{}, .allocator = allocator };
+        return .{
+            .items = .{},
+            .allocator = allocator,
+            .fix_arena = std.heap.ArenaAllocator.init(allocator),
+        };
     }
 
     pub fn deinit(self: *DiagnosticList) void {
+        self.fix_arena.deinit();
         self.items.deinit(self.allocator);
+    }
+
+    /// Returns an allocator for Fix edits/strings. Lifetime matches DiagnosticList.
+    pub fn fixAllocator(self: *DiagnosticList) std.mem.Allocator {
+        return self.fix_arena.allocator();
     }
 
     pub fn append(self: *DiagnosticList, diag: Diagnostic) std.mem.Allocator.Error!void {
         try self.items.append(self.allocator, diag);
+    }
+
+    /// Allocate a single Edit on the heap, tracked for cleanup on deinit.
+    /// Returns a slice suitable for use in Fix.edits, or null on OOM.
+    pub fn allocEdit(self: *DiagnosticList, edit: Edit) ?[]const Edit {
+        const alloc = self.fix_arena.allocator();
+        const edits = alloc.alloc(Edit, 1) catch return null;
+        edits[0] = edit;
+        return edits;
     }
 
     /// Sort diagnostics by file, then line, then column.
