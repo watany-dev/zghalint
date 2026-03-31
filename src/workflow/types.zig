@@ -1,4 +1,5 @@
 const std = @import("std");
+const yaml_types = @import("../yaml/types.zig");
 
 /// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
@@ -28,6 +29,8 @@ pub const Permissions = struct {
     statuses: ?PermissionLevel = null,
     read_all: bool = false,
     write_all: bool = false,
+    /// Span of the permissions value in the YAML source (for autofix)
+    value_span: ?yaml_types.Span = null,
 };
 
 /// Concurrency configuration
@@ -222,6 +225,12 @@ pub const Step = struct {
     continue_on_error: bool = false,
     timeout_minutes: ?u32 = null,
     working_directory: ?[]const u8 = null,
+    /// Column of the `uses:` key in source YAML (for autofix indentation).
+    uses_key_col: ?u32 = null,
+    /// End byte of the `uses:` value in source YAML (insertion point when no `with:` exists).
+    uses_value_end_byte: ?usize = null,
+    /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
+    with_last_entry_end_byte: ?usize = null,
 };
 
 /// Secrets configuration for reusable workflow jobs
@@ -230,9 +239,29 @@ pub const SecretsConfig = union(enum) {
     map: StringMap,
 };
 
+/// Docker registry credentials for container/service images
+pub const Credentials = struct {
+    username: ?[]const u8 = null,
+    password: ?[]const u8 = null,
+};
+
+/// Container configuration for a job
+pub const Container = struct {
+    image: ?[]const u8 = null,
+    credentials: ?Credentials = null,
+};
+
+/// Service container configuration
+pub const Service = struct {
+    name: []const u8,
+    image: ?[]const u8 = null,
+    credentials: ?Credentials = null,
+};
+
 /// A workflow job
 pub const Job = struct {
     id: []const u8,
+    span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     name: ?[]const u8 = null,
     runs_on: ?[]const u8 = null,
     needs: []const []const u8 = &.{},
@@ -244,6 +273,8 @@ pub const Job = struct {
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
     continue_on_error: bool = false,
+    container: ?Container = null,
+    services: []const Service = &.{},
     /// Reusable workflow reference (mutually exclusive with steps)
     uses: ?[]const u8 = null,
     with: ?StringMap = null,

@@ -50,6 +50,14 @@ pub const rules = struct {
     pub const performance = @import("rules/performance.zig");
     pub const best_practices = @import("rules/best_practices.zig");
     pub const permissions = @import("rules/permissions.zig");
+    pub const advisory = @import("rules/advisory.zig");
+};
+
+pub const fix = struct {
+    pub const engine = @import("fix/engine.zig");
+    pub const applyFixes = engine.applyFixes;
+    pub const ApplyResult = engine.ApplyResult;
+    pub const collectFixes = engine.collectFixes;
 };
 
 pub const config = @import("config.zig");
@@ -71,8 +79,10 @@ test {
     _ = @import("rules/performance.zig");
     _ = @import("rules/best_practices.zig");
     _ = @import("rules/permissions.zig");
+    _ = @import("rules/advisory.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
+    _ = @import("fix/engine.zig");
     _ = @import("config.zig");
 }

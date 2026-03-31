@@ -6,6 +6,12 @@ const ColorMode = zghalint.ColorMode;
 
 const version = "0.1.0";
 
+const FixMode = enum {
+    off,
+    safe,
+    all,
+};
+
 /// All lint rules used by the engine and SARIF output.
 const all_rules = zghalint.rules.security.security_rules ++
     zghalint.rules.best_practices.rules ++
@@ -21,6 +27,7 @@ const CliArgs = struct {
     color: ?ColorMode = null,
     show_help: bool = false,
     show_version: bool = false,
+    fix_mode: FixMode = .off,
 
     fn deinit(self: *CliArgs) void {
         self.files.deinit(self.allocator);
@@ -49,6 +56,10 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
             if (iter.next()) |color_str| {
                 args.color = ColorMode.fromString(color_str);
             }
+        } else if (std.mem.eql(u8, arg, "--fix")) {
+            args.fix_mode = .safe;
+        } else if (std.mem.eql(u8, arg, "--fix-unsafe")) {
+            args.fix_mode = .all;
         } else if (!std.mem.startsWith(u8, arg, "-")) {
             try args.files.append(allocator, arg);
         }
@@ -70,6 +81,8 @@ fn printHelp(writer: anytype) !void {
         \\  --config <path>   Path to config file (default: .zghalint.yml)
         \\  --format <fmt>    Output format: terminal, json, sarif (default: terminal)
         \\  --color <mode>    Color mode: auto, always, never (default: auto)
+        \\  --fix             Apply safe auto-fixes and rewrite files
+        \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
         \\  -h, --help        Show this help
         \\  -v, --version     Show version
         \\
@@ -128,8 +141,13 @@ fn lintFile(
     };
     defer allocator.free(source);
 
+    // Arena for YAML/workflow parsing (freed after diagnostics are collected)
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     // YAML parse
-    var yaml_parser = zghalint.yaml.Parser.init(allocator, source);
+    var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
     defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
@@ -138,7 +156,7 @@ fn lintFile(
     };
 
     // Workflow conversion
-    const workflow = zghalint.workflow.parseWorkflow(allocator, yaml_node) catch {
+    const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
         stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
         return;
     };
@@ -170,6 +188,53 @@ fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checke
 fn outputSarif(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
     try zghalint.output.renderSarif(writer, diag_list.*, &all_rules);
     try writer.writeAll("\n");
+}
+
+fn applyFixesForFile(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    all_diags: *zghalint.DiagnosticList,
+    include_unsafe: bool,
+) !usize {
+    // Collect diagnostics for this file that have fixes
+    var file_diags = std.ArrayList(zghalint.Diagnostic){};
+    defer file_diags.deinit(allocator);
+
+    for (all_diags.items.items) |d| {
+        if (d.fix != null) {
+            const f = d.file orelse continue;
+            if (std.mem.eql(u8, f, file_path)) {
+                try file_diags.append(allocator, d);
+            }
+        }
+    }
+
+    if (file_diags.items.len == 0) return 0;
+
+    // Collect applicable fixes
+    const fixes = try zghalint.fix.collectFixes(allocator, file_diags.items, include_unsafe);
+    defer allocator.free(fixes);
+
+    if (fixes.len == 0) return 0;
+
+    // Read file content
+    const file = try std.fs.cwd().openFile(file_path, .{});
+    defer file.close();
+    const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+    defer allocator.free(source);
+
+    // Apply fixes
+    const result = try zghalint.fix.applyFixes(allocator, source, fixes);
+    defer result.deinit(allocator);
+
+    if (result.edits_applied == 0) return 0;
+
+    // Write back
+    const out_file = try std.fs.cwd().createFile(file_path, .{});
+    defer out_file.close();
+    try out_file.writeAll(result.content);
+
+    return result.edits_applied;
 }
 
 fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
@@ -243,6 +308,10 @@ pub fn main() !u8 {
         return 0;
     }
 
+    // Initialize advisory database (network call, graceful offline skip)
+    zghalint.rules.advisory.initAdvisories(allocator);
+    defer zghalint.rules.advisory.deinitAdvisories();
+
     // Lint each file
     var all_diags = zghalint.DiagnosticList.init(allocator);
     defer all_diags.deinit();
@@ -252,6 +321,23 @@ pub fn main() !u8 {
         lintFile(allocator, file_path, &config, &all_diags) catch {
             stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
         };
+    }
+
+    // Apply fixes if requested
+    if (cli_args.fix_mode != .off) {
+        const include_unsafe = cli_args.fix_mode == .all;
+        var total_fixed: usize = 0;
+        for (files) |file_path| {
+            if (config.isIgnored(file_path)) continue;
+            const fixed = applyFixesForFile(allocator, file_path, &all_diags, include_unsafe) catch |err| {
+                try stderr.print("error: failed to apply fixes to '{s}': {}\n", .{ file_path, err });
+                continue;
+            };
+            total_fixed += fixed;
+        }
+        if (total_fixed > 0) {
+            try stderr.print("Applied {d} fix(es).\n", .{total_fixed});
+        }
     }
 
     all_diags.sort();

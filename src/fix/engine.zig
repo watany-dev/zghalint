@@ -1,0 +1,321 @@
+const std = @import("std");
+const diagnostics = @import("../diagnostics.zig");
+
+pub const Fix = diagnostics.Fix;
+pub const FixSafety = diagnostics.FixSafety;
+pub const Edit = diagnostics.Edit;
+pub const Diagnostic = diagnostics.Diagnostic;
+
+/// Collect Fix objects from diagnostics that have an autofix.
+/// When `include_unsafe` is false, only safe fixes are returned.
+pub fn collectFixes(
+    allocator: std.mem.Allocator,
+    diags: []const Diagnostic,
+    include_unsafe: bool,
+) ![]const Fix {
+    var list = std.ArrayList(Fix){};
+    defer list.deinit(allocator);
+
+    for (diags) |d| {
+        if (d.fix) |f| {
+            if (include_unsafe or f.safety == .safe) {
+                try list.append(allocator, f);
+            }
+        }
+    }
+
+    return list.toOwnedSlice(allocator);
+}
+
+const FlatEdits = struct {
+    /// The valid edits (sub-slice of `allocation`), sorted descending by start_byte.
+    items: []Edit,
+    /// The original allocation to free.
+    allocation: []Edit,
+
+    fn deinit(self: FlatEdits, allocator: std.mem.Allocator) void {
+        allocator.free(self.allocation);
+    }
+};
+
+/// Flatten all edits from multiple fixes into a single sorted, non-overlapping list.
+/// Edits are sorted by start_byte descending so they can be applied back-to-front
+/// without offset shifting. Overlapping edits are dropped (first wins by position).
+fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix) !FlatEdits {
+    // Count total edits
+    var total: usize = 0;
+    for (fixes) |f| {
+        total += f.edits.len;
+    }
+
+    if (total == 0) return .{ .items = &.{}, .allocation = &.{} };
+
+    // Collect all edits
+    var edits = try allocator.alloc(Edit, total);
+
+    var idx: usize = 0;
+    for (fixes) |f| {
+        for (f.edits) |e| {
+            edits[idx] = e;
+            idx += 1;
+        }
+    }
+
+    // Sort by start_byte ascending (for overlap detection), then we'll reverse
+    std.mem.sort(Edit, edits, {}, struct {
+        fn lessThan(_: void, a: Edit, b: Edit) bool {
+            if (a.start_byte != b.start_byte) return a.start_byte < b.start_byte;
+            return a.end_byte < b.end_byte;
+        }
+    }.lessThan);
+
+    // Remove overlapping edits (keep first by position, skip later overlaps)
+    var write_idx: usize = 0;
+    var last_end: usize = 0;
+    for (edits) |e| {
+        if (write_idx > 0 and e.start_byte < last_end) {
+            // Overlapping — skip
+            continue;
+        }
+        edits[write_idx] = e;
+        last_end = e.end_byte;
+        write_idx += 1;
+    }
+
+    // Get the valid portion
+    const result = edits[0..write_idx];
+
+    // Reverse to get descending order (apply back-to-front)
+    std.mem.reverse(Edit, result);
+
+    return .{ .items = result, .allocation = edits };
+}
+
+/// Apply fixes to source content, returning new content with all edits applied.
+/// Edits are applied back-to-front to avoid offset invalidation.
+pub fn applyFixes(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    fixes: []const Fix,
+) !ApplyResult {
+    const flat = try flattenAndSort(allocator, fixes);
+    defer if (flat.allocation.len > 0) flat.deinit(allocator);
+
+    const edits = flat.items;
+
+    if (edits.len == 0) {
+        return .{ .content = try allocator.dupe(u8, source), .edits_applied = 0 };
+    }
+
+    // Calculate result size
+    var result_len: usize = source.len;
+    for (edits) |e| {
+        result_len = result_len - (e.end_byte - e.start_byte) + e.replacement.len;
+    }
+
+    var result = try allocator.alloc(u8, result_len);
+    var src_pos: usize = source.len;
+    var dst_pos: usize = result_len;
+
+    for (edits) |e| {
+        // Copy bytes after this edit (from e.end_byte to src_pos)
+        const after_len = src_pos - e.end_byte;
+        dst_pos -= after_len;
+        @memcpy(result[dst_pos..][0..after_len], source[e.end_byte..][0..after_len]);
+
+        // Copy replacement
+        dst_pos -= e.replacement.len;
+        @memcpy(result[dst_pos..][0..e.replacement.len], e.replacement);
+
+        src_pos = e.start_byte;
+    }
+
+    // Copy remaining prefix
+    if (src_pos > 0) {
+        dst_pos -= src_pos;
+        @memcpy(result[dst_pos..][0..src_pos], source[0..src_pos]);
+    }
+
+    return .{ .content = result, .edits_applied = edits.len };
+}
+
+pub const ApplyResult = struct {
+    content: []const u8,
+    edits_applied: usize,
+
+    pub fn deinit(self: ApplyResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+    }
+};
+
+// ============================================================
+// Tests
+// ============================================================
+
+test "single replacement edit" {
+    const allocator = std.testing.allocator;
+    const source = "uses: actions/checkout@v4";
+    const edits = [_]Edit{
+        .{ .start_byte = 6, .end_byte = 25, .replacement = "actions/checkout@abc123def456" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "pin action", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("uses: actions/checkout@abc123def456", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "insertion edit (start_byte == end_byte)" {
+    const allocator = std.testing.allocator;
+    const source = "name: CI";
+    const edits = [_]Edit{
+        .{ .start_byte = 8, .end_byte = 8, .replacement = "\ntimeout-minutes: 30" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "add timeout", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("name: CI\ntimeout-minutes: 30", result.content);
+}
+
+test "deletion edit (empty replacement)" {
+    const allocator = std.testing.allocator;
+    const source = "line1\nDELETE_ME\nline3";
+    const edits = [_]Edit{
+        .{ .start_byte = 6, .end_byte = 15, .replacement = "" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "delete line", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("line1\n\nline3", result.content);
+}
+
+test "multiple non-overlapping edits" {
+    const allocator = std.testing.allocator;
+    const source = "AAA BBB CCC";
+    const edits1 = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 3, .replacement = "XXX" },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = 8, .end_byte = 11, .replacement = "ZZZ" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("XXX BBB ZZZ", result.content);
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+}
+
+test "overlapping edits — first by position wins" {
+    const allocator = std.testing.allocator;
+    const source = "ABCDEFGH";
+    // Edit 1: replace bytes 2..5 with "XX"
+    // Edit 2: replace bytes 3..6 with "YY" (overlaps with edit 1)
+    const edits1 = [_]Edit{
+        .{ .start_byte = 2, .end_byte = 5, .replacement = "XX" },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = 3, .end_byte = 6, .replacement = "YY" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    // Only edit 1 applied: AB + XX + FGH
+    try std.testing.expectEqualStrings("ABXXFGH", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "empty fixes — returns source unchanged" {
+    const allocator = std.testing.allocator;
+    const source = "unchanged content";
+    const fixes = [_]Fix{};
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("unchanged content", result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "collectFixes filters by safety" {
+    const allocator = std.testing.allocator;
+    const span = @import("../yaml/types.zig").Span.point(1, 1, 0);
+
+    const safe_edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 3, .replacement = "xxx" },
+    };
+    const unsafe_edits = [_]Edit{
+        .{ .start_byte = 10, .end_byte = 15, .replacement = "yyy" },
+    };
+
+    const diags = [_]Diagnostic{
+        .{
+            .rule_id = "R001",
+            .severity = .warning,
+            .message = "safe issue",
+            .span = span,
+            .fix = .{ .description = "safe fix", .safety = .safe, .edits = &safe_edits },
+        },
+        .{
+            .rule_id = "R002",
+            .severity = .warning,
+            .message = "unsafe issue",
+            .span = span,
+            .fix = .{ .description = "unsafe fix", .safety = .unsafe, .edits = &unsafe_edits },
+        },
+        .{
+            .rule_id = "R003",
+            .severity = .info,
+            .message = "no fix",
+            .span = span,
+        },
+    };
+
+    // Safe only
+    const safe_fixes = try collectFixes(allocator, &diags, false);
+    defer allocator.free(safe_fixes);
+    try std.testing.expectEqual(@as(usize, 1), safe_fixes.len);
+    try std.testing.expectEqualStrings("safe fix", safe_fixes[0].description);
+
+    // Including unsafe
+    const all_fixes = try collectFixes(allocator, &diags, true);
+    defer allocator.free(all_fixes);
+    try std.testing.expectEqual(@as(usize, 2), all_fixes.len);
+}
+
+test "fix with multiple edits in single fix" {
+    const allocator = std.testing.allocator;
+    const source = "AABBCC";
+    const edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 2, .replacement = "XX" },
+        .{ .start_byte = 4, .end_byte = 6, .replacement = "ZZ" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "multi-edit fix", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("XXBBZZ", result.content);
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+}
+
+test "fix safety toString" {
+    try std.testing.expectEqualStrings("safe", FixSafety.safe.toString());
+    try std.testing.expectEqualStrings("unsafe", FixSafety.unsafe.toString());
+}

@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("engine.zig");
+const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 
@@ -11,6 +12,8 @@ const DiagnosticList = engine.DiagnosticList;
 const Permissions = workflow_types.Permissions;
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
+const Fix = diagnostics.Fix;
+const Edit = diagnostics.Edit;
 
 // ── PERM001: Overly broad permissions ──
 
@@ -26,14 +29,31 @@ fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
     }
 }
 
+const write_all_replacement = "{contents: read}";
+
+fn makeWriteAllFix(diag_list: *DiagnosticList, value_span: Span) ?Fix {
+    const edits = diag_list.allocEdit(.{
+        .start_byte = value_span.start_byte,
+        .end_byte = value_span.end_byte,
+        .replacement = write_all_replacement,
+    }) orelse return null;
+    return .{
+        .description = "Replace 'write-all' with minimal permissions",
+        .safety = .safe,
+        .edits = edits,
+    };
+}
+
 fn checkPermissionsScope(perms: Permissions, diag_list: *DiagnosticList) void {
     if (perms.write_all) {
+        const span = perms.value_span orelse Span.point(0, 0, 0);
         diag_list.append(.{
             .rule_id = "PERM001",
             .severity = .warning,
             .message = "Overly broad 'write-all' permissions. Apply principle of least privilege.",
-            .span = Span.point(0, 0, 0),
+            .span = span,
             .fix_hint = "Replace 'write-all' with specific permissions needed.",
+            .fix = if (perms.value_span) |vs| makeWriteAllFix(diag_list, vs) else null,
         }) catch return;
         return;
     }
@@ -261,4 +281,55 @@ test "PERM002: no warning with only run steps" {
     defer diags.deinit();
     checkJobPermissions(&job, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+// ── PERM001 autofix tests ──
+
+test "PERM001: autofix replaces write-all with minimal permissions" {
+    const fix_engine = @import("../fix/engine.zig");
+    const source = "permissions: write-all\njobs:";
+    const value_span = Span{
+        .start_line = 1,
+        .start_col = 14,
+        .end_line = 1,
+        .end_col = 23,
+        .start_byte = 13,
+        .end_byte = 22,
+    };
+    const perms = Permissions{ .write_all = true, .value_span = value_span };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try std.testing.expectEqualStrings("PERM001", diag.rule_id);
+    try std.testing.expect(diag.fix != null);
+
+    const fix = diag.fix.?;
+    try std.testing.expectEqual(diagnostics.FixSafety.safe, fix.safety);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &.{fix});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("permissions: {contents: read}\njobs:", result.content);
+}
+
+test "PERM001: no fix when value_span is null" {
+    const perms = Permissions{ .write_all = true };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERM001: no fix for individual write permissions" {
+    const perms = Permissions{ .contents = .write };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
 }
