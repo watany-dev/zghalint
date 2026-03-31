@@ -28,8 +28,9 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
         const prefix = "timeout-minutes: 30\n";
         const text_len = prefix.len + indent;
 
-        const replacement = diag_list.allocator.alloc(u8, text_len) catch null;
-        const edits = diag_list.allocator.alloc(Edit, 1) catch null;
+        const fix_alloc = diag_list.fixAllocator();
+        const replacement = fix_alloc.alloc(u8, text_len) catch null;
+        const edits = fix_alloc.alloc(Edit, 1) catch null;
 
         if (replacement != null and edits != null) {
             @memcpy(replacement.?[0..prefix.len], prefix);

@@ -1137,7 +1137,7 @@ fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, list: *Diagnos
                 .message = "insecure workflow commands are enabled via ACTIONS_ALLOW_UNSECURE_COMMANDS",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "remove ACTIONS_ALLOW_UNSECURE_COMMANDS or set it to false; use environment files instead of set-env/add-path",
-            });
+            }) catch return;
         }
     }
 }
