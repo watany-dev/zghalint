@@ -1724,7 +1724,7 @@ test "fuzz: expression validation is deterministic" {
             validateExpression(arena.allocator(), input, Span.point(1, 1, 0), &list2);
             try std.testing.expectEqual(list1.len(), list2.len());
         }
-    }.testOne, .{} );
+    }.testOne, .{});
 }
 
 test "fuzz: findAndValidateExpressions never panics" {
