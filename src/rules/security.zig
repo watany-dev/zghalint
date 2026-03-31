@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
 const advisory = @import("advisory.zig");
+const archived = @import("archived.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -1321,6 +1322,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .dependency,
         .check_step = &advisory.checkKnownVulnerableAction,
+    },
+    .{
+        .id = "SC004",
+        .name = "archived-uses",
+        .description = "Action references an archived (unmaintained) repository",
+        .severity = .warning,
+        .category = .dependency,
+        .check_step = &archived.checkArchivedAction,
     },
 };
 

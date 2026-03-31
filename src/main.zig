@@ -373,6 +373,8 @@ pub fn main() !u8 {
     // Initialize advisory database (network call, graceful offline skip)
     zghalint.rules.advisory.initAdvisories(allocator);
     defer zghalint.rules.advisory.deinitAdvisories();
+    zghalint.rules.archived.initArchived(allocator);
+    defer zghalint.rules.archived.deinitArchived();
 
     // Lint each file
     var all_diags = zghalint.DiagnosticList.init(allocator);
