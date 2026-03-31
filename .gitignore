@@ -3,3 +3,8 @@ zig-out/
 zig-linux-x86_64-*/
 *.o
 coverage/
+
+# Python / PBT
+__pycache__/
+*.egg-info/
+.hypothesis/
