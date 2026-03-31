@@ -45,7 +45,11 @@ var advisory_arena: ?std.heap.ArenaAllocator = null;
 
 /// Fetch advisories from GitHub Security Advisories API.
 /// On any error (network, parse, etc.), silently enters offline mode (cache = null).
+/// Set ZGHALINT_OFFLINE=1 to skip the network fetch entirely.
 pub fn initAdvisories(backing_allocator: Allocator) void {
+    // Allow skipping network fetch for CI/testing/offline environments
+    if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
+
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     const allocator = arena.allocator();
 
