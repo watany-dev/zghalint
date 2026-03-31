@@ -43,6 +43,17 @@ jobs:
           version: 0.15.2
       - run: zig build test --summary all
 
+  fuzz:
+    name: Fuzz Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - run: zig build test --fuzz --summary all
+        timeout-minutes: 2
+
   coverage:
     name: Test Coverage
     runs-on: ubuntu-latest

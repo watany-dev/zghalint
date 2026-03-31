@@ -11,6 +11,7 @@ zig build                           # Build executable and library
 zig build run -- [workflow files]   # Run with arguments
 zig build test                      # Run all unit tests
 zig build test --summary all        # With detailed summary
+zig build test --fuzz               # Run fuzz tests (Ctrl+C to stop)
 zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
 ```
@@ -84,7 +85,7 @@ GitHub Actions ワークフローファイルを静的解析し、セキュリ�
 - **安全性重視**: Zig の安全機能（bounds checking, optional types）を活用
 - **高速性**: コンパイル時最適化とゼロアロケーション志向
 - **クロスプラットフォーム**: Linux, macOS, Windows 対応（x86_64, aarch64）
-- **テスト品質**: インラインテストによる網羅的な単体テスト
+- **テスト品質**: インラインテストによる網羅的な単体テスト + `std.testing.fuzz` によるプロパティベーステスト
 
 ## TDDサイクル
 各機能は以下のサイクルで実装します:
