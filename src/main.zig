@@ -378,6 +378,10 @@ pub fn main() !u8 {
     zghalint.rules.stale_refs.initStaleRefs(allocator);
     defer zghalint.rules.stale_refs.deinitStaleRefs();
 
+    // Initialize ref-confusion checker (network call, graceful offline skip)
+    zghalint.rules.refconfusion.initRefConfusion(allocator);
+    defer zghalint.rules.refconfusion.deinitRefConfusion();
+
     // Lint each file
     var all_diags = zghalint.DiagnosticList.init(allocator);
     defer all_diags.deinit();

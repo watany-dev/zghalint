@@ -6,6 +6,7 @@ const engine = @import("engine.zig");
 const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
+const refconfusion = @import("refconfusion.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -1339,6 +1340,14 @@ pub const security_rules = [_]Rule{
         .severity = .info,
         .category = .dependency,
         .check_step = &stale_refs.checkStaleActionRef,
+    },
+    .{
+        .id = "SC006",
+        .name = "ref-confusion",
+        .description = "Action ref matches both a tag and branch, creating exploitable ambiguity",
+        .severity = .warning,
+        .category = .dependency,
+        .check_step = &refconfusion.checkRefConfusion,
     },
 };
 
