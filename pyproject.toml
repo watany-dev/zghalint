@@ -15,6 +15,7 @@ test = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests/pbt"]
+pythonpath = ["."]
 
 [tool.setuptools]
 py-modules = []
