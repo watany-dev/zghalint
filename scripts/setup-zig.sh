@@ -7,7 +7,7 @@ if command -v zig &>/dev/null; then
 fi
 
 echo "Installing Zig via pip..."
-pip3 install ziglang==0.14.1
+pip3 install ziglang==0.15.2
 
 # Create symlink so zig is available in PATH
 ZIG_BIN="$(python3 -c 'import os, ziglang; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')"
