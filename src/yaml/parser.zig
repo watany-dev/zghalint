@@ -542,3 +542,27 @@ test "parser deinit cleans up" {
     var parser = Parser.init(arena.allocator(), "a: b");
     parser.deinit();
 }
+
+// ============================================================
+// Fuzz / Property-Based Tests
+// ============================================================
+
+test "fuzz: yaml parser never panics" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) anyerror!void {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var parser = Parser.init(arena.allocator(), input);
+            defer parser.deinit();
+            _ = parser.parse() catch {};
+        }
+    }.testOne, .{ .corpus = &.{
+        "name: CI\non: push",
+        "- a\n- b",
+        "{a: b}",
+        "[1, 2, 3]",
+        "---\nkey: val",
+        "'quoted': value",
+        "",
+    } });
+}

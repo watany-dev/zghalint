@@ -1386,3 +1386,82 @@ test "validate: toJSON wrong args" {
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
 }
+
+// ============================================================
+// Fuzz / Property-Based Tests
+// ============================================================
+
+test "fuzz: expression tokenizer never panics" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) anyerror!void {
+            var tokenizer = ExprTokenizer.init(input);
+            var count: usize = 0;
+            while (count < input.len + 10) : (count += 1) {
+                const tok = tokenizer.next();
+                if (tok.kind == .eof) break;
+            }
+        }
+    }.testOne, .{ .corpus = &.{
+        "github.sha",
+        "contains('a', 'b')",
+        "!cancelled()",
+        "==!=<><=>=",
+        "&&||",
+        "'unterminated",
+        "42",
+        "",
+    } });
+}
+
+test "fuzz: expression parser never panics" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) anyerror!void {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var parser = ExprParser.init(arena.allocator(), input);
+            _ = parser.parse() catch {};
+        }
+    }.testOne, .{ .corpus = &.{
+        "github.sha",
+        "success()",
+        "a == 'b'",
+        "!cancelled() && success()",
+        "(github.ref == 'refs/heads/main')",
+        "",
+    } });
+}
+
+test "fuzz: expression validation is deterministic" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) anyerror!void {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var list1 = DiagnosticList.init(std.testing.allocator);
+            defer list1.deinit();
+            var list2 = DiagnosticList.init(std.testing.allocator);
+            defer list2.deinit();
+
+            validateExpression(arena.allocator(), input, Span.point(1, 1, 0), &list1);
+            validateExpression(arena.allocator(), input, Span.point(1, 1, 0), &list2);
+            try std.testing.expectEqual(list1.len(), list2.len());
+        }
+    }.testOne, .{} );
+}
+
+test "fuzz: findAndValidateExpressions never panics" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) anyerror!void {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            var list = DiagnosticList.init(std.testing.allocator);
+            defer list.deinit();
+            findAndValidateExpressions(arena.allocator(), input, Span.point(1, 1, 0), &list);
+        }
+    }.testOne, .{ .corpus = &.{
+        "echo ${{ github.sha }}",
+        "${{ bad }}",
+        "no expressions",
+        "${{ ",
+        "${{ github.sha }} and ${{ github.ref }}",
+    } });
+}

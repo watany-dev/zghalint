@@ -556,3 +556,38 @@ test "tokenizer flow entry comma" {
     const comma = tokenizer.next();
     try std.testing.expectEqual(TokenKind.flow_entry, comma.kind);
 }
+
+// ============================================================
+// Fuzz / Property-Based Tests
+// ============================================================
+
+test "fuzz: tokenizer properties" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, input: []const u8) anyerror!void {
+            var tokenizer = Tokenizer.init(input);
+            var prev_line: u32 = 0;
+            var count: usize = 0;
+            while (count < input.len + 10) : (count += 1) {
+                const token = tokenizer.next();
+                if (token.kind == .eof) break;
+                // Property: spans within source bounds
+                try std.testing.expect(token.start <= token.end);
+                try std.testing.expect(token.end <= input.len);
+                // Property: line numbers monotonically non-decreasing
+                try std.testing.expect(token.line >= prev_line);
+                if (token.line > prev_line) prev_line = token.line;
+            }
+        }
+    }.testOne, .{ .corpus = &.{
+        "name: CI",
+        "- item1\n- item2",
+        "{a: b}",
+        "[1, 2]",
+        "'quoted'",
+        "\"double\"",
+        "---\nkey: val",
+        "# comment",
+        "run: |\n  echo hello",
+        "",
+    } });
+}
