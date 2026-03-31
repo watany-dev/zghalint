@@ -10,6 +10,9 @@ inputs:
   format:
     description: 'Output format (terminal, json, sarif)'
     default: 'terminal'
+  fix:
+    description: 'Fix mode: none, safe, unsafe'
+    default: ''
 branding:
   icon: 'check-circle'
   color: 'green'
@@ -46,8 +49,15 @@ runs:
     - name: Run zghalint
       shell: bash
       run: |
+        FIX_FLAG=""
+        if [ "${{ inputs.fix }}" = "safe" ]; then
+          FIX_FLAG="--fix"
+        elif [ "${{ inputs.fix }}" = "unsafe" ]; then
+          FIX_FLAG="--fix-unsafe"
+        fi
+
         if [ "$RUNNER_OS" = "Windows" ]; then
-          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }}
+          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $FIX_FLAG
         else
-          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }}
+          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $FIX_FLAG
         fi
