@@ -40,7 +40,16 @@ Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are availabl
 ```yaml
 - uses: watany-dev/zghalint@v0.1.0
   with:
-    files: ".github/workflows/*.yml"
+    paths: ".github/workflows/*.yml"
+```
+
+With auto-fix enabled:
+
+```yaml
+- uses: watany-dev/zghalint@v0.1.0
+  with:
+    paths: ".github/workflows/*.yml"
+    fix: safe
 ```
 
 ## Usage
@@ -147,6 +156,8 @@ output:
 | `--config <path>` | Load rule overrides from a `.zghalint.yml` file | None |
 | `--format <fmt>` | Output format: `terminal`, `json`, `sarif` | `terminal` |
 | `--color <mode>` | Color control: `auto`, `always`, `never` | `auto` |
+| `--fix` | Apply safe auto-fixes and rewrite files in place | |
+| `--fix-unsafe` | Apply all auto-fixes, including unsafe ones | |
 | `-h`, `--help` | Show help message | |
 | `-v`, `--version` | Show version | |
 
