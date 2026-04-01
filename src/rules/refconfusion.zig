@@ -11,6 +11,7 @@ const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const Rule = engine.Rule;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
+const isValidGitRef = engine.isValidGitRef;
 
 // ============================================================
 // Ref confusion status
@@ -63,7 +64,7 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
     const ref = action_ref.ref orelse return;
-    if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo) or !isValidGitHubComponent(ref)) return;
+    if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo) or !isValidGitRef(ref)) return;
 
     var arena = ref_arena orelse return;
     const allocator = arena.allocator();
@@ -398,7 +399,7 @@ test "SC006: invalid ref characters rejected" {
     defer list.deinit();
 
     // ref with URL-unsafe characters should be rejected
-    const step = Step{ .uses = ActionRef.parse("owner/repo@main/branch") };
+    const step = Step{ .uses = ActionRef.parse("owner/repo@ref?query") };
     checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }

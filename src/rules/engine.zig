@@ -66,7 +66,7 @@ pub const Engine = struct {
 
 pub var network_deadline_ns: ?i128 = null;
 
-/// Set a deadline for network operations (absolute timestamp in nanoseconds).
+/// Set a deadline for network operations using a timeout duration in nanoseconds.
 pub fn setNetworkDeadline(timeout_ns: i128) void {
     network_deadline_ns = std.time.nanoTimestamp() + timeout_ns;
 }
@@ -97,6 +97,23 @@ pub fn isValidGitHubComponent(s: []const u8) bool {
             else => return false,
         }
     }
+    // Reject "." and any ".." subsequence (path traversal)
+    if (std.mem.eql(u8, s, ".") or std.mem.indexOf(u8, s, "..") != null) return false;
+    return true;
+}
+
+/// Validate a Git ref for safe use in GitHub API URL path segments.
+/// Like isValidGitHubComponent but additionally allows '/' for branch refs
+/// (e.g. "feature/foo"). Rejects ".." (Git disallows this in refs).
+pub fn isValidGitRef(s: []const u8) bool {
+    if (s.len == 0 or s.len > 255) return false;
+    for (s) |c| {
+        switch (c) {
+            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-', '/' => {},
+            else => return false,
+        }
+    }
+    if (std.mem.indexOf(u8, s, "..") != null) return false;
     return true;
 }
 
@@ -379,6 +396,32 @@ test "isValidGitHubComponent: rejects control characters" {
 test "isValidGitHubComponent: rejects oversized input" {
     const long = "a" ** 256;
     try std.testing.expect(!isValidGitHubComponent(long));
+}
+
+test "isValidGitHubComponent: rejects dot segments" {
+    try std.testing.expect(!isValidGitHubComponent("."));
+    try std.testing.expect(!isValidGitHubComponent(".."));
+    try std.testing.expect(!isValidGitHubComponent("foo..bar"));
+    // Single dot within a name is still valid
+    try std.testing.expect(isValidGitHubComponent("my.action"));
+}
+
+// --- isValidGitRef tests ---
+
+test "isValidGitRef: allows slashes" {
+    try std.testing.expect(isValidGitRef("feature/foo"));
+    try std.testing.expect(isValidGitRef("v1"));
+    try std.testing.expect(isValidGitRef("main"));
+}
+
+test "isValidGitRef: rejects double dot" {
+    try std.testing.expect(!isValidGitRef("main..HEAD"));
+}
+
+test "isValidGitRef: rejects unsafe chars" {
+    try std.testing.expect(!isValidGitRef("ref?query"));
+    try std.testing.expect(!isValidGitRef("ref#fragment"));
+    try std.testing.expect(!isValidGitRef("ref name"));
 }
 
 // --- isValidSha tests ---
