@@ -104,7 +104,8 @@ pub fn isValidGitHubComponent(s: []const u8) bool {
 
 /// Validate a Git ref for safe use in GitHub API URL path segments.
 /// Like isValidGitHubComponent but additionally allows '/' for branch refs
-/// (e.g. "feature/foo"). Rejects ".." (Git disallows this in refs).
+/// (e.g. "feature/foo"). Rejects ".." and dot-segment patterns per Git rules
+/// (refs cannot have components starting with ".").
 pub fn isValidGitRef(s: []const u8) bool {
     if (s.len == 0 or s.len > 255) return false;
     for (s) |c| {
@@ -114,6 +115,10 @@ pub fn isValidGitRef(s: []const u8) bool {
         }
     }
     if (std.mem.indexOf(u8, s, "..") != null) return false;
+    // Reject ".", starts with "./", contains "/.", per Git ref rules
+    if (std.mem.eql(u8, s, ".")) return false;
+    if (s.len >= 2 and s[0] == '.' and s[1] == '/') return false;
+    if (std.mem.indexOf(u8, s, "/.") != null) return false;
     return true;
 }
 
@@ -415,22 +420,48 @@ test "isValidGitHubComponent: allows dot-prefixed names" {
     try std.testing.expect(isValidGitHubComponent("a.b.c"));
 }
 
+test "isValidGitHubComponent: rejects path traversal with separators" {
+    // / and \ are rejected by character check
+    try std.testing.expect(!isValidGitHubComponent("./"));
+    try std.testing.expect(!isValidGitHubComponent("../"));
+    // Windows separators
+    try std.testing.expect(!isValidGitHubComponent(".\\"));
+    try std.testing.expect(!isValidGitHubComponent("..\\"));
+    try std.testing.expect(!isValidGitHubComponent("foo\\bar"));
+}
+
 // --- isValidGitRef tests ---
 
 test "isValidGitRef: allows slashes" {
     try std.testing.expect(isValidGitRef("feature/foo"));
     try std.testing.expect(isValidGitRef("v1"));
     try std.testing.expect(isValidGitRef("main"));
+    try std.testing.expect(isValidGitRef("release/v1.0"));
 }
 
 test "isValidGitRef: rejects double dot" {
     try std.testing.expect(!isValidGitRef("main..HEAD"));
 }
 
+test "isValidGitRef: rejects dot segment patterns" {
+    try std.testing.expect(!isValidGitRef("."));
+    try std.testing.expect(!isValidGitRef("./"));
+    try std.testing.expect(!isValidGitRef("./foo"));
+    try std.testing.expect(!isValidGitRef("../"));
+    try std.testing.expect(!isValidGitRef("../foo"));
+    try std.testing.expect(!isValidGitRef("foo/./bar"));
+    try std.testing.expect(!isValidGitRef("foo/."));
+    try std.testing.expect(!isValidGitRef("foo/.hidden"));
+}
+
 test "isValidGitRef: rejects unsafe chars" {
     try std.testing.expect(!isValidGitRef("ref?query"));
     try std.testing.expect(!isValidGitRef("ref#fragment"));
     try std.testing.expect(!isValidGitRef("ref name"));
+    // Windows separators
+    try std.testing.expect(!isValidGitRef("ref\\path"));
+    try std.testing.expect(!isValidGitRef(".\\foo"));
+    try std.testing.expect(!isValidGitRef("..\\foo"));
 }
 
 // --- isValidSha tests ---
