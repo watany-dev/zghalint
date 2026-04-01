@@ -1053,3 +1053,188 @@ test "parseJob with service credentials" {
     try testing.expectEqualStrings("${{ secrets.REDIS_USER }}", job.services[0].credentials.?.username.?);
     try testing.expectEqualStrings("${{ secrets.REDIS_PASS }}", job.services[0].credentials.?.password.?);
 }
+
+test "parseEventConfig with workflow_dispatch inputs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var input_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("description"), .value = mkScalar("The name"), .span = mkSpan() },
+        .{ .key = mkScalarS("required"), .value = mkScalar("true"), .span = mkSpan() },
+        .{ .key = mkScalarS("default"), .value = mkScalar("hello"), .span = mkSpan() },
+        .{ .key = mkScalarS("type"), .value = mkScalar("string"), .span = mkSpan() },
+    };
+    var inputs_map_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("name"), .value = mkMapping(&input_entries), .span = mkSpan() },
+    };
+    var wd_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("inputs"), .value = mkMapping(&inputs_map_entries), .span = mkSpan() },
+    };
+
+    const config = try parseEventConfig(alloc, "workflow_dispatch", mkMapping(&wd_entries));
+    try testing.expectEqual(types.EventType.workflow_dispatch, config.event);
+    try testing.expect(config.workflow_dispatch != null);
+    try testing.expectEqual(@as(usize, 1), config.workflow_dispatch.?.inputs.?.count());
+    const input_def = config.workflow_dispatch.?.inputs.?.get("name").?;
+    try testing.expect(input_def.required);
+    try testing.expectEqualStrings("The name", input_def.description.?);
+    try testing.expectEqualStrings("hello", input_def.default.?);
+    try testing.expectEqualStrings("string", input_def.input_type.?);
+}
+
+test "parseEventConfig with workflow_call" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var input_def_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("description"), .value = mkScalar("An input"), .span = mkSpan() },
+    };
+    var inputs_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("my-input"), .value = mkMapping(&input_def_entries), .span = mkSpan() },
+    };
+    var output_def_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("description"), .value = mkScalar("An output"), .span = mkSpan() },
+        .{ .key = mkScalarS("value"), .value = mkScalar("${{ jobs.build.outputs.result }}"), .span = mkSpan() },
+    };
+    var outputs_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("my-output"), .value = mkMapping(&output_def_entries), .span = mkSpan() },
+    };
+    var secret_def_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("description"), .value = mkScalar("A secret"), .span = mkSpan() },
+        .{ .key = mkScalarS("required"), .value = mkScalar("true"), .span = mkSpan() },
+    };
+    var secrets_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("my-secret"), .value = mkMapping(&secret_def_entries), .span = mkSpan() },
+    };
+    var wc_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("inputs"), .value = mkMapping(&inputs_entries), .span = mkSpan() },
+        .{ .key = mkScalarS("outputs"), .value = mkMapping(&outputs_entries), .span = mkSpan() },
+        .{ .key = mkScalarS("secrets"), .value = mkMapping(&secrets_entries), .span = mkSpan() },
+    };
+
+    const config = try parseEventConfig(alloc, "workflow_call", mkMapping(&wc_entries));
+    try testing.expect(config.workflow_call != null);
+    const wc = config.workflow_call.?;
+    try testing.expectEqual(@as(usize, 1), wc.inputs.?.count());
+    try testing.expectEqual(@as(usize, 1), wc.outputs.?.count());
+    try testing.expectEqual(@as(usize, 1), wc.secrets.?.count());
+    try testing.expectEqualStrings("An output", wc.outputs.?.get("my-output").?.description.?);
+    try testing.expect(wc.secrets.?.get("my-secret").?.required);
+}
+
+test "parseEventConfig with null value (empty event)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const config = try parseEventConfig(arena.allocator(), "push", .{ .null_value = mkSpan() });
+    try testing.expectEqual(types.EventType.push, config.event);
+    try testing.expectEqualStrings("push", config.name);
+}
+
+test "parseSecretsConfig with mapping" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("TOKEN"), .value = mkScalar("${{ secrets.MY_TOKEN }}"), .span = mkSpan() },
+    };
+
+    const config = try parseSecretsConfig(arena.allocator(), mkMapping(&entries));
+    switch (config) {
+        .map => |m| try testing.expectEqualStrings("${{ secrets.MY_TOKEN }}", m.get("TOKEN").?),
+        .inherit => unreachable,
+    }
+}
+
+test "parseWorkflow with permissions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var step_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo hi"), .span = mkSpan() },
+    };
+    var step_items = [_]Node{mkMapping(&step_entries)};
+    var job_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
+        .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
+    };
+    var jobs_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("build"), .value = mkMapping(&job_entries), .span = mkSpan() },
+    };
+    var root_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("on"), .value = mkScalar("push"), .span = mkSpan() },
+        .{ .key = mkScalarS("jobs"), .value = mkMapping(&jobs_entries), .span = mkSpan() },
+        .{ .key = mkScalarS("permissions"), .value = mkScalar("read-all"), .span = mkSpan() },
+    };
+
+    const wf = try parseWorkflow(arena.allocator(), mkMapping(&root_entries));
+    try testing.expect(wf.permissions != null);
+    try testing.expect(wf.permissions.?.read_all);
+}
+
+test "ActionRef.parse without ref (no @)" {
+    const ref = types.ActionRef.parse("actions/checkout");
+    try testing.expectEqualStrings("actions", ref.owner.?);
+    try testing.expectEqualStrings("checkout", ref.repo.?);
+    try testing.expect(ref.ref == null);
+    try testing.expect(!ref.is_pinned);
+}
+
+test "ActionRef.parse bare name (no slash)" {
+    const ref = types.ActionRef.parse("checkout");
+    try testing.expect(ref.owner == null);
+    try testing.expect(ref.repo == null);
+    try testing.expect(ref.ref == null);
+}
+
+test "parseJob with env and concurrency and with" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var step_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
+    };
+    var step_items = [_]Node{mkMapping(&step_entries)};
+    var env_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("CI"), .value = mkScalar("true"), .span = mkSpan() },
+    };
+    var with_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("key"), .value = mkScalar("val"), .span = mkSpan() },
+    };
+    var perm_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("contents"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
+        .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
+        .{ .key = mkScalarS("env"), .value = mkMapping(&env_entries), .span = mkSpan() },
+        .{ .key = mkScalarS("with"), .value = mkMapping(&with_entries), .span = mkSpan() },
+        .{ .key = mkScalarS("concurrency"), .value = mkScalar("my-group"), .span = mkSpan() },
+        .{ .key = mkScalarS("permissions"), .value = mkMapping(&perm_entries), .span = mkSpan() },
+    };
+
+    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    try testing.expectEqualStrings("true", job.env.?.get("CI").?);
+    try testing.expectEqualStrings("val", job.with.?.get("key").?);
+    try testing.expectEqualStrings("my-group", job.concurrency.?.group);
+    try testing.expect(job.permissions != null);
+    try testing.expectEqual(types.PermissionLevel.read, job.permissions.?.contents.?);
+}
+
+test "parseServices with scalar image" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("redis"), .value = mkScalar("redis:6"), .span = mkSpan() },
+    };
+
+    const services = try parseServices(arena.allocator(), mkMapping(&entries));
+    try testing.expectEqual(@as(usize, 1), services.len);
+    try testing.expectEqualStrings("redis", services[0].name);
+    try testing.expectEqualStrings("redis:6", services[0].image.?);
+    try testing.expect(services[0].credentials == null);
+}
