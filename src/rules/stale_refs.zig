@@ -15,7 +15,7 @@ const isValidGitHubComponent = engine.isValidGitHubComponent;
 // Types
 // ============================================================
 
-const TagResolution = enum {
+pub const TagResolution = enum {
     has_tag,
     no_tag,
     unknown,
@@ -42,6 +42,14 @@ pub fn initStaleRefs(backing_allocator: Allocator) void {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     tag_cache = std.StringHashMap(TagResolution).init(arena.allocator());
     stale_refs_arena = arena;
+}
+
+/// For prefetch: insert a pre-fetched result into the cache.
+pub fn setCachedTagResult(key: []const u8, resolution: TagResolution) void {
+    var cache = &(tag_cache orelse return);
+    const allocator = (stale_refs_arena orelse return).allocator();
+    const permanent_key = allocator.dupe(u8, key) catch return;
+    cache.put(permanent_key, resolution) catch return;
 }
 
 /// Release all memory.
@@ -88,7 +96,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
 // HTTP fetch
 // ============================================================
 
-fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, sha: []const u8) !TagResolution {
+pub fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, sha: []const u8) !TagResolution {
     if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();

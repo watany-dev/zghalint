@@ -181,61 +181,101 @@ fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
     return zghalint.config.parseConfig(allocator, source) catch return Config.init(allocator);
 }
 
-fn lintFile(
-    allocator: std.mem.Allocator,
+/// A parsed workflow file, ready for linting. The arena is heap-allocated
+/// to maintain pointer stability when stored in an ArrayList.
+const ParsedWorkflow = struct {
     file_path: []const u8,
-    config: *const Config,
-    all_diags: *zghalint.DiagnosticList,
-) !void {
+    workflow: zghalint.workflow.Workflow,
+    arena: *std.heap.ArenaAllocator,
+    source: []const u8,
+    yaml_parser: zghalint.yaml.Parser,
+
+    fn deinit(self: *ParsedWorkflow, backing: std.mem.Allocator) void {
+        self.yaml_parser.deinit();
+        self.arena.deinit();
+        backing.destroy(self.arena);
+        backing.free(self.source);
+    }
+};
+
+fn parseWorkflowFile(allocator: std.mem.Allocator, file_path: []const u8) ?ParsedWorkflow {
     var stderr_buf: [1024]u8 = undefined;
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
 
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
         stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
+        return null;
     };
     defer file.close();
 
     const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
         stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
+        return null;
     };
-    defer allocator.free(source);
+    errdefer allocator.free(source);
 
-    // Arena for YAML/workflow parsing (freed after diagnostics are collected)
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
+    const arena = allocator.create(std.heap.ArenaAllocator) catch return null;
+    errdefer allocator.destroy(arena);
+    arena.* = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // YAML parse
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
+    errdefer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
-        return;
+        yaml_parser.deinit();
+        arena.deinit();
+        allocator.destroy(arena);
+        allocator.free(source);
+        return null;
     };
 
-    // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
         stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
-        return;
+        yaml_parser.deinit();
+        arena.deinit();
+        allocator.destroy(arena);
+        allocator.free(source);
+        return null;
     };
 
-    // Run engine
-    const engine = zghalint.rules.Engine.init(&all_rules);
-    var diag_list = engine.run(allocator, &workflow);
+    return .{
+        .file_path = file_path,
+        .workflow = workflow,
+        .arena = arena,
+        .source = source,
+        .yaml_parser = yaml_parser,
+    };
+}
+
+fn lintParsedWorkflow(
+    allocator: std.mem.Allocator,
+    pw: *const ParsedWorkflow,
+    config: *const Config,
+    all_diags: *zghalint.DiagnosticList,
+) void {
+    const eng = zghalint.rules.Engine.init(&all_rules);
+    var diag_list = eng.run(allocator, &pw.workflow);
     defer diag_list.deinit();
 
-    // Apply config: filter disabled rules, override severity, set file
     for (diag_list.items.items) |diag| {
         if (!config.isRuleEnabled(diag.rule_id)) continue;
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
-        d.file = file_path;
+        d.file = pw.file_path;
         all_diags.append(d) catch {};
     }
+}
+
+fn extractWorkflows(allocator: std.mem.Allocator, parsed: []const ParsedWorkflow) ?[]const zghalint.workflow.Workflow {
+    const workflows = allocator.alloc(zghalint.workflow.Workflow, parsed.len) catch return null;
+    for (parsed, 0..) |pw, i| {
+        workflows[i] = pw.workflow;
+    }
+    return workflows;
 }
 
 fn outputTerminal(diag_list: *zghalint.DiagnosticList, writer: anytype, use_color: bool) !void {
@@ -386,7 +426,27 @@ pub fn main() !u8 {
     zghalint.rules.refconfusion.initRefConfusion(allocator);
     defer zghalint.rules.refconfusion.deinitRefConfusion();
 
-    // Lint each file
+    // Phase 1: Parse workflow files (dependabot files are handled separately)
+    var parsed_workflows = std.ArrayList(ParsedWorkflow){};
+    defer {
+        for (parsed_workflows.items) |*pw| pw.deinit(allocator);
+        parsed_workflows.deinit(allocator);
+    }
+    for (files) |file_path| {
+        if (config.isIgnored(file_path) or isDependabotFile(file_path)) continue;
+        if (parseWorkflowFile(allocator, file_path)) |pw| {
+            parsed_workflows.append(allocator, pw) catch {};
+        }
+    }
+
+    // Phase 2: Parallel prefetch of network-dependent rule data
+    const wf_slice = extractWorkflows(allocator, parsed_workflows.items);
+    defer if (wf_slice) |s| allocator.free(s);
+    if (wf_slice) |workflows| {
+        zghalint.rules.prefetch.prefetchAll(allocator, workflows);
+    }
+
+    // Phase 3: Lint all files (workflow files hit cache, dependabot files have no network)
     var all_diags = zghalint.DiagnosticList.init(allocator);
     defer all_diags.deinit();
 
@@ -396,11 +456,10 @@ pub fn main() !u8 {
             lintDependabotFile(allocator, file_path, &config, &all_diags) catch {
                 stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
             };
-        } else {
-            lintFile(allocator, file_path, &config, &all_diags) catch {
-                stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
-            };
         }
+    }
+    for (parsed_workflows.items) |*pw| {
+        lintParsedWorkflow(allocator, pw, &config, &all_diags);
     }
 
     // Apply fixes if requested

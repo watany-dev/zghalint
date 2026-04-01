@@ -56,6 +56,17 @@ pub fn initAdvisories(backing_allocator: Allocator) void {
     is_offline = false;
 }
 
+/// Set the advisory cache directly (used by prefetch module).
+pub fn setAdvisoryCache(cache: ?[]const Advisory) void {
+    advisory_cache = cache;
+    fetched = true;
+}
+
+/// Return the advisory arena's allocator (for prefetch thread-safe wrapping).
+pub fn getArenaAllocator() ?Allocator {
+    return if (advisory_arena) |*a| a.allocator() else null;
+}
+
 /// Release advisory memory.
 pub fn deinitAdvisories() void {
     if (advisory_arena) |*arena| {
@@ -117,7 +128,7 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
 
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
 
-fn fetchAndParse(allocator: Allocator) ![]const Advisory {
+pub fn fetchAndParse(allocator: Allocator) ![]const Advisory {
     if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();

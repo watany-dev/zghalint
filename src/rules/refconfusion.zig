@@ -29,7 +29,7 @@ pub const RefStatus = enum {
 
 var ref_cache: ?std.StringHashMap(RefStatus) = null;
 var ref_arena: ?std.heap.ArenaAllocator = null;
-var rate_limited: bool = false;
+var rate_limited: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 // ============================================================
 // Public API
@@ -43,7 +43,15 @@ pub fn initRefConfusion(backing_allocator: Allocator) void {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     ref_cache = std.StringHashMap(RefStatus).init(arena.allocator());
     ref_arena = arena;
-    rate_limited = false;
+    rate_limited.store(false, .monotonic);
+}
+
+/// For prefetch: insert a pre-fetched result into the cache.
+pub fn setCachedRefResult(key: []const u8, status: RefStatus) void {
+    var cache = &(ref_cache orelse return);
+    var arena = ref_arena orelse return;
+    const permanent_key = arena.allocator().dupe(u8, key) catch return;
+    cache.put(permanent_key, status) catch return;
 }
 
 /// Release all ref-confusion memory.
@@ -53,7 +61,7 @@ pub fn deinitRefConfusion() void {
         ref_arena = null;
     }
     ref_cache = null;
-    rate_limited = false;
+    rate_limited.store(false, .monotonic);
 }
 
 /// Rule check function for SC006.
@@ -110,8 +118,8 @@ fn emitDiagnostic(list: *DiagnosticList, owner: []const u8, repo: []const u8, re
 // HTTP fetch
 // ============================================================
 
-fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8) RefStatus {
-    if (rate_limited) return .fetch_failed;
+pub fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8) RefStatus {
+    if (rate_limited.load(.monotonic)) return .fetch_failed;
 
     const tag_exists = checkRefExists(allocator, owner, repo, ref, "tags") orelse {
         return .fetch_failed;
@@ -126,7 +134,7 @@ fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref
 
 /// Check if a ref exists under the given ref_type ("tags" or "heads").
 /// Returns true if exists (HTTP 200), false if not (HTTP 404), null on error.
-fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8, ref_type: []const u8) ?bool {
+pub fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8, ref_type: []const u8) ?bool {
     if (engine.isNetworkDeadlineExceeded()) return null;
     const url = std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}/git/ref/{s}/{s}", .{ owner, repo, ref_type, ref }) catch return null;
 
@@ -165,7 +173,7 @@ fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref
 
     // Rate-limited or other error
     if (result.status == .forbidden or result.status == .too_many_requests) {
-        rate_limited = true;
+        rate_limited.store(true, .monotonic);
     }
     return null;
 }

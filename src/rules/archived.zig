@@ -116,7 +116,7 @@ fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
 // HTTP fetch
 // ============================================================
 
-fn fetchArchiveStatus(allocator: Allocator, owner: []const u8, repo: []const u8) !bool {
+pub fn fetchArchiveStatus(allocator: Allocator, owner: []const u8, repo: []const u8) !bool {
     if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();
