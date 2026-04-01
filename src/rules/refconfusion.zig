@@ -40,9 +40,10 @@ var rate_limited: bool = false;
 pub fn initRefConfusion(backing_allocator: Allocator) void {
     if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
 
-    var arena = std.heap.ArenaAllocator.init(backing_allocator);
-    ref_cache = std.StringHashMap(RefStatus).init(arena.allocator());
-    ref_arena = arena;
+    ref_arena = std.heap.ArenaAllocator.init(backing_allocator);
+    if (ref_arena) |*arena| {
+        ref_cache = std.StringHashMap(RefStatus).init(arena.allocator());
+    }
     rate_limited = false;
 }
 
@@ -66,8 +67,7 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     const ref = action_ref.ref orelse return;
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo) or !isValidGitRef(ref)) return;
 
-    var arena = ref_arena orelse return;
-    const allocator = arena.allocator();
+    const allocator = if (ref_arena) |*arena| arena.allocator() else return;
     var cache = ref_cache orelse return; // offline → skip
 
     // Build cache key

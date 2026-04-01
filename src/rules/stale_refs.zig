@@ -39,9 +39,10 @@ var stale_refs_arena: ?std.heap.ArenaAllocator = null;
 pub fn initStaleRefs(backing_allocator: Allocator) void {
     if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
 
-    var arena = std.heap.ArenaAllocator.init(backing_allocator);
-    tag_cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    stale_refs_arena = arena;
+    stale_refs_arena = std.heap.ArenaAllocator.init(backing_allocator);
+    if (stale_refs_arena) |*arena| {
+        tag_cache = std.StringHashMap(TagResolution).init(arena.allocator());
+    }
 }
 
 /// Release all memory.
@@ -64,7 +65,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     const sha = action_ref.ref orelse return;
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
 
-    const allocator = (stale_refs_arena orelse return).allocator();
+    const allocator = if (stale_refs_arena) |*arena| arena.allocator() else return;
     const key = std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
 
     const resolution = cache.get(key) orelse blk: {
