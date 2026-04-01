@@ -467,3 +467,39 @@ test "isIgnored with no patterns returns false" {
     defer config.deinit();
     try std.testing.expect(!config.isIgnored("anything.yml"));
 }
+
+test "parse config with non-mapping root (sequence) returns error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A YAML sequence as root should return InvalidConfig
+    const result = parseConfig(arena.allocator(), "- item1\n- item2");
+    try std.testing.expectError(ConfigError.InvalidConfig, result);
+}
+
+test "parse config with scalar root returns error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A bare scalar as root should return InvalidConfig
+    const result = parseConfig(arena.allocator(), "just_a_string");
+    try std.testing.expectError(ConfigError.InvalidConfig, result);
+}
+
+test "matchGlob empty pattern and string" {
+    try std.testing.expect(matchGlob("", ""));
+    try std.testing.expect(!matchGlob("", "a"));
+}
+
+test "matchGlob star matches empty" {
+    try std.testing.expect(matchGlob("*", ""));
+    try std.testing.expect(matchGlob("*", "anything"));
+}
+
+test "getEffectiveSeverity with override that has no severity set" {
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+
+    // Add override with enabled=true but no severity
+    try config.rule_overrides.put("MY_RULE", .{ .severity = null, .enabled = true });
+    // Should return the default severity
+    try std.testing.expectEqual(Severity.warning, config.getEffectiveSeverity("MY_RULE", .warning));
+}

@@ -325,6 +325,59 @@ test "diagnostic list sort by file then line then col" {
     try std.testing.expectEqualStrings("R3", list.get(3).rule_id);
 }
 
+test "fixSafety toString" {
+    try std.testing.expectEqualStrings("safe", FixSafety.safe.toString());
+    try std.testing.expectEqualStrings("unsafe", FixSafety.unsafe.toString());
+}
+
+test "allocEdit returns valid slice" {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const edits = list.allocEdit(.{
+        .start_byte = 10,
+        .end_byte = 20,
+        .replacement = "replacement text",
+    });
+    try std.testing.expect(edits != null);
+    try std.testing.expectEqual(@as(usize, 1), edits.?.len);
+    try std.testing.expectEqual(@as(usize, 10), edits.?[0].start_byte);
+    try std.testing.expectEqual(@as(usize, 20), edits.?[0].end_byte);
+    try std.testing.expectEqualStrings("replacement text", edits.?[0].replacement);
+}
+
+test "fixAllocator returns valid allocator" {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const alloc = list.fixAllocator();
+    // Allocate something to verify it works
+    const mem = try alloc.alloc(u8, 16);
+    defer alloc.free(mem);
+    try std.testing.expectEqual(@as(usize, 16), mem.len);
+}
+
+test "diagnostic with fix" {
+    const edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 5, .replacement = "hello" },
+    };
+    const diag = Diagnostic{
+        .rule_id = "T1",
+        .severity = .warning,
+        .message = "test",
+        .span = Span.point(1, 1, 0),
+        .fix = .{
+            .description = "Fix it",
+            .safety = .safe,
+            .edits = &edits,
+        },
+    };
+    try std.testing.expect(diag.fix != null);
+    try std.testing.expectEqualStrings("Fix it", diag.fix.?.description);
+    try std.testing.expect(diag.fix.?.safety == .safe);
+    try std.testing.expectEqual(@as(usize, 1), diag.fix.?.edits.len);
+}
+
 test "diagnostic list toOwnedSlice" {
     var list = DiagnosticList.init(std.testing.allocator);
     // Don't defer deinit — toOwnedSlice transfers ownership

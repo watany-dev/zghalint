@@ -370,6 +370,10 @@ pub fn main() !u8 {
         return 0;
     }
 
+    // Set a 10-second deadline for all network operations to prevent hangs
+    zghalint.rules.engine.setNetworkDeadline(10 * std.time.ns_per_s);
+    defer zghalint.rules.engine.clearNetworkDeadline();
+
     // Initialize network-dependent rule databases (graceful offline skip)
     zghalint.rules.advisory.initAdvisories(allocator);
     defer zghalint.rules.advisory.deinitAdvisories();
@@ -454,4 +458,49 @@ pub fn main() !u8 {
 
 test {
     _ = zghalint;
+}
+
+test "isDependabotFile detects dependabot yml" {
+    try std.testing.expect(isDependabotFile(".github/dependabot.yml"));
+    try std.testing.expect(isDependabotFile(".github/dependabot.yaml"));
+    try std.testing.expect(isDependabotFile("some/path/dependabot.yml"));
+    try std.testing.expect(!isDependabotFile(".github/workflows/ci.yml"));
+    try std.testing.expect(!isDependabotFile("dependabot.txt"));
+}
+
+test "hasErrors detects error severity" {
+    var list = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    // No errors
+    try std.testing.expect(!hasErrors(&list));
+
+    // Warning only
+    try list.append(.{
+        .rule_id = "W1",
+        .severity = .warning,
+        .message = "warn",
+        .span = zghalint.yaml.types.Span.point(1, 1, 0),
+    });
+    try std.testing.expect(!hasErrors(&list));
+
+    // Add error
+    try list.append(.{
+        .rule_id = "E1",
+        .severity = .@"error",
+        .message = "err",
+        .span = zghalint.yaml.types.Span.point(2, 1, 0),
+    });
+    try std.testing.expect(hasErrors(&list));
+}
+
+test "printHelp outputs usage text" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    try printHelp(buf.writer(std.testing.allocator));
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "Usage: zghalint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--config") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--format") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--fix") != null);
 }

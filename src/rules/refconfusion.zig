@@ -10,6 +10,8 @@ const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const Rule = engine.Rule;
+const isValidGitHubComponent = engine.isValidGitHubComponent;
+const isValidGitRef = engine.isValidGitRef;
 
 // ============================================================
 // Ref confusion status
@@ -62,6 +64,7 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
     const ref = action_ref.ref orelse return;
+    if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo) or !isValidGitRef(ref)) return;
 
     var arena = ref_arena orelse return;
     const allocator = arena.allocator();
@@ -124,6 +127,7 @@ fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref
 /// Check if a ref exists under the given ref_type ("tags" or "heads").
 /// Returns true if exists (HTTP 200), false if not (HTTP 404), null on error.
 fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8, ref_type: []const u8) ?bool {
+    if (engine.isNetworkDeadlineExceeded()) return null;
     const url = std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}/git/ref/{s}/{s}", .{ owner, repo, ref_type, ref }) catch return null;
 
     var client: std.http.Client = .{ .allocator = allocator };
@@ -347,6 +351,55 @@ test "SC006: step without uses (no false positive)" {
     defer list.deinit();
 
     const step = Step{ .run = "echo hello" };
+    checkRefConfusion(&step, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC006: invalid owner characters rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
+    cache.put("evil?org/repo@main", .ambiguous) catch unreachable;
+
+    const prev_cache = ref_cache;
+    const prev_arena = ref_arena;
+    ref_cache = cache;
+    ref_arena = arena;
+    defer {
+        ref_cache = prev_cache;
+        ref_arena = prev_arena;
+    }
+
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+
+    // URL-unsafe owner should be silently rejected
+    const step = Step{ .uses = ActionRef.parse("evil?org/repo@main") };
+    checkRefConfusion(&step, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC006: invalid ref characters rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cache = std.StringHashMap(RefStatus).init(arena.allocator());
+
+    const prev_cache = ref_cache;
+    const prev_arena = ref_arena;
+    ref_cache = cache;
+    ref_arena = arena;
+    defer {
+        ref_cache = prev_cache;
+        ref_arena = prev_arena;
+    }
+
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+
+    // ref with URL-unsafe characters should be rejected
+    const step = Step{ .uses = ActionRef.parse("owner/repo@ref?query") };
     checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }

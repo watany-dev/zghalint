@@ -3,6 +3,8 @@ const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 
+const engine = @import("engine.zig");
+
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const Span = yaml.Span;
@@ -10,6 +12,7 @@ const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const Job = workflow_types.Job;
 const Workflow = workflow_types.Workflow;
+const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // ============================================================
 // Module-level state for lazy caching
@@ -56,6 +59,7 @@ pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
     if (action_ref.is_local or action_ref.is_docker) return;
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
+    if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
 
     const is_archived = lookupOrFetch(alloc, owner, repo) orelse return;
 
@@ -113,6 +117,7 @@ fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
 // ============================================================
 
 fn fetchArchiveStatus(allocator: Allocator, owner: []const u8, repo: []const u8) !bool {
+    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();
 
@@ -182,7 +187,6 @@ fn parseArchivedField(allocator: Allocator, body: []const u8) !bool {
 // ============================================================
 
 const testing = std.testing;
-const engine = @import("engine.zig");
 
 const sc004_rule = [_]engine.Rule{
     .{
@@ -364,4 +368,40 @@ test "parseArchivedField: missing archived field" {
         \\{"id":1,"name":"test-repo","disabled":false}
     ;
     try testing.expectError(error.MissingField, parseArchivedField(arena.allocator(), body));
+}
+
+test "SC004: invalid owner characters rejected" {
+    initForTesting(testing.allocator);
+    defer deinitArchived();
+
+    setCachedResult("archived-org", "archived-repo", true);
+
+    // URL-unsafe owner should be silently rejected
+    const steps = [_]Step{.{ .uses = ActionRef.parse("archived?org/archived-repo@v1") }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .name = "CI", .on = .{ .events = &.{} }, .jobs = &jobs };
+
+    const eng = engine.Engine.init(&sc004_rule);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.items.items.len);
+}
+
+test "SC004: invalid repo characters rejected" {
+    initForTesting(testing.allocator);
+    defer deinitArchived();
+
+    setCachedResult("archived-org", "archived-repo", true);
+
+    // URL-unsafe repo should be silently rejected
+    const steps = [_]Step{.{ .uses = ActionRef.parse("archived-org/archived#repo@v1") }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .name = "CI", .on = .{ .events = &.{} }, .jobs = &jobs };
+
+    const eng = engine.Engine.init(&sc004_rule);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.items.items.len);
 }

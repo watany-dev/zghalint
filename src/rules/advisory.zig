@@ -10,6 +10,7 @@ const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const Rule = engine.Rule;
+const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // ============================================================
 // Advisory data types
@@ -38,28 +39,21 @@ pub const Semver = struct {
 
 var advisory_cache: ?[]const Advisory = null;
 var advisory_arena: ?std.heap.ArenaAllocator = null;
+var is_offline: bool = true;
+var fetched: bool = false;
 
 // ============================================================
 // Public API
 // ============================================================
 
-/// Fetch advisories from GitHub Security Advisories API.
-/// On any error (network, parse, etc.), silently enters offline mode (cache = null).
-/// Set ZGHALINT_OFFLINE=1 to skip the network fetch entirely.
+/// Initialize advisory check. The actual HTTP fetch is deferred until the
+/// first call to checkKnownVulnerableAction() to avoid blocking startup.
+/// Set ZGHALINT_OFFLINE=1 to skip network checks entirely.
 pub fn initAdvisories(backing_allocator: Allocator) void {
-    // Allow skipping network fetch for CI/testing/offline environments
     if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
 
-    var arena = std.heap.ArenaAllocator.init(backing_allocator);
-    const allocator = arena.allocator();
-
-    const advisories = fetchAndParse(allocator) catch {
-        arena.deinit();
-        return;
-    };
-
-    advisory_arena = arena;
-    advisory_cache = advisories;
+    advisory_arena = std.heap.ArenaAllocator.init(backing_allocator);
+    is_offline = false;
 }
 
 /// Release advisory memory.
@@ -69,15 +63,28 @@ pub fn deinitAdvisories() void {
         advisory_arena = null;
     }
     advisory_cache = null;
+    is_offline = true;
+    fetched = false;
 }
 
 /// Rule check function for SC003.
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
+    if (is_offline) return;
+
+    // Lazy fetch: only on first invocation
+    if (!fetched) {
+        fetched = true;
+        if (advisory_arena) |*arena| {
+            advisory_cache = fetchAndParse(arena.allocator()) catch null;
+        }
+    }
+
     const advisories = advisory_cache orelse return;
     const action_ref = step.uses orelse return;
     if (action_ref.is_local or action_ref.is_docker) return;
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
+    if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
 
     for (advisories) |adv| {
         if (!slugMatches(adv.action_slug, owner, repo)) continue;
@@ -111,6 +118,7 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
 
 fn fetchAndParse(allocator: Allocator) ![]const Advisory {
+    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();
 
@@ -549,10 +557,18 @@ test "parseAdvisories: multiple vulnerabilities" {
 // --- Check function tests ---
 
 test "SC003: offline mode produces no diagnostics" {
-    // Ensure cache is null (offline mode)
+    // Ensure offline mode
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = null;
-    defer advisory_cache = prev_cache;
+    is_offline = true;
+    fetched = false;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     const step = Step{ .uses = ActionRef.parse("actions/checkout@v4") };
     var list = DiagnosticList.init(testing.allocator);
@@ -576,8 +592,16 @@ test "SC003: detects known vulnerable action" {
     };
 
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = &mock_advisories;
-    defer advisory_cache = prev_cache;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     const step = Step{ .uses = ActionRef.parse("evil/action@v0.9.0") };
     var list = DiagnosticList.init(testing.allocator);
@@ -602,8 +626,16 @@ test "SC003: safe action not flagged" {
     };
 
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = &mock_advisories;
-    defer advisory_cache = prev_cache;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     const step = Step{ .uses = ActionRef.parse("actions/checkout@v4") };
     var list = DiagnosticList.init(testing.allocator);
@@ -627,8 +659,16 @@ test "SC003: patched version not flagged" {
     };
 
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = &mock_advisories;
-    defer advisory_cache = prev_cache;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     const step = Step{ .uses = ActionRef.parse("evil/action@v1.0.0") };
     var list = DiagnosticList.init(testing.allocator);
@@ -652,8 +692,16 @@ test "SC003: SHA ref with vulnerable action still warns" {
     };
 
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = &mock_advisories;
-    defer advisory_cache = prev_cache;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     // SHA ref: can't determine version, is_pinned=true so skip version check → warn
     const step = Step{ .uses = ActionRef.parse("evil/action@a5ac7e51b41094c92402da3b24376905380afc29") };
@@ -679,8 +727,16 @@ test "SC003: local action skipped" {
     };
 
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = &mock_advisories;
-    defer advisory_cache = prev_cache;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     const step = Step{ .uses = ActionRef.parse("./local-action") };
     var list = DiagnosticList.init(testing.allocator);
@@ -704,8 +760,16 @@ test "SC003: step without uses skipped" {
     };
 
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = &mock_advisories;
-    defer advisory_cache = prev_cache;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     const step = Step{ .run = "echo hello" };
     var list = DiagnosticList.init(testing.allocator);
@@ -729,12 +793,85 @@ test "SC003: advisory without version range always flags" {
     };
 
     const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
     advisory_cache = &mock_advisories;
-    defer advisory_cache = prev_cache;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
 
     const step = Step{ .uses = ActionRef.parse("evil/action@v99.0.0") };
     var list = DiagnosticList.init(testing.allocator);
     defer list.deinit();
     checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 1), list.len());
+}
+
+test "SC003: invalid owner characters rejected" {
+    const mock_advisories = [_]Advisory{
+        .{
+            .ghsa_id = "GHSA-test-1234",
+            .action_slug = "evil/action",
+            .summary = "RCE vulnerability",
+            .severity = "critical",
+            .vulnerable_range = "< 1.0.0",
+            .patched_version = "1.0.0",
+            .diagnostic_message = "action 'evil/action' has known vulnerability",
+            .diagnostic_hint = "update to version 1.0.0 or later",
+        },
+    };
+
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    advisory_cache = &mock_advisories;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+
+    // URL-unsafe owner should be rejected before any network call
+    const step = Step{ .uses = ActionRef.parse("evil?owner/action@v0.9.0") };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkKnownVulnerableAction(&step, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC003: lazy fetch with deadline exceeded produces no diagnostics" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    const prev_arena = advisory_arena;
+    advisory_cache = null;
+    is_offline = false;
+    fetched = false;
+    advisory_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer {
+        if (advisory_arena) |*a| a.deinit();
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+        advisory_arena = prev_arena;
+    }
+
+    // Set a past deadline so fetchAndParse returns immediately
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    const step = Step{ .uses = ActionRef.parse("evil/action@v0.9.0") };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkKnownVulnerableAction(&step, &list);
+    // fetchAndParse should fail due to deadline, cache stays null, no diagnostics
+    try testing.expectEqual(@as(usize, 0), list.len());
+    // fetched flag should be set even on failure
+    try testing.expect(fetched);
 }
