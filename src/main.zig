@@ -370,6 +370,10 @@ pub fn main() !u8 {
         return 0;
     }
 
+    // Set a 10-second deadline for all network operations to prevent hangs
+    zghalint.rules.engine.setNetworkDeadline(10 * std.time.ns_per_s);
+    defer zghalint.rules.engine.clearNetworkDeadline();
+
     // Initialize network-dependent rule databases (graceful offline skip)
     zghalint.rules.advisory.initAdvisories(allocator);
     defer zghalint.rules.advisory.deinitAdvisories();

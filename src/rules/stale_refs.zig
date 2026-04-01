@@ -3,10 +3,13 @@ const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 
+const engine = @import("engine.zig");
+
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const Span = yaml.Span;
 const Step = workflow_types.Step;
+const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // ============================================================
 // Types
@@ -59,6 +62,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
     const sha = action_ref.ref orelse return;
+    if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
 
     const allocator = (stale_refs_arena orelse return).allocator();
     const key = std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
@@ -85,6 +89,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, sha: []const u8) !TagResolution {
+    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();
 
@@ -189,6 +194,7 @@ fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8
 }
 
 fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []const u8, tag_sha: []const u8) ![]const u8 {
+    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
     var client: std.http.Client = .{ .allocator = allocator };
     defer client.deinit();
 
@@ -279,7 +285,6 @@ const ActionRef = workflow_types.ActionRef;
 const Workflow = workflow_types.Workflow;
 const Job = workflow_types.Job;
 const Trigger = workflow_types.Trigger;
-const engine = @import("engine.zig");
 const Rule = engine.Rule;
 const Engine = engine.Engine;
 const security = @import("security.zig");

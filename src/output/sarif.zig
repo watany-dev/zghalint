@@ -71,16 +71,18 @@ fn writeResult(writer: anytype, diag: Diagnostic, rules: []const Rule) !void {
     try writeJsonString(writer, sarifLevel(diag.severity));
 
     try writer.writeAll(",\"message\":{\"text\":");
-    var msg_buf: [1024]u8 = undefined;
+    const max_msg_part = 512;
+    const hint_sep = ". ";
+    const max_hint_part = max_msg_part - hint_sep.len;
+    const combined_buf_size = max_msg_part + hint_sep.len + max_hint_part;
+    var msg_buf: [combined_buf_size]u8 = undefined;
     const msg = if (diag.fix_hint) |hint| blk: {
-        // Append hint to message
-        const msg_len = @min(diag.message.len, 512);
+        const msg_len = @min(diag.message.len, max_msg_part);
         @memcpy(msg_buf[0..msg_len], diag.message[0..msg_len]);
-        const sep = ". ";
-        @memcpy(msg_buf[msg_len .. msg_len + sep.len], sep);
-        const hint_len = @min(hint.len, 512 - sep.len);
-        @memcpy(msg_buf[msg_len + sep.len .. msg_len + sep.len + hint_len], hint[0..hint_len]);
-        break :blk msg_buf[0 .. msg_len + sep.len + hint_len];
+        @memcpy(msg_buf[msg_len .. msg_len + hint_sep.len], hint_sep);
+        const hint_len = @min(hint.len, max_hint_part);
+        @memcpy(msg_buf[msg_len + hint_sep.len .. msg_len + hint_sep.len + hint_len], hint[0..hint_len]);
+        break :blk msg_buf[0 .. msg_len + hint_sep.len + hint_len];
     } else diag.message;
     try writeJsonString(writer, msg);
     try writer.writeAll("}");

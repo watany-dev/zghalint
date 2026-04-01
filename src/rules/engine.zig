@@ -61,6 +61,58 @@ pub const Engine = struct {
 };
 
 // ============================================================
+// Network deadline
+// ============================================================
+
+var network_deadline_ns: ?i128 = null;
+
+/// Set a deadline for network operations (absolute timestamp in nanoseconds).
+pub fn setNetworkDeadline(timeout_ns: i128) void {
+    network_deadline_ns = std.time.nanoTimestamp() + timeout_ns;
+}
+
+/// Check if the network deadline has been exceeded.
+pub fn isNetworkDeadlineExceeded() bool {
+    const deadline = network_deadline_ns orelse return false;
+    return std.time.nanoTimestamp() >= deadline;
+}
+
+/// Clear the network deadline.
+pub fn clearNetworkDeadline() void {
+    network_deadline_ns = null;
+}
+
+// ============================================================
+// URL component validation
+// ============================================================
+
+/// Validate that a string is safe for use in GitHub API URL path segments.
+/// Allows: [a-zA-Z0-9._-] (GitHub naming rules for owners, repos, and refs).
+/// Rejects: /, ?, #, \, spaces, control characters, etc.
+pub fn isValidGitHubComponent(s: []const u8) bool {
+    if (s.len == 0 or s.len > 255) return false;
+    for (s) |c| {
+        switch (c) {
+            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+/// Validate that a string is a valid hex SHA (40 chars, [0-9a-f]).
+pub fn isValidSha(s: []const u8) bool {
+    if (s.len != 40) return false;
+    for (s) |c| {
+        switch (c) {
+            '0'...'9', 'a'...'f' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -289,4 +341,80 @@ test "rule struct field access" {
     try std.testing.expect(rule.check_workflow != null);
     try std.testing.expect(rule.check_job == null);
     try std.testing.expect(rule.check_step == null);
+}
+
+// --- isValidGitHubComponent tests ---
+
+test "isValidGitHubComponent: valid names" {
+    try std.testing.expect(isValidGitHubComponent("actions"));
+    try std.testing.expect(isValidGitHubComponent("checkout"));
+    try std.testing.expect(isValidGitHubComponent("setup-node"));
+    try std.testing.expect(isValidGitHubComponent("my_action.v2"));
+    try std.testing.expect(isValidGitHubComponent("Owner-123"));
+}
+
+test "isValidGitHubComponent: rejects empty" {
+    try std.testing.expect(!isValidGitHubComponent(""));
+}
+
+test "isValidGitHubComponent: rejects slash" {
+    try std.testing.expect(!isValidGitHubComponent("owner/repo"));
+}
+
+test "isValidGitHubComponent: rejects query chars" {
+    try std.testing.expect(!isValidGitHubComponent("repo?foo"));
+    try std.testing.expect(!isValidGitHubComponent("repo#bar"));
+}
+
+test "isValidGitHubComponent: rejects backslash and spaces" {
+    try std.testing.expect(!isValidGitHubComponent("repo\\path"));
+    try std.testing.expect(!isValidGitHubComponent("repo name"));
+}
+
+test "isValidGitHubComponent: rejects control characters" {
+    try std.testing.expect(!isValidGitHubComponent("repo\x00name"));
+    try std.testing.expect(!isValidGitHubComponent("repo\nname"));
+}
+
+test "isValidGitHubComponent: rejects oversized input" {
+    const long = "a" ** 256;
+    try std.testing.expect(!isValidGitHubComponent(long));
+}
+
+// --- isValidSha tests ---
+
+test "isValidSha: valid 40-char hex" {
+    try std.testing.expect(isValidSha("a5ac7e51b41094c92402da3b24376905380afc29"));
+}
+
+test "isValidSha: rejects short string" {
+    try std.testing.expect(!isValidSha("a5ac7e"));
+}
+
+test "isValidSha: rejects uppercase hex" {
+    try std.testing.expect(!isValidSha("A5AC7E51B41094C92402DA3B24376905380AFC29"));
+}
+
+test "isValidSha: rejects non-hex chars" {
+    try std.testing.expect(!isValidSha("g5ac7e51b41094c92402da3b24376905380afc29"));
+}
+
+// --- Network deadline tests ---
+
+test "isNetworkDeadlineExceeded: no deadline set returns false" {
+    clearNetworkDeadline();
+    try std.testing.expect(!isNetworkDeadlineExceeded());
+}
+
+test "isNetworkDeadlineExceeded: future deadline returns false" {
+    setNetworkDeadline(60 * std.time.ns_per_s); // 60 seconds
+    defer clearNetworkDeadline();
+    try std.testing.expect(!isNetworkDeadlineExceeded());
+}
+
+test "isNetworkDeadlineExceeded: past deadline returns true" {
+    // Set a deadline in the past by using a negative timeout
+    network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer clearNetworkDeadline();
+    try std.testing.expect(isNetworkDeadlineExceeded());
 }

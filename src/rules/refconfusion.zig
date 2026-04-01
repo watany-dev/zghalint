@@ -10,6 +10,7 @@ const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const Rule = engine.Rule;
+const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // ============================================================
 // Ref confusion status
@@ -62,6 +63,7 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
     const ref = action_ref.ref orelse return;
+    if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo) or !isValidGitHubComponent(ref)) return;
 
     var arena = ref_arena orelse return;
     const allocator = arena.allocator();
@@ -124,6 +126,7 @@ fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref
 /// Check if a ref exists under the given ref_type ("tags" or "heads").
 /// Returns true if exists (HTTP 200), false if not (HTTP 404), null on error.
 fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8, ref_type: []const u8) ?bool {
+    if (engine.isNetworkDeadlineExceeded()) return null;
     const url = std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}/git/ref/{s}/{s}", .{ owner, repo, ref_type, ref }) catch return null;
 
     var client: std.http.Client = .{ .allocator = allocator };
