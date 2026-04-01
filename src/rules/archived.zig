@@ -369,3 +369,39 @@ test "parseArchivedField: missing archived field" {
     ;
     try testing.expectError(error.MissingField, parseArchivedField(arena.allocator(), body));
 }
+
+test "SC004: invalid owner characters rejected" {
+    initForTesting(testing.allocator);
+    defer deinitArchived();
+
+    setCachedResult("archived-org", "archived-repo", true);
+
+    // URL-unsafe owner should be silently rejected
+    const steps = [_]Step{.{ .uses = ActionRef.parse("archived?org/archived-repo@v1") }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .name = "CI", .on = .{ .events = &.{} }, .jobs = &jobs };
+
+    const eng = engine.Engine.init(&sc004_rule);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.items.items.len);
+}
+
+test "SC004: invalid repo characters rejected" {
+    initForTesting(testing.allocator);
+    defer deinitArchived();
+
+    setCachedResult("archived-org", "archived-repo", true);
+
+    // URL-unsafe repo should be silently rejected
+    const steps = [_]Step{.{ .uses = ActionRef.parse("archived-org/archived#repo@v1") }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .name = "CI", .on = .{ .events = &.{} }, .jobs = &jobs };
+
+    const eng = engine.Engine.init(&sc004_rule);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.items.items.len);
+}

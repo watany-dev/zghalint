@@ -810,3 +810,68 @@ test "SC003: advisory without version range always flags" {
     checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 1), list.len());
 }
+
+test "SC003: invalid owner characters rejected" {
+    const mock_advisories = [_]Advisory{
+        .{
+            .ghsa_id = "GHSA-test-1234",
+            .action_slug = "evil/action",
+            .summary = "RCE vulnerability",
+            .severity = "critical",
+            .vulnerable_range = "< 1.0.0",
+            .patched_version = "1.0.0",
+            .diagnostic_message = "action 'evil/action' has known vulnerability",
+            .diagnostic_hint = "update to version 1.0.0 or later",
+        },
+    };
+
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    advisory_cache = &mock_advisories;
+    is_offline = false;
+    fetched = true;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+
+    // URL-unsafe owner should be rejected before any network call
+    const step = Step{ .uses = ActionRef.parse("evil?owner/action@v0.9.0") };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkKnownVulnerableAction(&step, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC003: lazy fetch with deadline exceeded produces no diagnostics" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    const prev_arena = advisory_arena;
+    advisory_cache = null;
+    is_offline = false;
+    fetched = false;
+    advisory_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer {
+        if (advisory_arena) |*a| a.deinit();
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+        advisory_arena = prev_arena;
+    }
+
+    // Set a past deadline so fetchAndParse returns immediately
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    const step = Step{ .uses = ActionRef.parse("evil/action@v0.9.0") };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkKnownVulnerableAction(&step, &list);
+    // fetchAndParse should fail due to deadline, cache stays null, no diagnostics
+    try testing.expectEqual(@as(usize, 0), list.len());
+    // fetched flag should be set even on failure
+    try testing.expect(fetched);
+}

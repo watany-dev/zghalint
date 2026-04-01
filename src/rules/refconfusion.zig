@@ -353,3 +353,52 @@ test "SC006: step without uses (no false positive)" {
     checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
+
+test "SC006: invalid owner characters rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
+    cache.put("evil?org/repo@main", .ambiguous) catch unreachable;
+
+    const prev_cache = ref_cache;
+    const prev_arena = ref_arena;
+    ref_cache = cache;
+    ref_arena = arena;
+    defer {
+        ref_cache = prev_cache;
+        ref_arena = prev_arena;
+    }
+
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+
+    // URL-unsafe owner should be silently rejected
+    const step = Step{ .uses = ActionRef.parse("evil?org/repo@main") };
+    checkRefConfusion(&step, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC006: invalid ref characters rejected" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cache = std.StringHashMap(RefStatus).init(arena.allocator());
+
+    const prev_cache = ref_cache;
+    const prev_arena = ref_arena;
+    ref_cache = cache;
+    ref_arena = arena;
+    defer {
+        ref_cache = prev_cache;
+        ref_arena = prev_arena;
+    }
+
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+
+    // ref with URL-unsafe characters should be rejected
+    const step = Step{ .uses = ActionRef.parse("owner/repo@main/branch") };
+    checkRefConfusion(&step, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}

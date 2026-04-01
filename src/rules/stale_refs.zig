@@ -701,3 +701,40 @@ test "parseTagObject: missing object field returns error" {
     ;
     try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
 }
+
+test "SC005: invalid owner characters rejected" {
+    const prev_cache = tag_cache;
+    const prev_arena = stale_refs_arena;
+    defer {
+        tag_cache = prev_cache;
+        stale_refs_arena = prev_arena;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cache = std.StringHashMap(TagResolution).init(arena.allocator());
+    tag_cache = cache;
+    stale_refs_arena = arena;
+
+    // URL-unsafe owner should be silently rejected
+    var steps = [_]Step{.{
+        .uses = ActionRef.parse("evil?org/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+    }};
+    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
+    const wf = Workflow{ .jobs = &jobs, .on = .{ .events = &.{} } };
+
+    const rules_arr = [_]Rule{.{
+        .id = "SC005",
+        .name = "stale-action-refs",
+        .description = "test",
+        .severity = .info,
+        .category = .dependency,
+        .check_step = &checkStaleActionRef,
+    }};
+    const eng = Engine.init(&rules_arr);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.items.items.len);
+}

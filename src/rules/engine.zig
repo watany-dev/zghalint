@@ -64,7 +64,7 @@ pub const Engine = struct {
 // Network deadline
 // ============================================================
 
-var network_deadline_ns: ?i128 = null;
+pub var network_deadline_ns: ?i128 = null;
 
 /// Set a deadline for network operations (absolute timestamp in nanoseconds).
 pub fn setNetworkDeadline(timeout_ns: i128) void {
