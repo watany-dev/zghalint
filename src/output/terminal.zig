@@ -429,3 +429,106 @@ test "severityColor returns correct codes" {
     try std.testing.expectEqualStrings(Color.bold_blue, severityColor(.info));
     try std.testing.expectEqualStrings(Color.bold_gray, severityColor(.hint));
 }
+
+test "getSourceLine empty source" {
+    // Empty source with line 1 returns empty slice (last line without trailing newline)
+    try std.testing.expectEqualStrings("", getSourceLine("", 1).?);
+    try std.testing.expect(getSourceLine("", 0) == null);
+    try std.testing.expect(getSourceLine("", 2) == null);
+}
+
+test "renderDiagnostics with source_lookup callback" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{
+        .rule_id = "T1",
+        .severity = .@"error",
+        .message = "test error",
+        .file = "found.yml",
+        .span = .{ .start_line = 1, .start_col = 1, .end_line = 1, .end_col = 5, .start_byte = 0, .end_byte = 4 },
+    });
+    try list.append(.{
+        .rule_id = "T2",
+        .severity = .warning,
+        .message = "test warning",
+        .file = "missing.yml",
+        .span = Span.point(1, 1, 0),
+    });
+
+    const lookup = struct {
+        fn func(path: []const u8) ?[]const u8 {
+            if (std.mem.eql(u8, path, "found.yml")) return "name: CI";
+            return null;
+        }
+    }.func;
+
+    try renderDiagnostics(writer, list, &lookup, false);
+    const output = buf.items;
+
+    // First diagnostic should include source context (file found)
+    try std.testing.expect(std.mem.indexOf(u8, output, "name: CI") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "^^^^") != null);
+    // Second diagnostic should have no source context (file not found)
+    try std.testing.expect(std.mem.indexOf(u8, output, "test warning") != null);
+    // Summary
+    try std.testing.expect(std.mem.indexOf(u8, output, "2 issue(s)") != null);
+}
+
+test "renderDiagnostic multi-line span shows single caret" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    const diag = Diagnostic{
+        .rule_id = "T1",
+        .severity = .warning,
+        .message = "spans multiple lines",
+        .file = "f.yml",
+        .span = .{
+            .start_line = 1,
+            .start_col = 3,
+            .end_line = 5,
+            .end_col = 1,
+            .start_byte = 2,
+            .end_byte = 40,
+        },
+    };
+
+    try renderDiagnostic(writer, diag, "ab: cd\nef: gh", false);
+    const output = buf.items;
+
+    // end_line != start_line, so width should be 1 => single caret
+    try std.testing.expect(std.mem.indexOf(u8, output, "^") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "spans multiple lines") != null);
+}
+
+test "renderDiagnostic with no file shows unknown" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{
+        .rule_id = "T1",
+        .severity = .hint,
+        .message = "a hint",
+        .span = Span.point(1, 1, 0),
+    });
+
+    const lookup = struct {
+        fn func(_: []const u8) ?[]const u8 {
+            return null;
+        }
+    }.func;
+
+    try renderDiagnostics(writer, list, &lookup, false);
+    const output = buf.items;
+    try std.testing.expect(std.mem.indexOf(u8, output, "a hint") != null);
+}
