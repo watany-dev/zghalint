@@ -1224,6 +1224,42 @@ test "parseJob with env and concurrency and with" {
     try testing.expectEqual(types.PermissionLevel.read, job.permissions.?.contents.?);
 }
 
+test "parsePermissions ignores invalid permission level" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("contents"), .value = mkScalar("execute"), .span = mkSpan() },
+        .{ .key = mkScalarS("issues"), .value = mkScalar("admin"), .span = mkSpan() },
+        .{ .key = mkScalarS("pull-requests"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+
+    const perms = try parsePermissions(mkMapping(&entries));
+    // Invalid levels should be skipped (orelse continue)
+    try testing.expect(perms.contents == null);
+    try testing.expect(perms.issues == null);
+    // Valid level should be set
+    try testing.expectEqual(types.PermissionLevel.read, perms.pull_requests.?);
+}
+
+test "parsePermissions with empty mapping" {
+    var entries = [_]yaml.MappingEntry{};
+    const perms = try parsePermissions(mkMapping(&entries));
+    try testing.expect(!perms.read_all);
+    try testing.expect(!perms.write_all);
+    try testing.expect(perms.contents == null);
+}
+
+test "parseTrigger null value" {
+    try testing.expectError(error.InvalidValue, parseTrigger(testing.allocator, .{ .null_value = mkSpan() }));
+}
+
+test "parseEventConfig with scalar (unknown event)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // A scalar value for an event config (e.g. `push: true`) is valid but does nothing
+    const config = try parseEventConfig(arena.allocator(), "push", mkScalar("true"));
+    try testing.expectEqual(types.EventType.push, config.event);
+}
+
 test "parseServices with scalar image" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
