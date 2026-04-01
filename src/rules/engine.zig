@@ -402,8 +402,17 @@ test "isValidGitHubComponent: rejects dot segments" {
     try std.testing.expect(!isValidGitHubComponent("."));
     try std.testing.expect(!isValidGitHubComponent(".."));
     try std.testing.expect(!isValidGitHubComponent("foo..bar"));
+    try std.testing.expect(!isValidGitHubComponent("..."));
     // Single dot within a name is still valid
     try std.testing.expect(isValidGitHubComponent("my.action"));
+}
+
+test "isValidGitHubComponent: allows dot-prefixed names" {
+    // .github is a legitimate repo name used widely
+    try std.testing.expect(isValidGitHubComponent(".github"));
+    try std.testing.expect(isValidGitHubComponent(".hidden"));
+    try std.testing.expect(isValidGitHubComponent(".gitignore"));
+    try std.testing.expect(isValidGitHubComponent("a.b.c"));
 }
 
 // --- isValidGitRef tests ---
