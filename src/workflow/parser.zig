@@ -11,6 +11,11 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
+const ParsedStringMap = struct {
+    values: types.StringMap,
+    meta: types.ScalarValueMetaMap,
+};
+
 /// Parse a YAML AST Node into a Workflow struct
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
     const root = switch (node) {
@@ -31,14 +36,21 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     else
         return error.MissingField;
 
-    return types.Workflow{
+    var workflow = types.Workflow{
         .name = root.getScalar("name"),
         .on = trigger,
         .permissions = if (root.get("permissions")) |n| try parsePermissions(n) else null,
-        .env = if (root.get("env")) |n| try parseStringMap(allocator, n) else null,
         .concurrency = if (root.get("concurrency")) |n| try parseConcurrency(n) else null,
         .jobs = jobs,
     };
+
+    if (root.get("env")) |n| {
+        const parsed = try parseStringMapWithMeta(allocator, n);
+        workflow.env = parsed.values;
+        workflow.env_meta = parsed.meta;
+    }
+
+    return workflow;
 }
 
 /// Parse the `on:` trigger field
@@ -275,7 +287,9 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
         job.permissions = try parsePermissions(n);
     }
     if (m.get("env")) |n| {
-        job.env = try parseStringMap(allocator, n);
+        const parsed = try parseStringMapWithMeta(allocator, n);
+        job.env = parsed.values;
+        job.env_meta = parsed.meta;
     }
     if (m.get("concurrency")) |n| {
         job.concurrency = try parseConcurrency(n);
@@ -362,7 +376,9 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
         }
     }
     if (m.get("env")) |n| {
-        step.env = try parseStringMap(allocator, n);
+        const parsed = try parseStringMapWithMeta(allocator, n);
+        step.env = parsed.values;
+        step.env_meta = parsed.meta;
     }
 
     return step;
@@ -567,6 +583,29 @@ fn parseStringMap(allocator: std.mem.Allocator, node: Node) ParseError!types.Str
     return map;
 }
 
+fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!ParsedStringMap {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return error.InvalidValue,
+    };
+
+    var values = types.StringMap.init(allocator);
+    var meta = types.ScalarValueMetaMap.init(allocator);
+    for (m.entries) |entry| {
+        switch (entry.value) {
+            .scalar => |s| {
+                try values.put(entry.key.value, s.value);
+                try meta.put(entry.key.value, .{
+                    .value_span = s.span,
+                    .style = s.style,
+                });
+            },
+            else => {},
+        }
+    }
+    return .{ .values = values, .meta = meta };
+}
+
 fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
     switch (node) {
         .sequence => |seq| {
@@ -602,8 +641,23 @@ fn mkSpan() yaml.Span {
     return yaml.Span.point(1, 1, 0);
 }
 
+fn mkSpanBytes(start_byte: usize, end_byte: usize) yaml.Span {
+    return .{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 1,
+        .start_byte = start_byte,
+        .end_byte = end_byte,
+    };
+}
+
 fn mkScalar(value: []const u8) Node {
     return .{ .scalar = .{ .value = value, .style = .plain, .span = mkSpan() } };
+}
+
+fn mkScalarStyled(value: []const u8, style: yaml.ScalarStyle, span: yaml.Span) Node {
+    return .{ .scalar = .{ .value = value, .style = style, .span = span } };
 }
 
 fn mkScalarS(value: []const u8) yaml.Scalar {
@@ -877,6 +931,32 @@ test "parseStringMap" {
     try testing.expectEqualStrings("qux", map.get("BAZ").?);
 }
 
+test "parseStringMapWithMeta" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var entries = [_]yaml.MappingEntry{
+        .{
+            .key = mkScalarS("PLAIN"),
+            .value = mkScalarStyled("true", .plain, mkSpanBytes(10, 14)),
+            .span = mkSpan(),
+        },
+        .{
+            .key = mkScalarS("QUOTED"),
+            .value = mkScalarStyled("true", .double_quoted, mkSpanBytes(20, 26)),
+            .span = mkSpan(),
+        },
+    };
+
+    const parsed = try parseStringMapWithMeta(arena.allocator(), mkMapping(&entries));
+    try testing.expectEqualStrings("true", parsed.values.get("PLAIN").?);
+    try testing.expectEqualStrings("true", parsed.values.get("QUOTED").?);
+    try testing.expectEqual(yaml.ScalarStyle.plain, parsed.meta.get("PLAIN").?.style);
+    try testing.expectEqual(yaml.ScalarStyle.double_quoted, parsed.meta.get("QUOTED").?.style);
+    try testing.expectEqual(@as(usize, 10), parsed.meta.get("PLAIN").?.value_span.start_byte);
+    try testing.expectEqual(@as(usize, 26), parsed.meta.get("QUOTED").?.value_span.end_byte);
+}
+
 test "parseStrategy with fail-fast and max-parallel" {
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("fail-fast"), .value = mkScalar("false"), .span = mkSpan() },
@@ -954,6 +1034,8 @@ test "parseStep with timeout and continue-on-error" {
     try testing.expectEqualStrings("./src", step.working_directory.?);
     try testing.expectEqualStrings("value", step.with.?.get("key").?);
     try testing.expectEqualStrings("bar", step.env.?.get("FOO").?);
+    try testing.expect(step.env_meta != null);
+    try testing.expectEqual(yaml.ScalarStyle.plain, step.env_meta.?.get("FOO").?.style);
 }
 
 test "parseJob with timeout and strategy" {
@@ -1015,6 +1097,8 @@ test "parseWorkflow with env and concurrency" {
 
     const wf = try parseWorkflow(arena.allocator(), mkMapping(&root_entries));
     try testing.expectEqualStrings("true", wf.env.?.get("CI").?);
+    try testing.expect(wf.env_meta != null);
+    try testing.expectEqual(yaml.ScalarStyle.plain, wf.env_meta.?.get("CI").?.style);
     try testing.expectEqualStrings("my-group", wf.concurrency.?.group);
 }
 
@@ -1267,6 +1351,8 @@ test "parseJob with env and concurrency and with" {
 
     const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
     try testing.expectEqualStrings("true", job.env.?.get("CI").?);
+    try testing.expect(job.env_meta != null);
+    try testing.expectEqual(yaml.ScalarStyle.plain, job.env_meta.?.get("CI").?.style);
     try testing.expectEqualStrings("val", job.with.?.get("key").?);
     try testing.expectEqualStrings("my-group", job.concurrency.?.group);
     try testing.expect(job.permissions != null);

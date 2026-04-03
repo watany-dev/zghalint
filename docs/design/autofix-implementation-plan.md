@@ -67,7 +67,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `SEC013` | 未実装 | 不可/非推奨 | 高 | 低 | credentials をどの secret に置き換えるか決められない |
 | `SEC014` | 未実装 | 条件付き可 | 高 | 低 | `github.actor` を `github.event.sender.type` 等へ書き換えるには式パターン限定が必要 |
 | `SEC016` | 未実装 | 不可/非推奨 | 高 | 低 | cache 削除や trigger 制限は意味変更が大きい |
-| `SEC017` | 未実装 | 可 | 低 | 高 | `ACTIONS_ALLOW_UNSECURE_COMMANDS` を削除、または `false` へ置換する単純修正 |
+| `SEC017` | 未実装 | 条件付き可 | 中 | 高 | workflow parser / model に `env` value span/style を保持すれば `false` 置換で対応可能。個別設計: `docs/design/sec017-autofix-design.md` |
 | `SEC019` | 未実装 | 不可/非推奨 | 高 | 低 | `env:` へ持ち上げるには参照名の決定と複数箇所書換えが必要 |
 | `SC001` | 未実装 | 条件付き可 | 高 | 低 | digest 解決にレジストリ参照が必要。ネットワーク依存 |
 | `SC003` | 未実装 | 条件付き可 | 高 | 低 | advisory の patched version がある場合のみ候補生成可能。unsafe 寄り |
@@ -105,7 +105,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | ID | 理由 |
 |----|------|
-| `SEC017` | 単純置換で済み、セキュリティ効果が高い |
+| `SEC017` | `env` value span/style の最小拡張で着手でき、セキュリティ効果が高い |
 | `DEP002` | Dependabot 設定の 1 箇所置換で済む |
 | `PERF003` | 単純削除で済み、edit も作りやすい |
 | `BP003` | 既存の置換表をそのまま使える |
@@ -206,6 +206,6 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 ## 結論
 
-短期で価値が出るのは、単純置換または局所挿入で完結する `SEC017`, `DEP002`, `PERF003`, `BP003`, `BP002` である。  
+短期で価値が出るのは、単純置換または局所挿入で完結する `DEP002`, `PERF003`, `BP003`, `BP002` と、最小の env span/style 拡張で実装できる `SEC017` である。  
 一方で、security 系の多くと network 依存の supply chain 系は、汎用 autofix より fix hint に留める方が安全である。  
 したがって、まずは local / deterministic な autofix を広げ、その後に unsafe fix と span 拡張へ進むのが妥当である。

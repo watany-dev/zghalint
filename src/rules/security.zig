@@ -17,6 +17,8 @@ pub const Job = workflow_types.Job;
 pub const Step = workflow_types.Step;
 pub const ActionRef = workflow_types.ActionRef;
 pub const Permissions = workflow_types.Permissions;
+pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
+pub const ScalarValueMetaMap = workflow_types.ScalarValueMetaMap;
 pub const Fix = diagnostics.Fix;
 pub const Edit = diagnostics.Edit;
 pub const SecretsConfig = workflow_types.SecretsConfig;
@@ -1127,35 +1129,63 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
 // SEC017 - Insecure workflow commands
 // ============================================================
 
-fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, list: *DiagnosticList) void {
+fn buildInsecureCommandsFix(list: *DiagnosticList, meta: ScalarValueMeta) ?Fix {
+    const replacement = switch (meta.style) {
+        .plain => "false",
+        .single_quoted => "'false'",
+        .double_quoted => "\"false\"",
+        .literal, .folded => return null,
+    };
+
+    const edits = list.allocEdit(.{
+        .start_byte = meta.value_span.start_byte,
+        .end_byte = meta.value_span.end_byte,
+        .replacement = replacement,
+    }) orelse return null;
+
+    return .{
+        .description = "set ACTIONS_ALLOW_UNSECURE_COMMANDS to false",
+        .safety = .safe,
+        .edits = edits,
+    };
+}
+
+fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, env_meta: ?ScalarValueMetaMap, list: *DiagnosticList) void {
     if (env_map.get("ACTIONS_ALLOW_UNSECURE_COMMANDS")) |val| {
         if (std.mem.eql(u8, val, "true")) {
-            list.append(.{
+            const meta = if (env_meta) |m| m.get("ACTIONS_ALLOW_UNSECURE_COMMANDS") else null;
+            var diag = Diagnostic{
                 .rule_id = "SEC017",
                 .severity = .warning,
                 .message = "insecure workflow commands are enabled via ACTIONS_ALLOW_UNSECURE_COMMANDS",
-                .span = Span.point(0, 0, 0),
+                .span = if (meta) |m| m.value_span else Span.point(0, 0, 0),
                 .fix_hint = "remove ACTIONS_ALLOW_UNSECURE_COMMANDS or set it to false; use environment files instead of set-env/add-path",
-            }) catch return;
+            };
+
+            if (meta) |m| {
+                diag.fix = buildInsecureCommandsFix(list, m);
+            }
+
+            list.append(diag) catch return;
         }
     }
 }
 
 fn checkInsecureCommandsStep(step: *const Step, list: *DiagnosticList) void {
     if (step.env) |env_map| {
-        checkEnvForInsecureCommands(env_map, list);
+        checkEnvForInsecureCommands(env_map, step.env_meta, list);
     }
 }
 
 fn checkInsecureCommandsJob(job: *const Job, list: *DiagnosticList) void {
     if (job.env) |env_map| {
-        checkEnvForInsecureCommands(env_map, list);
+        checkEnvForInsecureCommands(env_map, job.env_meta, list);
     }
 }
 
 fn checkInsecureCommandsWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     if (wf.env) |env_map| {
-        checkEnvForInsecureCommands(env_map, list);
+        checkEnvForInsecureCommands(env_map, wf.env_meta, list);
     }
 }
 
@@ -1574,6 +1604,26 @@ fn countDiagnostics(list: *const DiagnosticList, rule_id: []const u8) usize {
         if (std.mem.eql(u8, d.rule_id, rule_id)) count += 1;
     }
     return count;
+}
+
+fn findDiagnostic(list: *const DiagnosticList, rule_id: []const u8) ?Diagnostic {
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, rule_id)) return d;
+    }
+    return null;
+}
+
+fn makeSec017EnvMeta(
+    allocator: std.mem.Allocator,
+    style: yaml.ScalarStyle,
+    span: Span,
+) !ScalarValueMetaMap {
+    var meta = ScalarValueMetaMap.init(allocator);
+    try meta.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", .{
+        .value_span = span,
+        .style = style,
+    });
+    return meta;
 }
 
 // --- SEC001: Unpinned action ---
@@ -3888,6 +3938,95 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_meta = try makeSec017EnvMeta(testing.allocator, .plain, Span{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 5,
+        .start_byte = 10,
+        .end_byte = 14,
+    });
+    defer env_meta.deinit();
+    const steps = [_]Step{
+        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    try testing.expect(diag.fix != null);
+    try testing.expectEqualStrings("set ACTIONS_ALLOW_UNSECURE_COMMANDS to false", diag.fix.?.description);
+    try testing.expectEqual(diagnostics.FixSafety.safe, diag.fix.?.safety);
+    try testing.expectEqual(@as(usize, 1), diag.fix.?.edits.len);
+    try testing.expectEqual(@as(usize, 10), diag.fix.?.edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 14), diag.fix.?.edits[0].end_byte);
+    try testing.expectEqualStrings("false", diag.fix.?.edits[0].replacement);
+}
+
+test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_meta = try makeSec017EnvMeta(testing.allocator, .plain, Span{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 5,
+        .start_byte = 20,
+        .end_byte = 24,
+    });
+    defer env_meta.deinit();
+    const jobs = [_]Job{
+        .{ .id = "build", .env = env_map, .env_meta = env_meta, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    try testing.expect(diag.fix != null);
+    try testing.expectEqualStrings("false", diag.fix.?.edits[0].replacement);
+    try testing.expectEqual(@as(usize, 20), diag.fix.?.edits[0].start_byte);
+}
+
+test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_meta = try makeSec017EnvMeta(testing.allocator, .plain, Span{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 5,
+        .start_byte = 30,
+        .end_byte = 34,
+    });
+    defer env_meta.deinit();
+    const wf = Workflow{
+        .name = "CI",
+        .on = makeEmptyTrigger(),
+        .jobs = &.{},
+        .permissions = Permissions{},
+        .env = env_map,
+        .env_meta = env_meta,
+    };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    try testing.expect(diag.fix != null);
+    try testing.expectEqualStrings("false", diag.fix.?.edits[0].replacement);
+    try testing.expectEqual(@as(usize, 30), diag.fix.?.edits[0].start_byte);
+}
+
+test "SEC017: fallback without env metadata keeps diagnostic" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     const steps = [_]Step{
         .{ .run = "echo test", .env = env_map },
     };
@@ -3897,32 +4036,97 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
     const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC017"));
+
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    try testing.expect(diag.fix == null);
+    try testing.expect(diag.fix_hint != null);
 }
 
-test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
+test "SEC017: fix preserves single quoted style" {
     const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_meta = try makeSec017EnvMeta(testing.allocator, .single_quoted, Span{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 7,
+        .start_byte = 40,
+        .end_byte = 46,
+    });
+    defer env_meta.deinit();
+    const steps = [_]Step{
+        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
+    };
     const jobs = [_]Job{
-        .{ .id = "build", .env = env_map, .permissions = Permissions{} },
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
     const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC017"));
+
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    try testing.expect(diag.fix != null);
+    try testing.expectEqualStrings("'false'", diag.fix.?.edits[0].replacement);
 }
 
-test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
+test "SEC017: fix preserves double quoted style" {
     const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &.{}, .permissions = Permissions{}, .env = env_map };
+    var env_meta = try makeSec017EnvMeta(testing.allocator, .double_quoted, Span{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 7,
+        .start_byte = 50,
+        .end_byte = 56,
+    });
+    defer env_meta.deinit();
+    const steps = [_]Step{
+        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC017"));
+
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    try testing.expect(diag.fix != null);
+    try testing.expectEqualStrings("\"false\"", diag.fix.?.edits[0].replacement);
+}
+
+test "SEC017: literal style gets diagnostic without fix" {
+    const eng = engine.Engine.init(&security_rules);
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_meta = try makeSec017EnvMeta(testing.allocator, .literal, Span{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 2,
+        .end_col = 1,
+        .start_byte = 60,
+        .end_byte = 70,
+    });
+    defer env_meta.deinit();
+    const steps = [_]Step{
+        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    try testing.expect(diag.fix == null);
+    try testing.expectEqual(@as(usize, 60), diag.span.start_byte);
 }
 
 test "SEC017: value is false (no false positive)" {
@@ -3971,6 +4175,123 @@ test "SEC017: no env (no false positive)" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
+}
+
+test "SEC017: integration applies fix to workflow env" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\env:
+        \\  ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo test
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    const eng = engine.Engine.init(&security_rules);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: false") != null);
+}
+
+test "SEC017: integration applies fix to job env and preserves single quote/comment" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      ACTIONS_ALLOW_UNSECURE_COMMANDS: 'true' # deprecated
+        \\    steps:
+        \\      - run: echo test
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    const eng = engine.Engine.init(&security_rules);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: 'false' # deprecated") != null);
+}
+
+test "SEC017: integration applies fix to step env and preserves double quote/comment" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo test
+        \\        env:
+        \\          ACTIONS_ALLOW_UNSECURE_COMMANDS: "true" # deprecated
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    const eng = engine.Engine.init(&security_rules);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: \"false\" # deprecated") != null);
 }
 
 // ============================================================

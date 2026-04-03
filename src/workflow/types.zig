@@ -3,6 +3,13 @@ const yaml_types = @import("../yaml/types.zig");
 
 /// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
+pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
+
+/// Source metadata for a scalar value preserved for autofix generation.
+pub const ScalarValueMeta = struct {
+    value_span: yaml_types.Span,
+    style: yaml_types.ScalarStyle,
+};
 
 /// Permission level for a scope
 pub const PermissionLevel = enum {
@@ -225,6 +232,7 @@ pub const Step = struct {
     shell: ?[]const u8 = null,
     with: ?StringMap = null,
     env: ?StringMap = null,
+    env_meta: ?ScalarValueMetaMap = null,
     if_condition: ?[]const u8 = null,
     continue_on_error: bool = false,
     timeout_minutes: ?u32 = null,
@@ -272,6 +280,7 @@ pub const Job = struct {
     permissions: ?Permissions = null,
     steps: []const Step = &.{},
     env: ?StringMap = null,
+    env_meta: ?ScalarValueMetaMap = null,
     if_condition: ?[]const u8 = null,
     timeout_minutes: ?u32 = null,
     strategy: ?Strategy = null,
@@ -291,6 +300,7 @@ pub const Workflow = struct {
     on: Trigger,
     permissions: ?Permissions = null,
     env: ?StringMap = null,
+    env_meta: ?ScalarValueMetaMap = null,
     concurrency: ?Concurrency = null,
     jobs: []const Job,
 };
