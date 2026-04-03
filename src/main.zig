@@ -66,7 +66,7 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliAr
             // handled in indexed loop below
         } else if (std.mem.eql(u8, arg, "--color")) {
             // handled in indexed loop below
-        } else if (std.mem.eql(u8, arg, "--offline")) {
+        } else if (std.mem.eql(u8, arg, "--offline") or std.mem.eql(u8, arg, "--quick")) {
             args.offline = true;
         }
     }
@@ -98,6 +98,7 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliAr
             !std.mem.eql(u8, arg, "--version") and
             !std.mem.eql(u8, arg, "-v") and
             !std.mem.eql(u8, arg, "--offline") and
+            !std.mem.eql(u8, arg, "--quick") and
             !std.mem.startsWith(u8, arg, "-"))
         {
             try args.files.append(allocator, arg);
@@ -120,7 +121,8 @@ fn printHelp(writer: anytype) !void {
         \\  --config <path>   Path to config file (default: .zghalint.yml)
         \\  --format <fmt>    Output format: terminal, json, sarif (default: terminal)
         \\  --color <mode>    Color mode: auto, always, never (default: auto)
-        \\  --offline         Disable network requests and use only local data/cache
+        \\  --quick           Disable network requests and use only local data/cache
+        \\  --offline         Alias for --quick
         \\  --fix             Apply safe auto-fixes and rewrite files
         \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
         \\  -h, --help        Show this help
@@ -541,12 +543,23 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--config") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--format") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--quick") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--offline") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--fix") != null);
 }
 
 test "parseArgsSlice parses offline flag" {
     const argv = [_][]const u8{ "--offline", ".github/workflows/ci.yml" };
+    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    defer args.deinit();
+
+    try std.testing.expect(args.offline);
+    try std.testing.expectEqual(@as(usize, 1), args.files.items.len);
+    try std.testing.expectEqualStrings(".github/workflows/ci.yml", args.files.items[0]);
+}
+
+test "parseArgsSlice parses quick flag" {
+    const argv = [_][]const u8{ "--quick", ".github/workflows/ci.yml" };
     var args = try parseArgsSlice(std.testing.allocator, &argv);
     defer args.deinit();
 

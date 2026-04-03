@@ -46,7 +46,7 @@ def zghalint_bin() -> Path:
 def run_zghalint(binary: Path, *args: str, timeout: int = 10) -> LintResult:
     """Run zghalint as a subprocess with a timeout."""
     result = subprocess.run(
-        [str(binary), "--offline", *args],
+        [str(binary), "--quick", *args],
         capture_output=True,
         text=True,
         timeout=timeout,
