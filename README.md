@@ -34,11 +34,12 @@ The binary will be at `./zig-out/bin/zghalint`.
 ### Download release binary
 
 Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are available on the [Releases](https://github.com/watany-dev/zghalint/releases) page.
+The first public tag is `v0.0.1-rc.1`, published as a prerelease while the installation flow and CLI contract are still being validated.
 
 ### Use as a GitHub Action
 
 ```yaml
-- uses: watany-dev/zghalint@v0.1.0
+- uses: watany-dev/zghalint@v0.0.1-rc.1
   with:
     paths: ".github/workflows/*.yml"
 ```
@@ -46,7 +47,7 @@ Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are availabl
 With auto-fix enabled:
 
 ```yaml
-- uses: watany-dev/zghalint@v0.1.0
+- uses: watany-dev/zghalint@v0.0.1-rc.1
   with:
     paths: ".github/workflows/*.yml"
     fix: safe
