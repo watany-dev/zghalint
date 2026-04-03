@@ -949,22 +949,18 @@ fn hasPersistCredentialsFalse(step: *const Step) bool {
 }
 
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
-    // Check if the job has any upload-artifact step
-    var has_upload = false;
-    for (job.steps) |*step| {
+    var has_upload_after = false;
+    var i = job.steps.len;
+    while (i > 0) {
+        i -= 1;
+        const step = &job.steps[i];
         if (step.uses) |ref| {
             if (isUploadArtifactAction(ref)) {
-                has_upload = true;
-                break;
+                has_upload_after = true;
+                continue;
             }
-        }
-    }
-    if (!has_upload) return;
 
-    // Emit one diagnostic per vulnerable checkout step
-    for (job.steps) |*step| {
-        if (step.uses) |ref| {
-            if (isCheckoutAction(ref) and !hasPersistCredentialsFalse(step)) {
+            if (has_upload_after and isCheckoutAction(ref) and !hasPersistCredentialsFalse(step)) {
                 var diag = Diagnostic{
                     .rule_id = "SEC015",
                     .severity = .warning,
@@ -3453,6 +3449,57 @@ test "SEC015: checkout and upload in different jobs (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
 
+test "SEC015: upload before checkout does not trigger" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: only checkout before upload triggers in mixed ordering" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .uses_key_col = 8,
+            .uses_value_end_byte = 50,
+        },
+        .{ .run = "make build" },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .uses_key_col = 8,
+            .uses_value_end_byte = 120,
+        },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC015"));
+
+    var fix_count: usize = 0;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
+            try testing.expect(d.fix != null);
+            try testing.expectEqual(@as(usize, 50), d.fix.?.edits[0].start_byte);
+            fix_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), fix_count);
+}
+
 test "SEC015: fix is safe and attached when span info present" {
     const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
@@ -3675,6 +3722,40 @@ test "SEC015: integration - YAML parse to fix apply" {
         }
     }
     try testing.expect(fix_found);
+}
+
+test "SEC015: integration ignores checkout after upload-artifact" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/upload-artifact@v4
+        \\        with:
+        \\          name: dist
+        \\          path: ./dist
+        \\      - uses: actions/checkout@v4
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    const eng = engine.Engine.init(&security_rules);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
 
 // --- SEC019: Secrets outside env ---
