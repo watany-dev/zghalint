@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Do not include any closing suggestions such as “if needed” or similar conditional offers at the end of your response.
+
 ## Project Overview
 
 zghalint is a comprehensive, fast GitHub Actions workflow linter written in Zig. It analyzes `.yml`/`.yaml` workflow files to detect security vulnerabilities, performance issues, best practices violations, expression syntax errors, and permission model problems.
