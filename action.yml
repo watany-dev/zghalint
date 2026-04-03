@@ -10,6 +10,9 @@ inputs:
   format:
     description: 'Output format (terminal, json, sarif)'
     default: 'terminal'
+  offline:
+    description: 'Disable network requests and use only local data/cache'
+    default: 'false'
   fix:
     description: 'Fix mode: none, safe, unsafe'
     default: ''
@@ -57,14 +60,19 @@ runs:
       shell: bash
       run: |
         FIX_FLAG=""
+        OFFLINE_FLAG=""
         if [ "${{ inputs.fix }}" = "safe" ]; then
           FIX_FLAG="--fix"
         elif [ "${{ inputs.fix }}" = "unsafe" ]; then
           FIX_FLAG="--fix-unsafe"
         fi
 
+        if [ "${{ inputs.offline }}" = "true" ]; then
+          OFFLINE_FLAG="--offline"
+        fi
+
         if [ "$RUNNER_OS" = "Windows" ]; then
-          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $FIX_FLAG
+          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG
         else
-          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $FIX_FLAG
+          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG
         fi

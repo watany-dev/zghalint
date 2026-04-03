@@ -36,10 +36,9 @@ var rate_limited: bool = false;
 // ============================================================
 
 /// Initialize ref-confusion checker.
-/// On ZGHALINT_OFFLINE=1, skips initialization (cache stays null → offline mode).
-pub fn initRefConfusion(backing_allocator: Allocator) void {
-    if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
-
+/// When offline, skips initialization (cache stays null → offline mode).
+pub fn initRefConfusion(backing_allocator: Allocator, offline: bool) void {
+    if (offline) return;
     ref_arena = std.heap.ArenaAllocator.init(backing_allocator);
     if (ref_arena) |*arena| {
         ref_cache = std.StringHashMap(RefStatus).init(arena.allocator());

@@ -84,6 +84,13 @@ zghalint --format json .github/workflows/*.yml
 zghalint --format sarif .github/workflows/*.yml > results.sarif
 ```
 
+### Offline mode
+
+```bash
+# Disable all network requests and use only local data/cache
+zghalint --offline .github/workflows/*.yml
+```
+
 ### Example output
 
 ```
@@ -157,6 +164,7 @@ output:
 | `--config <path>` | Load rule overrides from a `.zghalint.yml` file | None |
 | `--format <fmt>` | Output format: `terminal`, `json`, `sarif` | `terminal` |
 | `--color <mode>` | Color control: `auto`, `always`, `never` | `auto` |
+| `--offline` | Disable network requests and use only local data/cache | Off |
 | `--fix` | Apply safe auto-fixes and rewrite files in place | |
 | `--fix-unsafe` | Apply all auto-fixes, including unsafe ones | |
 | `-h`, `--help` | Show help message | |

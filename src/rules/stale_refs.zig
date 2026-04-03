@@ -26,7 +26,7 @@ const TagResolution = enum {
 // ============================================================
 
 /// Maps "owner/repo@sha" -> TagResolution.
-/// null means offline mode (ZGHALINT_OFFLINE set or init not called).
+/// null means offline mode.
 var tag_cache: ?std.StringHashMap(TagResolution) = null;
 var stale_refs_arena: ?std.heap.ArenaAllocator = null;
 
@@ -35,10 +35,8 @@ var stale_refs_arena: ?std.heap.ArenaAllocator = null;
 // ============================================================
 
 /// Initialize stale-ref checker. Lazy: only sets up cache; API calls happen per-lookup.
-/// Set ZGHALINT_OFFLINE=1 to skip entirely (cache stays null).
-pub fn initStaleRefs(backing_allocator: Allocator) void {
-    if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
-
+pub fn initStaleRefs(backing_allocator: Allocator, offline: bool) void {
+    if (offline) return;
     stale_refs_arena = std.heap.ArenaAllocator.init(backing_allocator);
     if (stale_refs_arena) |*arena| {
         tag_cache = std.StringHashMap(TagResolution).init(arena.allocator());

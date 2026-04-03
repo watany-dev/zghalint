@@ -30,10 +30,8 @@ var is_offline: bool = true;
 // ============================================================
 
 /// Initialize archived-repo check.
-/// Set ZGHALINT_OFFLINE=1 to skip network checks entirely.
-pub fn initArchived(backing_allocator: Allocator) void {
-    if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
-
+pub fn initArchived(backing_allocator: Allocator, offline: bool) void {
+    if (offline) return;
     archived_arena = std.heap.ArenaAllocator.init(backing_allocator);
     is_offline = false;
 }

@@ -26,6 +26,7 @@ const CliArgs = struct {
     config_path: ?[]const u8 = null,
     format: ?OutputFormat = null,
     color: ?ColorMode = null,
+    offline: bool = false,
     show_help: bool = false,
     show_version: bool = false,
     fix_mode: FixMode = .off,
@@ -36,32 +37,69 @@ const CliArgs = struct {
 };
 
 fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
-    var args = CliArgs{ .files = .{}, .allocator = allocator };
+    var raw_args = std.ArrayList([]const u8){};
+    defer raw_args.deinit(allocator);
+
     var iter = try std.process.argsWithAllocator(allocator);
     defer iter.deinit();
 
     _ = iter.next(); // skip program name
-
     while (iter.next()) |arg| {
+        try raw_args.append(allocator, arg);
+    }
+
+    return parseArgsSlice(allocator, raw_args.items);
+}
+
+fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliArgs {
+    var args = CliArgs{ .files = .{}, .allocator = allocator };
+
+    for (argv) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             args.show_help = true;
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
             args.show_version = true;
         } else if (std.mem.eql(u8, arg, "--config")) {
-            args.config_path = iter.next();
+            // Match the current permissive behavior: missing values are ignored.
+            // The slice walker below advances over consumed option values.
         } else if (std.mem.eql(u8, arg, "--format")) {
-            if (iter.next()) |fmt_str| {
-                args.format = OutputFormat.fromString(fmt_str);
+            // handled in indexed loop below
+        } else if (std.mem.eql(u8, arg, "--color")) {
+            // handled in indexed loop below
+        } else if (std.mem.eql(u8, arg, "--offline")) {
+            args.offline = true;
+        }
+    }
+
+    var i: usize = 0;
+    while (i < argv.len) : (i += 1) {
+        const arg = argv[i];
+        if (std.mem.eql(u8, arg, "--config")) {
+            if (i + 1 < argv.len) {
+                i += 1;
+                args.config_path = argv[i];
+            }
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            if (i + 1 < argv.len) {
+                i += 1;
+                args.format = OutputFormat.fromString(argv[i]);
             }
         } else if (std.mem.eql(u8, arg, "--color")) {
-            if (iter.next()) |color_str| {
-                args.color = ColorMode.fromString(color_str);
+            if (i + 1 < argv.len) {
+                i += 1;
+                args.color = ColorMode.fromString(argv[i]);
             }
         } else if (std.mem.eql(u8, arg, "--fix")) {
             args.fix_mode = .safe;
         } else if (std.mem.eql(u8, arg, "--fix-unsafe")) {
             args.fix_mode = .all;
-        } else if (!std.mem.startsWith(u8, arg, "-")) {
+        } else if (!std.mem.eql(u8, arg, "--help") and
+            !std.mem.eql(u8, arg, "-h") and
+            !std.mem.eql(u8, arg, "--version") and
+            !std.mem.eql(u8, arg, "-v") and
+            !std.mem.eql(u8, arg, "--offline") and
+            !std.mem.startsWith(u8, arg, "-"))
+        {
             try args.files.append(allocator, arg);
         }
     }
@@ -82,6 +120,7 @@ fn printHelp(writer: anytype) !void {
         \\  --config <path>   Path to config file (default: .zghalint.yml)
         \\  --format <fmt>    Output format: terminal, json, sarif (default: terminal)
         \\  --color <mode>    Color mode: auto, always, never (default: auto)
+        \\  --offline         Disable network requests and use only local data/cache
         \\  --fix             Apply safe auto-fixes and rewrite files
         \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
         \\  -h, --help        Show this help
@@ -375,15 +414,15 @@ pub fn main() !u8 {
     defer zghalint.rules.engine.clearNetworkDeadline();
 
     // Initialize network-dependent rule databases (graceful offline skip)
-    zghalint.rules.advisory.initAdvisories(allocator);
+    zghalint.rules.advisory.initAdvisories(allocator, cli_args.offline);
     defer zghalint.rules.advisory.deinitAdvisories();
-    zghalint.rules.archived.initArchived(allocator);
+    zghalint.rules.archived.initArchived(allocator, cli_args.offline);
     defer zghalint.rules.archived.deinitArchived();
-    zghalint.rules.stale_refs.initStaleRefs(allocator);
+    zghalint.rules.stale_refs.initStaleRefs(allocator, cli_args.offline);
     defer zghalint.rules.stale_refs.deinitStaleRefs();
 
     // Initialize ref-confusion checker (network call, graceful offline skip)
-    zghalint.rules.refconfusion.initRefConfusion(allocator);
+    zghalint.rules.refconfusion.initRefConfusion(allocator, cli_args.offline);
     defer zghalint.rules.refconfusion.deinitRefConfusion();
 
     // Lint each file
@@ -502,5 +541,35 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--config") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--format") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--offline") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--fix") != null);
+}
+
+test "parseArgsSlice parses offline flag" {
+    const argv = [_][]const u8{ "--offline", ".github/workflows/ci.yml" };
+    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    defer args.deinit();
+
+    try std.testing.expect(args.offline);
+    try std.testing.expectEqual(@as(usize, 1), args.files.items.len);
+    try std.testing.expectEqualStrings(".github/workflows/ci.yml", args.files.items[0]);
+}
+
+test "parseArgsSlice parses config and format options" {
+    const argv = [_][]const u8{
+        "--config",
+        ".zghalint.yml",
+        "--format",
+        "json",
+        "--color",
+        "never",
+        "--fix-unsafe",
+    };
+    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    defer args.deinit();
+
+    try std.testing.expectEqualStrings(".zghalint.yml", args.config_path.?);
+    try std.testing.expectEqual(OutputFormat.json, args.format.?);
+    try std.testing.expectEqual(ColorMode.never, args.color.?);
+    try std.testing.expectEqual(FixMode.all, args.fix_mode);
 }

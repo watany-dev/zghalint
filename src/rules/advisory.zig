@@ -51,12 +51,9 @@ const cache_max_age_s: i64 = 24 * 60 * 60;
 
 /// Initialize advisory check. The actual HTTP fetch is deferred until the
 /// first call to checkKnownVulnerableAction() to avoid blocking startup.
-/// Set ZGHALINT_OFFLINE=1 to skip network checks entirely.
-pub fn initAdvisories(backing_allocator: Allocator) void {
-    if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
-
+pub fn initAdvisories(backing_allocator: Allocator, offline: bool) void {
     advisory_arena = std.heap.ArenaAllocator.init(backing_allocator);
-    is_offline = false;
+    is_offline = offline;
 }
 
 /// Release advisory memory.
@@ -72,18 +69,12 @@ pub fn deinitAdvisories() void {
 
 /// Rule check function for SC003.
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
-    if (is_offline) return;
-
     // Lazy fetch: only on first invocation
     if (!fetched) {
         fetched = true;
         if (advisory_arena) |*arena| {
             const alloc = arena.allocator();
-            // Try disk cache first (fast path), then network, then stale cache
-            advisory_cache = loadFromDiskCache(alloc) catch
-                fetchAndParse(alloc) catch
-                loadFromDiskCacheIgnoreAge(alloc) catch
-                null;
+            advisory_cache = loadAdvisories(alloc);
         }
     }
 
@@ -238,6 +229,19 @@ fn loadFromDiskCacheIgnoreAge(allocator: Allocator) ![]const Advisory {
     defer file.close();
     const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
     return deserializeAdvisories(allocator, body);
+}
+
+fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
+    if (is_offline) {
+        return loadFromDiskCache(allocator) catch
+            loadFromDiskCacheIgnoreAge(allocator) catch
+            null;
+    }
+
+    return loadFromDiskCache(allocator) catch
+        fetchAndParse(allocator) catch
+        loadFromDiskCacheIgnoreAge(allocator) catch
+        null;
 }
 
 // ============================================================
