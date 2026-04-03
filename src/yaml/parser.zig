@@ -136,6 +136,7 @@ pub const Parser = struct {
                 .key = key_scalar,
                 .value = value,
                 .span = key_scalar.span,
+                .full_span = self.blockEntryFullSpan(key_scalar, value),
             });
 
             // Look for next key at same indent level
@@ -364,6 +365,45 @@ pub const Parser = struct {
             .style = .plain,
             .span = self.spanFromToken(token),
         };
+    }
+
+    fn blockEntryFullSpan(self: *Parser, key: Scalar, value: Node) ?Span {
+        const line_start = self.lineStartByte(key.span.start_byte);
+
+        switch (value) {
+            .scalar, .null_value => {
+                var end_byte = value.getSpan().end_byte;
+                while (end_byte < self.source.len and self.source[end_byte] != '\n') {
+                    end_byte += 1;
+                }
+
+                var end_line = key.span.start_line;
+                var end_col: u32 = @as(u32, @intCast(end_byte - line_start + 1));
+                if (end_byte < self.source.len and self.source[end_byte] == '\n') {
+                    end_byte += 1;
+                    end_line += 1;
+                    end_col = 1;
+                }
+
+                return .{
+                    .start_line = key.span.start_line,
+                    .start_col = 1,
+                    .end_line = end_line,
+                    .end_col = end_col,
+                    .start_byte = line_start,
+                    .end_byte = end_byte,
+                };
+            },
+            else => return null,
+        }
+    }
+
+    fn lineStartByte(self: *Parser, byte_offset: usize) usize {
+        var start = byte_offset;
+        while (start > 0 and self.source[start - 1] != '\n') {
+            start -= 1;
+        }
+        return start;
     }
 };
 

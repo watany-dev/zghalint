@@ -453,11 +453,24 @@ fn parseStrategy(node: Node) ParseError!types.Strategy {
     };
 
     var strategy = types.Strategy{};
-    if (m.getScalar("fail-fast")) |v| {
-        strategy.fail_fast = !std.mem.eql(u8, v, "false");
-    }
-    if (m.getScalar("max-parallel")) |v| {
-        strategy.max_parallel = std.fmt.parseInt(u32, v, 10) catch null;
+    for (m.entries) |entry| {
+        if (std.mem.eql(u8, entry.key.value, "fail-fast")) {
+            switch (entry.value) {
+                .scalar => |s| {
+                    strategy.fail_fast = !std.mem.eql(u8, s.value, "false");
+                    strategy.fail_fast_value_span = s.span;
+                    strategy.fail_fast_entry_span = entry.full_span;
+                },
+                else => {},
+            }
+        } else if (std.mem.eql(u8, entry.key.value, "max-parallel")) {
+            switch (entry.value) {
+                .scalar => |s| {
+                    strategy.max_parallel = std.fmt.parseInt(u32, s.value, 10) catch null;
+                },
+                else => {},
+            }
+        }
     }
     return strategy;
 }
@@ -873,6 +886,42 @@ test "parseStrategy with fail-fast and max-parallel" {
     const strategy = try parseStrategy(mkMapping(&entries));
     try testing.expect(!strategy.fail_fast);
     try testing.expectEqual(@as(?u32, 2), strategy.max_parallel);
+}
+
+test "parseWorkflow captures removable span for fail-fast entry" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      fail-fast: "false" # keep running
+        \\      max-parallel: 2
+        \\    steps:
+        \\      - run: echo test
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    const strategy = wf.jobs[0].strategy.?;
+    const value_span = strategy.fail_fast_value_span.?;
+    const entry_span = strategy.fail_fast_entry_span.?;
+
+    try testing.expect(!strategy.fail_fast);
+    try testing.expectEqualStrings("\"false\"", source[value_span.start_byte..value_span.end_byte]);
+    try testing.expectEqualStrings(
+        "      fail-fast: \"false\" # keep running\n",
+        source[entry_span.start_byte..entry_span.end_byte],
+    );
 }
 
 test "parseStep with timeout and continue-on-error" {

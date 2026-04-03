@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("engine.zig");
+const diagnostics_mod = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 
@@ -10,6 +11,7 @@ const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
+const Fix = diagnostics_mod.Fix;
 
 /// Actions that set up language runtimes and support caching.
 const CacheableSetup = struct {
@@ -94,19 +96,38 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
 
 // ── PERF003: fail-fast disabled ──
 
+fn buildFailFastDisabledFix(diag_list: *DiagnosticList, entry_span: Span) ?Fix {
+    const edits = diag_list.allocEdit(.{
+        .start_byte = entry_span.start_byte,
+        .end_byte = entry_span.end_byte,
+        .replacement = "",
+    }) orelse return null;
+
+    return .{
+        .description = "remove fail-fast: false from strategy",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
 fn checkFailFastDisabled(job: *const Job, diag_list: *DiagnosticList) void {
     const strategy = job.strategy orelse return;
 
     // fail_fast defaults to true; only flag when explicitly false
     if (strategy.fail_fast) return;
 
-    diag_list.append(.{
+    var diag = diagnostics_mod.Diagnostic{
         .rule_id = "PERF003",
         .severity = .warning,
         .message = "Strategy has fail-fast: false. Failed matrix jobs will continue running, wasting CI resources.",
-        .span = Span.point(0, 0, 0),
+        .span = strategy.fail_fast_value_span orelse Span.point(0, 0, 0),
         .fix_hint = "Consider removing 'fail-fast: false' to cancel remaining jobs on first failure.",
-    }) catch return;
+    };
+    if (strategy.fail_fast_entry_span) |entry_span| {
+        diag.fix = buildFailFastDisabledFix(diag_list, entry_span);
+    }
+
+    diag_list.append(diag) catch return;
 }
 
 /// Extract the base name (owner/repo) from an action reference string like "actions/checkout@v4".
@@ -287,6 +308,126 @@ test "PERF003: detect fail-fast false" {
     checkFailFastDisabled(&job, &diags);
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqualStrings("PERF003", diags.get(0).rule_id);
+}
+
+test "PERF003: attach unsafe autofix when removable span exists" {
+    const job = Job{
+        .id = "test",
+        .strategy = .{
+            .fail_fast = false,
+            .fail_fast_value_span = Span{
+                .start_line = 1,
+                .start_col = 18,
+                .end_line = 1,
+                .end_col = 25,
+                .start_byte = 17,
+                .end_byte = 24,
+            },
+            .fail_fast_entry_span = Span{
+                .start_line = 1,
+                .start_col = 1,
+                .end_line = 2,
+                .end_col = 1,
+                .start_byte = 0,
+                .end_byte = 25,
+            },
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkFailFastDisabled(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqualStrings("remove fail-fast: false from strategy", fix.description);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try std.testing.expectEqual(@as(usize, 0), fix.edits[0].start_byte);
+    try std.testing.expectEqual(@as(usize, 25), fix.edits[0].end_byte);
+    try std.testing.expectEqualStrings("", fix.edits[0].replacement);
+}
+
+test "PERF003: no autofix without removable span" {
+    const job = Job{
+        .id = "test",
+        .strategy = .{
+            .fail_fast = false,
+            .fail_fast_value_span = Span.point(1, 1, 0),
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkFailFastDisabled(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERF003: autofix removes fail-fast line from workflow source" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      fail-fast: "false" # keep running
+        \\      max-parallel: 2
+        \\      matrix:
+        \\        node: [18, 20]
+        \\    steps:
+        \\      - run: npm test
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkFailFastDisabled(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix != null);
+
+    const safe_fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, false);
+    defer std.testing.allocator.free(safe_fixes);
+    try std.testing.expectEqual(@as(usize, 0), safe_fixes.len);
+
+    const all_fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
+    defer std.testing.allocator.free(all_fixes);
+    try std.testing.expectEqual(@as(usize, 1), all_fixes.len);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, all_fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      max-parallel: 2
+        \\      matrix:
+        \\        node: [18, 20]
+        \\    steps:
+        \\      - run: npm test
+        \\
+    ,
+        result.content,
+    );
 }
 
 test "PERF003: no warning when fail-fast is true (default)" {

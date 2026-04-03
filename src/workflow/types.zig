@@ -209,6 +209,10 @@ pub const ActionRef = struct {
 /// Matrix strategy configuration
 pub const Strategy = struct {
     fail_fast: bool = true,
+    /// Span of the `fail-fast` scalar value in the source YAML.
+    fail_fast_value_span: ?yaml_types.Span = null,
+    /// Span of the removable `fail-fast` entry in block-style YAML.
+    fail_fast_entry_span: ?yaml_types.Span = null,
     max_parallel: ?u32 = null,
 };
 

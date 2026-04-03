@@ -72,6 +72,9 @@ pub const MappingEntry = struct {
     key: Scalar,
     value: Node,
     span: Span,
+    /// Byte range that can safely remove the entire entry from block-style YAML.
+    /// Null when the parser cannot determine a stable removable range.
+    full_span: ?Span = null,
 };
 
 pub const Mapping = struct {
