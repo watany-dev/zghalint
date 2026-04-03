@@ -90,7 +90,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `PERM001` | 部分実装 | 条件付き可 | 中 | 中 | 個別 `write` を `read` へ落とす autofix は可能だが unsafe |
 | `PERM002` | 未実装 | 条件付き可 | 中 | 中 | job-level `permissions` を挿入できるが最低権限の決定は unsafe |
 | `DEP001` | 未実装 | 条件付き可 | 中 | 中 | `cooldown` ブロックの雛形挿入は可能だが運用ポリシー依存 |
-| `DEP002` | 未実装 | 可 | 低 | 高 | `insecure-external-code-execution: allow` を `deny` へ置換、または削除で対応可能 |
+| `DEP002` | 未実装 | 可 | 低 | 高 | `insecure-external-code-execution: allow` を `deny` へ置換、または削除で対応可能。個別設計: `docs/design/dep002-autofix-design.md` |
 | `EXPR001` | 未実装 | 不可/非推奨 | 高 | 低 | 構文エラーの正解を機械推定できない |
 | `EXPR002` | 未実装 | 不可/非推奨 | 高 | 低 | unknown context の正しい候補が文脈依存 |
 | `EXPR003` | 未実装 | 不可/非推奨 | 高 | 低 | property 名の typo 自動修正は誤爆しやすい |
