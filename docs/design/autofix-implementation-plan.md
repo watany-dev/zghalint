@@ -4,6 +4,12 @@
 
 GitHub Actions / Dependabot 向けルールのうち、autofix が未実装または部分実装の診断を棚卸しし、`実装可否`、`難易度`、`優先度` を付けて段階的に実装できるようにする。
 
+## 関連資料
+
+- ロードマップ: `docs/ROADMAP.md` の `RM-100`, `RM-200`, `RM-300`
+- 要件定義: `docs/requirements.md` の `FR-005`, `NFR-002`, `NFR-003`, `NFR-006`
+- 個別設計: `docs/design/dep002-autofix-design.md`, `docs/design/sec017-autofix-design.md`
+
 ## 対象と集計単位
 
 - 集計単位は CLI 上の「ルール数」ではなく、最終的に `Diagnostic.rule_id` として出力される診断 ID 単位とする

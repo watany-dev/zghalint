@@ -23,7 +23,12 @@ description: zghalintのドキュメント（設計書・README等）を一括�
 
 ## Phase 2: 各ドキュメントの更新
 
-### 2-1. 設計書 (`docs/design/<feature>.md`)
+### 2-0. 基準文書 (`docs/ROADMAP.md`, `docs/requirements.md`)
+
+1. ロードマップ item と requirement ID が現状の設計書・実装対象を正しく表しているか確認する
+2. `docs/design/*.md` が基準文書を参照できる状態か確認する
+
+### 2-1. 設計書 (`docs/design/` 配下)
 
 1. 各設計書の内容をソースコードと照合する
 2. 以下を更新する:
@@ -32,6 +37,7 @@ description: zghalintのドキュメント（設計書・README等）を一括�
    - 関数シグネチャの変更
    - ビルドオプションの変更
 3. 設計書が存在しない新機能がある場合、設計書の新規作成を提案する
+4. 各設計書が対応する roadmap item と requirement ID を明示しているか確認する
 
 ### 2-2. README.md
 
@@ -55,6 +61,7 @@ description: zghalintのドキュメント（設計書・README等）を一括�
 3. **ファイルパス参照の統一**
 4. **依存情報の統一**
 5. **`@import` 文の検証**
+6. **`docs/ROADMAP.md` / `docs/requirements.md` への参照整合**
 
 ## Phase 4: 更新レポートの出力
 
@@ -66,7 +73,7 @@ description: zghalintのドキュメント（設計書・README等）を一括�
 ### 更新したドキュメント
 | ファイル | 更新内容 |
 |---------|---------|
-| docs/design/xxx.md | [変更概要] |
+| docs/design/sec017-autofix-design.md | [変更概要] |
 | README.md | [変更概要] |
 | AGENTS.md | [変更概要] |
 

@@ -8,6 +8,7 @@ description: zghalintの設計書（docs/design/*.md）を評価・改善する 
 
 ## Phase 1: 設計書の収集
 
+0. `docs/ROADMAP.md` と `docs/requirements.md` を読み込み、設計レビュー基準と requirement ID を把握する
 1. `docs/design/` ディレクトリ配下のすべての `.md` ファイルを読み込む
 2. 各設計書のタイトル・構成を把握する
 3. 設計書が存在しない場合は、その旨を報告して終了する
@@ -104,4 +105,4 @@ description: zghalintの設計書（docs/design/*.md）を評価・改善する 
 - 設計書は日本語で記述すること
 - 構造体名・関数名はZigの命名規則（camelCase / PascalCase）に従うこと
 - 定数名はscreaming_snake_caseまたはZigの慣例に従うこと
-- 参照先は Codex 用の `AGENTS.md` と `.agents/skills/` を基準に扱うこと
+- 参照先は `AGENTS.md`、`docs/ROADMAP.md`、`docs/requirements.md`、`.agents/skills/` を基準に扱うこと

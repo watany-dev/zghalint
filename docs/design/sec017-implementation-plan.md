@@ -5,6 +5,12 @@
 `docs/design/sec017-autofix-design.md` を実装に落とし込み、`SEC017` に safe autofix を追加する。  
 対象は `ACTIONS_ALLOW_UNSECURE_COMMANDS: true` の検出時に、YAML の scalar style を保持したまま `false` へ置換する機能である。
 
+## 関連資料
+
+- ロードマップ: `docs/ROADMAP.md` の `RM-120`
+- 要件定義: `docs/requirements.md` の `FR-001`, `FR-005`, `NFR-002`, `NFR-005`, `NFR-006`
+- 設計書: `docs/design/sec017-autofix-design.md`
+
 ## update-plan 検証結果
 
 ### 設計書品質評価
@@ -18,7 +24,7 @@
 | チェック項目 | スコア | 詳細 |
 |-------------|--------|------|
 | 設計書 ↔ ソースコード | 94/100 | `src/workflow/parser.zig` が `env` の span/style を落としている点、`src/rules/security.zig` が fix 未実装である点を設計書が正しく捉えている |
-| ロードマップ ↔ 設計書 ↔ 要件定義 | 72/100 | `docs/ROADMAP.md` と `docs/requirements.md` は現状リポジトリ内に見当たらないため、`AGENTS.md` と既存設計書を基準に整合性を確認した |
+| ロードマップ ↔ 設計書 ↔ 要件定義 | 94/100 | `docs/ROADMAP.md` の `RM-120` と `docs/requirements.md` の `FR-001`, `FR-005`, `NFR-002`, `NFR-006` に整合する |
 
 ### 修正事項
 
@@ -182,5 +188,5 @@ YAML parse から fix 適用までが実際に通ることを担保する。
 
 ## 実装メモ
 
-- `docs/ROADMAP.md` と `docs/requirements.md` は現時点で見当たらないため、本計画は [sec017-autofix-design.md](/workspaces/zghalint/docs/design/sec017-autofix-design.md) と `AGENTS.md`、既存 autofix 実装パターンを基準にしている
+- 本計画は `docs/ROADMAP.md` の `RM-120`、`docs/requirements.md` の `FR-001`, `FR-005`, `NFR-002`, `NFR-006`、[sec017-autofix-design.md](./sec017-autofix-design.md)、`AGENTS.md` を基準にしている
 - 既存の `SEC017` テストは検出確認だけなので、fix attachment と integration の 2 系統に分けて拡張するのが最小差分

@@ -5,6 +5,12 @@
 `DEP002` は Dependabot 設定の `insecure-external-code-execution: allow` を検出するが、現状は `fix_hint` のみで自動修正を提供していない。  
 `docs/design/autofix-implementation-plan.md` では `DEP002` を Phase 1 の優先実装候補としており、本設計書では既存の edit-based autofix 基盤の上で安全に実装する方法を定義する。
 
+## 関連資料
+
+- ロードマップ: `docs/ROADMAP.md` の `RM-110`
+- 要件定義: `docs/requirements.md` の `FR-002`, `FR-005`, `NFR-002`, `NFR-006`
+- 上位計画: `docs/design/autofix-implementation-plan.md`
+
 ## スコープ
 
 - `updates` 配列内の各 entry にある `insecure-external-code-execution: allow` に対して autofix を付与する
