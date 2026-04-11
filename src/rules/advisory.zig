@@ -46,14 +46,14 @@ var fetched: bool = false;
 // Public API
 // ============================================================
 
+/// Cache validity duration: 24 hours (in seconds).
+const cache_max_age_s: i64 = 24 * 60 * 60;
+
 /// Initialize advisory check. The actual HTTP fetch is deferred until the
 /// first call to checkKnownVulnerableAction() to avoid blocking startup.
-/// Set ZGHALINT_OFFLINE=1 to skip network checks entirely.
-pub fn initAdvisories(backing_allocator: Allocator) void {
-    if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
-
+pub fn initAdvisories(backing_allocator: Allocator, offline: bool) void {
     advisory_arena = std.heap.ArenaAllocator.init(backing_allocator);
-    is_offline = false;
+    is_offline = offline;
 }
 
 /// Release advisory memory.
@@ -69,13 +69,12 @@ pub fn deinitAdvisories() void {
 
 /// Rule check function for SC003.
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
-    if (is_offline) return;
-
     // Lazy fetch: only on first invocation
     if (!fetched) {
         fetched = true;
         if (advisory_arena) |*arena| {
-            advisory_cache = fetchAndParse(arena.allocator()) catch null;
+            const alloc = arena.allocator();
+            advisory_cache = loadAdvisories(alloc);
         }
     }
 
@@ -109,6 +108,140 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
         }) catch return;
         return; // One diagnostic per step
     }
+}
+
+// ============================================================
+// Disk cache
+// ============================================================
+
+const cache_subdir = "zghalint";
+const cache_filename = "advisories.json";
+
+fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
+    if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME")) |xdg| {
+        defer allocator.free(xdg);
+        var dir = std.fs.openDirAbsolute(xdg, .{}) catch return null;
+        const sub = dir.makeOpenPath(cache_subdir, .{}) catch {
+            dir.close();
+            return null;
+        };
+        dir.close();
+        return sub;
+    } else |_| {}
+
+    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
+        defer allocator.free(home);
+        var dir = std.fs.openDirAbsolute(home, .{}) catch return null;
+        const sub = dir.makeOpenPath(".cache/" ++ cache_subdir, .{}) catch {
+            dir.close();
+            return null;
+        };
+        dir.close();
+        return sub;
+    } else |_| {}
+
+    return null;
+}
+
+fn isCacheFresh(dir: std.fs.Dir) bool {
+    const stat = dir.statFile(cache_filename) catch return false;
+    const now = std.time.timestamp();
+    const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_s));
+    return (now - mtime) < cache_max_age_s;
+}
+
+fn writeCacheFile(dir: std.fs.Dir, data: []const u8) void {
+    const file = dir.createFile(cache_filename, .{}) catch return;
+    defer file.close();
+    file.writeAll(data) catch {};
+}
+
+fn serializeAdvisories(allocator: Allocator, advisories: []const Advisory) ![]const u8 {
+    var buf = std.ArrayList(u8){};
+    for (advisories) |adv| {
+        buf.appendSlice(allocator, adv.ghsa_id) catch continue;
+        buf.append(allocator, '\t') catch continue;
+        buf.appendSlice(allocator, adv.action_slug) catch continue;
+        buf.append(allocator, '\t') catch continue;
+        buf.appendSlice(allocator, adv.summary) catch continue;
+        buf.append(allocator, '\t') catch continue;
+        buf.appendSlice(allocator, adv.severity) catch continue;
+        buf.append(allocator, '\t') catch continue;
+        buf.appendSlice(allocator, adv.vulnerable_range orelse "") catch continue;
+        buf.append(allocator, '\t') catch continue;
+        buf.appendSlice(allocator, adv.patched_version orelse "") catch continue;
+        buf.append(allocator, '\n') catch continue;
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Advisory {
+    var result = std.ArrayList(Advisory){};
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        var fields = std.mem.splitScalar(u8, line, '\t');
+        const ghsa_id = fields.next() orelse continue;
+        const action_slug = fields.next() orelse continue;
+        const summary = fields.next() orelse continue;
+        const severity = fields.next() orelse continue;
+        const range_str = fields.next() orelse continue;
+        const patched_str = fields.next() orelse continue;
+        const range: ?[]const u8 = if (range_str.len > 0) range_str else null;
+        const patched: ?[]const u8 = if (patched_str.len > 0) patched_str else null;
+
+        const message = std.fmt.allocPrint(allocator, "action '{s}' has known vulnerability {s}: {s}", .{
+            action_slug, ghsa_id, summary,
+        }) catch continue;
+        const hint = if (patched) |p|
+            std.fmt.allocPrint(allocator, "update to version {s} or later, see https://github.com/advisories/{s}", .{ p, ghsa_id }) catch continue
+        else
+            std.fmt.allocPrint(allocator, "check https://github.com/advisories/{s} for remediation", .{ghsa_id}) catch continue;
+
+        result.append(allocator, .{
+            .ghsa_id = ghsa_id,
+            .action_slug = action_slug,
+            .summary = summary,
+            .severity = severity,
+            .vulnerable_range = range,
+            .patched_version = patched,
+            .diagnostic_message = message,
+            .diagnostic_hint = hint,
+        }) catch continue;
+    }
+    return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
+}
+
+fn loadFromDiskCache(allocator: Allocator) ![]const Advisory {
+    var dir = getCacheDir(allocator) orelse return error.CacheMiss;
+    defer dir.close();
+    if (!isCacheFresh(dir)) return error.CacheStale;
+    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
+    defer file.close();
+    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
+    return deserializeAdvisories(allocator, body);
+}
+
+fn loadFromDiskCacheIgnoreAge(allocator: Allocator) ![]const Advisory {
+    var dir = getCacheDir(allocator) orelse return error.CacheMiss;
+    defer dir.close();
+    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
+    defer file.close();
+    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
+    return deserializeAdvisories(allocator, body);
+}
+
+fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
+    if (is_offline) {
+        return loadFromDiskCache(allocator) catch
+            loadFromDiskCacheIgnoreAge(allocator) catch
+            null;
+    }
+
+    return loadFromDiskCache(allocator) catch
+        fetchAndParse(allocator) catch
+        loadFromDiskCacheIgnoreAge(allocator) catch
+        null;
 }
 
 // ============================================================
@@ -158,7 +291,18 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
     var response_list = aw.toArrayList();
     defer response_list.deinit(allocator);
 
-    return parseAdvisories(allocator, response_list.items);
+    const advisories = try parseAdvisories(allocator, response_list.items);
+
+    // Write parsed advisories to disk cache in compact TSV format
+    if (serializeAdvisories(allocator, advisories)) |serialized| {
+        if (getCacheDir(allocator)) |dir_val| {
+            var dir_mut = dir_val;
+            writeCacheFile(dir_mut, serialized);
+            dir_mut.close();
+        }
+    } else |_| {}
+
+    return advisories;
 }
 
 // ============================================================
@@ -166,9 +310,6 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
 // ============================================================
 
 fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return error.JsonParseError;
-    _ = parsed; // We don't defer deinit because arena owns everything
-
     const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch return error.JsonParseError;
 
     const items = switch (root) {
@@ -361,15 +502,15 @@ fn satisfiesConstraint(ver: Semver, constraint: Constraint) bool {
 /// Check if a ref version falls within a vulnerable range.
 /// Returns true if the version IS vulnerable (or if we can't determine).
 pub fn isVersionVulnerable(ref: []const u8, range: []const u8) bool {
-    const ver = parseSemver(ref) orelse return true; // Can't parse → conservatively vulnerable
+    const ver = parseSemver(ref) orelse return true; // Can't parse -> conservatively vulnerable
 
     // Split range on comma for AND conditions (e.g., ">= 2.0.0, < 2.3.1")
     var iter = std.mem.splitScalar(u8, range, ',');
     while (iter.next()) |part| {
-        const constraint = parseConstraint(part) orelse return true; // Can't parse → conservatively vulnerable
-        if (!satisfiesConstraint(ver, constraint)) return false; // One constraint not met → not in vulnerable range
+        const constraint = parseConstraint(part) orelse return true; // Can't parse -> conservatively vulnerable
+        if (!satisfiesConstraint(ver, constraint)) return false; // One constraint not met -> not in vulnerable range
     }
-    return true; // All constraints met → vulnerable
+    return true; // All constraints met -> vulnerable
 }
 
 // ============================================================
@@ -703,7 +844,7 @@ test "SC003: SHA ref with vulnerable action still warns" {
         fetched = prev_fetched;
     }
 
-    // SHA ref: can't determine version, is_pinned=true so skip version check → warn
+    // SHA ref: can't determine version, is_pinned=true so skip version check -> warn
     const step = Step{ .uses = ActionRef.parse("evil/action@a5ac7e51b41094c92402da3b24376905380afc29") };
     var list = DiagnosticList.init(testing.allocator);
     defer list.deinit();

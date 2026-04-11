@@ -2,12 +2,14 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
+const fix_engine = @import("../fix/engine.zig");
 
 const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
 const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
 const Span = yaml_types.Span;
+const Fix = diagnostics_mod.Fix;
 
 // ── DEP001: dependabot-cooldown ──
 
@@ -38,6 +40,30 @@ fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
 
 // ── DEP002: dependabot-execution ──
 
+fn buildInsecureExecutionFix(
+    list: *DiagnosticList,
+    value: yaml_types.Scalar,
+) ?Fix {
+    const replacement = switch (value.style) {
+        .plain => "deny",
+        .single_quoted => "'deny'",
+        .double_quoted => "\"deny\"",
+        else => return null,
+    };
+
+    const edits = list.allocEdit(.{
+        .start_byte = value.span.start_byte,
+        .end_byte = value.span.end_byte,
+        .replacement = replacement,
+    }) orelse return null;
+
+    return .{
+        .description = "set insecure-external-code-execution to deny",
+        .safety = .safe,
+        .edits = edits,
+    };
+}
+
 fn checkInsecureExecution(root: Mapping, diag_list: *DiagnosticList) void {
     const updates_node = root.get("updates") orelse return;
     const items = switch (updates_node) {
@@ -57,13 +83,15 @@ fn checkInsecureExecution(root: Mapping, diag_list: *DiagnosticList) void {
                 switch (map_entry.value) {
                     .scalar => |s| {
                         if (std.mem.eql(u8, s.value, "allow")) {
-                            diag_list.append(.{
+                            var diag = diagnostics_mod.Diagnostic{
                                 .rule_id = "DEP002",
                                 .severity = .warning,
                                 .message = "'insecure-external-code-execution: allow' permits running untrusted external code during dependency updates. This is a supply chain attack risk.",
                                 .span = map_entry.span,
                                 .fix_hint = "Remove 'insecure-external-code-execution: allow' or set it to 'deny'.",
-                            }) catch return;
+                            };
+                            diag.fix = buildInsecureExecutionFix(diag_list, s);
+                            diag_list.append(diag) catch return;
                         }
                     },
                     else => {},
@@ -225,7 +253,61 @@ test "DEP002: detect insecure-external-code-execution allow" {
     for (diags.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "DEP002")) {
             found = true;
+            try std.testing.expect(d.fix != null);
+            const fix = d.fix.?;
+            try std.testing.expectEqualStrings("set insecure-external-code-execution to deny", fix.description);
+            try std.testing.expect(fix.safety == .safe);
+            try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
             break;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "DEP002: fix preserves single quoted style" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const node = try parseYamlWithArena(&arena,
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    insecure-external-code-execution: 'allow'
+    );
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    lintDependabot(node, &diags);
+
+    var found = false;
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
+            const fix = d.fix orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqualStrings("'deny'", fix.edits[0].replacement);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "DEP002: fix preserves double quoted style" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const node = try parseYamlWithArena(&arena,
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    insecure-external-code-execution: "allow"
+    );
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    lintDependabot(node, &diags);
+
+    var found = false;
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
+            const fix = d.fix orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqualStrings("\"deny\"", fix.edits[0].replacement);
+            found = true;
         }
     }
     try std.testing.expect(found);
@@ -274,6 +356,54 @@ test "DEP002: no warning when key is absent" {
             try std.testing.expect(false);
         }
     }
+}
+
+test "DEP002: autofix rewrites allow to deny without disturbing other updates" {
+    const source =
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    directory: "/"
+        \\    insecure-external-code-execution: allow
+        \\  - package-ecosystem: "docker"
+        \\    directory: "/"
+        \\    insecure-external-code-execution: "allow"
+        \\  - package-ecosystem: "github-actions"
+        \\    directory: "/"
+        \\    insecure-external-code-execution: deny
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const node = try parseYamlWithArena(&arena, source);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    lintDependabot(node, &diags);
+
+    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, false);
+    defer std.testing.allocator.free(fixes);
+
+    try std.testing.expectEqual(@as(usize, 2), fixes.len);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    directory: "/"
+        \\    insecure-external-code-execution: deny
+        \\  - package-ecosystem: "docker"
+        \\    directory: "/"
+        \\    insecure-external-code-execution: "deny"
+        \\  - package-ecosystem: "github-actions"
+        \\    directory: "/"
+        \\    insecure-external-code-execution: deny
+    ,
+        result.content,
+    );
 }
 
 test "lintDependabot: both rules detected" {

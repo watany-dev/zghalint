@@ -10,6 +10,9 @@ inputs:
   format:
     description: 'Output format (terminal, json, sarif)'
     default: 'terminal'
+  offline:
+    description: 'Disable network requests and use only local data/cache'
+    default: 'false'
   fix:
     description: 'Fix mode: none, safe, unsafe'
     default: ''
@@ -22,7 +25,7 @@ runs:
     - name: Download zghalint
       shell: bash
       run: |
-        VERSION=${GITHUB_ACTION_REF:-v0.1.0}
+        VERSION=${GITHUB_ACTION_REF:-v0.0.1-rc.1}
 
         case "$RUNNER_OS" in
           Linux)  OS=linux ;;
@@ -41,23 +44,35 @@ runs:
           echo "::error::Windows ARM64 is not supported"; exit 1
         fi
 
-        EXT=""
-        if [ "$OS" = "windows" ]; then EXT=".exe"; fi
-
-        curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/zghalint-$OS-$ARCH$EXT" -o "zghalint$EXT"
-        chmod +x "zghalint$EXT"
+        if [ "$OS" = "windows" ]; then
+          ARCHIVE="zghalint-$OS-$ARCH.zip"
+          curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/$ARCHIVE" -o "$ARCHIVE"
+          unzip -q "$ARCHIVE"
+          cp "zghalint-$OS-$ARCH/zghalint.exe" ./zghalint.exe
+        else
+          ARCHIVE="zghalint-$OS-$ARCH.tar.gz"
+          curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/$ARCHIVE" -o "$ARCHIVE"
+          tar -xzf "$ARCHIVE"
+          cp "zghalint-$OS-$ARCH/zghalint" ./zghalint
+          chmod +x ./zghalint
+        fi
     - name: Run zghalint
       shell: bash
       run: |
         FIX_FLAG=""
+        OFFLINE_FLAG=""
         if [ "${{ inputs.fix }}" = "safe" ]; then
           FIX_FLAG="--fix"
         elif [ "${{ inputs.fix }}" = "unsafe" ]; then
           FIX_FLAG="--fix-unsafe"
         fi
 
+        if [ "${{ inputs.offline }}" = "true" ]; then
+          OFFLINE_FLAG="--offline"
+        fi
+
         if [ "$RUNNER_OS" = "Windows" ]; then
-          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $FIX_FLAG
+          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG
         else
-          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $FIX_FLAG
+          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG
         fi

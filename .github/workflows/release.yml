@@ -9,25 +9,45 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: Verify Release Inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build
+
+      - name: Format Check
+        run: zig fmt --check src/ build.zig
+
+      - name: Test
+        run: zig build test --summary all
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - target: x86_64-linux
+          - target: linux-x86_64
             os: ubuntu-latest
             zig_target: x86_64-linux
-          - target: aarch64-linux
+          - target: linux-aarch64
             os: ubuntu-latest
             zig_target: aarch64-linux
-          - target: x86_64-macos
+          - target: macos-x86_64
             os: macos-latest
             zig_target: x86_64-macos
-          - target: aarch64-macos
+          - target: macos-aarch64
             os: macos-latest
             zig_target: aarch64-macos
-          - target: x86_64-windows
+          - target: windows-x86_64
             os: windows-latest
             zig_target: x86_64-windows
     steps:
@@ -40,19 +60,28 @@ jobs:
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
-      - name: Rename binary (Unix)
+      - name: Package archive (Unix)
         if: matrix.os != 'windows-latest'
-        run: mv zig-out/bin/zghalint zghalint-${{ matrix.target }}
+        run: |
+          mkdir -p zghalint-${{ matrix.target }}
+          cp zig-out/bin/zghalint zghalint-${{ matrix.target }}/zghalint
+          cp LICENSE README.md zghalint-${{ matrix.target }}/
+          tar -czf zghalint-${{ matrix.target }}.tar.gz zghalint-${{ matrix.target }}
 
-      - name: Rename binary (Windows)
+      - name: Package archive (Windows)
         if: matrix.os == 'windows-latest'
-        run: mv zig-out/bin/zghalint.exe zghalint-${{ matrix.target }}.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path zghalint-${{ matrix.target }} | Out-Null
+          Copy-Item zig-out/bin/zghalint.exe zghalint-${{ matrix.target }}/zghalint.exe
+          Copy-Item LICENSE, README.md zghalint-${{ matrix.target }}/
+          Compress-Archive -Path zghalint-${{ matrix.target }} -DestinationPath zghalint-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: zghalint-${{ matrix.target }}
-          path: zghalint-${{ matrix.target }}*
+          path: zghalint-${{ matrix.target }}.*
 
   release:
     name: Create Release
@@ -70,13 +99,66 @@ jobs:
           cd artifacts
           sha256sum zghalint-* > SHA256SUMS
 
+      - name: Write release notes
+        run: |
+          cat <<'EOF' > artifacts/RELEASE_NOTES.md
+          ## Summary
+          First public prerelease of zghalint.
+
+          This release is intended to validate binary distribution, installation flow, and basic CLI behavior across supported platforms. It is not the first stable release.
+
+          ## Supported Platforms
+          - Linux x86_64
+          - Linux aarch64
+          - macOS x86_64
+          - macOS aarch64
+          - Windows x86_64
+
+          ## Installation
+          Download the appropriate archive from the release assets, extract it, and place the `zghalint` binary in your PATH.
+
+          Example on Linux/macOS:
+
+          ```bash
+          tar -xzf zghalint-linux-x86_64.tar.gz
+          chmod +x zghalint-linux-x86_64/zghalint
+          ./zghalint-linux-x86_64/zghalint --help
+          ```
+
+          ## Scope Of This Release
+          - First standalone binaries published via GitHub Releases
+          - Basic workflow linting from the CLI
+          - Early validation of output, diagnostics, and exit-code behavior
+
+          ## Known Limitations
+          - CLI flags may still change before stable release
+          - Output details may change in later versions
+          - Config behavior is still considered early-stage
+          - GitHub Action usage is still early and tied to the release asset layout
+
+          ## Feedback Requested
+          - Installation issues by OS or architecture
+          - Incorrect diagnostics
+          - Confusing CLI behavior or messages
+          - Packaging issues in release assets
+
+          ## Checksums
+          See `SHA256SUMS` in the release assets.
+          EOF
+
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
+          PRERELEASE_FLAG=""
+          case "$TAG" in
+            *-rc.*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
+
           gh release create "$TAG" \
             --title "$TAG" \
-            --generate-notes \
+            --notes-file artifacts/RELEASE_NOTES.md \
+            $PRERELEASE_FLAG \
             artifacts/*

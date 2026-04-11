@@ -26,7 +26,7 @@ const TagResolution = enum {
 // ============================================================
 
 /// Maps "owner/repo@sha" -> TagResolution.
-/// null means offline mode (ZGHALINT_OFFLINE set or init not called).
+/// null means offline mode.
 var tag_cache: ?std.StringHashMap(TagResolution) = null;
 var stale_refs_arena: ?std.heap.ArenaAllocator = null;
 
@@ -35,13 +35,12 @@ var stale_refs_arena: ?std.heap.ArenaAllocator = null;
 // ============================================================
 
 /// Initialize stale-ref checker. Lazy: only sets up cache; API calls happen per-lookup.
-/// Set ZGHALINT_OFFLINE=1 to skip entirely (cache stays null).
-pub fn initStaleRefs(backing_allocator: Allocator) void {
-    if (std.process.hasEnvVar(backing_allocator, "ZGHALINT_OFFLINE") catch false) return;
-
-    var arena = std.heap.ArenaAllocator.init(backing_allocator);
-    tag_cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    stale_refs_arena = arena;
+pub fn initStaleRefs(backing_allocator: Allocator, offline: bool) void {
+    if (offline) return;
+    stale_refs_arena = std.heap.ArenaAllocator.init(backing_allocator);
+    if (stale_refs_arena) |*arena| {
+        tag_cache = std.StringHashMap(TagResolution).init(arena.allocator());
+    }
 }
 
 /// Release all memory.
@@ -64,7 +63,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     const sha = action_ref.ref orelse return;
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
 
-    const allocator = (stale_refs_arena orelse return).allocator();
+    const allocator = if (stale_refs_arena) |*arena| arena.allocator() else return;
     const key = std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
 
     const resolution = cache.get(key) orelse blk: {

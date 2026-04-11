@@ -55,7 +55,6 @@ pub const Engine = struct {
             }
         }
 
-        list.sort();
         return list;
     }
 };
@@ -305,7 +304,7 @@ test "engine no false positive for local action" {
     }
 }
 
-test "engine returns sorted diagnostics" {
+test "engine returns all expected diagnostics" {
     const engine = Engine.init(&test_rules);
 
     const steps = [_]Step{
@@ -320,12 +319,6 @@ test "engine returns sorted diagnostics" {
 
     // Should have BP001, BP002, SEC001
     try std.testing.expect(list.len() >= 3);
-    // Verify sorted order (by line, then col)
-    var prev_line: u32 = 0;
-    for (list.items.items) |d| {
-        try std.testing.expect(d.span.start_line >= prev_line);
-        prev_line = d.span.start_line;
-    }
 }
 
 test "engine with empty rules" {
