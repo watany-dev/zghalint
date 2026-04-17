@@ -1,8 +1,10 @@
 const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
+const util = @import("../util.zig");
 const Diagnostic = diagnostics.Diagnostic;
 const DiagnosticList = diagnostics.DiagnosticList;
 const Severity = diagnostics.Severity;
+const writeJsonString = util.writeJsonString;
 
 /// Render diagnostics as a JSON object to the writer.
 /// Output format:
@@ -71,28 +73,6 @@ fn writeDiagnosticJson(writer: anytype, diag: Diagnostic) !void {
     }
 
     try writer.writeAll("}");
-}
-
-/// Write a JSON-escaped string (with surrounding quotes).
-fn writeJsonString(writer: anytype, s: []const u8) !void {
-    try writer.writeByte('"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => {
-                if (c < 0x20) {
-                    try writer.print("\\u{x:0>4}", .{c});
-                } else {
-                    try writer.writeByte(c);
-                }
-            },
-        }
-    }
-    try writer.writeByte('"');
 }
 
 // ============================================================

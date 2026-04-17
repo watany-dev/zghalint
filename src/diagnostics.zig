@@ -11,12 +11,7 @@ pub const Severity = enum {
     hint,
 
     pub fn toString(self: Severity) []const u8 {
-        return switch (self) {
-            .@"error" => "error",
-            .warning => "warning",
-            .info => "info",
-            .hint => "hint",
-        };
+        return @tagName(self);
     }
 };
 
@@ -33,17 +28,7 @@ pub const Category = enum {
     reusable_workflow,
 
     pub fn toString(self: Category) []const u8 {
-        return switch (self) {
-            .syntax => "syntax",
-            .security => "security",
-            .performance => "performance",
-            .best_practice => "best_practice",
-            .expression => "expression",
-            .dependency => "dependency",
-            .permissions => "permissions",
-            .runner => "runner",
-            .reusable_workflow => "reusable_workflow",
-        };
+        return @tagName(self);
     }
 };
 
@@ -55,10 +40,7 @@ pub const FixSafety = enum {
     unsafe,
 
     pub fn toString(self: FixSafety) []const u8 {
-        return switch (self) {
-            .safe => "safe",
-            .unsafe => "unsafe",
-        };
+        return @tagName(self);
     }
 };
 
@@ -87,32 +69,6 @@ pub const Diagnostic = struct {
     span: Span,
     fix_hint: ?[]const u8 = null,
     fix: ?Fix = null,
-
-    /// Format as "file:line:col: severity [rule_id]: message"
-    pub fn format(self: Diagnostic, allocator: std.mem.Allocator) ![]const u8 {
-        const file_str = self.file orelse "<unknown>";
-
-        if (self.fix_hint) |hint| {
-            return std.fmt.allocPrint(allocator, "{s}:{d}:{d}: {s} [{s}]: {s}\n  hint: {s}", .{
-                file_str,
-                self.span.start_line,
-                self.span.start_col,
-                self.severity.toString(),
-                self.rule_id,
-                self.message,
-                hint,
-            });
-        }
-
-        return std.fmt.allocPrint(allocator, "{s}:{d}:{d}: {s} [{s}]: {s}", .{
-            file_str,
-            self.span.start_line,
-            self.span.start_col,
-            self.severity.toString(),
-            self.rule_id,
-            self.message,
-        });
-    }
 };
 
 /// Collects diagnostics and provides sorting/access.
@@ -208,57 +164,6 @@ test "category toString" {
     try std.testing.expectEqualStrings("permissions", Category.permissions.toString());
     try std.testing.expectEqualStrings("runner", Category.runner.toString());
     try std.testing.expectEqualStrings("reusable_workflow", Category.reusable_workflow.toString());
-}
-
-test "diagnostic format without fix hint" {
-    const allocator = std.testing.allocator;
-    const diag = Diagnostic{
-        .rule_id = "SEC001",
-        .severity = .warning,
-        .message = "unpinned action reference",
-        .file = ".github/workflows/ci.yml",
-        .span = Span.point(10, 5, 100),
-    };
-    const formatted = try diag.format(allocator);
-    defer allocator.free(formatted);
-    try std.testing.expectEqualStrings(
-        ".github/workflows/ci.yml:10:5: warning [SEC001]: unpinned action reference",
-        formatted,
-    );
-}
-
-test "diagnostic format with fix hint" {
-    const allocator = std.testing.allocator;
-    const diag = Diagnostic{
-        .rule_id = "SEC001",
-        .severity = .@"error",
-        .message = "script injection risk",
-        .file = "ci.yml",
-        .span = Span.point(3, 1, 20),
-        .fix_hint = "use an intermediate env variable",
-    };
-    const formatted = try diag.format(allocator);
-    defer allocator.free(formatted);
-    try std.testing.expectEqualStrings(
-        "ci.yml:3:1: error [SEC001]: script injection risk\n  hint: use an intermediate env variable",
-        formatted,
-    );
-}
-
-test "diagnostic format with no file" {
-    const allocator = std.testing.allocator;
-    const diag = Diagnostic{
-        .rule_id = "BP001",
-        .severity = .info,
-        .message = "consider adding a timeout",
-        .span = Span.point(1, 1, 0),
-    };
-    const formatted = try diag.format(allocator);
-    defer allocator.free(formatted);
-    try std.testing.expectEqualStrings(
-        "<unknown>:1:1: info [BP001]: consider adding a timeout",
-        formatted,
-    );
 }
 
 test "diagnostic list append and len" {

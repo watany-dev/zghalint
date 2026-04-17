@@ -2,6 +2,7 @@ const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
+const util = @import("../util.zig");
 const engine = @import("engine.zig");
 const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
@@ -796,13 +797,13 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 
 fn isCacheAction(step: *const Step) bool {
     const action_ref = step.uses orelse return false;
-    const base = actionBaseName(action_ref.raw);
+    const base = util.actionBaseName(action_ref.raw);
     return std.mem.eql(u8, base, "actions/cache");
 }
 
 fn isSetupActionWithCache(step: *const Step) bool {
     const action_ref = step.uses orelse return false;
-    const base = actionBaseName(action_ref.raw);
+    const base = util.actionBaseName(action_ref.raw);
     for (cache_setup_actions) |setup_action| {
         if (std.mem.eql(u8, base, setup_action)) {
             if (step.with) |with_map| {
@@ -842,10 +843,6 @@ fn exprHasSecretJsonCall(expr: []const u8) bool {
         }
     }
     return false;
-}
-
-fn actionBaseName(raw: []const u8) []const u8 {
-    return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
 }
 
 // ============================================================

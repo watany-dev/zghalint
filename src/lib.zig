@@ -93,4 +93,5 @@ test {
     _ = @import("output/sarif.zig");
     _ = @import("fix/engine.zig");
     _ = @import("config.zig");
+    _ = @import("util.zig");
 }

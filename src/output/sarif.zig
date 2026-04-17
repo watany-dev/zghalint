@@ -1,10 +1,12 @@
 const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
+const util = @import("../util.zig");
 const Diagnostic = diagnostics.Diagnostic;
 const DiagnosticList = diagnostics.DiagnosticList;
 const Severity = diagnostics.Severity;
 const engine_mod = @import("../rules/engine.zig");
 const Rule = engine_mod.Rule;
+const writeJsonString = util.writeJsonString;
 
 /// SARIF severity level mapping.
 /// Maps zghalint Severity to SARIF "level" values.
@@ -111,28 +113,6 @@ fn findRuleIndex(rules: []const Rule, rule_id: []const u8) ?usize {
         if (std.mem.eql(u8, rule.id, rule_id)) return i;
     }
     return null;
-}
-
-/// Write a JSON-escaped string (with surrounding quotes).
-fn writeJsonString(writer: anytype, s: []const u8) !void {
-    try writer.writeByte('"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => {
-                if (c < 0x20) {
-                    try writer.print("\\u{x:0>4}", .{c});
-                } else {
-                    try writer.writeByte(c);
-                }
-            },
-        }
-    }
-    try writer.writeByte('"');
 }
 
 // ============================================================
