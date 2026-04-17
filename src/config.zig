@@ -43,18 +43,23 @@ pub const Config = struct {
     output_format: OutputFormat = .terminal,
     color_mode: ColorMode = .auto,
     allocator: std.mem.Allocator,
+    /// Owns string data (rule IDs, ignore patterns) referenced by the fields
+    /// above. Decouples Config lifetime from the YAML source buffer.
+    strings_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{
             .rule_overrides = std.StringHashMap(RuleOverride).init(allocator),
             .ignore_patterns = .{},
             .allocator = allocator,
+            .strings_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
     pub fn deinit(self: *Config) void {
         self.rule_overrides.deinit();
         self.ignore_patterns.deinit(self.allocator);
+        self.strings_arena.deinit();
     }
 
     pub fn isRuleEnabled(self: *const Config, rule_id: []const u8) bool {
