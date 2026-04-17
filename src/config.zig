@@ -110,12 +110,16 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         else => return ConfigError.InvalidConfig,
     };
 
+    // YAML scalar values are slices into the source buffer; dupe them into the
+    // Config-owned arena so the Config can outlive the source buffer.
+    const strings = config.strings_arena.allocator();
+
     // Parse "rules" section
     if (root.get("rules")) |rules_node| {
         switch (rules_node) {
             .mapping => |m| {
                 for (m.entries) |entry| {
-                    const rule_id = entry.key.value;
+                    const rule_id = strings.dupe(u8, entry.key.value) catch return ConfigError.OutOfMemory;
                     var override = RuleOverride{};
 
                     switch (entry.value) {
@@ -144,7 +148,8 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                 for (seq.items) |item| {
                     switch (item) {
                         .scalar => |s| {
-                            config.ignore_patterns.append(allocator, s.value) catch return ConfigError.OutOfMemory;
+                            const pattern = strings.dupe(u8, s.value) catch return ConfigError.OutOfMemory;
+                            config.ignore_patterns.append(allocator, pattern) catch return ConfigError.OutOfMemory;
                         },
                         else => {},
                     }
@@ -506,4 +511,27 @@ test "getEffectiveSeverity with override that has no severity set" {
     try config.rule_overrides.put("MY_RULE", .{ .severity = null, .enabled = true });
     // Should return the default severity
     try std.testing.expectEqual(Severity.warning, config.getEffectiveSeverity("MY_RULE", .warning));
+}
+
+test "config outlives source buffer (rule override)" {
+    const alloc = std.testing.allocator;
+    const src = try alloc.dupe(u8, "rules:\n  SEC001:\n    enabled: false\n");
+    var config = try parseConfig(alloc, src);
+    // Free the source before using the config — YAML scalars must have been duped.
+    alloc.free(src);
+    defer config.deinit();
+
+    try std.testing.expect(!config.isRuleEnabled("SEC001"));
+    try std.testing.expect(config.isRuleEnabled("BP001"));
+}
+
+test "config outlives source buffer (ignore pattern)" {
+    const alloc = std.testing.allocator;
+    const src = try alloc.dupe(u8, "ignore:\n  - '.github/workflows/legacy-*.yml'\n");
+    var config = try parseConfig(alloc, src);
+    alloc.free(src);
+    defer config.deinit();
+
+    try std.testing.expect(config.isIgnored(".github/workflows/legacy-deploy.yml"));
+    try std.testing.expect(!config.isIgnored(".github/workflows/ci.yml"));
 }
