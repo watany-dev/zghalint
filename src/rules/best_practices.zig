@@ -3,6 +3,7 @@ const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
+const util = @import("../util.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -112,7 +113,7 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
     if (action_ref.is_local or action_ref.is_docker) return;
 
-    const action_name = actionBaseName(action_ref.raw);
+    const action_name = util.actionBaseName(action_ref.raw);
     const version = action_ref.ref orelse return;
 
     for (deprecated_actions) |dep| {
@@ -183,10 +184,6 @@ fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
             .fix_hint = "Add a 'concurrency' group to cancel or queue redundant workflow runs.",
         }) catch return;
     }
-}
-
-fn actionBaseName(raw: []const u8) []const u8 {
-    return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
 }
 
 pub const rules = [_]Rule{

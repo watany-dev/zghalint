@@ -3,6 +3,7 @@ const engine = @import("engine.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
+const util = @import("../util.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -34,7 +35,7 @@ fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
 
         for (job.steps) |step| {
             if (step.uses) |action_ref| {
-                const action_name = actionBaseName(action_ref.raw);
+                const action_name = util.actionBaseName(action_ref.raw);
 
                 if (std.mem.eql(u8, action_name, ca.setup_action)) {
                     uses_setup = true;
@@ -73,7 +74,7 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
 
     for (job.steps) |step| {
         if (step.uses) |action_ref| {
-            const action_name = actionBaseName(action_ref.raw);
+            const action_name = util.actionBaseName(action_ref.raw);
             if (std.mem.eql(u8, action_name, "actions/checkout")) {
                 const has_path = if (step.with) |with| with.get("path") != null else false;
                 if (!has_path) {
@@ -128,11 +129,6 @@ fn checkFailFastDisabled(job: *const Job, diag_list: *DiagnosticList) void {
     }
 
     diag_list.append(diag) catch return;
-}
-
-/// Extract the base name (owner/repo) from an action reference string like "actions/checkout@v4".
-fn actionBaseName(raw: []const u8) []const u8 {
-    return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
 }
 
 pub const rules = [_]Rule{
