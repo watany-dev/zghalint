@@ -4,7 +4,6 @@ const yaml_types = @import("yaml/types.zig");
 const diagnostics = @import("diagnostics.zig");
 
 const Node = yaml_types.Node;
-const Mapping = yaml_types.Mapping;
 const Severity = diagnostics.Severity;
 
 pub const OutputFormat = enum {

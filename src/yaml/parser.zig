@@ -22,13 +22,6 @@ pub const Parser = struct {
     tokenizer: Tokenizer,
     current: Token,
     source: []const u8,
-    errors: std.ArrayList(DiagnosticError),
-
-    pub const DiagnosticError = struct {
-        message: []const u8,
-        line: u32,
-        column: u32,
-    };
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         var tokenizer = Tokenizer.init(source);
@@ -40,12 +33,11 @@ pub const Parser = struct {
             .tokenizer = tokenizer,
             .current = current,
             .source = source,
-            .errors = .{},
         };
     }
 
     pub fn deinit(self: *Parser) void {
-        self.errors.deinit(self.allocator);
+        _ = self;
     }
 
     pub fn parse(self: *Parser) ParseError!Node {
