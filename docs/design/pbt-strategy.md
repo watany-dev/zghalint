@@ -28,8 +28,8 @@ PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されてい�
 | `tests/pbt/conftest.py` | 115 | – | ReleaseSafe ビルド・subprocess 実行・config 書き出し | OK |
 | `tests/pbt/test_crash.py` | 87 | 4 | 任意入力で signal 終了しない | OK |
 | `tests/pbt/test_determinism.py` | 73 | – | 同一入力 → 同一出力 | OK |
-| `tests/pbt/test_monotonicity.py` | 128 | 3 | 問題追加で診断数が減らない / disable で増えない | 1 pass + **2 xfail** |
-| `tests/pbt/test_autofix_idempotency.py` | 112 | 4 | `--fix` 冪等・出力再 lint 可 | 3 pass + **1 xfail** |
+| `tests/pbt/test_monotonicity.py` | 119 | 3 | 問題追加で診断数が減らない / disable で増えない | OK |
+| `tests/pbt/test_autofix_idempotency.py` | 108 | 4 | `--fix` 冪等・出力再 lint 可 | OK |
 | `tests/pbt/test_security_detection.py` | 87 | 3 | SEC001/002/003 を必ず検出 | OK |
 | `tests/pbt/test_output_consistency.py` | 212 | – | JSON/SARIF スキーマ・summary 算術 | OK |
 
@@ -66,18 +66,17 @@ detection を直接保証しているのは **3 種のみ (27%)**。
 
 ## 4. 既知の xfail とその出自
 
-PBT が実際に検出した既知バグを `xfail` で記録している。これらは
+PBT が実際に検出した既知バグを `xfail` で記録する運用とする。これらは
 **「PBT が機能している証拠」** であると同時に、解消すべき技術的負債である。
 
-| # | 場所 | 症状 | 修正タスク |
-|---|---|---|---|
-| (a) | `tests/pbt/test_autofix_idempotency.py:80-96` | `fix/engine.zig` が一部の生成 workflow で segfault | §5 #1 |
-| (b) | `tests/pbt/test_monotonicity.py:47-91` | `--config` のルール無効化が適用されない | §5 #2 |
-| (c) | `tests/pbt/test_monotonicity.py:93-128` | 全ルール無効化でも診断が残る（同根本原因） | §5 #2 |
+現時点で有効な `xfail` は **なし**。P0 (§5 #1, #2) の修正で過去 3 件は
+解消済み — `docs/codebase-improvements.md` の「解決済み (PBT 検出)」節を参照。
 
-修正完了時には対応する設計書（`docs/design/autofix-implementation-plan.md` 等）の
-Known Issues 欄、または `docs/codebase-improvements.md` に「PBT 検出済み・修正日」を
-記録する運用とする。
+新規に `xfail` を追加する場合は以下を同時に行う:
+
+- 本節に `場所 / 症状 / 修正タスク` の 3 列で登録
+- 修正完了時には該当行を削除し、`docs/codebase-improvements.md` の
+  「解決済み (PBT 検出)」節に日付付きで移設する
 
 ---
 
@@ -87,8 +86,8 @@ Known Issues 欄、または `docs/codebase-improvements.md` に「PBT 検出済
 
 | # | 強化項目 | 優先度 | 必要度の理由 | 投資 | 期待効果 |
 |---|---|:---:|---|:---:|---|
-| 1 | **fix/engine segfault の根本修正** (§4-a の xfail 解除) | **P0** | PBT が再現済みの実バグ。`--fix` 実行で落ちユーザ影響大 | 中 | バグ撲滅・xfail 解消 |
-| 2 | **config rule override の修正** (§4-b/c の xfail 2 件解除) | **P0** | 設定ファイルの主要機能が壊れている。CLAUDE.md 規約と矛盾 | 中 | 設定機能復活 |
+| 1 | ~~**fix/engine segfault の根本修正**~~ | **完了** | `applyFixes` に Edit 値域検証を追加し ReleaseSafe panic を解消 (2026-04-17) | 中 | バグ撲滅・xfail 解消 |
+| 2 | ~~**config rule override の修正**~~ | **完了** | `Config.strings_arena` 導入で YAML scalar を dupe し use-after-free を解消 (2026-04-17) | 中 | 設定機能復活 |
 | 3 | **PERM / BP / PERF ルールの detection PBT 追加** | **P1** | 11 ルール中 8 種が未カバー。`test_security_detection.py` パターンで横展開可 | 小 | カバー率 27% → 90%+ |
 | 4 | **YAML パーサ ラウンドトリップ不変条件** (`parse(s) == parse(serialize(parse(s)))`) | **P1** | 1,134 行の自前 YAML パーサ。テスト 36 個のみで網羅性低い | 中 | パーサバグ早期発見 |
 | 5 | **生成戦略の拡充**（matrix / reusable workflow / `if` 条件式 / multiline run / 巨大 jobs） | **P1** | 現ジェネレータは固定パターン中心。実運用ワークフローを反映できていない | 中 | 既存テスト全体の実効カバー底上げ |
@@ -100,7 +99,7 @@ Known Issues 欄、または `docs/codebase-improvements.md` に「PBT 検出済
 
 ### 推奨実装順序
 
-1. **#1, #2** (P0): xfail 解消で CI から黄信号を消す
+1. ~~**#1, #2** (P0): xfail 解消で CI から黄信号を消す~~ — 完了 (2026-04-17)
 2. **#3** (P1, 投資小): 既存パターンの横展開で一気にカバー率を上げる
 3. **#5** (P1, 投資中): ジェネレータ拡充で既存テスト全体の質を底上げ
 4. **#4** (P1, 投資中): YAML ラウンドトリップで自前パーサの信頼性確保

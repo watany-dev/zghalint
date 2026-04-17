@@ -117,7 +117,6 @@ Step の `run`, `with`, `env` を順にチェックする同一パターンが4�
 | SARIF固定サイズバッファ | `sarif.zig:74-84` | 1024バイト固定、512バイトで暗黙の切り詰め。ドキュメントなし |
 | `allocEdit` のnull返却 | `diagnostics.zig:149-154` | アロケーションエラーを nullable で返す。`append` はエラー伝播するのに非一貫 |
 | Silent OOM | `main.zig:168, 238` | `all_diags.append(d) catch {}` でOOMエラーを黙殺 |
-| `Edit` 構造体のバリデーション不在 | `diagnostics.zig:68-79` | `start_byte <= end_byte` の不変条件チェックがない |
 | `toOwnedSlice` 後の `fix_arena` リーク | `diagnostics.zig:161-163` | 部分消費済み状態で `fix_arena` が生存 |
 | `allocPrint` での文字列リテラルコピー | `main.zig:111` | `allocator.dupe` で十分 |
 
@@ -178,3 +177,15 @@ Step の `run`, `with`, `env` を順にチェックする同一パターンが4�
 | **8** | `makeWriteAllFix` / write-allチェックの統合 | security.zig/permissions.zig間の重複解消 |
 
 全体として、コード重複を **20-25%** 削減可能と見込まれる。
+
+---
+
+## 解決済み (PBT 検出)
+
+PBT (`tests/pbt/`) が検出し、以後修正された問題を記録する。新規に解消した
+項目は本節に移動し、原本セクション (§1-§10) からは削除する。
+
+| 修正日 | 項目 | 原本セクション | 検出 PBT | 修正コミット概要 |
+|---|---|---|---|---|
+| 2026-04-17 | `Edit` 構造体のバリデーション不在 (`diagnostics.zig:68-79`) | §6 バッファ管理・安全性 | `test_autofix_idempotency.py::test_fix_does_not_crash` | `applyFixes` に値域検証を追加し、`end_byte > source.len` などの不正 edit を黙って棄却 (`src/fix/engine.zig`) |
+| 2026-04-17 | Config 文字列の use-after-free (YAML scalar が `main.loadConfig` の解放後に dangling) | §6 相当 (未記載だった) | `test_monotonicity.py::test_disabling_rule_does_not_increase_diagnostics` / `..._zero_diagnostics` | `Config.strings_arena` を導入し、`rule_overrides` キーと `ignore_patterns` を dupe (`src/config.zig`) |
