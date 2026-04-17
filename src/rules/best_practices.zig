@@ -83,7 +83,7 @@ fn buildStepNameFix(list: *DiagnosticList, step: *const Step) ?Fix {
     const fix_alloc = list.fixAllocator();
     const generated = generateStepName(fix_alloc, step) orelse return null;
 
-    const indent: usize = key_col - 1;
+    const indent: usize = @intCast(key_col - 1);
     const prefix = "name: ";
     const text_len = prefix.len + generated.len + 1 + indent; // "name: X\n<indent>"
     const replacement = fix_alloc.alloc(u8, text_len) catch return null;
@@ -493,6 +493,40 @@ test "BP002: no fix for local actions" {
     };
     var diags = DiagnosticList.init(alloc);
     checkMissingStepName(&step, &diags);
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP002: no fix when `if:` precedes `uses:` in step" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `if:` comes before `uses:`, so the parser must NOT set uses_key_start_byte
+    // (BP002 autofix would otherwise insert `name:` between `if:` and `uses:`).
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - if: always()
+        \\        uses: actions/checkout@v4
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkMissingStepName(&wf.jobs[0].steps[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
 }
 

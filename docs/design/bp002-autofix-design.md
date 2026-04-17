@@ -11,10 +11,17 @@
 
 ## スコープ
 
-- step mapping が `name` を持たず、`uses` または `run` のいずれかを持つ場合に autofix を付与する
-- autofix は step mapping の先頭に `name: <生成名>` を挿入する
+- step mapping が `name` を持たず、`uses` が **mapping の先頭 key** として現れる場合のみ autofix を付与する
+- autofix は `uses:` key の直前（= step mapping の先頭）に `name: <生成名>` を挿入する
 - `Fix.safety` は `.safe` とする
 - 既存の検出条件と診断メッセージは維持する
+
+### 現時点で対象外のケース（将来拡張）
+
+- `uses:` が `if:` / `id:` などより後ろに来る step（挿入位置が step 先頭にならず、設計意図と乖離するため）
+- `run:` のみを持つ step（`run` 用の key insertion anchor を parser に追加するまで保留）
+
+これらは診断のみを出し、`fix` は `null` とする。
 
 ## 非スコープ
 
@@ -78,13 +85,18 @@ SEC017 が `env_meta` を追加したのと同じ方針で、rule 実装が必�
 
 ### 3. 生成名ルール
 
-優先順で次を適用する。
+`util.zig` に次のヘルパを実装する。
+
+- `stepNameFromRepo(allocator, repo)`: `ActionRef.repo` の先頭 1 文字を ASCII 大文字化して返す。先頭が ASCII letter でない場合は `null`
+- `stepNameFromRun(allocator, run)`: `run` の先頭行を trim し最大 40 文字に切り詰める。制御文字や YAML 記号（`'`, `"`, `:`, `#`, `&`, `*`, `!`, `|`, `>`, `%`, `@`, `` ` ``）を含む場合は `null`
+
+BP002 の現行 fix は `uses` のみを anchor とするため、実際に使用するのは `stepNameFromRepo` である。`stepNameFromRun` は run-step 拡張（将来 phase）のために util 層へ先行実装し、単体テストのみ用意する。
 
 | 条件 | 生成名 |
 |---|---|
-| `step.uses != null` かつ `ActionRef.repo` が取れる | `ActionRef.repo` の先頭 1 文字を大文字化（例: `checkout → "Checkout"`）|
+| `step.uses != null` かつ `ActionRef.repo` が取れる | `stepNameFromRepo(repo)`（例: `checkout → "Checkout"`）|
 | `step.uses != null` で repo が取れない（local / docker 等） | fix を付けない |
-| `step.run != null` | `run` の先頭行を ASCII 範囲で trim し、最大 40 文字に切り詰め。制御文字や `'` `"` を含む場合は fix を付けない |
+| `uses` が mapping の先頭 key でない | fix を付けない |
 | `uses`, `run` どちらも無い | fix を付けない |
 
 生成名に `:` や `"` を含まない ASCII 文字列しか採用しないことで、YAML として再パース可能な plain scalar を保証する。
@@ -109,6 +121,8 @@ const replacement = std.fmt.allocPrint(fix_alloc,
 `offset_to_first_key` は span 開始から最初の非空白・非 `-` までの byte offset。parser 側で計算して `uses_key_start_byte` として渡す形が簡潔だが、まずは `uses_value_end_byte` と `uses_key_col` から逆算する実装でも可。
 
 本設計では **parser に `step.uses_key_start_byte: ?usize` を追加する**ことを選ぶ。これにより `run` だけの step でも同じパターンで拡張できる（将来的に `run_key_start_byte` を足す余地）。
+
+さらに parser 側で `uses` が mapping の先頭 key である場合のみ `uses_key_start_byte` を格納する。これにより「`if:` が `uses:` より前にある step」では `uses_key_start_byte == null` となり、`buildStepNameFix` は自然に `null` を返す。
 
 ### 5. Fix 生成 API
 
@@ -186,9 +200,9 @@ BP002 の autofix は `.safe` とする。
 ### 変更内容
 
 1. `Step.span` と `Step.uses_key_start_byte` を追加する
-2. `parseStep` で span と `uses_key_start_byte` を格納する
-3. `util.zig` に `stepNameFromUses(ref)` と `stepNameFromRun(run)` を追加する
-4. `buildStepNameFix` を追加する
+2. `parseStep` で span を格納する。`uses_key_start_byte` は `uses` が mapping の先頭 key の場合のみ格納する
+3. `util.zig` に `stepNameFromRepo(repo)` と `stepNameFromRun(run)` を追加する（後者は run-step 拡張のため util 層のみ先行実装）
+4. `buildStepNameFix` を追加する（anchor は `uses_key_start_byte`）
 5. `checkMissingStepName` に fix 付与を組み込む
 6. BP002 の autofix テストを 3 層で追加する
 
@@ -202,8 +216,9 @@ BP002 の autofix は `.safe` とする。
 
 ### 1. 診断に fix が付くこと
 
-- `uses` step で `fix != null`、description が `"Add name: Checkout"` 相当
-- `run` step で `fix != null`
+- `uses` step（mapping の先頭 key）で `fix != null`、description が `"Add step name"`
+- `if:` → `uses:` の順の step で `fix == null`（anchor が null）
+- `run` のみの step で `fix == null`（anchor が null）
 - local action (`./foo`) step で `fix == null`（repo が取れないため）
 - docker action (`docker://...`) step で `fix == null`
 - `uses` も `run` も無い step で `fix == null`

@@ -87,8 +87,8 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `PERF001` | 未実装 | 条件付き可 | 中 | 中 | `setup-*` に `cache:` を足せるが値の選定が言語・パッケージマネージャ依存 |
 | `PERF002` | 未実装 | 不可/非推奨 | 高 | 低 | redundant checkout を削除するか `path` を足すかが文脈依存 |
 | `PERF003` | 未実装 | 可 | 低 | 高 | `fail-fast: false` の削除、または `true` 置換で対応可能。unsafe fix 扱いが妥当 |
-| `BP002` | 未実装 | 可 | 中 | 高 | `uses` の action 名、または `run` 先頭行から step 名を生成して挿入できる。個別設計: `docs/design/bp002-autofix-design.md` |
-| `BP003` | 未実装 | 可 | 中 | 高 | 既知の置換表があるため `uses:` の version 部分を機械置換できる。個別設計: `docs/design/bp003-autofix-design.md` |
+| `BP002` | 完全実装 | 可 | 中 | 高 | `uses` が step mapping の先頭 key の場合のみ、action 名から step 名を生成して `uses:` の直前に挿入する。個別設計: `docs/design/bp002-autofix-design.md` |
+| `BP003` | 完全実装 | 可 | 中 | 高 | 既知の置換表により `uses:` の version 部分を機械置換する。個別設計: `docs/design/bp003-autofix-design.md` |
 | `BP004` | 未実装 | 条件付き可 | 中 | 中 | `shell: bash` / `pwsh` のどちらを入れるか方針決めが必要 |
 | `BP005` | 未実装 | 条件付き可 | 中 | 中 | workflow に標準 `concurrency` ブロックを挿入可能だが挙動変更が大きい |
 | `BP007` | 未実装 | 不可/非推奨 | 高 | 低 | obfuscated 実行の安全な代替コマンドは自動生成できない |

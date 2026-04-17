@@ -351,10 +351,15 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
             },
             else => {},
         }
-        for (m.entries) |entry| {
+        for (m.entries, 0..) |entry, idx| {
             if (std.mem.eql(u8, entry.key.value, "uses")) {
                 step.uses_key_col = entry.key.span.start_col;
-                step.uses_key_start_byte = entry.key.span.start_byte;
+                // Only capture insertion anchor when `uses` is the first key in the
+                // step mapping; BP002 autofix inserts `name:` before this anchor and
+                // must land at the step head.
+                if (idx == 0) {
+                    step.uses_key_start_byte = entry.key.span.start_byte;
+                }
                 break;
             }
         }
