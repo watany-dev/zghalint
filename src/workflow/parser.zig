@@ -333,6 +333,7 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
     };
 
     var step = types.Step{};
+    step.span = m.span;
     step.id = m.getScalar("id");
     step.name = m.getScalar("name");
     step.run = m.getScalar("run");
@@ -346,12 +347,14 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
             .scalar => |s| {
                 step.uses = types.ActionRef.parse(s.value);
                 step.uses_value_end_byte = s.span.end_byte;
+                step.uses_value_style = s.style;
             },
             else => {},
         }
         for (m.entries) |entry| {
             if (std.mem.eql(u8, entry.key.value, "uses")) {
                 step.uses_key_col = entry.key.span.start_col;
+                step.uses_key_start_byte = entry.key.span.start_byte;
                 break;
             }
         }

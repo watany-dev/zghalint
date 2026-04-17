@@ -12,6 +12,7 @@ const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
+const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
 const Edit = diagnostics_mod.Edit;
 const FixSafety = diagnostics_mod.FixSafety;
@@ -62,16 +63,65 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
 
 // ── BP002: Missing step name ──
 
-fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
-    if (step.name == null) {
-        diag_list.append(.{
-            .rule_id = "BP002",
-            .severity = .info,
-            .message = "Step is missing a 'name' field. Named steps improve workflow readability.",
-            .span = Span.point(0, 0, 0),
-            .fix_hint = "Add a descriptive 'name' to this step.",
-        }) catch return;
+fn generateStepName(allocator: std.mem.Allocator, step: *const Step) ?[]const u8 {
+    if (step.uses) |ref| {
+        if (ref.is_local or ref.is_docker) return null;
+        const repo = ref.repo orelse return null;
+        return util.stepNameFromRepo(allocator, repo);
     }
+    if (step.run) |run| {
+        return util.stepNameFromRun(allocator, run);
+    }
+    return null;
+}
+
+fn buildStepNameFix(list: *DiagnosticList, step: *const Step) ?Fix {
+    const insert_byte = step.uses_key_start_byte orelse return null;
+    const key_col = step.uses_key_col orelse return null;
+    if (key_col < 1) return null;
+
+    const fix_alloc = list.fixAllocator();
+    const generated = generateStepName(fix_alloc, step) orelse return null;
+
+    const indent: usize = key_col - 1;
+    const prefix = "name: ";
+    const text_len = prefix.len + generated.len + 1 + indent; // "name: X\n<indent>"
+    const replacement = fix_alloc.alloc(u8, text_len) catch return null;
+
+    var pos: usize = 0;
+    @memcpy(replacement[pos .. pos + prefix.len], prefix);
+    pos += prefix.len;
+    @memcpy(replacement[pos .. pos + generated.len], generated);
+    pos += generated.len;
+    replacement[pos] = '\n';
+    pos += 1;
+    @memset(replacement[pos..], ' ');
+
+    const edits = list.allocEdit(.{
+        .start_byte = insert_byte,
+        .end_byte = insert_byte,
+        .replacement = replacement,
+    }) orelse return null;
+
+    return .{
+        .description = "Add step name",
+        .safety = .safe,
+        .edits = edits,
+    };
+}
+
+fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
+    if (step.name != null) return;
+
+    var diag = Diagnostic{
+        .rule_id = "BP002",
+        .severity = .info,
+        .message = "Step is missing a 'name' field. Named steps improve workflow readability.",
+        .span = step.span,
+        .fix_hint = "Add a descriptive 'name' to this step.",
+    };
+    diag.fix = buildStepNameFix(diag_list, step);
+    diag_list.append(diag) catch return;
 }
 
 // ── BP003: Deprecated action version ──
@@ -109,6 +159,39 @@ const deprecated_actions = [_]DeprecatedAction{
     .{ .action = "actions/cache", .version = "v2", .replacement = "v4" },
 };
 
+fn buildDeprecatedActionFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    old_version: []const u8,
+    new_version: []const u8,
+) ?Fix {
+    const end_byte = step.uses_value_end_byte orelse return null;
+    const style = step.uses_value_style orelse return null;
+
+    const quote_offset: usize = switch (style) {
+        .plain => 0,
+        .single_quoted, .double_quoted => 1,
+        .literal, .folded => return null,
+    };
+
+    if (end_byte < quote_offset + old_version.len) return null;
+
+    const version_end = end_byte - quote_offset;
+    const version_start = version_end - old_version.len;
+
+    const edits = list.allocEdit(.{
+        .start_byte = version_start,
+        .end_byte = version_end,
+        .replacement = new_version,
+    }) orelse return null;
+
+    return .{
+        .description = "Upgrade deprecated action version",
+        .safety = .safe,
+        .edits = edits,
+    };
+}
+
 fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
     if (action_ref.is_local or action_ref.is_docker) return;
@@ -118,13 +201,15 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
 
     for (deprecated_actions) |dep| {
         if (std.mem.eql(u8, action_name, dep.action) and std.mem.eql(u8, version, dep.version)) {
-            diag_list.append(.{
+            var diag = Diagnostic{
                 .rule_id = "BP003",
                 .severity = .warning,
                 .message = "Using deprecated action version. Consider upgrading.",
-                .span = Span.point(0, 0, 0),
+                .span = step.span,
                 .fix_hint = "Upgrade to a newer version.",
-            }) catch return;
+            };
+            diag.fix = buildDeprecatedActionFix(diag_list, step, dep.version, dep.replacement);
+            diag_list.append(diag) catch return;
             return;
         }
     }
@@ -365,6 +450,96 @@ test "BP002: no warning when name is present" {
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
+test "BP002: no fix when position info is missing" {
+    const step = Step{ .run = "echo hello" };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkMissingStepName(&step, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP002: autofix generated from uses" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const step = Step{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .uses_key_col = 9,
+        .uses_key_start_byte = 50,
+    };
+    var diags = DiagnosticList.init(alloc);
+    checkMissingStepName(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+    try std.testing.expect(fix.safety == .safe);
+    const edit = fix.edits[0];
+    try std.testing.expectEqual(@as(usize, 50), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, 50), edit.end_byte);
+    try std.testing.expectEqualStrings("name: Checkout\n        ", edit.replacement);
+}
+
+test "BP002: no fix for local actions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const step = Step{
+        .uses = ActionRef.parse("./local-action"),
+        .uses_key_col = 9,
+        .uses_key_start_byte = 50,
+    };
+    var diags = DiagnosticList.init(alloc);
+    checkMissingStepName(&step, &diags);
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP002: autofix applied to YAML source" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkMissingStepName(&wf.jobs[0].steps[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+
+    const fixes = [_]Fix{fix};
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "name: Checkout") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4") != null);
+    // name: Checkout must appear before uses:
+    const name_pos = std.mem.indexOf(u8, result.content, "name: Checkout").?;
+    const uses_pos = std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4").?;
+    try std.testing.expect(name_pos < uses_pos);
+}
+
 test "BP003: detect deprecated checkout v1" {
     const step = Step{ .uses = ActionRef.parse("actions/checkout@v1") };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -396,6 +571,103 @@ test "BP003: no warning for local actions" {
     defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP003: no fix when position info is missing" {
+    const step = Step{ .uses = ActionRef.parse("actions/checkout@v1") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP003: autofix generated for plain scalar uses" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // "actions/checkout@v1" ends at byte 25, version "v1" occupies bytes 23..25
+    const step = Step{
+        .uses = ActionRef.parse("actions/checkout@v1"),
+        .uses_value_end_byte = 25,
+        .uses_value_style = .plain,
+    };
+    var diags = DiagnosticList.init(alloc);
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const d = diags.get(0);
+    try std.testing.expect(d.fix != null);
+    const fix = d.fix.?;
+    try std.testing.expect(fix.safety == .safe);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+
+    const edit = fix.edits[0];
+    try std.testing.expectEqual(@as(usize, 23), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, 25), edit.end_byte);
+    try std.testing.expectEqualStrings("v4", edit.replacement);
+}
+
+test "BP003: autofix with single-quoted scalar keeps quotes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // "'actions/checkout@v1'" — quote at 0 and 20, v1 at 18..20, end_byte=21
+    const step = Step{
+        .uses = ActionRef.parse("actions/checkout@v1"),
+        .uses_value_end_byte = 21,
+        .uses_value_style = .single_quoted,
+    };
+    var diags = DiagnosticList.init(alloc);
+    checkDeprecatedAction(&step, &diags);
+
+    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+    const edit = fix.edits[0];
+    try std.testing.expectEqual(@as(usize, 18), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, 20), edit.end_byte);
+    try std.testing.expectEqualStrings("v4", edit.replacement);
+}
+
+test "BP003: autofix applied to YAML source" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v1
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkDeprecatedAction(&wf.jobs[0].steps[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+
+    const fixes = [_]Fix{fix};
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "actions/checkout@v4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "actions/checkout@v1") == null);
 }
 
 test "BP004: detect missing shell with windows runs-on" {
