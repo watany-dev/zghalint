@@ -154,6 +154,7 @@ pub fn batchQuery(
 
     return parseResponse(allocator, response_list.items, repos) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
+        error.RateLimited => error.RateLimited,
         else => error.ParseFailed,
     };
 }
@@ -193,11 +194,14 @@ fn parseResponse(
         else => return error.ParseFailed,
     };
 
-    // If "errors" is present without "data" we treat it as a rate limit.
-    if (root_obj.get("data") == null) {
-        if (root_obj.get("errors")) |_| return error.ParseFailed;
-        return error.ParseFailed;
+    // GitHub signals secondary rate limits via HTTP 200 + errors[].type ==
+    // "RATE_LIMITED" (primary limits come back as 403/429 and are caught by
+    // the caller before we get here). Surface that explicitly so the
+    // orchestrator can stop making requests.
+    if (root_obj.get("errors")) |errors_value| {
+        if (isRateLimitedErrors(errors_value)) return error.RateLimited;
     }
+    if (root_obj.get("data") == null) return error.ParseFailed;
 
     const data = switch (root_obj.get("data").?) {
         .object => |o| o,
@@ -224,6 +228,26 @@ fn parseResponse(
     }
 
     return results;
+}
+
+fn isRateLimitedErrors(value: std.json.Value) bool {
+    const arr = switch (value) {
+        .array => |a| a,
+        else => return false,
+    };
+    for (arr.items) |entry| {
+        const obj = switch (entry) {
+            .object => |o| o,
+            else => continue,
+        };
+        const type_value = obj.get("type") orelse continue;
+        const type_str = switch (type_value) {
+            .string => |s| s,
+            else => continue,
+        };
+        if (std.mem.eql(u8, type_str, "RATE_LIMITED")) return true;
+    }
+    return false;
 }
 
 fn defaultMissingResults(allocator: Allocator, repos: []const RepoInput) ![]const RepoResult {
@@ -470,6 +494,26 @@ test "parseResponse: errors without data surfaces ParseFailed" {
     defer arena.deinit();
 
     try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
+}
+
+test "parseResponse: errors[].type RATE_LIMITED surfaces RateLimited" {
+    const body = "{\"errors\":[{\"type\":\"RATE_LIMITED\",\"message\":\"API rate limit exceeded\"}]}";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.RateLimited, parseResponse(arena.allocator(), body, &repos));
+}
+
+test "parseResponse: errors[].type RATE_LIMITED wins even if data is also present" {
+    // GitHub may return a partial data payload alongside the rate-limit
+    // error. Detecting the sentinel should still short-circuit the caller.
+    const body = "{\"data\":{\"r0\":null},\"errors\":[{\"type\":\"RATE_LIMITED\"}]}";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.RateLimited, parseResponse(arena.allocator(), body, &repos));
 }
 
 test "parseResponse: 100 tag nodes without match yields unknown (page-limit fallback)" {

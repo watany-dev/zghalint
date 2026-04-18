@@ -20,14 +20,24 @@ var client_mutex: std.Thread.Mutex = .{};
 
 /// Initialize the shared HTTP client.
 /// No-op if already initialized. `deinit()` must be called to free resources.
+/// The provided `allocator` must remain valid until `deinit()` returns —
+/// `std.http.Client` retains it for connection pool allocations.
+/// Safe to call from multiple threads; init/deinit/fetch share a mutex so
+/// the initialization flag and storage are never observed half-built.
 pub fn init(allocator: Allocator) void {
+    client_mutex.lock();
+    defer client_mutex.unlock();
     if (client_initialized) return;
     client_storage = .{ .allocator = allocator };
     client_initialized = true;
 }
 
 /// Release the shared HTTP client and any pooled connections.
+/// Safe to call multiple times; safe to call concurrently with `fetch()`
+/// (the mutex serializes with in-flight requests).
 pub fn deinit() void {
+    client_mutex.lock();
+    defer client_mutex.unlock();
     if (!client_initialized) return;
     client_storage.deinit();
     client_initialized = false;
