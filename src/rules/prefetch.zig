@@ -18,6 +18,7 @@ const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
 const refconfusion = @import("refconfusion.zig");
+const graphql = @import("graphql.zig");
 
 const Allocator = std.mem.Allocator;
 const Workflow = workflow_types.Workflow;
@@ -58,9 +59,16 @@ pub fn prefetchAll(allocator: Allocator, workflows: []const Workflow) !Stats {
 
     const ref_sets = try collectRefs(scratch, workflows);
 
-    if (archived_active) fetchRepos(scratch, ref_sets.repos);
-    if (stale_active) fetchShaRefs(scratch, ref_sets.sha_refs);
-    if (refconf_active) fetchNamedRefs(scratch, ref_sets.named_refs);
+    // Try the GraphQL batch path first (folds archived + SHA + named ref
+    // lookups into 1-2 POSTs). Falls back to REST on no-token, parse
+    // failure, or rate-limit.
+    const used_graphql = tryGraphQlBatch(scratch, ref_sets, archived_active, stale_active, refconf_active);
+
+    if (!used_graphql) {
+        if (archived_active) fetchRepos(scratch, ref_sets.repos);
+        if (stale_active) fetchShaRefs(scratch, ref_sets.sha_refs);
+        if (refconf_active) fetchNamedRefs(scratch, ref_sets.named_refs);
+    }
 
     return .{
         .unique_repos = ref_sets.repos.count(),
@@ -140,6 +148,136 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
     }
 
     return .{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
+}
+
+// ============================================================
+// GraphQL batch path
+// ============================================================
+
+/// Group refs per repo and issue GraphQL batches. Returns `true` if the
+/// batch completed and caches were populated; `false` if the caller
+/// should fall back to REST.
+fn tryGraphQlBatch(
+    scratch: Allocator,
+    sets: RefSets,
+    archived_active: bool,
+    stale_active: bool,
+    refconf_active: bool,
+) bool {
+    if (sets.repos.count() == 0) return false;
+
+    const inputs = buildRepoInputs(
+        scratch,
+        sets,
+        stale_active,
+        refconf_active,
+    ) catch return false;
+
+    var idx: usize = 0;
+    while (idx < inputs.len) {
+        if (engine.isNetworkDeadlineExceeded()) return idx > 0;
+        const end = @min(idx + graphql.max_repos_per_batch, inputs.len);
+        const chunk = inputs[idx..end];
+
+        const results = graphql.batchQuery(scratch, chunk) catch |err| switch (err) {
+            error.NoToken => return false, // fall back to REST
+            error.RateLimited => return idx > 0, // give up; keep what we have
+            else => return false,
+        };
+
+        applyResults(results, archived_active, stale_active, refconf_active);
+        idx = end;
+    }
+
+    return true;
+}
+
+fn buildRepoInputs(
+    scratch: Allocator,
+    sets: RefSets,
+    stale_active: bool,
+    refconf_active: bool,
+) ![]graphql.RepoInput {
+    var inputs = try scratch.alloc(graphql.RepoInput, sets.repos.count());
+    var shas_by_repo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+    var named_by_repo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+
+    if (stale_active) {
+        var it = sets.sha_refs.valueIterator();
+        while (it.next()) |sha_key| {
+            const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ sha_key.owner, sha_key.repo });
+            const gop = try shas_by_repo.getOrPut(scratch, repo_key);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            try gop.value_ptr.append(scratch, sha_key.sha);
+        }
+    }
+    if (refconf_active) {
+        var it = sets.named_refs.valueIterator();
+        while (it.next()) |named_key| {
+            const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ named_key.owner, named_key.repo });
+            const gop = try named_by_repo.getOrPut(scratch, repo_key);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            try gop.value_ptr.append(scratch, named_key.ref);
+        }
+    }
+
+    var i: usize = 0;
+    var repo_it = sets.repos.iterator();
+    while (repo_it.next()) |entry| : (i += 1) {
+        const repo_key = entry.key_ptr.*;
+        const val = entry.value_ptr.*;
+
+        const sha_slice: []const []const u8 = if (shas_by_repo.getPtr(repo_key)) |list|
+            list.items
+        else
+            &.{};
+        const named_slice: []const []const u8 = if (named_by_repo.getPtr(repo_key)) |list|
+            list.items
+        else
+            &.{};
+
+        inputs[i] = .{
+            .owner = val.owner,
+            .repo = val.repo,
+            .sha_refs = sha_slice,
+            .named_refs = named_slice,
+        };
+    }
+
+    return inputs;
+}
+
+fn applyResults(
+    results: []const graphql.RepoResult,
+    archived_active: bool,
+    stale_active: bool,
+    refconf_active: bool,
+) void {
+    for (results) |res| {
+        if (res.missing) continue;
+        if (archived_active) {
+            if (res.archived) |b| archived.setCachedResult(res.owner, res.repo, b);
+        }
+        if (stale_active) {
+            for (res.sha_results) |sr| {
+                const mapped: stale_refs.TagResolution = switch (sr.resolution) {
+                    .has_tag => .has_tag,
+                    .no_tag => .no_tag,
+                    .unknown => .unknown,
+                };
+                stale_refs.setCachedTagResult(res.owner, res.repo, sr.sha, mapped);
+            }
+        }
+        if (refconf_active) {
+            for (res.named_results) |nr| {
+                const status: refconfusion.RefStatus = if (nr.is_tag and nr.is_branch)
+                    .ambiguous
+                else
+                    .not_ambiguous;
+                refconfusion.setCachedRefResult(res.owner, res.repo, nr.ref, status);
+            }
+        }
+    }
 }
 
 // ============================================================
