@@ -15,13 +15,21 @@ pub const ParseError = error{
     UnexpectedToken,
     OutOfMemory,
     InvalidYaml,
+    MaxDepthExceeded,
 };
+
+/// Hard cap on nested mappings/sequences/flow containers. A well-formed
+/// Actions workflow nests ~6 levels deep; 256 leaves ample headroom while
+/// preventing an attacker-controlled YAML from recursing the parser into
+/// a stack overflow (SIGSEGV) during CI runs.
+pub const max_parse_depth: u16 = 256;
 
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokenizer: Tokenizer,
     current: Token,
     source: []const u8,
+    depth: u16,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         var tokenizer = Tokenizer.init(source);
@@ -33,6 +41,7 @@ pub const Parser = struct {
             .tokenizer = tokenizer,
             .current = current,
             .source = source,
+            .depth = 0,
         };
     }
 
@@ -51,6 +60,10 @@ pub const Parser = struct {
     }
 
     fn parseNode(self: *Parser, min_indent: u32) ParseError!Node {
+        if (self.depth >= max_parse_depth) return error.MaxDepthExceeded;
+        self.depth += 1;
+        defer self.depth -= 1;
+
         self.skipNewlines();
 
         if (self.current.kind == .eof) {
@@ -573,4 +586,22 @@ test "parser deinit cleans up" {
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "a: b");
     parser.deinit();
+}
+
+test "parse rejects input nested past max_parse_depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Build `a:\n b:\n  c:\n   ...` with one level more than the cap.
+    const levels = @as(usize, max_parse_depth) + 16;
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    for (0..levels) |i| {
+        try buf.appendNTimes(std.testing.allocator, ' ', i);
+        try buf.appendSlice(std.testing.allocator, "k:\n");
+    }
+
+    var parser = Parser.init(arena.allocator(), buf.items);
+    defer parser.deinit();
+    try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
 }

@@ -19,6 +19,7 @@
 
 const std = @import("std");
 const graphql = @import("graphql.zig");
+const engine = @import("engine.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -88,7 +89,9 @@ fn repoFilename(allocator: Allocator, owner: []const u8, repo: []const u8) ![]co
 pub fn isFresh(cached_at: i64) bool {
     const now = std.time.timestamp();
     if (cached_at > now) return false;
-    return (now - cached_at) < cache_ttl_s;
+    const floor = std.math.sub(i64, now, cache_ttl_s) catch return false;
+    if (cached_at < floor) return false;
+    return true;
 }
 
 // ============================================================
@@ -165,6 +168,7 @@ pub fn loadFromDir(
                 const fields = entry.array.items;
                 if (fields.len < 2) continue;
                 if (fields[0] != .string or fields[1] != .string) continue;
+                if (!engine.isValidSha(fields[0].string)) continue;
                 const res = parseResolutionCode(fields[1].string) orelse continue;
                 const sha_copy = allocator.dupe(u8, fields[0].string) catch continue;
                 list.append(allocator, .{ .sha = sha_copy, .resolution = res }) catch continue;
@@ -182,6 +186,7 @@ pub fn loadFromDir(
                 const fields = entry.array.items;
                 if (fields.len < 3) continue;
                 if (fields[0] != .string) continue;
+                if (!engine.isValidGitRef(fields[0].string)) continue;
                 const ref_copy = allocator.dupe(u8, fields[0].string) catch continue;
                 const is_tag = intFieldAsBool(fields[1]);
                 const is_branch = intFieldAsBool(fields[2]);
@@ -270,9 +275,25 @@ pub fn saveToDir(
 
     try buf.appendSlice(allocator, "]}");
 
-    const file = dir.createFile(name, .{ .truncate = true }) catch return;
-    defer file.close();
-    file.writeAll(buf.items) catch return;
+    // Refuse to write through a symlink planted in the cache directory.
+    // A same-user attacker could otherwise redirect the truncate+write to an
+    // arbitrary file path.
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (dir.readLink(name, &link_buf)) |_| {
+        return; // caller treats save() as best-effort
+    } else |err| switch (err) {
+        error.NotLink, error.FileNotFound => {},
+        else => return,
+    }
+
+    // Atomically replace the cache file. atomicFile writes to a sibling
+    // tmp file and renames over the destination, which swaps the directory
+    // entry without following any existing symlink at the target path.
+    var write_buf: [4096]u8 = undefined;
+    var af = dir.atomicFile(name, .{ .write_buffer = &write_buf }) catch return;
+    defer af.deinit();
+    af.file_writer.interface.writeAll(buf.items) catch return;
+    af.finish() catch return;
 }
 
 // ============================================================
@@ -422,11 +443,12 @@ test "loadFromDir: tolerates malformed shas/named entries" {
     defer file.close();
 
     // Each shas entry is either non-array, too-short, wrong-type, or has an
-    // unknown resolution code. All must be silently skipped.
+    // unknown resolution code. All must be silently skipped. The final 40-char
+    // hex sha survives.
     const now = std.time.timestamp();
     const body = try std.fmt.allocPrint(
         testing.allocator,
-        "{{\"cached_at\":{d},\"archived\":false,\"shas\":[42,[\"onlyone\"],[1,2],[\"sha\",\"X\"],[\"good\",\"h\"]],\"named\":[0,[\"x\"],[\"ref\",\"notnum\",1],[\"ok\",1,0]]}}",
+        "{{\"cached_at\":{d},\"archived\":false,\"shas\":[42,[\"onlyone\"],[1,2],[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"X\"],[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[0,[\"x\"],[\"ref\",\"notnum\",1],[\"ok\",1,0]]}}",
         .{now},
     );
     defer testing.allocator.free(body);
@@ -440,11 +462,12 @@ test "loadFromDir: tolerates malformed shas/named entries" {
         for (loaded.named) |n| testing.allocator.free(n.ref);
         testing.allocator.free(loaded.named);
     }
-    // Only the "good" shas entry survives (others are dropped by length or
-    // type checks). Named entries with a string-typed first field survive —
-    // non-string bool/int fields fall through to intFieldAsBool's else branch.
+    // Only the final 40-char hex shas entry survives (others are dropped by
+    // length, type, or hex-validity checks). Named entries with a string-typed
+    // first field survive — non-string bool/int fields fall through to
+    // intFieldAsBool's else branch.
     try testing.expectEqual(@as(usize, 1), loaded.shas.len);
-    try testing.expectEqualStrings("good", loaded.shas[0].sha);
+    try testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", loaded.shas[0].sha);
     try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
     try testing.expectEqual(@as(usize, 2), loaded.named.len);
     try testing.expectEqualStrings("ref", loaded.named[0].ref);
@@ -492,3 +515,97 @@ test "load/save: round-trip via XDG_CACHE_HOME" {
 
 const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
 const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
+
+test "loadFromDir: invalid sha hex is dropped" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+
+    // "zz..." is not hex; "aaaa" is too short; the 40-char lowercase hex sha survives.
+    const now = std.time.timestamp();
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"cached_at\":{d},\"shas\":[[\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\",\"h\"],[\"aaaa\",\"h\"],[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[]}}",
+        .{now},
+    );
+    defer testing.allocator.free(body);
+    try file.writeAll(body);
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        for (loaded.shas) |s| testing.allocator.free(s.sha);
+        testing.allocator.free(loaded.shas);
+        testing.allocator.free(loaded.named);
+    }
+    try testing.expectEqual(@as(usize, 1), loaded.shas.len);
+    try testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", loaded.shas[0].sha);
+}
+
+test "loadFromDir: invalid git refs are dropped" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+
+    // Path-traversal, spaces, and control chars must be rejected. "main" survives.
+    const now = std.time.timestamp();
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"cached_at\":{d},\"shas\":[],\"named\":[[\"../evil\",1,0],[\"with space\",1,0],[\"main\",0,1]]}}",
+        .{now},
+    );
+    defer testing.allocator.free(body);
+    try file.writeAll(body);
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        testing.allocator.free(loaded.shas);
+        for (loaded.named) |n| testing.allocator.free(n.ref);
+        testing.allocator.free(loaded.named);
+    }
+    try testing.expectEqual(@as(usize, 1), loaded.named.len);
+    try testing.expectEqualStrings("main", loaded.named[0].ref);
+}
+
+test "saveToDir: refuses to write through a pre-existing symlink" {
+    // On a same-user attack, a symlink planted in the cache dir pointing at
+    // an arbitrary path would, prior to this hardening, be followed by a
+    // truncating write. Verify saveToDir leaves the symlink target alone.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create the file that must NOT be overwritten.
+    {
+        const victim = try tmp.dir.createFile("victim.txt", .{});
+        defer victim.close();
+        try victim.writeAll("SACRED");
+    }
+
+    const cache_name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(cache_name);
+
+    // Plant a symlink at the path saveToDir would write to.
+    tmp.dir.symLink("victim.txt", cache_name, .{}) catch |err| switch (err) {
+        error.AccessDenied, error.Unexpected => return, // filesystem doesn't support symlinks
+        else => return err,
+    };
+
+    const now = std.time.timestamp();
+    try saveToDir(tmp.dir, testing.allocator, "o", "r", .{ .cached_at = now, .archived = false });
+
+    // Victim must still read "SACRED".
+    const f = try tmp.dir.openFile("victim.txt", .{});
+    defer f.close();
+    var buf: [32]u8 = undefined;
+    const n = try f.readAll(&buf);
+    try testing.expectEqualStrings("SACRED", buf[0..n]);
+}

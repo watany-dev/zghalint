@@ -365,6 +365,17 @@ fn applyFixesForFile(
 
     if (fixes.len == 0) return 0;
 
+    // Refuse to rewrite through a symlink: otherwise `--fix` on a crafted
+    // `workflow.yml -> /etc/passwd` would read and then overwrite the link
+    // target. `readLink` succeeding means the path itself is a symlink.
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.fs.cwd().readLink(file_path, &link_buf)) |_| {
+        return error.RefusingToFixSymlink;
+    } else |err| switch (err) {
+        error.NotLink => {},
+        else => return err,
+    }
+
     // Read file content
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
@@ -377,10 +388,15 @@ fn applyFixesForFile(
 
     if (result.edits_applied == 0) return 0;
 
-    // Write back
-    const out_file = try std.fs.cwd().createFile(file_path, .{});
-    defer out_file.close();
-    try out_file.writeAll(result.content);
+    // Atomically replace the file: write a random-named sibling and rename
+    // it into place. `rename(2)` replaces the directory entry itself, so if
+    // the destination was swapped to a symlink between our check and now,
+    // the symlink is replaced — the link target is never written through.
+    var write_buf: [4096]u8 = undefined;
+    var af = try std.fs.cwd().atomicFile(file_path, .{ .write_buffer = &write_buf });
+    defer af.deinit();
+    try af.file_writer.interface.writeAll(result.content);
+    try af.finish();
 
     return result.edits_applied;
 }
