@@ -19,6 +19,7 @@ const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
 const refconfusion = @import("refconfusion.zig");
 const graphql = @import("graphql.zig");
+const disk_cache = @import("disk_cache.zig");
 
 const Allocator = std.mem.Allocator;
 const Workflow = workflow_types.Workflow;
@@ -31,6 +32,13 @@ pub const Stats = struct {
     unique_repos: usize = 0,
     unique_sha_refs: usize = 0,
     unique_tag_or_branch_refs: usize = 0,
+    cache_hits: usize = 0,
+    cache_misses: usize = 0,
+};
+
+pub const Options = struct {
+    /// When true, ignore existing disk cache entries and refetch everything.
+    no_cache: bool = false,
 };
 
 // ============================================================
@@ -41,6 +49,15 @@ pub const Stats = struct {
 /// Safe to call with an empty slice, in offline mode, or with any rule
 /// module left uninitialized (each rule self-gates on `isActive()`).
 pub fn prefetchAll(allocator: Allocator, workflows: []const Workflow) !Stats {
+    return prefetchAllWithOptions(allocator, workflows, .{});
+}
+
+/// Like `prefetchAll`, but accepts runtime options such as `no_cache`.
+pub fn prefetchAllWithOptions(
+    allocator: Allocator,
+    workflows: []const Workflow,
+    opts: Options,
+) !Stats {
     // Advisory is a single batched fetch regardless of workflow content.
     advisory.prefetch();
 
@@ -57,7 +74,12 @@ pub fn prefetchAll(allocator: Allocator, workflows: []const Workflow) !Stats {
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
 
-    const ref_sets = try collectRefs(scratch, workflows);
+    var ref_sets = try collectRefs(scratch, workflows);
+
+    var cache_hits: usize = 0;
+    if (!opts.no_cache) {
+        cache_hits = applyDiskCache(scratch, &ref_sets, archived_active, stale_active, refconf_active);
+    }
 
     // Try the GraphQL batch path first (folds archived + SHA + named ref
     // lookups into 1-2 POSTs). Falls back to REST on no-token, parse
@@ -74,6 +96,8 @@ pub fn prefetchAll(allocator: Allocator, workflows: []const Workflow) !Stats {
         .unique_repos = ref_sets.repos.count(),
         .unique_sha_refs = ref_sets.sha_refs.count(),
         .unique_tag_or_branch_refs = ref_sets.named_refs.count(),
+        .cache_hits = cache_hits,
+        .cache_misses = ref_sets.repos.count() + ref_sets.sha_refs.count() + ref_sets.named_refs.count(),
     };
 }
 
@@ -151,6 +175,114 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
 }
 
 // ============================================================
+// Disk cache path (front of the pipeline)
+// ============================================================
+
+/// For each unique repo, load any fresh cache entry and populate the rule
+/// caches directly. Remove satisfied entries from `sets` so the GraphQL /
+/// REST phase only fetches what the disk cache could not supply.
+///
+/// Returns the number of cache entries applied (for diagnostics).
+fn applyDiskCache(
+    scratch: Allocator,
+    sets: *RefSets,
+    archived_active: bool,
+    stale_active: bool,
+    refconf_active: bool,
+) usize {
+    var hits: usize = 0;
+
+    // Collect the repos we want to consult, then iterate over a stable
+    // snapshot (we mutate `sets` while iterating).
+    var repo_keys = std.ArrayList([]const u8){};
+    defer repo_keys.deinit(scratch);
+    var rk_it = sets.repos.keyIterator();
+    while (rk_it.next()) |k| repo_keys.append(scratch, k.*) catch return hits;
+
+    for (repo_keys.items) |repo_key| {
+        const val_ptr = sets.repos.getPtr(repo_key) orelse continue;
+        const owner = val_ptr.owner;
+        const repo = val_ptr.repo;
+
+        const entry = disk_cache.load(scratch, owner, repo) orelse continue;
+        // Apply cached archive status.
+        if (archived_active) {
+            if (entry.archived) |b| {
+                archived.setCachedResult(owner, repo, b);
+                _ = sets.repos.remove(repo_key);
+                hits += 1;
+            }
+        }
+
+        if (stale_active) {
+            for (entry.shas) |s| {
+                var sha_buf = std.ArrayList(u8){};
+                defer sha_buf.deinit(scratch);
+                sha_buf.writer(scratch).print("{s}/{s}@{s}", .{ owner, repo, s.sha }) catch continue;
+                if (sets.sha_refs.getPtr(sha_buf.items)) |_| {
+                    const mapped: stale_refs.TagResolution = switch (s.resolution) {
+                        .has_tag => .has_tag,
+                        .no_tag => .no_tag,
+                        .unknown => .unknown,
+                    };
+                    stale_refs.setCachedTagResult(owner, repo, s.sha, mapped);
+                    _ = sets.sha_refs.remove(sha_buf.items);
+                    hits += 1;
+                }
+            }
+        }
+
+        if (refconf_active) {
+            for (entry.named) |n| {
+                var ref_buf = std.ArrayList(u8){};
+                defer ref_buf.deinit(scratch);
+                ref_buf.writer(scratch).print("{s}/{s}@{s}", .{ owner, repo, n.ref }) catch continue;
+                if (sets.named_refs.getPtr(ref_buf.items)) |_| {
+                    const status: refconfusion.RefStatus = if (n.is_tag and n.is_branch)
+                        .ambiguous
+                    else
+                        .not_ambiguous;
+                    refconfusion.setCachedRefResult(owner, repo, n.ref, status);
+                    _ = sets.named_refs.remove(ref_buf.items);
+                    hits += 1;
+                }
+            }
+        }
+    }
+
+    return hits;
+}
+
+/// Persist freshly-fetched results for a single repo. Non-fatal: failures
+/// are ignored so that a missing cache dir or permission error never
+/// blocks the lint run.
+fn persistRepoResult(
+    scratch: Allocator,
+    res: graphql.RepoResult,
+) void {
+    if (res.missing) return;
+    const entry: disk_cache.CachedRepo = .{
+        .cached_at = std.time.timestamp(),
+        .archived = res.archived,
+        .shas = blk: {
+            var list = scratch.alloc(disk_cache.ShaEntry, res.sha_results.len) catch return;
+            for (res.sha_results, 0..) |sr, i| {
+                list[i] = .{ .sha = sr.sha, .resolution = sr.resolution };
+            }
+            break :blk list;
+        },
+        .named = blk: {
+            var list = scratch.alloc(disk_cache.NamedEntry, res.named_results.len) catch return;
+            for (res.named_results, 0..) |nr, i| {
+                list[i] = .{ .ref = nr.ref, .is_tag = nr.is_tag, .is_branch = nr.is_branch };
+            }
+            break :blk list;
+        },
+    };
+    disk_cache.save(scratch, res.owner, res.repo, entry) catch return;
+}
+
+// ============================================================
 // GraphQL batch path
 // ============================================================
 
@@ -185,7 +317,7 @@ fn tryGraphQlBatch(
             else => return false,
         };
 
-        applyResults(results, archived_active, stale_active, refconf_active);
+        applyResults(scratch, results, archived_active, stale_active, refconf_active);
         idx = end;
     }
 
@@ -248,6 +380,7 @@ fn buildRepoInputs(
 }
 
 fn applyResults(
+    scratch: Allocator,
     results: []const graphql.RepoResult,
     archived_active: bool,
     stale_active: bool,
@@ -277,6 +410,7 @@ fn applyResults(
                 refconfusion.setCachedRefResult(res.owner, res.repo, nr.ref, status);
             }
         }
+        persistRepoResult(scratch, res);
     }
 }
 
