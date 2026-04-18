@@ -3,6 +3,7 @@ const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
+const http_client = @import("http_client.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -54,6 +55,44 @@ pub fn deinitRefConfusion() void {
     }
     ref_cache = null;
     rate_limited = false;
+}
+
+/// Returns `true` if ref-confusion is live (non-offline) so a prefetcher
+/// can decide whether to issue network requests for it.
+pub fn isActive() bool {
+    return ref_cache != null;
+}
+
+/// Pre-populate the ref cache. Used by the prefetch orchestrator to
+/// install batched results before the engine runs.
+pub fn setCachedRefResult(
+    owner: []const u8,
+    repo: []const u8,
+    ref: []const u8,
+    status: RefStatus,
+) void {
+    if (ref_cache == null) return;
+    const alloc = if (ref_arena) |*arena| arena.allocator() else return;
+    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, ref }) catch return;
+    ref_cache.?.put(key, status) catch return;
+}
+
+/// Query GitHub for the status of a ref. Exposed for the prefetch
+/// orchestrator so it can batch ref lookups instead of hitting the
+/// lazy per-step path.
+pub fn queryRefStatusPub(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    ref: []const u8,
+) RefStatus {
+    return queryRefStatus(allocator, owner, repo, ref);
+}
+
+/// Return the arena allocator used for cache keys, so the prefetch
+/// orchestrator can stage allocations that live for the rule's lifetime.
+pub fn getArenaAllocator() ?Allocator {
+    return if (ref_arena) |*arena| arena.allocator() else null;
 }
 
 /// Rule check function for SC006.
@@ -126,36 +165,17 @@ fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref
 /// Check if a ref exists under the given ref_type ("tags" or "heads").
 /// Returns true if exists (HTTP 200), false if not (HTTP 404), null on error.
 fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8, ref_type: []const u8) ?bool {
-    if (engine.isNetworkDeadlineExceeded()) return null;
     const url = std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}/git/ref/{s}/{s}", .{ owner, repo, ref_type, ref }) catch return null;
 
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
-    // Build extra headers
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count: usize = 0;
-
-    headers_buf[header_count] = .{ .name = "Accept", .value = "application/vnd.github+json" };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "X-GitHub-Api-Version", .value = "2022-11-28" };
-    header_count += 1;
-
-    // Use GITHUB_TOKEN if available for higher rate limits
-    const auth_value = blk: {
-        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
-        defer allocator.free(token);
-        break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
-    };
+    const auth_value = http_client.getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
-    if (auth_value) |auth| {
-        headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
-        header_count += 1;
-    }
 
-    const result = client.fetch(.{
+    var headers_buf: [3]std.http.Header = undefined;
+    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
+
+    const result = http_client.fetch(.{
         .location = .{ .url = url },
-        .headers = .{ .user_agent = .{ .override = "zghalint/0.1.0" } },
+        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
     }) catch return null;
 

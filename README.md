@@ -84,12 +84,21 @@ zghalint --format json .github/workflows/*.yml
 zghalint --format sarif .github/workflows/*.yml > results.sarif
 ```
 
-### Offline mode
+### Offline mode and cache control
 
 ```bash
 # Disable all network requests and use only local data/cache
 zghalint --quick .github/workflows/*.yml
+
+# Bypass the on-disk prefetch cache and refetch from GitHub
+zghalint --no-cache .github/workflows/*.yml
 ```
+
+Network-dependent rules (SC003-SC006) share a single HTTP client and,
+when `GITHUB_TOKEN` is set, batch repository lookups into a single
+GraphQL POST. Results are cached per-repo under
+`$XDG_CACHE_HOME/zghalint/repos/` with a 24-hour TTL; `--no-cache`
+forces a refresh.
 
 ### Example output
 
@@ -165,6 +174,7 @@ output:
 | `--format <fmt>` | Output format: `terminal`, `json`, `sarif` | `terminal` |
 | `--color <mode>` | Color control: `auto`, `always`, `never` | `auto` |
 | `--quick` | Disable network requests and use only local data/cache (`--offline` is also accepted) | Off |
+| `--no-cache` | Bypass the on-disk prefetch cache and refetch from the network | Off |
 | `--fix` | Apply safe auto-fixes and rewrite files in place | |
 | `--fix-unsafe` | Apply all auto-fixes, including unsafe ones | |
 | `-h`, `--help` | Show help message | |

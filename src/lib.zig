@@ -55,6 +55,10 @@ pub const rules = struct {
     pub const dependabot = @import("rules/dependabot.zig");
     pub const archived = @import("rules/archived.zig");
     pub const stale_refs = @import("rules/stale_refs.zig");
+    pub const http_client = @import("rules/http_client.zig");
+    pub const prefetch = @import("rules/prefetch.zig");
+    pub const graphql = @import("rules/graphql.zig");
+    pub const disk_cache = @import("rules/disk_cache.zig");
 };
 
 pub const fix = struct {
@@ -88,6 +92,10 @@ test {
     _ = @import("rules/dependabot.zig");
     _ = @import("rules/archived.zig");
     _ = @import("rules/stale_refs.zig");
+    _ = @import("rules/http_client.zig");
+    _ = @import("rules/prefetch.zig");
+    _ = @import("rules/graphql.zig");
+    _ = @import("rules/disk_cache.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");

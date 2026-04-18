@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
+const http_client = @import("http_client.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -15,7 +16,7 @@ const isValidGitHubComponent = engine.isValidGitHubComponent;
 // Types
 // ============================================================
 
-const TagResolution = enum {
+pub const TagResolution = enum {
     has_tag,
     no_tag,
     unknown,
@@ -50,6 +51,44 @@ pub fn deinitStaleRefs() void {
         stale_refs_arena = null;
     }
     tag_cache = null;
+}
+
+/// Returns `true` if stale-refs is live (non-offline) so a prefetcher can
+/// decide whether to issue network requests for it.
+pub fn isActive() bool {
+    return tag_cache != null;
+}
+
+/// Pre-populate the tag resolution cache. Used by the prefetch orchestrator
+/// to install batched GraphQL/REST results before the engine runs.
+pub fn setCachedTagResult(
+    owner: []const u8,
+    repo: []const u8,
+    sha: []const u8,
+    resolution: TagResolution,
+) void {
+    if (tag_cache == null) return;
+    const alloc = if (stale_refs_arena) |*arena| arena.allocator() else return;
+    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
+    tag_cache.?.put(key, resolution) catch return;
+}
+
+/// Resolve the tag relationship for a SHA by calling GitHub's REST API.
+/// Exposed so the prefetch orchestrator can batch calls without going
+/// through the lazy per-step path.
+pub fn resolveTagForShaPub(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    sha: []const u8,
+) !TagResolution {
+    return resolveTagForSha(allocator, owner, repo, sha);
+}
+
+/// Return the arena allocator used for cache keys, so the prefetch
+/// orchestrator can stage allocations that live for the rule's lifetime.
+pub fn getArenaAllocator() ?Allocator {
+    return if (stale_refs_arena) |*arena| arena.allocator() else null;
 }
 
 /// Rule check function for SC005.
@@ -88,10 +127,6 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, sha: []const u8) !TagResolution {
-    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
     const url = try std.fmt.allocPrint(
         allocator,
         "https://api.github.com/repos/{s}/{s}/git/matching-refs/tags/?per_page=100",
@@ -101,31 +136,16 @@ fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, s
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
 
-    // Build extra headers
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count: usize = 0;
-
-    headers_buf[header_count] = .{ .name = "Accept", .value = "application/vnd.github+json" };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "X-GitHub-Api-Version", .value = "2022-11-28" };
-    header_count += 1;
-
-    // Use GITHUB_TOKEN if available
-    const auth_value = blk: {
-        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
-        defer allocator.free(token);
-        break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
-    };
+    const auth_value = http_client.getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
-    if (auth_value) |auth| {
-        headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
-        header_count += 1;
-    }
 
-    const result = client.fetch(.{
+    var headers_buf: [3]std.http.Header = undefined;
+    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
+
+    const result = http_client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = "zghalint/0.1.0" } },
+        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
     }) catch return error.FetchFailed;
 
@@ -193,10 +213,6 @@ fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8
 }
 
 fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []const u8, tag_sha: []const u8) ![]const u8 {
-    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
     const url = try std.fmt.allocPrint(
         allocator,
         "https://api.github.com/repos/{s}/{s}/git/tags/{s}",
@@ -206,29 +222,16 @@ fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []cons
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
 
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count: usize = 0;
-
-    headers_buf[header_count] = .{ .name = "Accept", .value = "application/vnd.github+json" };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "X-GitHub-Api-Version", .value = "2022-11-28" };
-    header_count += 1;
-
-    const auth_value = blk: {
-        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
-        defer allocator.free(token);
-        break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
-    };
+    const auth_value = http_client.getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
-    if (auth_value) |auth| {
-        headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
-        header_count += 1;
-    }
 
-    const result = client.fetch(.{
+    var headers_buf: [3]std.http.Header = undefined;
+    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
+
+    const result = http_client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = "zghalint/0.1.0" } },
+        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
     }) catch return error.FetchFailed;
 
@@ -697,6 +700,76 @@ test "parseTagObject: malformed JSON returns error" {
 test "parseTagObject: missing object field returns error" {
     const body =
         \\{"tag":"v1.0.0"}
+    ;
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+}
+
+test "matchShaInRefs: annotated tags fail to dereference offline -> no_tag" {
+    // Five annotated tags, no network available (engine sets a past deadline
+    // so shared HTTP fetches short-circuit). Dereferencing fails for each,
+    // so none match → items.len < 100 → no_tag.
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  {"ref":"refs/tags/v1","object":{"sha":"tagsha111111111111111111111111111111111","type":"tag"}},
+        \\  {"ref":"refs/tags/v2","object":{"sha":"tagsha222222222222222222222222222222222","type":"tag"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
+    try testing.expectEqual(TagResolution.no_tag, result);
+}
+
+test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    try buf.append(testing.allocator, '[');
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        if (i != 0) try buf.append(testing.allocator, ',');
+        try buf.writer(testing.allocator).print(
+            "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
+            .{ i, i },
+        );
+    }
+    try buf.append(testing.allocator, ']');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = matchShaInRefs(arena.allocator(), buf.items, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
+    try testing.expectEqual(TagResolution.unknown, result);
+}
+
+test "matchShaInRefs: non-object items and missing object/type are skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  42,
+        \\  {"ref":"refs/tags/v0"},
+        \\  {"ref":"refs/tags/v1","object":"not-an-object"},
+        \\  {"ref":"refs/tags/v2","object":{"type":"commit"}},
+        \\  {"ref":"refs/tags/v3","object":{"sha":"abc"}},
+        \\  {"ref":"refs/tags/v4","object":{"sha":"hit","type":"commit"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "hit", "o", "r");
+    try testing.expectEqual(TagResolution.has_tag, result);
+}
+
+test "parseTagObject: non-object inner 'object' returns error" {
+    const body =
+        \\{"tag":"v1","object":"not-an-object"}
+    ;
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+}
+
+test "parseTagObject: inner missing sha returns error" {
+    const body =
+        \\{"tag":"v1","object":{"type":"commit"}}
     ;
     try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
 }
