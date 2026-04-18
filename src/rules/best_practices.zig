@@ -156,11 +156,20 @@ fn buildDeprecatedActionFix(
     const version_end = end_byte - quote_offset;
     const version_start = version_end - old_version.len;
 
-    const edits = list.allocEdit(.{
+    const version_span = yaml_types.Span{
+        .start_line = 0,
+        .start_col = 0,
+        .end_line = 0,
+        .end_col = 0,
         .start_byte = version_start,
         .end_byte = version_end,
-        .replacement = new_version,
-    }) orelse return null;
+    };
+    const edits = fix_builder.replaceScalar(
+        list.fixAllocator(),
+        version_span,
+        .plain,
+        new_version,
+    ) orelse return null;
 
     return .{
         .description = "Upgrade deprecated action version",

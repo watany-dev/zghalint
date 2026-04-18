@@ -3,6 +3,7 @@ const engine = @import("engine.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const fix_engine = @import("../fix/engine.zig");
+const fix_builder = @import("../fix/builder.zig");
 
 const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
@@ -44,18 +45,12 @@ fn buildInsecureExecutionFix(
     list: *DiagnosticList,
     value: yaml_types.Scalar,
 ) ?Fix {
-    const replacement = switch (value.style) {
-        .plain => "deny",
-        .single_quoted => "'deny'",
-        .double_quoted => "\"deny\"",
-        else => return null,
-    };
-
-    const edits = list.allocEdit(.{
-        .start_byte = value.span.start_byte,
-        .end_byte = value.span.end_byte,
-        .replacement = replacement,
-    }) orelse return null;
+    const edits = fix_builder.replaceScalar(
+        list.fixAllocator(),
+        value.span,
+        value.style,
+        "deny",
+    ) orelse return null;
 
     return .{
         .description = "set insecure-external-code-execution to deny",
@@ -282,7 +277,8 @@ test "DEP002: fix preserves single quoted style" {
     for (diags.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "DEP002")) {
             const fix = d.fix orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqualStrings("'deny'", fix.edits[0].replacement);
+            // replaceScalar swaps only the inner content between quotes.
+            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
             found = true;
         }
     }
@@ -306,7 +302,8 @@ test "DEP002: fix preserves double quoted style" {
     for (diags.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "DEP002")) {
             const fix = d.fix orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqualStrings("\"deny\"", fix.edits[0].replacement);
+            // replaceScalar swaps only the inner content between quotes.
+            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
             found = true;
         }
     }

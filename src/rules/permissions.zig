@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("engine.zig");
+const fix_builder = @import("../fix/builder.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
@@ -32,11 +33,12 @@ fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
 const write_all_replacement = "{contents: read}";
 
 fn makeWriteAllFix(diag_list: *DiagnosticList, value_span: Span) ?Fix {
-    const edits = diag_list.allocEdit(.{
-        .start_byte = value_span.start_byte,
-        .end_byte = value_span.end_byte,
-        .replacement = write_all_replacement,
-    }) orelse return null;
+    const edits = fix_builder.replaceScalar(
+        diag_list.fixAllocator(),
+        value_span,
+        .plain,
+        write_all_replacement,
+    ) orelse return null;
     return .{
         .description = "Replace 'write-all' with minimal permissions",
         .safety = .safe,
