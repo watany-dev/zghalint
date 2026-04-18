@@ -27,6 +27,7 @@ const CliArgs = struct {
     format: ?OutputFormat = null,
     color: ?ColorMode = null,
     offline: bool = false,
+    no_cache: bool = false,
     show_help: bool = false,
     show_version: bool = false,
     fix_mode: FixMode = .off,
@@ -68,6 +69,8 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliAr
             // handled in indexed loop below
         } else if (std.mem.eql(u8, arg, "--offline") or std.mem.eql(u8, arg, "--quick")) {
             args.offline = true;
+        } else if (std.mem.eql(u8, arg, "--no-cache")) {
+            args.no_cache = true;
         }
     }
 
@@ -99,6 +102,7 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliAr
             !std.mem.eql(u8, arg, "-v") and
             !std.mem.eql(u8, arg, "--offline") and
             !std.mem.eql(u8, arg, "--quick") and
+            !std.mem.eql(u8, arg, "--no-cache") and
             !std.mem.startsWith(u8, arg, "-"))
         {
             try args.files.append(allocator, arg);
@@ -123,6 +127,7 @@ fn printHelp(writer: anytype) !void {
         \\  --color <mode>    Color mode: auto, always, never (default: auto)
         \\  --quick           Disable network requests and use only local data/cache
         \\  --offline         Alias for --quick
+        \\  --no-cache        Ignore the on-disk prefetch cache and refetch from the network
         \\  --fix             Apply safe auto-fixes and rewrite files
         \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
         \\  -h, --help        Show this help
@@ -217,6 +222,7 @@ fn prefetchNetworkData(
     allocator: std.mem.Allocator,
     files: []const []const u8,
     config: *const Config,
+    no_cache: bool,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -242,7 +248,11 @@ fn prefetchNetworkData(
         try workflows.append(scratch, workflow);
     }
 
-    _ = zghalint.rules.prefetch.prefetchAll(scratch, workflows.items) catch return;
+    _ = zghalint.rules.prefetch.prefetchAllWithOptions(
+        scratch,
+        workflows.items,
+        .{ .no_cache = no_cache },
+    ) catch return;
 }
 
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
@@ -469,7 +479,7 @@ pub fn main() !u8 {
     // Batch all network-rule fetches before the lint pass so TLS/TCP
     // connections, advisories, and repo metadata are primed in the caches.
     if (!cli_args.offline) {
-        prefetchNetworkData(allocator, files, &config) catch {};
+        prefetchNetworkData(allocator, files, &config, cli_args.no_cache) catch {};
     }
 
     // Lint each file
@@ -590,6 +600,7 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--color") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--quick") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--offline") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--no-cache") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--fix") != null);
 }
 
@@ -599,6 +610,16 @@ test "parseArgsSlice parses offline flag" {
     defer args.deinit();
 
     try std.testing.expect(args.offline);
+    try std.testing.expectEqual(@as(usize, 1), args.files.items.len);
+    try std.testing.expectEqualStrings(".github/workflows/ci.yml", args.files.items[0]);
+}
+
+test "parseArgsSlice parses no-cache flag" {
+    const argv = [_][]const u8{ "--no-cache", ".github/workflows/ci.yml" };
+    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    defer args.deinit();
+
+    try std.testing.expect(args.no_cache);
     try std.testing.expectEqual(@as(usize, 1), args.files.items.len);
     try std.testing.expectEqualStrings(".github/workflows/ci.yml", args.files.items[0]);
 }
