@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
+const http_client = @import("http_client.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -115,41 +116,22 @@ fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
 // ============================================================
 
 fn fetchArchiveStatus(allocator: Allocator, owner: []const u8, repo: []const u8) !bool {
-    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
     const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}", .{ owner, repo });
     defer allocator.free(url);
 
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
 
-    // Build extra headers
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count: usize = 0;
-
-    headers_buf[header_count] = .{ .name = "Accept", .value = "application/vnd.github+json" };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "X-GitHub-Api-Version", .value = "2022-11-28" };
-    header_count += 1;
-
-    // Use GITHUB_TOKEN if available for higher rate limits
-    const auth_value = blk: {
-        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
-        defer allocator.free(token);
-        break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
-    };
+    const auth_value = http_client.getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
-    if (auth_value) |auth| {
-        headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
-        header_count += 1;
-    }
 
-    const result = client.fetch(.{
+    var headers_buf: [3]std.http.Header = undefined;
+    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
+
+    const result = http_client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = "zghalint/0.1.0" } },
+        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
     }) catch return error.FetchFailed;
 

@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
+const http_client = @import("http_client.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -88,10 +89,6 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, sha: []const u8) !TagResolution {
-    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
     const url = try std.fmt.allocPrint(
         allocator,
         "https://api.github.com/repos/{s}/{s}/git/matching-refs/tags/?per_page=100",
@@ -101,31 +98,16 @@ fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, s
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
 
-    // Build extra headers
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count: usize = 0;
-
-    headers_buf[header_count] = .{ .name = "Accept", .value = "application/vnd.github+json" };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "X-GitHub-Api-Version", .value = "2022-11-28" };
-    header_count += 1;
-
-    // Use GITHUB_TOKEN if available
-    const auth_value = blk: {
-        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
-        defer allocator.free(token);
-        break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
-    };
+    const auth_value = http_client.getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
-    if (auth_value) |auth| {
-        headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
-        header_count += 1;
-    }
 
-    const result = client.fetch(.{
+    var headers_buf: [3]std.http.Header = undefined;
+    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
+
+    const result = http_client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = "zghalint/0.1.0" } },
+        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
     }) catch return error.FetchFailed;
 
@@ -193,10 +175,6 @@ fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8
 }
 
 fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []const u8, tag_sha: []const u8) ![]const u8 {
-    if (engine.isNetworkDeadlineExceeded()) return error.FetchFailed;
-    var client: std.http.Client = .{ .allocator = allocator };
-    defer client.deinit();
-
     const url = try std.fmt.allocPrint(
         allocator,
         "https://api.github.com/repos/{s}/{s}/git/tags/{s}",
@@ -206,29 +184,16 @@ fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []cons
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
 
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count: usize = 0;
-
-    headers_buf[header_count] = .{ .name = "Accept", .value = "application/vnd.github+json" };
-    header_count += 1;
-    headers_buf[header_count] = .{ .name = "X-GitHub-Api-Version", .value = "2022-11-28" };
-    header_count += 1;
-
-    const auth_value = blk: {
-        const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch break :blk null;
-        defer allocator.free(token);
-        break :blk std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
-    };
+    const auth_value = http_client.getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
-    if (auth_value) |auth| {
-        headers_buf[header_count] = .{ .name = "Authorization", .value = auth };
-        header_count += 1;
-    }
 
-    const result = client.fetch(.{
+    var headers_buf: [3]std.http.Header = undefined;
+    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
+
+    const result = http_client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = "zghalint/0.1.0" } },
+        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
     }) catch return error.FetchFailed;
 
