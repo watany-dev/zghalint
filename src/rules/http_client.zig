@@ -137,3 +137,52 @@ test "init is idempotent and deinit resets state" {
     deinit();
     try testing.expect(!client_initialized);
 }
+
+test "getAuthHeader: returns Bearer <token> when GITHUB_TOKEN set" {
+    const saved = std.process.getEnvVarOwned(testing.allocator, "GITHUB_TOKEN") catch null;
+    defer if (saved) |s| testing.allocator.free(s);
+    const saved_z: ?[:0]u8 = if (saved) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
+    defer if (saved_z) |z| testing.allocator.free(z);
+
+    _ = libc_setenv("GITHUB_TOKEN", "ghp_mock_token", 1);
+    defer {
+        if (saved_z) |z| {
+            _ = libc_setenv("GITHUB_TOKEN", z.ptr, 1);
+        } else {
+            _ = libc_unsetenv("GITHUB_TOKEN");
+        }
+    }
+
+    const header = getAuthHeader(testing.allocator) orelse return error.TestExpectedNonNull;
+    defer testing.allocator.free(header);
+    try testing.expectEqualStrings("Bearer ghp_mock_token", header);
+}
+
+test "getAuthHeader: returns null when GITHUB_TOKEN unset" {
+    const saved = std.process.getEnvVarOwned(testing.allocator, "GITHUB_TOKEN") catch null;
+    defer if (saved) |s| testing.allocator.free(s);
+    const saved_z: ?[:0]u8 = if (saved) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
+    defer if (saved_z) |z| testing.allocator.free(z);
+
+    _ = libc_unsetenv("GITHUB_TOKEN");
+    defer {
+        if (saved_z) |z| {
+            _ = libc_setenv("GITHUB_TOKEN", z.ptr, 1);
+        }
+    }
+
+    try testing.expect(getAuthHeader(testing.allocator) == null);
+}
+
+test "fetch: returns NetworkDeadlineExceeded when deadline has passed" {
+    // Force an already-expired deadline. This must short-circuit before any
+    // TCP / TLS work is attempted, so the client doesn't even need to be init'd.
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    const result = fetch(.{ .location = .{ .url = "http://127.0.0.1:1/irrelevant" } });
+    try testing.expectError(error.NetworkDeadlineExceeded, result);
+}
+
+const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
+const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });

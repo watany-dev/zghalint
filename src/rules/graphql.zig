@@ -528,3 +528,142 @@ test "batchQuery: empty repo slice short-circuits" {
     const results = try batchQuery(testing.allocator, &.{});
     try testing.expectEqual(@as(usize, 0), results.len);
 }
+
+test "parseResponse: non-object data (string) surfaces ParseFailed" {
+    const body = "{\"data\":\"not-an-object\"}";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
+}
+
+test "parseResponse: alias missing from data marks repo missing" {
+    // data has r0 but we query two repos → r1 absent should be reported missing.
+    const body = "{\"data\":{\"r0\":{\"isArchived\":false}}}";
+    const repos = [_]RepoInput{
+        .{ .owner = "a", .repo = "x" },
+        .{ .owner = "b", .repo = "y" },
+    };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(!results[0].missing);
+    try testing.expect(results[1].missing);
+}
+
+test "parseResponse: alias is primitive (not object, not null) -> missing" {
+    const body = "{\"data\":{\"r0\":42}}";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(results[0].missing);
+}
+
+test "parseResponse: repo without isArchived field keeps archived = null" {
+    const body = "{\"data\":{\"r0\":{}}}";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(results[0].archived == null);
+    try testing.expect(!results[0].missing);
+}
+
+test "parseResponse: sha_refs but no tagNodes -> no_tag for every sha" {
+    // No tagNodes field means hit_page_limit=false AND empty tag_shas,
+    // so every SHA resolves to no_tag.
+    const body = "{\"data\":{\"r0\":{\"isArchived\":false}}}";
+    const shas = [_][]const u8{ "deadbeef", "cafebabe" };
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(@as(usize, 2), results[0].sha_results.len);
+    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[1].resolution);
+}
+
+test "parseResponse: tagNodes non-object is tolerated" {
+    // tagNodes is a string, not an object. collectTagCommitShas / page-limit
+    // detection both must handle this without crashing.
+    const body = "{\"data\":{\"r0\":{\"isArchived\":false,\"tagNodes\":\"oops\"}}}";
+    const shas = [_][]const u8{"any"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[0].resolution);
+}
+
+test "parseResponse: tagNodes.nodes is non-array is tolerated" {
+    const body = "{\"data\":{\"r0\":{\"isArchived\":false,\"tagNodes\":{\"nodes\":\"oops\"}}}}";
+    const shas = [_][]const u8{"any"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[0].resolution);
+}
+
+test "parseResponse: tag node malformed entries are skipped" {
+    // Non-object node, object-with-non-object-target, oid non-string:
+    // the loop must skip each without adding to tag_shas. A clean oid in
+    // the last node still produces a has_tag match.
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"nodes":[
+        \\  "not-an-object",
+        \\  {"name":"bad1","target":"not-an-object"},
+        \\  {"name":"bad2","target":{"oid":123}},
+        \\  {"name":"bad3","target":{"oid":"outer","target":"not-an-object"}},
+        \\  {"name":"bad4","target":{"oid":"outer2","target":{"oid":42}}},
+        \\  {"name":"good","target":{"oid":"the-commit"}}
+        \\]}}}}
+    ;
+    const shas = [_][]const u8{"the-commit"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
+}
+
+test "parseResponse: named ref alias with non-object value reads as false" {
+    // tag_0 present but set to null (branch_0 to an object).
+    const body = "{\"data\":{\"r0\":{\"isArchived\":true,\"tag_0\":null,\"branch_0\":{\"name\":\"main\"}}}}";
+    const named = [_][]const u8{"main"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .named_refs = &named }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(!results[0].named_results[0].is_tag);
+    try testing.expect(results[0].named_results[0].is_branch);
+}
+
+test "parseResponse: non-object root returns ParseFailed" {
+    const body = "[]";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
+}
+
+test "batchQuery: no GITHUB_TOKEN in env returns NoToken" {
+    // Save current token value so we can restore it after the test.
+    const saved = std.process.getEnvVarOwned(testing.allocator, "GITHUB_TOKEN") catch null;
+    defer if (saved) |s| testing.allocator.free(s);
+    const saved_z: ?[:0]u8 = if (saved) |s| testing.allocator.dupeZ(u8, s) catch null else null;
+    defer if (saved_z) |z| testing.allocator.free(z);
+
+    _ = libc_unsetenv("GITHUB_TOKEN");
+    defer if (saved_z) |z| {
+        _ = libc_setenv("GITHUB_TOKEN", z.ptr, 1);
+    };
+
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    const result = batchQuery(testing.allocator, &repos);
+    try testing.expectError(error.NoToken, result);
+}
+
+const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
+const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });

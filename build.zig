@@ -44,11 +44,13 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // --- Library tests ---
+    // Tests link libc so env-mutating helpers (setenv/unsetenv) are resolved.
     const lib_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
@@ -59,6 +61,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
         .use_llvm = true,
     });

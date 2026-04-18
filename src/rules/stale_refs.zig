@@ -704,6 +704,76 @@ test "parseTagObject: missing object field returns error" {
     try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
 }
 
+test "matchShaInRefs: annotated tags fail to dereference offline -> no_tag" {
+    // Five annotated tags, no network available (engine sets a past deadline
+    // so shared HTTP fetches short-circuit). Dereferencing fails for each,
+    // so none match → items.len < 100 → no_tag.
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  {"ref":"refs/tags/v1","object":{"sha":"tagsha111111111111111111111111111111111","type":"tag"}},
+        \\  {"ref":"refs/tags/v2","object":{"sha":"tagsha222222222222222222222222222222222","type":"tag"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
+    try testing.expectEqual(TagResolution.no_tag, result);
+}
+
+test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    try buf.append(testing.allocator, '[');
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        if (i != 0) try buf.append(testing.allocator, ',');
+        try buf.writer(testing.allocator).print(
+            "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
+            .{ i, i },
+        );
+    }
+    try buf.append(testing.allocator, ']');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = matchShaInRefs(arena.allocator(), buf.items, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
+    try testing.expectEqual(TagResolution.unknown, result);
+}
+
+test "matchShaInRefs: non-object items and missing object/type are skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  42,
+        \\  {"ref":"refs/tags/v0"},
+        \\  {"ref":"refs/tags/v1","object":"not-an-object"},
+        \\  {"ref":"refs/tags/v2","object":{"type":"commit"}},
+        \\  {"ref":"refs/tags/v3","object":{"sha":"abc"}},
+        \\  {"ref":"refs/tags/v4","object":{"sha":"hit","type":"commit"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "hit", "o", "r");
+    try testing.expectEqual(TagResolution.has_tag, result);
+}
+
+test "parseTagObject: non-object inner 'object' returns error" {
+    const body =
+        \\{"tag":"v1","object":"not-an-object"}
+    ;
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+}
+
+test "parseTagObject: inner missing sha returns error" {
+    const body =
+        \\{"tag":"v1","object":{"type":"commit"}}
+    ;
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+}
+
 test "SC005: invalid owner characters rejected" {
     const prev_cache = tag_cache;
     const prev_arena = stale_refs_arena;

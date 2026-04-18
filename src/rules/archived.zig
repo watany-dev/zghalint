@@ -368,6 +368,27 @@ test "parseArchivedField: missing archived field" {
     try testing.expectError(error.MissingField, parseArchivedField(arena.allocator(), body));
 }
 
+test "parseArchivedField: non-object root returns UnexpectedFormat" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(
+        error.UnexpectedFormat,
+        parseArchivedField(arena.allocator(), "[1,2,3]"),
+    );
+}
+
+test "parseArchivedField: non-bool archived returns UnexpectedFormat" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\{"archived":"yes"}
+    ;
+    try testing.expectError(
+        error.UnexpectedFormat,
+        parseArchivedField(arena.allocator(), body),
+    );
+}
+
 test "SC004: invalid owner characters rejected" {
     initForTesting(testing.allocator);
     defer deinitArchived();

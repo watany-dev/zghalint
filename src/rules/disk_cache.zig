@@ -398,3 +398,97 @@ test "saveToDir: archived null serializes as null literal" {
     }
     try testing.expect(loaded.archived == null);
 }
+
+test "loadFromDir: non-object JSON root returns null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+    try file.writeAll("[1,2,3]"); // array instead of object
+
+    try testing.expect(loadFromDir(tmp.dir, testing.allocator, "o", "r") == null);
+}
+
+test "loadFromDir: tolerates malformed shas/named entries" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+
+    // Each shas entry is either non-array, too-short, wrong-type, or has an
+    // unknown resolution code. All must be silently skipped.
+    const now = std.time.timestamp();
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"cached_at\":{d},\"archived\":false,\"shas\":[42,[\"onlyone\"],[1,2],[\"sha\",\"X\"],[\"good\",\"h\"]],\"named\":[0,[\"x\"],[\"ref\",\"notnum\",1],[\"ok\",1,0]]}}",
+        .{now},
+    );
+    defer testing.allocator.free(body);
+    try file.writeAll(body);
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        for (loaded.shas) |s| testing.allocator.free(s.sha);
+        testing.allocator.free(loaded.shas);
+        for (loaded.named) |n| testing.allocator.free(n.ref);
+        testing.allocator.free(loaded.named);
+    }
+    // Only the "good" shas entry survives (others are dropped by length or
+    // type checks). Named entries with a string-typed first field survive —
+    // non-string bool/int fields fall through to intFieldAsBool's else branch.
+    try testing.expectEqual(@as(usize, 1), loaded.shas.len);
+    try testing.expectEqualStrings("good", loaded.shas[0].sha);
+    try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
+    try testing.expectEqual(@as(usize, 2), loaded.named.len);
+    try testing.expectEqualStrings("ref", loaded.named[0].ref);
+    try testing.expect(!loaded.named[0].is_tag); // "notnum" -> false
+    try testing.expect(loaded.named[0].is_branch); // 1 -> true
+    try testing.expectEqualStrings("ok", loaded.named[1].ref);
+}
+
+test "load/save: round-trip via XDG_CACHE_HOME" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+    const tmp_path_z = try testing.allocator.dupeZ(u8, tmp_path);
+    defer testing.allocator.free(tmp_path_z);
+
+    // Snapshot current env so we leave the process state untouched.
+    const saved_xdg = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
+    defer if (saved_xdg) |s| testing.allocator.free(s);
+    const saved_xdg_z: ?[:0]u8 = if (saved_xdg) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
+    defer if (saved_xdg_z) |z| testing.allocator.free(z);
+
+    _ = libc_setenv("XDG_CACHE_HOME", tmp_path_z.ptr, 1);
+    defer {
+        if (saved_xdg_z) |z| {
+            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
+        } else {
+            _ = libc_unsetenv("XDG_CACHE_HOME");
+        }
+    }
+
+    const now = std.time.timestamp();
+    try save(testing.allocator, "xdg-o", "xdg-r", .{ .cached_at = now, .archived = true });
+
+    const loaded = load(testing.allocator, "xdg-o", "xdg-r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        testing.allocator.free(loaded.shas);
+        testing.allocator.free(loaded.named);
+    }
+    try testing.expect(loaded.archived.?);
+    try testing.expectEqual(now, loaded.cached_at);
+}
+
+const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
+const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });

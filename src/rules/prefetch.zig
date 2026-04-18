@@ -680,6 +680,101 @@ test "applyResults: missing entries are skipped (no rule init required)" {
     applyResults(arena.allocator(), &results, true, true, true, null);
 }
 
+test "prefetchAllWithOptions: deadline-expired short-circuits but still counts refs" {
+    // Route all network fetches to the deadline-exceeded path so the test
+    // never touches the network, yet still exercises the orchestrator's
+    // GraphQL-fallback + per-rule REST loops.
+    archived.initForTesting(testing.allocator);
+    defer archived.deinitArchived();
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    refconfusion.initRefConfusion(testing.allocator, false);
+    defer refconfusion.deinitRefConfusion();
+
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    const sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@" ++ sha) },
+        .{ .uses = ActionRef.parse("actions/setup-node@v4") },
+    };
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    const wfs = [_]Workflow{wf};
+
+    const stats = try prefetchAllWithOptions(testing.allocator, &wfs, .{ .no_cache = true });
+    try testing.expectEqual(@as(usize, 2), stats.unique_repos);
+    try testing.expectEqual(@as(usize, 1), stats.unique_sha_refs);
+    try testing.expectEqual(@as(usize, 1), stats.unique_tag_or_branch_refs);
+    try testing.expectEqual(@as(usize, 0), stats.cache_hits);
+}
+
+test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets" {
+    archived.initForTesting(testing.allocator);
+    defer archived.deinitArchived();
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    refconfusion.initRefConfusion(testing.allocator, false);
+    defer refconfusion.deinitRefConfusion();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+    const tmp_path_z = try testing.allocator.dupeZ(u8, tmp_path);
+    defer testing.allocator.free(tmp_path_z);
+
+    const saved = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
+    defer if (saved) |s| testing.allocator.free(s);
+    const saved_z: ?[:0]u8 = if (saved) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
+    defer if (saved_z) |z| testing.allocator.free(z);
+
+    _ = libc_setenv("XDG_CACHE_HOME", tmp_path_z.ptr, 1);
+    defer {
+        if (saved_z) |z| {
+            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
+        } else {
+            _ = libc_unsetenv("XDG_CACHE_HOME");
+        }
+    }
+
+    // Stage a fresh entry at the real on-disk cache location so that
+    // `disk_cache.load` (via XDG resolution) finds it.
+    const now = std.time.timestamp();
+    const shas = [_]disk_cache.ShaEntry{.{ .sha = "abc123", .resolution = .no_tag }};
+    const named = [_]disk_cache.NamedEntry{.{ .ref = "main", .is_tag = true, .is_branch = true }};
+    try disk_cache.save(testing.allocator, "acme", "tool", .{
+        .cached_at = now,
+        .archived = false,
+        .shas = @constCast(&shas),
+        .named = @constCast(&named),
+    });
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const repo_key = "acme/tool";
+    var repos: RepoSet = .{};
+    try repos.put(alloc, repo_key, .{ .owner = "acme", .repo = "tool" });
+    var sha_refs: ShaSet = .{};
+    try sha_refs.put(alloc, "acme/tool@abc123", .{ .owner = "acme", .repo = "tool", .sha = "abc123" });
+    var named_refs: NamedSet = .{};
+    try named_refs.put(alloc, "acme/tool@main", .{ .owner = "acme", .repo = "tool", .ref = "main" });
+    var sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
+
+    const hits = applyDiskCache(alloc, &sets, true, true, true);
+    try testing.expectEqual(@as(usize, 3), hits);
+    try testing.expectEqual(@as(usize, 0), sets.repos.count());
+    try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
+    try testing.expectEqual(@as(usize, 0), sets.named_refs.count());
+}
+
+const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
+const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
+
 test "applyResults: persists repo state to the provided cache dir" {
     archived.initForTesting(testing.allocator);
     defer archived.deinitArchived();
