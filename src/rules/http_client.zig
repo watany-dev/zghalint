@@ -120,3 +120,20 @@ test "fetch returns NotInitialized when client not started" {
     const result = fetch(.{ .location = .{ .url = "http://localhost/does-not-matter" } });
     try testing.expectError(error.NotInitialized, result);
 }
+
+test "init is idempotent and deinit resets state" {
+    // Work on a clean slate. If a parent test left the client up, we bail.
+    if (client_initialized) return error.SkipZigTest;
+
+    init(testing.allocator);
+    try testing.expect(client_initialized);
+    // Second init must not re-allocate or leak.
+    init(testing.allocator);
+    try testing.expect(client_initialized);
+
+    deinit();
+    try testing.expect(!client_initialized);
+    // Second deinit is a no-op and must not crash.
+    deinit();
+    try testing.expect(!client_initialized);
+}

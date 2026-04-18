@@ -447,3 +447,84 @@ test "parseResponse: missing repo reported as missing=true" {
     const results = try parseResponse(arena.allocator(), body, &repos);
     try testing.expect(results[0].missing);
 }
+
+test "parseResponse: null data marks every repo missing" {
+    const body = "{\"data\":null}";
+    const repos = [_]RepoInput{
+        .{ .owner = "a", .repo = "x" },
+        .{ .owner = "b", .repo = "y" },
+    };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expect(results[0].missing);
+    try testing.expect(results[1].missing);
+}
+
+test "parseResponse: errors without data surfaces ParseFailed" {
+    const body = "{\"errors\":[{\"message\":\"boom\"}]}";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
+}
+
+test "parseResponse: 100 tag nodes without match yields unknown (page-limit fallback)" {
+    // Build a "data":{"r0":{...}} body with exactly 100 tagNodes entries.
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    try buf.appendSlice(testing.allocator, "{\"data\":{\"r0\":{\"isArchived\":false,\"tagNodes\":{\"nodes\":[");
+    for (0..100) |i| {
+        if (i != 0) try buf.append(testing.allocator, ',');
+        try buf.writer(testing.allocator).print("{{\"name\":\"v{d}\",\"target\":{{\"oid\":\"oid{d}\"}}}}", .{ i, i });
+    }
+    try buf.appendSlice(testing.allocator, "]}}}}");
+
+    const shas = [_][]const u8{"sha-not-present"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), buf.items, &repos);
+    try testing.expectEqual(ShaTagResolution.unknown, results[0].sha_results[0].resolution);
+}
+
+test "parseResponse: non-bool isArchived leaves archived = null" {
+    const body = "{\"data\":{\"r0\":{\"isArchived\":null}}}";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(results[0].archived == null);
+    try testing.expect(!results[0].missing);
+}
+
+test "parseResponse: malformed root JSON returns ParseFailed" {
+    const body = "not-json-at-all";
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
+}
+
+test "encodeRequestBody escapes quotes, backslashes, and newlines" {
+    const q = "query { a \"b\" \\c\nd }";
+    const body = try encodeRequestBody(testing.allocator, q);
+    defer testing.allocator.free(body);
+    // Double-quoted wrapper with escaped characters inside.
+    try testing.expect(std.mem.startsWith(u8, body, "{\"query\":\""));
+    try testing.expect(std.mem.endsWith(u8, body, "\"}"));
+    try testing.expect(std.mem.indexOf(u8, body, "\\\"b\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\\\\c") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\\n") != null);
+}
+
+test "batchQuery: empty repo slice short-circuits" {
+    const results = try batchQuery(testing.allocator, &.{});
+    try testing.expectEqual(@as(usize, 0), results.len);
+}

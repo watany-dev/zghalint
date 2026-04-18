@@ -104,7 +104,18 @@ pub fn load(
 ) ?CachedRepo {
     var dir = getCacheDir(allocator) orelse return null;
     defer dir.close();
+    return loadFromDir(dir, allocator, owner, repo);
+}
 
+/// Variant of `load` that takes an already-opened cache directory. Tests
+/// use this to drive load/save against a `std.testing.tmpDir` instead of
+/// the user's real XDG cache.
+pub fn loadFromDir(
+    dir: std.fs.Dir,
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+) ?CachedRepo {
     const name = repoFilename(allocator, owner, repo) catch return null;
     defer allocator.free(name);
 
@@ -114,7 +125,14 @@ pub fn load(
     const body = file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch return null;
     defer allocator.free(body);
 
-    const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch return null;
+    // Parse the JSON into an isolated arena so we don't leak the tree
+    // when `allocator` is a GPA. Only the per-repo copies we dupe below
+    // need to live on `allocator`.
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const parse_alloc = parse_arena.allocator();
+
+    const root = std.json.parseFromSliceLeaky(std.json.Value, parse_alloc, body, .{}) catch return null;
     const obj = switch (root) {
         .object => |o| o,
         else => return null,
@@ -214,7 +232,16 @@ pub fn save(
 ) !void {
     var dir = getCacheDir(allocator) orelse return;
     defer dir.close();
+    try saveToDir(dir, allocator, owner, repo, entry);
+}
 
+pub fn saveToDir(
+    dir: std.fs.Dir,
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    entry: CachedRepo,
+) !void {
     const name = try repoFilename(allocator, owner, repo);
     defer allocator.free(name);
 
@@ -267,4 +294,107 @@ test "parseResolutionCode round-trips" {
     try testing.expectEqual(graphql.ShaTagResolution.unknown, parseResolutionCode("u").?);
     try testing.expect(parseResolutionCode("x") == null);
     try testing.expect(parseResolutionCode("") == null);
+}
+
+test "resolutionCode maps each enum variant" {
+    try testing.expectEqual(@as(u8, 'h'), resolutionCode(.has_tag));
+    try testing.expectEqual(@as(u8, 'n'), resolutionCode(.no_tag));
+    try testing.expectEqual(@as(u8, 'u'), resolutionCode(.unknown));
+}
+
+test "intFieldAsBool decodes JSON variants" {
+    try testing.expect(intFieldAsBool(.{ .bool = true }));
+    try testing.expect(!intFieldAsBool(.{ .bool = false }));
+    try testing.expect(intFieldAsBool(.{ .integer = 1 }));
+    try testing.expect(!intFieldAsBool(.{ .integer = 0 }));
+    try testing.expect(!intFieldAsBool(.{ .null = {} }));
+}
+
+test "saveToDir/loadFromDir round-trips all fields" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const shas = [_]ShaEntry{
+        .{ .sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .resolution = .has_tag },
+        .{ .sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", .resolution = .no_tag },
+    };
+    const named = [_]NamedEntry{
+        .{ .ref = "main", .is_tag = false, .is_branch = true },
+        .{ .ref = "v4", .is_tag = true, .is_branch = false },
+    };
+    const now = std.time.timestamp();
+    const entry: CachedRepo = .{
+        .cached_at = now,
+        .archived = true,
+        .shas = @constCast(&shas),
+        .named = @constCast(&named),
+    };
+
+    try saveToDir(tmp.dir, testing.allocator, "actions", "checkout", entry);
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "actions", "checkout") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        for (loaded.shas) |s| testing.allocator.free(s.sha);
+        testing.allocator.free(loaded.shas);
+        for (loaded.named) |n| testing.allocator.free(n.ref);
+        testing.allocator.free(loaded.named);
+    }
+
+    try testing.expectEqual(now, loaded.cached_at);
+    try testing.expect(loaded.archived.?);
+    try testing.expectEqual(@as(usize, 2), loaded.shas.len);
+    try testing.expectEqualStrings(shas[0].sha, loaded.shas[0].sha);
+    try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
+    try testing.expectEqual(graphql.ShaTagResolution.no_tag, loaded.shas[1].resolution);
+    try testing.expectEqual(@as(usize, 2), loaded.named.len);
+    try testing.expectEqualStrings("main", loaded.named[0].ref);
+    try testing.expect(!loaded.named[0].is_tag);
+    try testing.expect(loaded.named[0].is_branch);
+    try testing.expect(loaded.named[1].is_tag);
+}
+
+test "loadFromDir: missing file returns null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try testing.expect(loadFromDir(tmp.dir, testing.allocator, "nobody", "nothing") == null);
+}
+
+test "loadFromDir: stale file (older than TTL) returns null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const stale_time = std.time.timestamp() - cache_ttl_s - 10;
+    try saveToDir(tmp.dir, testing.allocator, "o", "r", .{ .cached_at = stale_time, .archived = false });
+
+    try testing.expect(loadFromDir(tmp.dir, testing.allocator, "o", "r") == null);
+}
+
+test "loadFromDir: malformed JSON returns null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+    try file.writeAll("{ not valid json");
+
+    try testing.expect(loadFromDir(tmp.dir, testing.allocator, "o", "r") == null);
+}
+
+test "saveToDir: archived null serializes as null literal" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const now = std.time.timestamp();
+    try saveToDir(tmp.dir, testing.allocator, "o", "r", .{ .cached_at = now, .archived = null });
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        testing.allocator.free(loaded.shas);
+        testing.allocator.free(loaded.named);
+    }
+    try testing.expect(loaded.archived == null);
 }
