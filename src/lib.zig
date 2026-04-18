@@ -57,6 +57,7 @@ pub const rules = struct {
     pub const stale_refs = @import("rules/stale_refs.zig");
     pub const http_client = @import("rules/http_client.zig");
     pub const prefetch = @import("rules/prefetch.zig");
+    pub const graphql = @import("rules/graphql.zig");
 };
 
 pub const fix = struct {
@@ -92,6 +93,7 @@ test {
     _ = @import("rules/stale_refs.zig");
     _ = @import("rules/http_client.zig");
     _ = @import("rules/prefetch.zig");
+    _ = @import("rules/graphql.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
