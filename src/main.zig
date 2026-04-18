@@ -415,6 +415,10 @@ pub fn main() !u8 {
     zghalint.rules.engine.setNetworkDeadline(10 * std.time.ns_per_s);
     defer zghalint.rules.engine.clearNetworkDeadline();
 
+    // Shared HTTP client amortizes TLS/TCP handshakes across rule fetches.
+    zghalint.rules.http_client.init(allocator);
+    defer zghalint.rules.http_client.deinit();
+
     // Initialize network-dependent rule databases (graceful offline skip)
     zghalint.rules.advisory.initAdvisories(allocator, cli_args.offline);
     defer zghalint.rules.advisory.deinitAdvisories();
