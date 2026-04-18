@@ -45,6 +45,15 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
   - `performance.zig` — Performance optimization rules (caching, redundant steps)
   - `best_practices.zig` — Best practice checks (timeouts, naming, concurrency)
   - `permissions.zig` — Permission model validation
+  - `advisory.zig` — Known-vulnerable action detection (SC003)
+  - `archived.zig` — Archived repository detection (SC004)
+  - `stale_refs.zig` — SHA-to-tag resolution (SC005)
+  - `refconfusion.zig` — Tag/branch ref confusion (SC006)
+  - `dependabot.zig` — Dependabot configuration checks
+  - `http_client.zig` — Shared `std.http.Client` for GitHub API reuse
+  - `graphql.zig` — GitHub GraphQL batching (SC004-SC006 in 1-2 POSTs)
+  - `disk_cache.zig` — Per-repo JSON cache (24h TTL) for warm runs
+  - `prefetch.zig` — Orchestrator: disk → GraphQL → REST fallback
 - `src/workflow/` — Workflow data structures and parsing
   - `types.zig` — Workflow, Job, Step, Trigger types
   - `parser.zig` — Workflow structure parser
@@ -63,6 +72,9 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `--config <path>` — Load rule overrides from .zghalint.yml
 - `--format <fmt>` — Output format (terminal, json, sarif; default: terminal)
 - `--color <mode>` — Color control (auto, always, never; default: auto)
+- `--quick` / `--offline` — Disable network requests; use local data/cache only
+- `--no-cache` — Bypass the on-disk prefetch cache and refetch from GitHub
+- `--fix` / `--fix-unsafe` — Apply auto-fixes in place
 - `-h, --help` — Show help
 - `-v, --version` — Show version
 

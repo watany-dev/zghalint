@@ -146,8 +146,18 @@ pub const CachedRepo = struct {
 
 pub fn load(allocator, owner, repo) ?CachedRepo;
 pub fn save(allocator, owner, repo, entry: CachedRepo) !void;
+pub fn loadFromDir(dir: std.fs.Dir, allocator, owner, repo) ?CachedRepo;
+pub fn saveToDir(dir: std.fs.Dir, allocator, owner, repo, entry: CachedRepo) !void;
 pub fn isFresh(cached_at: i64) bool;
 ```
+
+`load`/`save` resolve the cache directory from `XDG_CACHE_HOME` (or
+`$HOME/.cache`) and delegate to the `*FromDir` / `*ToDir` variants. The
+dir-taking variants exist so unit tests can drive persistence against
+`std.testing.tmpDir` without touching the user's real cache.
+
+`load` parses JSON into an internal arena and only copies the strings
+it returns onto the caller's allocator, so passing a GPA is safe.
 
 ### 4.4 `prefetch.zig`
 
@@ -184,11 +194,12 @@ main.zig
   │         ├─ advisory.prefetch()
   │         ├─ collectRefs → {repos, sha_refs, named_refs}
   │         ├─ applyDiskCache
-  │         │    └─ fresh キャッシュから rule caches に注入、満たされた ref を set から除去
+  │         │    └─ repo ごとに disk_cache.load → applyCacheEntry で
+  │         │       rule caches に注入し、満たされた ref を set から除去
   │         ├─ tryGraphQlBatch
   │         │    ├─ 残りの repos を max 30 件ずつ graphql.batchQuery
-  │         │    ├─ applyResults で rule caches に注入
-  │         │    └─ persistRepoResult でディスクに保存
+  │         │    ├─ applyResults(persist_dir=null) で rule caches に注入
+  │         │    └─ persistRepoResult で disk_cache.save/saveToDir に保存
   │         └─ REST fallback
   │              ├─ fetchRepos / fetchShaRefs / fetchNamedRefs
   │              └─ 各 rule の setCached* を直接呼ぶ（ディスク保存はしない）
@@ -218,13 +229,24 @@ main.zig
 ### 7.1 単体テスト（ネットワーク不要）
 
 - `http_client`: `writeStandardHeaders` の 2/3 要素分岐、未初期化時の
-  `NotInitialized` エラー。
+  `NotInitialized` エラー、`init`/`deinit` の冪等性と状態遷移。
 - `graphql.buildQuery`: 空入力 / named refs / SHA refs / 複合ケース。
 - `graphql.parseResponse`: archived + named、SHA 一致、annotated tag の
-  内側 oid 一致、`missing=true` のケース。
+  内側 oid 一致、`missing=true`、`data:null`、`errors` のみ、100 件タグ
+  ノードでページ上限フォールバック、非 bool `isArchived`、malformed JSON。
+- `graphql.encodeRequestBody`: `"` / `\` / `\n` のエスケープ。
+- `graphql.batchQuery`: 空入力の短絡。
 - `disk_cache.isFresh`: 範囲内 / 期限切れ / 未来タイムスタンプ。
+- `disk_cache.loadFromDir`/`saveToDir`: `std.testing.tmpDir` を使った
+  ラウンドトリップ、欠損ファイル、TTL 外、malformed JSON、archived=null。
 - `prefetch.collectRefs`: ユニーク化、local/docker スキップ、URL 不正な
   owner/repo の拒否。
+- `prefetch.buildRepoInputs`: repo 単位での sha/named グルーピング、
+  inactive ルールで対応スライスが空になること。
+- `prefetch.applyCacheEntry`: ヒット時の rule cache 注入と set からの
+  削除、inactive カテゴリのスキップ。
+- `prefetch.applyResults`: `missing=true` のスキップ、`persist_dir`
+  指定時の tmpDir への書き込み検証。
 - `prefetch.prefetchAll`: offline 時 no-op。
 
 ### 7.2 CI 必須（CLAUDE.md より）
