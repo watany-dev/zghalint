@@ -14,19 +14,24 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | 区分 | 件数 | 備考 |
 |------|------|------|
-| autofix 完全実装済み | 3 | `BP001`, `SEC004`, `SEC015` |
+| autofix 完全実装済み | 8 | `BP001`, `BP002`, `BP003`, `SEC004`, `SEC015`, `SEC017`, `DEP002`, `PERF003` |
 | autofix 部分実装 | 1 | `PERM001` は `write-all` のみ対応 |
-| autofix 未着手 | 38 | fix hint のみ、または診断のみ |
-| autofix 追加対象合計 | 39 | 部分実装の `PERM001` を含む |
+| autofix 未着手 | 33 | fix hint のみ、または診断のみ |
+| autofix 追加対象合計 | 34 | 部分実装の `PERM001` を含む |
 
 ## 既存 autofix 実装
 
 | ID | 状態 | 実装ファイル | 内容 |
 |----|------|-------------|------|
 | `BP001` | 完全実装 | `src/rules/best_practices.zig` | job 先頭へ `timeout-minutes: 30` を挿入 |
+| `BP002` | 完全実装 | `src/rules/best_practices.zig` | step 先頭へ生成した `name:` を挿入（`uses` 起点のみ） |
+| `BP003` | 完全実装 | `src/rules/best_practices.zig` | `uses:` の deprecated version を置換表で更新 |
 | `PERM001` | 部分実装 | `src/rules/permissions.zig` | `write-all` を `{contents: read}` に置換 |
 | `SEC004` | 完全実装 | `src/rules/security.zig` | `permissions: write-all` を `{contents: read}` に置換 |
 | `SEC015` | 完全実装 | `src/rules/security.zig` | checkout step に `persist-credentials: false` を挿入 |
+| `SEC017` | 完全実装 | `src/rules/security.zig` | `ACTIONS_ALLOW_UNSECURE_COMMANDS: true` を `false` に置換 |
+| `DEP002` | 完全実装 | `src/rules/dependabot.zig` | `insecure-external-code-execution: allow` を `deny` に置換 |
+| `PERF003` | 完全実装 | `src/rules/performance.zig` | `fail-fast: false` エントリを削除（unsafe） |
 
 ## 評価基準
 
@@ -82,8 +87,8 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `PERF001` | 未実装 | 条件付き可 | 中 | 中 | `setup-*` に `cache:` を足せるが値の選定が言語・パッケージマネージャ依存 |
 | `PERF002` | 未実装 | 不可/非推奨 | 高 | 低 | redundant checkout を削除するか `path` を足すかが文脈依存 |
 | `PERF003` | 未実装 | 可 | 低 | 高 | `fail-fast: false` の削除、または `true` 置換で対応可能。unsafe fix 扱いが妥当 |
-| `BP002` | 未実装 | 可 | 中 | 高 | `uses` の action 名、または `run` 先頭行から step 名を生成して挿入できる |
-| `BP003` | 未実装 | 可 | 中 | 高 | 既知の置換表があるため `uses:` の version 部分を機械置換できる |
+| `BP002` | 完全実装 | 可 | 中 | 高 | `uses` が step mapping の先頭 key の場合のみ、action 名から step 名を生成して `uses:` の直前に挿入する。個別設計: `docs/design/bp002-autofix-design.md` |
+| `BP003` | 完全実装 | 可 | 中 | 高 | 既知の置換表により `uses:` の version 部分を機械置換する。個別設計: `docs/design/bp003-autofix-design.md` |
 | `BP004` | 未実装 | 条件付き可 | 中 | 中 | `shell: bash` / `pwsh` のどちらを入れるか方針決めが必要 |
 | `BP005` | 未実装 | 条件付き可 | 中 | 中 | workflow に標準 `concurrency` ブロックを挿入可能だが挙動変更が大きい |
 | `BP007` | 未実装 | 不可/非推奨 | 高 | 低 | obfuscated 実行の安全な代替コマンドは自動生成できない |

@@ -237,10 +237,16 @@ pub const Step = struct {
     continue_on_error: bool = false,
     timeout_minutes: ?u32 = null,
     working_directory: ?[]const u8 = null,
+    /// Span of the step mapping in source YAML (for autofix anchor).
+    span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     /// Column of the `uses:` key in source YAML (for autofix indentation).
     uses_key_col: ?u32 = null,
+    /// Start byte of the `uses:` key token in source YAML (insertion point for `name:`).
+    uses_key_start_byte: ?usize = null,
     /// End byte of the `uses:` value in source YAML (insertion point when no `with:` exists).
     uses_value_end_byte: ?usize = null,
+    /// Scalar style of the `uses:` value (for autofix replacement quoting).
+    uses_value_style: ?yaml_types.ScalarStyle = null,
     /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
     with_last_entry_end_byte: ?usize = null,
 };
