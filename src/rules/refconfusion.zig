@@ -57,6 +57,44 @@ pub fn deinitRefConfusion() void {
     rate_limited = false;
 }
 
+/// Returns `true` if ref-confusion is live (non-offline) so a prefetcher
+/// can decide whether to issue network requests for it.
+pub fn isActive() bool {
+    return ref_cache != null;
+}
+
+/// Pre-populate the ref cache. Used by the prefetch orchestrator to
+/// install batched results before the engine runs.
+pub fn setCachedRefResult(
+    owner: []const u8,
+    repo: []const u8,
+    ref: []const u8,
+    status: RefStatus,
+) void {
+    if (ref_cache == null) return;
+    const alloc = if (ref_arena) |*arena| arena.allocator() else return;
+    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, ref }) catch return;
+    ref_cache.?.put(key, status) catch return;
+}
+
+/// Query GitHub for the status of a ref. Exposed for the prefetch
+/// orchestrator so it can batch ref lookups instead of hitting the
+/// lazy per-step path.
+pub fn queryRefStatusPub(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    ref: []const u8,
+) RefStatus {
+    return queryRefStatus(allocator, owner, repo, ref);
+}
+
+/// Return the arena allocator used for cache keys, so the prefetch
+/// orchestrator can stage allocations that live for the rule's lifetime.
+pub fn getArenaAllocator() ?Allocator {
+    return if (ref_arena) |*arena| arena.allocator() else null;
+}
+
 /// Rule check function for SC006.
 /// Detects when an action ref matches both a tag and a branch.
 pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {

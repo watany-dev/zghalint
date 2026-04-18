@@ -210,6 +210,41 @@ fn lintDependabotFile(
     }
 }
 
+/// Pre-parse every workflow file and pre-fetch network-dependent rule data
+/// in one shot before the lint phase. Runs on a throwaway arena so the cost
+/// of parsing twice (once here, once in lintFile) is bounded.
+fn prefetchNetworkData(
+    allocator: std.mem.Allocator,
+    files: []const []const u8,
+    config: *const Config,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var workflows = std.ArrayList(zghalint.workflow.Workflow){};
+    defer workflows.deinit(scratch);
+
+    for (files) |file_path| {
+        if (config.isIgnored(file_path)) continue;
+        if (isDependabotFile(file_path)) continue;
+
+        const file = std.fs.cwd().openFile(file_path, .{}) catch continue;
+        defer file.close();
+
+        const source = file.readToEndAlloc(scratch, 10 * 1024 * 1024) catch continue;
+
+        var yaml_parser = zghalint.yaml.Parser.init(scratch, source);
+        defer yaml_parser.deinit();
+
+        const yaml_node = yaml_parser.parse() catch continue;
+        const workflow = zghalint.workflow.parseWorkflow(scratch, yaml_node) catch continue;
+        try workflows.append(scratch, workflow);
+    }
+
+    _ = zghalint.rules.prefetch.prefetchAll(scratch, workflows.items) catch return;
+}
+
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
     const path = config_path orelse zghalint.config.findConfigFile(".") orelse return Config.init(allocator);
 
@@ -430,6 +465,12 @@ pub fn main() !u8 {
     // Initialize ref-confusion checker (network call, graceful offline skip)
     zghalint.rules.refconfusion.initRefConfusion(allocator, cli_args.offline);
     defer zghalint.rules.refconfusion.deinitRefConfusion();
+
+    // Batch all network-rule fetches before the lint pass so TLS/TCP
+    // connections, advisories, and repo metadata are primed in the caches.
+    if (!cli_args.offline) {
+        prefetchNetworkData(allocator, files, &config) catch {};
+    }
 
     // Lint each file
     var all_diags = zghalint.DiagnosticList.init(allocator);

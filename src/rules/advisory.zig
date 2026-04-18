@@ -68,6 +68,17 @@ pub fn deinitAdvisories() void {
     fetched = false;
 }
 
+/// Eagerly load the advisory database (fresh disk cache -> network fallback).
+/// Safe to call multiple times; subsequent calls are no-ops.
+pub fn prefetch() void {
+    if (fetched) return;
+    fetched = true;
+    if (advisory_arena) |*arena| {
+        const alloc = arena.allocator();
+        advisory_cache = loadAdvisories(alloc);
+    }
+}
+
 /// Rule check function for SC003.
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
     // Lazy fetch: only on first invocation

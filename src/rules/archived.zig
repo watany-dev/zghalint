@@ -47,6 +47,24 @@ pub fn deinitArchived() void {
     is_offline = true;
 }
 
+/// Returns `true` if archived checks are live (non-offline) so a prefetcher
+/// can decide whether to issue network requests for it.
+pub fn isActive() bool {
+    return !is_offline and archived_arena != null;
+}
+
+/// Fetch archive status via GitHub REST. Exposed so the prefetch
+/// orchestrator can batch calls outside the lazy per-step path.
+pub fn fetchArchiveStatusPub(allocator: Allocator, owner: []const u8, repo: []const u8) !bool {
+    return fetchArchiveStatus(allocator, owner, repo);
+}
+
+/// Return the arena allocator used for cache keys, so the prefetch
+/// orchestrator can stage allocations that live for the rule's lifetime.
+pub fn getArenaAllocator() ?Allocator {
+    return if (archived_arena) |*arena| arena.allocator() else null;
+}
+
 /// SC004 rule check: detect archived repository actions.
 pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
     if (is_offline) return;

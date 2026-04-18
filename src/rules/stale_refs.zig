@@ -16,7 +16,7 @@ const isValidGitHubComponent = engine.isValidGitHubComponent;
 // Types
 // ============================================================
 
-const TagResolution = enum {
+pub const TagResolution = enum {
     has_tag,
     no_tag,
     unknown,
@@ -51,6 +51,44 @@ pub fn deinitStaleRefs() void {
         stale_refs_arena = null;
     }
     tag_cache = null;
+}
+
+/// Returns `true` if stale-refs is live (non-offline) so a prefetcher can
+/// decide whether to issue network requests for it.
+pub fn isActive() bool {
+    return tag_cache != null;
+}
+
+/// Pre-populate the tag resolution cache. Used by the prefetch orchestrator
+/// to install batched GraphQL/REST results before the engine runs.
+pub fn setCachedTagResult(
+    owner: []const u8,
+    repo: []const u8,
+    sha: []const u8,
+    resolution: TagResolution,
+) void {
+    if (tag_cache == null) return;
+    const alloc = if (stale_refs_arena) |*arena| arena.allocator() else return;
+    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
+    tag_cache.?.put(key, resolution) catch return;
+}
+
+/// Resolve the tag relationship for a SHA by calling GitHub's REST API.
+/// Exposed so the prefetch orchestrator can batch calls without going
+/// through the lazy per-step path.
+pub fn resolveTagForShaPub(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    sha: []const u8,
+) !TagResolution {
+    return resolveTagForSha(allocator, owner, repo, sha);
+}
+
+/// Return the arena allocator used for cache keys, so the prefetch
+/// orchestrator can stage allocations that live for the rule's lifetime.
+pub fn getArenaAllocator() ?Allocator {
+    return if (stale_refs_arena) |*arena| arena.allocator() else null;
 }
 
 /// Rule check function for SC005.
