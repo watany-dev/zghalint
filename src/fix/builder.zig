@@ -20,6 +20,8 @@ pub const InsertPos = struct {
 };
 
 /// Build a single-Edit slice inserting "<indent spaces>key: value\n" at `pos.byte`.
+/// Use when the anchor is the start of a physical line (column 1), such as the
+/// byte just after a `full_span` of a prior entry.
 /// Returns null on OOM.
 pub fn insertMappingEntry(
     alloc: std.mem.Allocator,
@@ -41,6 +43,38 @@ pub fn insertMappingEntry(
     @memcpy(buf[i..][0..value.len], value);
     i += value.len;
     buf[i] = '\n';
+
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{ .start_byte = pos.byte, .end_byte = pos.byte, .replacement = buf };
+    return edits;
+}
+
+/// Build a single-Edit slice inserting "key: value\n<indent spaces>" at `pos.byte`.
+/// Use when the anchor sits at an already-indented sibling key (e.g. `runs-on:`);
+/// the surrounding leading whitespace on the line is preserved and becomes the
+/// indent of the new entry, while the trailing `\n<indent>` restores indentation
+/// for the displaced sibling key.
+/// Returns null on OOM.
+pub fn insertMappingEntryBefore(
+    alloc: std.mem.Allocator,
+    pos: InsertPos,
+    key: []const u8,
+    value: []const u8,
+) ?[]const Edit {
+    const indent_len: usize = pos.indent;
+    const total = key.len + ": ".len + value.len + "\n".len + indent_len;
+    const buf = alloc.alloc(u8, total) catch return null;
+
+    var i: usize = 0;
+    @memcpy(buf[i..][0..key.len], key);
+    i += key.len;
+    @memcpy(buf[i..][0..2], ": ");
+    i += 2;
+    @memcpy(buf[i..][0..value.len], value);
+    i += value.len;
+    buf[i] = '\n';
+    i += 1;
+    @memset(buf[i..][0..indent_len], ' ');
 
     const edits = alloc.alloc(Edit, 1) catch return null;
     edits[0] = .{ .start_byte = pos.byte, .end_byte = pos.byte, .replacement = buf };
@@ -166,6 +200,22 @@ test "insertMappingEntry indent=0" {
         "read-all",
     ) orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings("permissions: read-all\n", edits[0].replacement);
+}
+
+test "insertMappingEntryBefore produces key first then trailing indent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const edits = insertMappingEntryBefore(
+        arena.allocator(),
+        .{ .byte = 20, .indent = 4 },
+        "timeout-minutes",
+        "30",
+    ) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqual(@as(usize, 20), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 20), edits[0].end_byte);
+    try testing.expectEqualStrings("timeout-minutes: 30\n    ", edits[0].replacement);
 }
 
 test "appendMappingEntry prepends newline + indent" {
