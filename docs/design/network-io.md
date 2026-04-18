@@ -42,6 +42,11 @@
   バックする（共有クライアントの恩恵は引き続き受ける）。
 - Advisory API は GraphQL スキーマ上で公開されていないため、REST で
   一括取得する既存フローを維持する。
+- GitHub の二次レート制限は HTTP 200 + `errors[].type == "RATE_LIMITED"`
+  で通知される（一次レート制限は 403/429 で返るので `http_client.fetch`
+  層で検出可能）。`parseResponse` は body 内の `errors` 配列を走査し、
+  `RATE_LIMITED` を見つけたら `error.RateLimited` を返して orchestrator に
+  伝搬する。
 
 ### 2.3 ETag ベース永続ディスクキャッシュ
 
@@ -219,7 +224,8 @@ main.zig
 
 - `http_client.FetchError`: 共有クライアント呼び出しの I/O 層エラー。
 - `graphql.GraphQlError`: `NoToken` は token 不在、`RequestFailed` は
-  HTTP 層失敗、`ParseFailed` は JSON 不整合、`RateLimited` は 403/429。
+  HTTP 層失敗、`ParseFailed` は JSON 不整合、`RateLimited` は 403/429 の
+  HTTP ステータス、もしくは body の `errors[].type == "RATE_LIMITED"`。
   prefetch はこれらを見て REST にフォールバックするか中断するかを決める。
 - rule 本体（advisory/archived/stale_refs/refconfusion）は prefetch が
   失敗しても遅延 fetch 経路で復旧できる。
@@ -229,11 +235,14 @@ main.zig
 ### 7.1 単体テスト（ネットワーク不要）
 
 - `http_client`: `writeStandardHeaders` の 2/3 要素分岐、未初期化時の
-  `NotInitialized` エラー、`init`/`deinit` の冪等性と状態遷移。
+  `NotInitialized` エラー、`init`/`deinit` の冪等性と状態遷移、
+  `getAuthHeader` の token 有無、expired deadline での短絡。
 - `graphql.buildQuery`: 空入力 / named refs / SHA refs / 複合ケース。
 - `graphql.parseResponse`: archived + named、SHA 一致、annotated tag の
-  内側 oid 一致、`missing=true`、`data:null`、`errors` のみ、100 件タグ
-  ノードでページ上限フォールバック、非 bool `isArchived`、malformed JSON。
+  内側 oid 一致、`missing=true`、`data:null`、`errors` のみ、`errors[].type
+  == "RATE_LIMITED"` で `error.RateLimited`（データ併存時も含む）、100 件
+  タグノードでページ上限フォールバック、非 bool `isArchived`、malformed
+  JSON。
 - `graphql.encodeRequestBody`: `"` / `\` / `\n` のエスケープ。
 - `graphql.batchQuery`: 空入力の短絡。
 - `disk_cache.isFresh`: 範囲内 / 期限切れ / 未来タイムスタンプ。
