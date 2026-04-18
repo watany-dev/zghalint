@@ -1,5 +1,5 @@
 ---
-description: zghalintのドキュメント（設計書・README等）を一括で最新化するスキル
+description: Update zghalint documentation (docs/design/*.md, README.md, docs/ROADMAP.md, docs/requirements.md) to match current source code. Use when the user asks to update docs, refresh README, sync design documents with implementation, or check doc/code consistency. Trigger examples - "ドキュメントを最新化して", "設計書を更新", "update docs", "README を直して", "docs と src の乖離を確認", "sync documentation".
 ---
 
 # update-docs

@@ -1,5 +1,5 @@
 ---
-description: プランモードでプラン完了直前に発動し、設計書・ロードマップ・要件定義との整合性を検証してプランの品質を高めるスキル（update-design の上位互換）
+description: Validate and improve an implementation plan in plan mode by cross-checking with docs/design/*.md, docs/ROADMAP.md, docs/requirements.md, and src/. Superset of update-design. Use in plan mode whenever the user requests an implementation plan for zghalint - invoke at the start of plan mode so the verification runs before finalizing the plan file, and re-invoke just before ExitPlanMode if the plan has materially changed. Trigger examples - entering plan mode for any zghalint feature work, "プランを作成", "実装計画", "plan this feature", "validate the plan", "整合性チェック".
 ---
 
 # update-plan
