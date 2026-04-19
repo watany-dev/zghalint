@@ -289,6 +289,12 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
     job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
     job.runs_on = m.getScalar("runs-on");
+    if (m.get("runs-on")) |n| {
+        switch (n) {
+            .scalar => |s| job.runs_on_value_span = s.span,
+            else => {},
+        }
+    }
     job.if_condition = m.getScalar("if");
     job.uses = m.getScalar("uses");
 
@@ -1111,6 +1117,53 @@ test "parseWorkflow captures removable span for fail-fast entry" {
         "      fail-fast: \"false\" # keep running\n",
         source[entry_span.start_byte..entry_span.end_byte],
     );
+}
+
+test "parseJob captures runs_on_value_span for scalar runs-on" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-20.04
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    const span = wf.jobs[0].runs_on_value_span.?;
+    try testing.expectEqualStrings("ubuntu-20.04", source[span.start_byte..span.end_byte]);
+}
+
+test "parseJob leaves runs_on_value_span null for missing runs-on" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: workflow_call
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    try testing.expect(wf.jobs[0].runs_on_value_span == null);
 }
 
 test "parseStep with timeout and continue-on-error" {

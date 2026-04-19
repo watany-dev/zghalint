@@ -331,6 +331,9 @@ pub const Job = struct {
     permissions_insertion_byte: ?usize = null,
     /// Byte position to insert a new `concurrency:` entry at job level.
     concurrency_insertion_byte: ?usize = null,
+    /// Span of the `runs-on:` scalar value (for RUNNER001 autofix).
+    /// Null when `runs-on` is absent or given as a sequence.
+    runs_on_value_span: ?yaml_types.Span = null,
 };
 
 /// Top-level workflow definition
