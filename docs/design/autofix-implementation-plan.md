@@ -7,8 +7,8 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 ## 対象と集計単位
 
 - 集計単位は CLI 上の「ルール数」ではなく、最終的に `Diagnostic.rule_id` として出力される診断 ID 単位とする
-- `docs/rules.md` の 38 rules に対し、autofix 設計上の対象診断 ID は 42 件ある
-- 差分の理由は `EXPR` がエンジン上は 1 ルールだが、`EXPR001` から `EXPR007` を個別診断として出力しているため
+- `docs/rules.md` の 42 rules は各診断 ID を 1 行として列挙したもので、autofix 設計上の対象診断 ID 数と一致する
+- ただし Rule 構造体の登録数は 36 件である。差分の理由は `EXPR` がエンジン上は 1 ルールだが、`EXPR001` から `EXPR007` を個別診断として出力しているため
 
 ## 現状サマリ
 

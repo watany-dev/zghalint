@@ -175,8 +175,8 @@ or make the runner ephemeral
 4. `checkSelfHostedRunnerForkTriggeredWorkflow(*const Workflow, *DiagnosticList) void` を追加
 5. `pub const rules` 配列に `SEC020` エントリを追加（`check_workflow` にハンドラ、`check_job` / `check_step` は `null`）
 6. `src/main.zig` の `lintFile` で Engine 初期化前に `security.setRepoVisibility(config.repo_visibility)` を呼ぶ
-7. `docs/rules.md` の SEC テーブルに SEC020 行を追加し、冒頭の rule 数を `38` → `39` に更新
-8. `README.md` L114 周辺の `38 rules` → `39 rules`
+7. `docs/rules.md` の SEC テーブルに SEC020 行を追加し、冒頭の rule 数を `42` → `43` に更新
+8. `README.md` L114 周辺の `42 rules` → `43 rules`
 
 ### 変更しないもの
 
