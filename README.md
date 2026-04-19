@@ -111,11 +111,11 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **38 rules** across 7 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **43 rules** across 7 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
-### Security (17 rules)
+### Security (18 rules)
 
-Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, and more.
+Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, and more.
 
 ### Supply Chain (5 rules)
 
@@ -164,6 +164,12 @@ ignore:
 output:
   format: terminal         # terminal, json, sarif
   color: auto              # auto, always, never
+
+# Repository visibility (used by SEC020)
+#   public  — fire SEC020 on self-hosted runners with fork-accessible triggers
+#   private — suppress SEC020 (fork PRs cannot reach private repos)
+#   unknown — fail-safe, treated as public (default when unset)
+repo_visibility: unknown
 ```
 
 ## CLI Options

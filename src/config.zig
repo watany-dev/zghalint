@@ -32,6 +32,19 @@ pub const ColorMode = enum {
     }
 };
 
+pub const Visibility = enum {
+    public,
+    private,
+    unknown,
+
+    pub fn fromString(s: []const u8) ?Visibility {
+        if (std.mem.eql(u8, s, "public")) return .public;
+        if (std.mem.eql(u8, s, "private")) return .private;
+        if (std.mem.eql(u8, s, "unknown")) return .unknown;
+        return null;
+    }
+};
+
 pub const RuleOverride = struct {
     severity: ?Severity = null,
     enabled: bool = true,
@@ -42,6 +55,7 @@ pub const Config = struct {
     ignore_patterns: std.ArrayList([]const u8),
     output_format: OutputFormat = .terminal,
     color_mode: ColorMode = .auto,
+    repo_visibility: Visibility = .unknown,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) Config {
@@ -165,6 +179,13 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                 }
             },
             else => {},
+        }
+    }
+
+    // Parse "repo_visibility" top-level key
+    if (root.getScalar("repo_visibility")) |vis_str| {
+        if (Visibility.fromString(vis_str)) |v| {
+            config.repo_visibility = v;
         }
     }
 

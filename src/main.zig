@@ -309,6 +309,9 @@ fn lintFile(
         return;
     };
 
+    // Propagate config to security rules that need it (SEC020)
+    zghalint.rules.security.setRepoVisibility(config.repo_visibility);
+
     // Run engine
     const engine = zghalint.rules.Engine.init(&all_rules);
     var diag_list = engine.run(allocator, &workflow);

@@ -38,6 +38,9 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `src/lib.zig` — Library public API and test orchestration
 - `src/config.zig` — Configuration parsing and rule overrides (.zghalint.yml)
 - `src/diagnostics.zig` — Diagnostic types, severity, categories
+- `src/util.zig` — Shared helpers (e.g. step name generation for autofix)
+- `src/fix/` — Auto-fix engine
+  - `engine.zig` — Collect and apply `--fix` / `--fix-unsafe` rewrites in place
 - `src/rules/` — Linting rule implementations
   - `engine.zig` — Rule execution framework
   - `security.zig` — Security checks (script injection, unpinned actions, hardcoded secrets)

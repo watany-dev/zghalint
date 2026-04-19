@@ -9,6 +9,15 @@ const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
 const refconfusion = @import("refconfusion.zig");
+const config_mod = @import("../config.zig");
+
+pub const Visibility = config_mod.Visibility;
+
+var sec020_repo_visibility: Visibility = .unknown;
+
+pub fn setRepoVisibility(v: Visibility) void {
+    sec020_repo_visibility = v;
+}
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -1203,6 +1212,44 @@ fn checkInsecureCommandsWorkflow(wf: *const Workflow, list: *DiagnosticList) voi
 }
 
 // ============================================================
+// SEC020 - Self-hosted runner on fork-accessible trigger
+// ============================================================
+
+fn hasForkAccessibleTrigger(wf: *const Workflow) bool {
+    for (wf.on.events) |event| {
+        switch (event.event) {
+            .pull_request,
+            .pull_request_target,
+            .workflow_run,
+            .issue_comment,
+            => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn checkSelfHostedRunnerForkTriggeredWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
+    // Private repositories opt out; public and unknown fall through (fail-safe).
+    if (sec020_repo_visibility == .private) return;
+
+    if (!hasForkAccessibleTrigger(wf)) return;
+
+    for (wf.jobs) |*job| {
+        const runs_on = job.runs_on orelse continue;
+        if (std.mem.indexOf(u8, runs_on, "self-hosted") == null) continue;
+
+        list.append(.{
+            .rule_id = "SEC020",
+            .severity = .warning,
+            .message = "self-hosted runner is used on a workflow with fork-accessible triggers; untrusted code may execute on your runner host",
+            .span = job.span,
+            .fix_hint = "use GitHub-hosted runners for fork-accessible triggers, restrict with `if:` to avoid running on fork PRs, or make the runner ephemeral",
+        }) catch return;
+    }
+}
+
+// ============================================================
 // BP007 - Obfuscated command execution
 // ============================================================
 
@@ -1517,6 +1564,14 @@ pub const security_rules = [_]Rule{
         .severity = .info,
         .category = .security,
         .check_step = &checkSecretsOutsideEnv,
+    },
+    .{
+        .id = "SEC020",
+        .name = "self-hosted-runner-fork-triggered",
+        .description = "Self-hosted runners used with fork-accessible triggers allow untrusted code execution",
+        .severity = .warning,
+        .category = .security,
+        .check_workflow = &checkSelfHostedRunnerForkTriggeredWorkflow,
     },
     .{
         .id = "SC001",
@@ -4771,4 +4826,258 @@ test "BP007: no false positive on GitHub Actions expression" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+// --- SEC020: Self-hosted runner on fork-accessible trigger ---
+
+fn makePRTrigger() Trigger {
+    const events = &[_]EventConfig{
+        .{ .event = .pull_request, .name = "pull_request" },
+    };
+    return .{ .events = events };
+}
+
+fn makeIssueCommentTrigger() Trigger {
+    const events = &[_]EventConfig{
+        .{ .event = .issue_comment, .name = "issue_comment" },
+    };
+    return .{ .events = events };
+}
+
+fn makeWorkflowRunTrigger() Trigger {
+    const events = &[_]EventConfig{
+        .{ .event = .workflow_run, .name = "workflow_run" },
+    };
+    return .{ .events = events };
+}
+
+fn makePushTrigger() Trigger {
+    const events = &[_]EventConfig{
+        .{ .event = .push, .name = "push" },
+    };
+    return .{ .events = events };
+}
+
+fn makeWorkflowDispatchTrigger() Trigger {
+    const events = &[_]EventConfig{
+        .{ .event = .workflow_dispatch, .name = "workflow_dispatch" },
+    };
+    return .{ .events = events };
+}
+
+test "SEC020: self-hosted + pull_request + public -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC020")) {
+            try testing.expect(d.severity == .warning);
+            try testing.expect(d.fix_hint != null and d.fix_hint.?.len > 0);
+        }
+    }
+}
+
+test "SEC020: scalar runs_on with self-hosted prefix -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted-gpu", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + pull_request_target -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTargetTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + issue_comment -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeIssueCommentTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + workflow_run -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: multiple jobs, only self-hosted ones fire" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "hosted", .runs_on = "ubuntu-latest", .permissions = Permissions{} },
+        .{ .id = "selfa", .runs_on = "self-hosted", .permissions = Permissions{} },
+        .{ .id = "selfb", .runs_on = "self-hosted-linux", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC020"));
+}
+
+test "SEC020: ubuntu-latest + pull_request -> no fire" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "ubuntu-latest", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + push only -> no fire" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePushTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + workflow_dispatch -> no fire" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeWorkflowDispatchTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: repo_visibility private -> suppressed" {
+    setRepoVisibility(.private);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: repo_visibility public -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: repo_visibility unknown default -> fires (fail-safe)" {
+    setRepoVisibility(.unknown);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: runs_on null (reusable workflow caller) -> no fire" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "call", .runs_on = null, .uses = "./.github/workflows/reusable.yml", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: disabled via config suppresses after engine run" {
+    // Engine always produces diagnostics; main.zig filters via Config.isRuleEnabled.
+    // Simulate the filter here.
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    var cfg = config_mod.Config.init(testing.allocator);
+    defer cfg.deinit();
+    try cfg.rule_overrides.put("SEC020", .{ .enabled = false });
+
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    var remaining: usize = 0;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC020")) {
+            if (cfg.isRuleEnabled(d.rule_id)) remaining += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 0), remaining);
 }
