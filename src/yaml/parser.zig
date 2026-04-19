@@ -376,7 +376,7 @@ pub const Parser = struct {
         const line_start = self.lineStartByte(key.span.start_byte);
 
         switch (value) {
-            .scalar, .null_value => {
+            .scalar => {
                 var end_byte = value.getSpan().end_byte;
                 while (end_byte < self.source.len and self.source[end_byte] != '\n') {
                     end_byte += 1;
@@ -399,8 +399,74 @@ pub const Parser = struct {
                     .end_byte = end_byte,
                 };
             },
-            else => return null,
+            .null_value => {
+                // Null value: end at the key's own line. The value's span may
+                // point at a far-away token (the next sibling), so we anchor
+                // on `key.span.end_byte` instead.
+                const end_byte = self.scanLineEndInclusive(key.span.end_byte);
+                return .{
+                    .start_line = key.span.start_line,
+                    .start_col = 1,
+                    .end_line = key.span.start_line,
+                    .end_col = key.span.start_col,
+                    .start_byte = line_start,
+                    .end_byte = end_byte,
+                };
+            },
+            .mapping => |m| {
+                if (m.entries.len == 0) {
+                    const end_byte = self.scanLineEndInclusive(key.span.end_byte);
+                    return .{
+                        .start_line = key.span.start_line,
+                        .start_col = 1,
+                        .end_line = key.span.start_line,
+                        .end_col = key.span.start_col,
+                        .start_byte = line_start,
+                        .end_byte = end_byte,
+                    };
+                }
+                const last = m.entries[m.entries.len - 1];
+                const last_full = self.blockEntryFullSpan(last.key, last.value) orelse return null;
+                return .{
+                    .start_line = key.span.start_line,
+                    .start_col = 1,
+                    .end_line = key.span.start_line,
+                    .end_col = key.span.start_col,
+                    .start_byte = line_start,
+                    .end_byte = last_full.end_byte,
+                };
+            },
+            .sequence => |s| {
+                if (s.items.len == 0) {
+                    const end_byte = self.scanLineEndInclusive(key.span.end_byte);
+                    return .{
+                        .start_line = key.span.start_line,
+                        .start_col = 1,
+                        .end_line = key.span.start_line,
+                        .end_col = key.span.start_col,
+                        .start_byte = line_start,
+                        .end_byte = end_byte,
+                    };
+                }
+                const last_item = s.items[s.items.len - 1];
+                const end_byte = self.scanLineEndInclusive(last_item.getSpan().end_byte);
+                return .{
+                    .start_line = key.span.start_line,
+                    .start_col = 1,
+                    .end_line = key.span.start_line,
+                    .end_col = key.span.start_col,
+                    .start_byte = line_start,
+                    .end_byte = end_byte,
+                };
+            },
         }
+    }
+
+    fn scanLineEndInclusive(self: *Parser, start: usize) usize {
+        var end = start;
+        while (end < self.source.len and self.source[end] != '\n') end += 1;
+        if (end < self.source.len and self.source[end] == '\n') end += 1;
+        return end;
     }
 
     fn lineStartByte(self: *Parser, byte_offset: usize) usize {

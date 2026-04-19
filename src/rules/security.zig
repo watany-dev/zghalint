@@ -319,6 +319,21 @@ fn checkConditionForDangerousContext(cond: []const u8, list: *DiagnosticList) vo
 // SEC007 - Missing permissions block
 // ============================================================
 
+fn makeMissingPermissionsFix(wf: *const Workflow, list: *DiagnosticList) ?Fix {
+    const insert_byte = wf.permissions_insertion_byte orelse return null;
+    const edits = fix_builder.insertMappingEntry(
+        list.fixAllocator(),
+        .{ .byte = insert_byte, .indent = wf.top_level_indent },
+        "permissions",
+        "{contents: read}",
+    ) orelse return null;
+    return .{
+        .description = "insert top-level permissions: {contents: read}",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
 fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
     if (wf.permissions == null) {
         list.append(.{
@@ -327,6 +342,7 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
             .message = "workflow does not define top-level permissions, defaults may be overly broad",
             .span = Span.point(0, 0, 0),
             .fix_hint = "add a top-level 'permissions:' block to restrict GITHUB_TOKEN scope",
+            .fix = makeMissingPermissionsFix(wf, list),
         }) catch return;
     }
 }
@@ -2148,6 +2164,170 @@ test "SEC007: empty permissions block counts as defined" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC007"));
+}
+
+test "SEC007: autofix generated on single-line on:" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    const diag = list.get(0);
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    try testing.expect(fix.safety == .unsafe);
+    try testing.expectEqualStrings("insert top-level permissions: {contents: read}", fix.description);
+    try testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try testing.expectEqualStrings("permissions: {contents: read}\n", fix.edits[0].replacement);
+    try testing.expectEqual(fix.edits[0].start_byte, fix.edits[0].end_byte);
+    // Insertion sits at the byte just after the `on: push\n` line.
+    const on_line_end = (std.mem.indexOf(u8, source, "on: push\n") orelse unreachable) + "on: push\n".len;
+    try testing.expectEqual(on_line_end, fix.edits[0].start_byte);
+}
+
+test "SEC007: autofix on multi-line on: block inserts after last child" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on:
+        \\  push:
+        \\  pull_request:
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+
+    const diag = list.get(0);
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    // Insertion should land at the byte just after `pull_request:\n`,
+    // i.e. immediately before `jobs:`.
+    const jobs_pos = std.mem.indexOf(u8, source, "jobs:") orelse unreachable;
+    try testing.expectEqual(jobs_pos, fix.edits[0].start_byte);
+    try testing.expectEqualStrings("permissions: {contents: read}\n", fix.edits[0].replacement);
+}
+
+test "SEC007: no fix when permissions_insertion_byte missing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Hand-built Workflow without permissions_insertion_byte set.
+    const jobs = [_]Job{.{ .id = "build" }};
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expect(list.get(0).fix == null);
+}
+
+test "SEC007: no diagnostic when permissions already defined (parser path)" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\permissions: read-all
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+    const fix = list.get(0).fix orelse return error.TestUnexpectedResult;
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.edits_applied);
+    const perm_pos = std.mem.indexOf(u8, result.content, "permissions: {contents: read}") orelse return error.TestUnexpectedResult;
+    const on_pos = std.mem.indexOf(u8, result.content, "on: push") orelse unreachable;
+    const jobs_pos = std.mem.indexOf(u8, result.content, "jobs:") orelse unreachable;
+    try testing.expect(on_pos < perm_pos);
+    try testing.expect(perm_pos < jobs_pos);
 }
 
 // --- SEC008: github-env injection ---
