@@ -66,6 +66,7 @@ pub const fix = struct {
     pub const applyFixes = engine.applyFixes;
     pub const ApplyResult = engine.ApplyResult;
     pub const collectFixes = engine.collectFixes;
+    pub const builder = @import("fix/builder.zig");
 };
 
 pub const config = @import("config.zig");
@@ -100,6 +101,7 @@ test {
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
     _ = @import("fix/engine.zig");
+    _ = @import("fix/builder.zig");
     _ = @import("config.zig");
     _ = @import("util.zig");
 }

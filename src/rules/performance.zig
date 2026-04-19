@@ -4,6 +4,7 @@ const diagnostics_mod = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
+const fix_builder = @import("../fix/builder.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -98,11 +99,10 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
 // ── PERF003: fail-fast disabled ──
 
 fn buildFailFastDisabledFix(diag_list: *DiagnosticList, entry_span: Span) ?Fix {
-    const edits = diag_list.allocEdit(.{
-        .start_byte = entry_span.start_byte,
-        .end_byte = entry_span.end_byte,
-        .replacement = "",
-    }) orelse return null;
+    const edits = fix_builder.deleteMappingEntry(
+        diag_list.fixAllocator(),
+        entry_span,
+    ) orelse return null;
 
     return .{
         .description = "remove fail-fast: false from strategy",

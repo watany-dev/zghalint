@@ -50,6 +50,19 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         workflow.env_meta = parsed.meta;
     }
 
+    // Compute insertion anchors for top-level `permissions:` / `concurrency:`
+    // directly after the `on:` entry line.
+    for (root.entries) |entry| {
+        const name = entry.key.value;
+        if (std.mem.eql(u8, name, "on") or std.mem.eql(u8, name, "true")) {
+            if (entry.full_span) |fs| {
+                workflow.permissions_insertion_byte = fs.end_byte;
+                workflow.concurrency_insertion_byte = fs.end_byte;
+            }
+            break;
+        }
+    }
+
     return workflow;
 }
 
@@ -263,10 +276,27 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
 
     var job = types.Job{ .id = id };
     job.span = m.span;
+    job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
     job.runs_on = m.getScalar("runs-on");
     job.if_condition = m.getScalar("if");
     job.uses = m.getScalar("uses");
+
+    // Insertion anchor for job-level `permissions:` / `concurrency:` lands after
+    // the `runs-on:` line; `uses:` (reusable workflow) works as a fallback.
+    for (m.entries) |entry| {
+        const name = entry.key.value;
+        if (std.mem.eql(u8, name, "runs-on") or std.mem.eql(u8, name, "uses")) {
+            if (entry.full_span) |fs| {
+                if (job.permissions_insertion_byte == null) {
+                    job.permissions_insertion_byte = fs.end_byte;
+                }
+                if (job.concurrency_insertion_byte == null) {
+                    job.concurrency_insertion_byte = fs.end_byte;
+                }
+            }
+        }
+    }
 
     if (m.getScalar("timeout-minutes")) |t| {
         job.timeout_minutes = std.fmt.parseInt(u32, t, 10) catch null;
@@ -340,6 +370,27 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
     step.shell = m.getScalar("shell");
     step.if_condition = m.getScalar("if");
     step.working_directory = m.getScalar("working-directory");
+
+    // Capture `run:` value span and the insertion anchor for a sibling `shell:`.
+    for (m.entries) |entry| {
+        if (!std.mem.eql(u8, entry.key.value, "run")) continue;
+        switch (entry.value) {
+            .scalar => |s| step.run_value_span = s.span,
+            else => {},
+        }
+        if (entry.full_span) |fs| {
+            step.shell_insertion_byte = fs.end_byte;
+        }
+        break;
+    }
+
+    // Insertion anchor for a new entry at the end of the step mapping.
+    if (m.entries.len > 0) {
+        const last = m.entries[m.entries.len - 1];
+        if (last.full_span) |fs| {
+            step.env_insertion_byte = fs.end_byte;
+        }
+    }
 
     // Parse uses: and capture span info for autofix
     if (m.get("uses")) |uses_node| {

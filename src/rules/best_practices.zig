@@ -3,6 +3,7 @@ const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
+const fix_builder = @import("../fix/builder.zig");
 const util = @import("../util.zig");
 
 const Rule = engine.Rule;
@@ -23,30 +24,18 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.timeout_minutes != null) return;
 
     var fix: ?Fix = null;
-
-    // Generate fix only when we have real position info (start_col >= 1, since yaml parser is 1-based)
     if (job.span.start_col >= 1) {
-        const indent: usize = @intCast(job.span.start_col - 1);
-        const prefix = "timeout-minutes: 30\n";
-        const text_len = prefix.len + indent;
-
-        const fix_alloc = diag_list.fixAllocator();
-        const replacement = fix_alloc.alloc(u8, text_len) catch null;
-        const edits = fix_alloc.alloc(Edit, 1) catch null;
-
-        if (replacement != null and edits != null) {
-            @memcpy(replacement.?[0..prefix.len], prefix);
-            @memset(replacement.?[prefix.len..], ' ');
-
-            edits.?[0] = .{
-                .start_byte = job.span.start_byte,
-                .end_byte = job.span.start_byte,
-                .replacement = replacement.?,
-            };
+        const indent: u32 = job.span.start_col - 1;
+        if (fix_builder.insertMappingEntryBefore(
+            diag_list.fixAllocator(),
+            .{ .byte = job.span.start_byte, .indent = indent },
+            "timeout-minutes",
+            "30",
+        )) |edits| {
             fix = .{
                 .description = "Add timeout-minutes: 30",
                 .safety = .safe,
-                .edits = edits.?,
+                .edits = edits,
             };
         }
     }
@@ -82,26 +71,14 @@ fn buildStepNameFix(list: *DiagnosticList, step: *const Step) ?Fix {
 
     const fix_alloc = list.fixAllocator();
     const generated = generateStepName(fix_alloc, step) orelse return null;
+    const indent: u32 = key_col - 1;
 
-    const indent: usize = @intCast(key_col - 1);
-    const prefix = "name: ";
-    const text_len = prefix.len + generated.len + 1 + indent; // "name: X\n<indent>"
-    const replacement = fix_alloc.alloc(u8, text_len) catch return null;
-
-    var pos: usize = 0;
-    @memcpy(replacement[pos .. pos + prefix.len], prefix);
-    pos += prefix.len;
-    @memcpy(replacement[pos .. pos + generated.len], generated);
-    pos += generated.len;
-    replacement[pos] = '\n';
-    pos += 1;
-    @memset(replacement[pos..], ' ');
-
-    const edits = list.allocEdit(.{
-        .start_byte = insert_byte,
-        .end_byte = insert_byte,
-        .replacement = replacement,
-    }) orelse return null;
+    const edits = fix_builder.insertMappingEntryBefore(
+        fix_alloc,
+        .{ .byte = insert_byte, .indent = indent },
+        "name",
+        generated,
+    ) orelse return null;
 
     return .{
         .description = "Add step name",
@@ -179,11 +156,20 @@ fn buildDeprecatedActionFix(
     const version_end = end_byte - quote_offset;
     const version_start = version_end - old_version.len;
 
-    const edits = list.allocEdit(.{
+    const version_span = yaml_types.Span{
+        .start_line = 0,
+        .start_col = 0,
+        .end_line = 0,
+        .end_col = 0,
         .start_byte = version_start,
         .end_byte = version_end,
-        .replacement = new_version,
-    }) orelse return null;
+    };
+    const edits = fix_builder.replaceScalar(
+        list.fixAllocator(),
+        version_span,
+        .plain,
+        new_version,
+    ) orelse return null;
 
     return .{
         .description = "Upgrade deprecated action version",

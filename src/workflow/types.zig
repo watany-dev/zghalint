@@ -249,6 +249,12 @@ pub const Step = struct {
     uses_value_style: ?yaml_types.ScalarStyle = null,
     /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
     with_last_entry_end_byte: ?usize = null,
+    /// Value span of the `run:` scalar (for future SEC008 family).
+    run_value_span: ?yaml_types.Span = null,
+    /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
+    shell_insertion_byte: ?usize = null,
+    /// Byte position for appending an entry to the step mapping (end of last entry's line).
+    env_insertion_byte: ?usize = null,
 };
 
 /// Secrets configuration for reusable workflow jobs
@@ -298,6 +304,12 @@ pub const Job = struct {
     uses: ?[]const u8 = null,
     with: ?StringMap = null,
     secrets: ?SecretsConfig = null,
+    /// Column (1-based) at which this job's child keys are indented.
+    job_indent: u32 = 0,
+    /// Byte position to insert a new `permissions:` entry (after `runs-on:` line).
+    permissions_insertion_byte: ?usize = null,
+    /// Byte position to insert a new `concurrency:` entry at job level.
+    concurrency_insertion_byte: ?usize = null,
 };
 
 /// Top-level workflow definition
@@ -309,6 +321,12 @@ pub const Workflow = struct {
     env_meta: ?ScalarValueMetaMap = null,
     concurrency: ?Concurrency = null,
     jobs: []const Job,
+    /// Top-level keys are always at column 1.
+    top_level_indent: u32 = 0,
+    /// Byte position to insert a new top-level `permissions:` entry (after `on:` line).
+    permissions_insertion_byte: ?usize = null,
+    /// Byte position to insert a new top-level `concurrency:` entry (after `on:` line).
+    concurrency_insertion_byte: ?usize = null,
 };
 
 // ============================================================

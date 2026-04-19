@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const engine = @import("engine.zig");
+const fix_builder = @import("../fix/builder.zig");
 const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
@@ -175,11 +176,12 @@ fn containsSecretPrefix(s: []const u8, prefix: []const u8) bool {
 const write_all_replacement = "{contents: read}";
 
 fn makeWriteAllFix(list: *DiagnosticList, value_span: Span) ?Fix {
-    const edits = list.allocEdit(.{
-        .start_byte = value_span.start_byte,
-        .end_byte = value_span.end_byte,
-        .replacement = write_all_replacement,
-    }) orelse return null;
+    const edits = fix_builder.replaceScalar(
+        list.fixAllocator(),
+        value_span,
+        .plain,
+        write_all_replacement,
+    ) orelse return null;
     return .{
         .description = "Replace 'write-all' with minimal permissions",
         .safety = .safe,
@@ -1004,9 +1006,13 @@ fn buildPersistCredentialsFix(list: *DiagnosticList, step: *const Step) ?diagnos
     } else {
         // with: exists — append persist-credentials: false after last entry
         const insert_at = step.with_last_entry_end_byte orelse return null;
-        const replacement = std.fmt.allocPrint(alloc, "\n{s}persist-credentials: false", .{indent2}) catch return null;
-        const edits = alloc.alloc(diagnostics.Edit, 1) catch return null;
-        edits[0] = .{ .start_byte = insert_at, .end_byte = insert_at, .replacement = replacement };
+        const edits = fix_builder.appendMappingEntry(
+            alloc,
+            insert_at,
+            col + 2,
+            "persist-credentials",
+            "false",
+        ) orelse return null;
         return .{ .description = "add persist-credentials: false to checkout step", .safety = .safe, .edits = edits };
     }
 }
@@ -1127,18 +1133,12 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
 // ============================================================
 
 fn buildInsecureCommandsFix(list: *DiagnosticList, meta: ScalarValueMeta) ?Fix {
-    const replacement = switch (meta.style) {
-        .plain => "false",
-        .single_quoted => "'false'",
-        .double_quoted => "\"false\"",
-        .literal, .folded => return null,
-    };
-
-    const edits = list.allocEdit(.{
-        .start_byte = meta.value_span.start_byte,
-        .end_byte = meta.value_span.end_byte,
-        .replacement = replacement,
-    }) orelse return null;
+    const edits = fix_builder.replaceScalar(
+        list.fixAllocator(),
+        meta.value_span,
+        meta.style,
+        "false",
+    ) orelse return null;
 
     return .{
         .description = "set ACTIONS_ALLOW_UNSECURE_COMMANDS to false",
@@ -4065,7 +4065,9 @@ test "SEC017: fix preserves single quoted style" {
 
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
     try testing.expect(diag.fix != null);
-    try testing.expectEqualStrings("'false'", diag.fix.?.edits[0].replacement);
+    try testing.expectEqualStrings("false", diag.fix.?.edits[0].replacement);
+    try testing.expectEqual(@as(usize, 41), diag.fix.?.edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 45), diag.fix.?.edits[0].end_byte);
 }
 
 test "SEC017: fix preserves double quoted style" {
@@ -4094,7 +4096,9 @@ test "SEC017: fix preserves double quoted style" {
 
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
     try testing.expect(diag.fix != null);
-    try testing.expectEqualStrings("\"false\"", diag.fix.?.edits[0].replacement);
+    try testing.expectEqualStrings("false", diag.fix.?.edits[0].replacement);
+    try testing.expectEqual(@as(usize, 51), diag.fix.?.edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 55), diag.fix.?.edits[0].end_byte);
 }
 
 test "SEC017: literal style gets diagnostic without fix" {
