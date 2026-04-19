@@ -1,6 +1,6 @@
 # PBT 戦略: Property-Based Testing 強化計画
 
-最終更新: 2026-04-17
+最終更新: 2026-04-19
 
 ## 1. 概要
 
@@ -24,7 +24,7 @@ PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されてい�
 
 | ファイル | 行 | テスト数 | 主な不変条件 | 状態 |
 |---|---:|---:|---|---|
-| `tests/pbt/strategies.py` | 291 | – | 5 段階のジェネレータ + Phase 2 挿入系 3 ルール専用誘発 strategy | OK |
+| `tests/pbt/strategies.py` | 381 | – | 5 段階のジェネレータ + Phase 2 全 6 ルール専用誘発 strategy (BP004 / BP005 / DEP001 / PERF001 / PERM001 / PERM002) | OK |
 | `tests/pbt/conftest.py` | 115 | – | ReleaseSafe ビルド・subprocess 実行・config 書き出し | OK |
 | `tests/pbt/test_crash.py` | 87 | 4 | 任意入力で signal 終了しない | OK |
 | `tests/pbt/test_determinism.py` | 73 | – | 同一入力 → 同一出力 | OK |
@@ -44,15 +44,15 @@ PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されてい�
 ## 3. ルールカバレッジ
 
 zghalint は 11 種のルールモジュールを `src/rules/` に持つが、PBT で
-detection を直接保証しているのは **3 種のみ (27%)**。
+detection を直接保証しているのは **5 種 (45%)**。
 
 | ルールモジュール | PBT 対象 | 備考 |
 |---|:---:|---|
 | `security.zig` (SEC001/002/003) | ✅ | `test_security_detection.py` |
 | `expressions.zig` | ❌ | 1,667 行・既存単体テスト 190+ |
-| `permissions.zig` (PERM002) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
-| `best_practices.zig` (BP005) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
-| `performance.zig` | ❌ | – |
+| `permissions.zig` (PERM001 / PERM002) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
+| `best_practices.zig` (BP004 / BP005) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
+| `performance.zig` (PERF001 setup-go) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
 | `advisory.zig` | ❌ | 外部依存あり、生成困難可能性 |
 | `archived.zig` | ❌ | 同上 |
 | `dependabot.zig` (DEP001) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
