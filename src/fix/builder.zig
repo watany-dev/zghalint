@@ -19,6 +19,11 @@ pub const InsertPos = struct {
     indent: u32,
 };
 
+pub const SubEntry = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
 /// Build a single-Edit slice inserting "<indent spaces>key: value\n" at `pos.byte`.
 /// Use when the anchor is the start of a physical line (column 1), such as the
 /// byte just after a `full_span` of a prior entry.
@@ -107,6 +112,60 @@ pub fn appendMappingEntry(
 
     const edits = alloc.alloc(Edit, 1) catch return null;
     edits[0] = .{ .start_byte = after_byte, .end_byte = after_byte, .replacement = buf };
+    return edits;
+}
+
+/// Build a single-Edit slice inserting a multi-line block mapping at `pos.byte`.
+/// Generated shape (line-oriented, each line newline-terminated):
+///   <indent>key:
+///   <indent+child_indent>subkey1: value1
+///   <indent+child_indent>subkey2: value2
+///   ...
+/// Use when the anchor is at the start of a physical line (e.g. just after a
+/// prior entry's `full_span`). Returns null for empty `sub_entries` (to avoid
+/// producing a key with no mapping children) or on OOM.
+pub fn insertMappingEntryBlock(
+    alloc: std.mem.Allocator,
+    pos: InsertPos,
+    key: []const u8,
+    sub_entries: []const SubEntry,
+    child_indent: u32,
+) ?[]const Edit {
+    if (sub_entries.len == 0) return null;
+
+    const parent_indent: usize = pos.indent;
+    const sub_indent: usize = parent_indent + child_indent;
+
+    var total: usize = parent_indent + key.len + ":\n".len;
+    for (sub_entries) |sub| {
+        total += sub_indent + sub.key.len + ": ".len + sub.value.len + "\n".len;
+    }
+
+    const buf = alloc.alloc(u8, total) catch return null;
+
+    var i: usize = 0;
+    @memset(buf[i..][0..parent_indent], ' ');
+    i += parent_indent;
+    @memcpy(buf[i..][0..key.len], key);
+    i += key.len;
+    @memcpy(buf[i..][0..2], ":\n");
+    i += 2;
+
+    for (sub_entries) |sub| {
+        @memset(buf[i..][0..sub_indent], ' ');
+        i += sub_indent;
+        @memcpy(buf[i..][0..sub.key.len], sub.key);
+        i += sub.key.len;
+        @memcpy(buf[i..][0..2], ": ");
+        i += 2;
+        @memcpy(buf[i..][0..sub.value.len], sub.value);
+        i += sub.value.len;
+        buf[i] = '\n';
+        i += 1;
+    }
+
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{ .start_byte = pos.byte, .end_byte = pos.byte, .replacement = buf };
     return edits;
 }
 
@@ -288,4 +347,75 @@ test "deleteMappingEntry produces empty-replacement edit" {
     try testing.expectEqual(@as(usize, 50), edits[0].start_byte);
     try testing.expectEqual(@as(usize, 90), edits[0].end_byte);
     try testing.expectEqualStrings("", edits[0].replacement);
+}
+
+test "insertMappingEntryBlock: single sub entry at indent=0" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const subs = [_]SubEntry{.{ .key = "group", .value = "main" }};
+    const edits = insertMappingEntryBlock(
+        arena.allocator(),
+        .{ .byte = 12, .indent = 0 },
+        "concurrency",
+        &subs,
+        2,
+    ) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 12), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 12), edits[0].end_byte);
+    try testing.expectEqualStrings("concurrency:\n  group: main\n", edits[0].replacement);
+}
+
+test "insertMappingEntryBlock: multiple sub entries" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const subs = [_]SubEntry{
+        .{ .key = "group", .value = "main" },
+        .{ .key = "cancel-in-progress", .value = "true" },
+    };
+    const edits = insertMappingEntryBlock(
+        arena.allocator(),
+        .{ .byte = 0, .indent = 0 },
+        "concurrency",
+        &subs,
+        2,
+    ) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqualStrings(
+        "concurrency:\n  group: main\n  cancel-in-progress: true\n",
+        edits[0].replacement,
+    );
+}
+
+test "insertMappingEntryBlock: indented mapping (indent=2, child=2)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const subs = [_]SubEntry{.{ .key = "contents", .value = "read" }};
+    const edits = insertMappingEntryBlock(
+        arena.allocator(),
+        .{ .byte = 30, .indent = 2 },
+        "permissions",
+        &subs,
+        2,
+    ) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqualStrings("  permissions:\n    contents: read\n", edits[0].replacement);
+}
+
+test "insertMappingEntryBlock: empty sub_entries returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const subs = [_]SubEntry{};
+    try testing.expect(insertMappingEntryBlock(
+        arena.allocator(),
+        .{ .byte = 0, .indent = 0 },
+        "permissions",
+        &subs,
+        2,
+    ) == null);
 }
