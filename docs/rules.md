@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **43 rules** across 7 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **44 rules** across 7 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -26,6 +26,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC006 | untrusted-input-condition | error | Untrusted context in `if:` condition expression |
 | SEC007 | missing-permissions | info | Workflow should define top-level permissions |
 | SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection |
+| SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks |
 | SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit` |
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |
 | SEC012 | unredacted-secrets | error | Secrets processed via `toJSON()`/`fromJSON()` bypass masking and may be exposed in logs |
