@@ -100,13 +100,16 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, diag);
     }
 
-    /// Append a Diagnostic, deep-cloning any embedded Fix into this list's
-    /// fix_arena. Use this when bringing diagnostics across DiagnosticList
-    /// boundaries; plain `append` keeps Fix slices borrowed from the source
-    /// list's arena, which dangles once that list is deinitialized.
+    /// Append a Diagnostic, deep-cloning any embedded Fix and any
+    /// heap-allocated `fix_hint` into this list's fix_arena. Use this when
+    /// bringing diagnostics across DiagnosticList boundaries; plain `append`
+    /// keeps Fix slices and hint strings borrowed from the source list's
+    /// arena, which dangles once that list is deinitialized.
     pub fn appendOwning(self: *DiagnosticList, diag: Diagnostic) !void {
+        const alloc = self.fix_arena.allocator();
         var d = diag;
-        if (diag.fix) |f| d.fix = try cloneFix(self.fix_arena.allocator(), f);
+        if (diag.fix) |f| d.fix = try cloneFix(alloc, f);
+        if (diag.fix_hint) |hint| d.fix_hint = try alloc.dupe(u8, hint);
         try self.items.append(self.allocator, d);
     }
 
@@ -379,4 +382,30 @@ test "appendOwning without fix skips clone" {
 
     try std.testing.expectEqual(@as(usize, 1), dst.len());
     try std.testing.expect(dst.get(0).fix == null);
+}
+
+test "appendOwning deep-clones heap-allocated fix_hint" {
+    var dst = DiagnosticList.init(std.testing.allocator);
+    defer dst.deinit();
+
+    {
+        var src = DiagnosticList.init(std.testing.allocator);
+        defer src.deinit();
+
+        const hint = try src.fixAllocator().dupe(u8, "heap-hint-text");
+        try src.append(.{
+            .rule_id = "T3",
+            .severity = .warning,
+            .message = "msg",
+            .span = Span.point(1, 1, 0),
+            .fix_hint = hint,
+        });
+
+        try dst.appendOwning(src.get(0));
+    }
+    // src.deinit() ran — the original hint backing is gone.
+
+    const got = dst.get(0);
+    const hint = got.fix_hint orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings("heap-hint-text", hint);
 }

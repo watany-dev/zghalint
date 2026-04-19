@@ -14,9 +14,9 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | 区分 | 件数 | 備考 |
 |------|------|------|
-| autofix 完全実装済み | 15 | `BP001`, `BP002`, `BP003`, `BP004`, `BP005`, `DEP001`, `DEP002`, `PERF001`(setup-go のみ), `PERF003`, `PERM001`, `PERM002`, `SEC004`, `SEC007`, `SEC015`, `SEC017` |
+| autofix 完全実装済み | 15 | `BP001`, `BP002`, `BP003`, `BP004`, `BP005`, `DEP001`, `DEP002`, `PERF001`(setup-node/-python/-go, lockfile 検出), `PERF003`, `PERM001`, `PERM002`, `SEC004`, `SEC007`, `SEC015`, `SEC017` |
 | autofix 部分実装 | 0 | — |
-| autofix 未着手 | 27 | fix hint のみ、または診断のみ（`PERF001` の setup-node / setup-python は lockfile 検出待ち） |
+| autofix 未着手 | 27 | fix hint のみ、または診断のみ |
 | autofix 追加対象合計 | 27 | |
 
 ## 既存 autofix 実装
@@ -37,7 +37,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `PERM002` | 完全実装 | `src/rules/permissions.zig` | job の `runs-on:` 直後に `permissions: contents: read` を挿入（unsafe） |
 | `PERF003` | 完全実装 | `src/rules/performance.zig` | `fail-fast: false` エントリを削除（unsafe） |
 | `BP004` | 完全実装 | `src/rules/best_practices.zig` | Windows-targeting ジョブの `run` step に `shell: bash` を挿入（unsafe） |
-| `PERF001` | 完全実装（setup-go のみ） | `src/rules/performance.zig` | `actions/setup-go` step に `cache: true` を追加。`with:` 有無の両方に対応（unsafe）。`setup-node` / `setup-python` は lockfile 検出待ち |
+| `PERF001` | 完全実装（setup-node / setup-python / setup-go） | `src/rules/performance.zig`, `src/workspace.zig` | 起動時の lockfile probe で `node_cache` / `python_cache` / `go_sum_present` を判定し、setup-node/python/go step に `cache: <manager>` を追加（全 unsafe）。曖昧時は fix 抑止し fix_hint に lockfile 一覧を提示。`.zghalint.yml` の `rules.PERF001.node_cache_manager` / `python_cache_manager` で上書き可 |
 
 ## 評価基準
 
@@ -90,7 +90,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | ID | 現状 | 実装可否 | 難易度 | 優先度 | 方針 |
 |----|------|----------|--------|--------|------|
-| `PERF001` | 完全実装（setup-go のみ） | 条件付き可 | 中 | 中 | `actions/setup-go` に `cache: true` を付与（unsafe）。setup-node / setup-python は lockfile 検出基盤が必要 |
+| `PERF001` | 完全実装（setup-node / setup-python / setup-go） | 可 | 中 | 中 | 起動時 lockfile probe で setup-node/python/go 向け `cache: <manager>` を付与（全 unsafe）。曖昧ケースは fix 抑止。`.zghalint.yml` で override 可 |
 | `PERF002` | 未実装 | 不可/非推奨 | 高 | 低 | redundant checkout を削除するか `path` を足すかが文脈依存 |
 | `PERF003` | 未実装 | 可 | 低 | 高 | `fail-fast: false` の削除、または `true` 置換で対応可能。unsafe fix 扱いが妥当 |
 | `BP002` | 完全実装 | 可 | 中 | 高 | `uses` が step mapping の先頭 key の場合のみ、action 名から step 名を生成して `uses:` の直前に挿入する。個別設計: `docs/design/bp002-autofix-design.md` |
@@ -134,7 +134,7 @@ Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）の実�
 | `DEP001` | 完了 | `cooldown` 雛形挿入。dependabot entry の `MappingEntry.full_span` 末尾に追加 |
 | `BP004` | 完了 | `shell: bash` を挿入（unsafe）。`Step.shell_insertion_byte` 既存活用 |
 | `PERM001` | 完了 | 14 scope 検出 + 個別 `write → read` 降格（unsafe）、`id-token` は専用 hint |
-| `PERF001` | 完了（setup-go のみ） | `actions/setup-go` に `cache: true` 付与（unsafe）。setup-node / setup-python は lockfile 検出基盤が未整備で別計画 |
+| `PERF001` | 完了（setup-node / setup-python / setup-go） | 起動時 lockfile probe で `cache: <manager>` を付与（全 unsafe）。go.sum 不在時は setup-go fix を抑止。`docs/design/perf001-lockfile-detection-design.md` / `docs/adr/0004-perf001-cache-extension.md` 参照 |
 
 ### Phase 3: 条件付きパターン変換
 
@@ -206,7 +206,7 @@ Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）の実�
 3. `SEC007` — 完了
 4. `BP005`, `PERM002`, `DEP001` — 完了（`docs/adr/0001-autofix-phase2-insertion-rules.md`、`docs/design/autofix-phase2-insertion-design.md`）
 5. `BP004`, `PERM001` 追加対応, `PERF001`(setup-go のみ) — 完了（`docs/adr/0002-autofix-phase2-remainder.md`、`docs/design/autofix-phase2-remainder-design.md`）
-6. `PERF001` の setup-node / setup-python — lockfile 検出基盤の設計後に着手
+6. `PERF001` の setup-node / setup-python / setup-go (lockfile 検出) — 完了（`docs/adr/0004-perf001-cache-extension.md`、`docs/design/perf001-lockfile-detection-design.md`）
 7. 条件付き変換として `EXPR007`, `EXPR006`, `SEC014` を検討
 8. ネットワーク依存 autofix は別設計として切り出す
 

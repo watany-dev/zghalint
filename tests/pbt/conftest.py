@@ -43,13 +43,24 @@ def zghalint_bin() -> Path:
     return binary
 
 
-def run_zghalint(binary: Path, *args: str, timeout: int = 10) -> LintResult:
-    """Run zghalint as a subprocess with a timeout."""
+def run_zghalint(
+    binary: Path,
+    *args: str,
+    timeout: int = 10,
+    cwd: str | Path | None = None,
+) -> LintResult:
+    """Run zghalint as a subprocess with a timeout.
+
+    ``cwd`` lets callers control the working directory so PERF001's
+    lockfile probe sees a specific repo layout (package-lock.json,
+    go.sum, etc.).
+    """
     result = subprocess.run(
         [str(binary), "--quick", *args],
         capture_output=True,
         text=True,
         timeout=timeout,
+        cwd=str(cwd) if cwd is not None else None,
     )
     return LintResult(
         returncode=result.returncode,

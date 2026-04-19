@@ -340,6 +340,70 @@ def workflow_with_perf001_setup_go(draw: st.DrawFn) -> str:
 
 
 @st.composite
+def workflow_with_perf001_setup_node(draw: st.DrawFn) -> str:
+    """Generate a workflow that triggers PERF001 (setup-node without cache).
+
+    The autofix insertion is exercised via conftest's lockfile tmpdir; this
+    strategy just emits a cache-less setup-node step so PERF001 fires.
+
+    Intentionally omits a concurrency block while keeping minimal permissions
+    so that other rules remain free to vary diagnostic count — PERF001's
+    presence alone is what the caller tests.
+    """
+    has_with = draw(st.booleans())
+    node_version = draw(st.sampled_from(["'18'", "'20'", "'lts/*'"]))
+    if has_with:
+        setup_step = (
+            "      - uses: actions/setup-node@a5ac7e51b41094c92402da3b24376905380afc29\n"
+            "        with:\n"
+            f"          node-version: {node_version}\n"
+        )
+    else:
+        setup_step = "      - uses: actions/setup-node@a5ac7e51b41094c92402da3b24376905380afc29\n"
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
+        f"{setup_step}"
+    )
+
+
+@st.composite
+def workflow_with_perf001_setup_python(draw: st.DrawFn) -> str:
+    """Generate a workflow that triggers PERF001 (setup-python without cache)."""
+    has_with = draw(st.booleans())
+    py_version = draw(st.sampled_from(["'3.11'", "'3.12'", "'3.x'"]))
+    if has_with:
+        setup_step = (
+            "      - uses: actions/setup-python@a5ac7e51b41094c92402da3b24376905380afc29\n"
+            "        with:\n"
+            f"          python-version: {py_version}\n"
+        )
+    else:
+        setup_step = "      - uses: actions/setup-python@a5ac7e51b41094c92402da3b24376905380afc29\n"
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
+        f"{setup_step}"
+    )
+
+
+@st.composite
 def dependabot_with_dep001(draw: st.DrawFn) -> str:
     """Generate a dependabot config guaranteed to trigger DEP001 (missing cooldown)."""
     ecosystem = draw(st.sampled_from(["npm", "pip", "docker", "github-actions"]))

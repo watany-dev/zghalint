@@ -5,6 +5,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
+const workspace = @import("../workspace.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -19,17 +20,39 @@ const Fix = diagnostics_mod.Fix;
 const CacheableSetup = struct {
     setup_action: []const u8,
     cache_key: []const u8,
+    fix_hint_base: []const u8,
 };
 
 const cacheable_setups = [_]CacheableSetup{
-    .{ .setup_action = "actions/setup-node", .cache_key = "cache" },
-    .{ .setup_action = "actions/setup-python", .cache_key = "cache" },
-    .{ .setup_action = "actions/setup-go", .cache_key = "cache" },
+    .{
+        .setup_action = "actions/setup-node",
+        .cache_key = "cache",
+        .fix_hint_base = "Set 'cache' to the package manager ('npm', 'yarn', or 'pnpm') in the action's 'with' inputs, or add a separate actions/cache step.",
+    },
+    .{
+        .setup_action = "actions/setup-python",
+        .cache_key = "cache",
+        .fix_hint_base = "Set 'cache' to the package manager ('pip', 'pipenv', or 'poetry') in the action's 'with' inputs, or add a separate actions/cache step.",
+    },
+    .{
+        .setup_action = "actions/setup-go",
+        .cache_key = "cache",
+        .fix_hint_base = "Add 'cache: true' to the setup action's 'with' inputs (requires go.sum), or add a separate actions/cache step.",
+    },
 };
 
 // ── PERF001: Cache not used ──
 
-fn buildSetupGoCacheFix(diag_list: *DiagnosticList, job: *const Job) ?Fix {
+/// Build a PERF001 fix that inserts `cache: <cache_value>` into every step of
+/// `job` that matches `setup_action`. Returns null if no edit is applicable
+/// (no span info, existing cache entry, etc.).
+fn buildCacheFix(
+    diag_list: *DiagnosticList,
+    job: *const Job,
+    setup_action: []const u8,
+    cache_value: []const u8,
+    description: []const u8,
+) ?Fix {
     const alloc = diag_list.fixAllocator();
 
     var edits = std.ArrayList(diagnostics_mod.Edit){};
@@ -37,7 +60,7 @@ fn buildSetupGoCacheFix(diag_list: *DiagnosticList, job: *const Job) ?Fix {
     for (job.steps) |step| {
         const action_ref = step.uses orelse continue;
         const action_name = util.actionBaseName(action_ref.raw);
-        if (!std.mem.eql(u8, action_name, "actions/setup-go")) continue;
+        if (!std.mem.eql(u8, action_name, setup_action)) continue;
 
         if (step.with) |with| {
             if (with.get("cache")) |_| continue;
@@ -53,7 +76,7 @@ fn buildSetupGoCacheFix(diag_list: *DiagnosticList, job: *const Job) ?Fix {
                 anchor,
                 col + 1,
                 "cache",
-                "true",
+                cache_value,
             ) orelse continue;
             edits.appendSlice(alloc, appended) catch continue;
         } else {
@@ -64,8 +87,8 @@ fn buildSetupGoCacheFix(diag_list: *DiagnosticList, job: *const Job) ?Fix {
             @memset(child_indent, ' ');
             const replacement = std.fmt.allocPrint(
                 alloc,
-                "\n{s}with:\n{s}cache: true",
-                .{ parent_indent, child_indent },
+                "\n{s}with:\n{s}cache: {s}",
+                .{ parent_indent, child_indent, cache_value },
             ) catch continue;
             edits.append(alloc, .{
                 .start_byte = anchor,
@@ -79,10 +102,106 @@ fn buildSetupGoCacheFix(diag_list: *DiagnosticList, job: *const Job) ?Fix {
 
     const owned = edits.toOwnedSlice(alloc) catch return null;
     return .{
-        .description = "add cache: true to actions/setup-go step(s)",
+        .description = description,
         .safety = .unsafe,
         .edits = owned,
     };
+}
+
+/// Dispatch fix building for a setup action based on workspace context.
+/// Returns a tuple of (optional Fix, optional extra fix_hint suffix).
+const DispatchResult = struct {
+    fix: ?Fix,
+    hint_extra: ?[]const u8,
+};
+
+fn dispatchCacheFix(
+    diag_list: *DiagnosticList,
+    job: *const Job,
+    setup_action: []const u8,
+) DispatchResult {
+    const alloc = diag_list.fixAllocator();
+    const ctx = workspace.current;
+
+    if (std.mem.eql(u8, setup_action, "actions/setup-node")) {
+        if (ctx.node_cache) |mgr| {
+            const mgr_str = mgr.toString();
+            const description = std.fmt.allocPrint(
+                alloc,
+                "add \"cache: {s}\" to actions/setup-node step(s)",
+                .{mgr_str},
+            ) catch return .{ .fix = null, .hint_extra = null };
+            return .{
+                .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
+                .hint_extra = null,
+            };
+        }
+        if (ctx.ambiguous_node_lockfiles.len > 0) {
+            return .{
+                .fix = null,
+                .hint_extra = formatAmbiguity(alloc, ctx.ambiguous_node_lockfiles, "node_cache_manager"),
+            };
+        }
+        return .{ .fix = null, .hint_extra = null };
+    }
+
+    if (std.mem.eql(u8, setup_action, "actions/setup-python")) {
+        if (ctx.python_cache) |mgr| {
+            const mgr_str = mgr.toString();
+            const description = std.fmt.allocPrint(
+                alloc,
+                "add \"cache: {s}\" to actions/setup-python step(s)",
+                .{mgr_str},
+            ) catch return .{ .fix = null, .hint_extra = null };
+            return .{
+                .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
+                .hint_extra = null,
+            };
+        }
+        if (ctx.ambiguous_python_lockfiles.len > 0) {
+            return .{
+                .fix = null,
+                .hint_extra = formatAmbiguity(alloc, ctx.ambiguous_python_lockfiles, "python_cache_manager"),
+            };
+        }
+        return .{ .fix = null, .hint_extra = null };
+    }
+
+    if (std.mem.eql(u8, setup_action, "actions/setup-go")) {
+        if (!ctx.go_sum_present) return .{ .fix = null, .hint_extra = null };
+        return .{
+            .fix = buildCacheFix(
+                diag_list,
+                job,
+                setup_action,
+                "true",
+                "add \"cache: true\" to actions/setup-go step(s) (go.sum detected)",
+            ),
+            .hint_extra = null,
+        };
+    }
+
+    return .{ .fix = null, .hint_extra = null };
+}
+
+fn formatAmbiguity(
+    alloc: std.mem.Allocator,
+    lockfiles: []const []const u8,
+    override_key: []const u8,
+) ?[]const u8 {
+    var joined = std.ArrayList(u8){};
+    var first = true;
+    for (lockfiles) |name| {
+        if (!first) joined.appendSlice(alloc, ", ") catch return null;
+        joined.appendSlice(alloc, name) catch return null;
+        first = false;
+    }
+    const list = joined.toOwnedSlice(alloc) catch return null;
+    return std.fmt.allocPrint(
+        alloc,
+        " Detected lockfiles: {s} — specify via .zghalint.yml rules.PERF001.{s}.",
+        .{ list, override_key },
+    ) catch null;
 }
 
 fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
@@ -113,18 +232,24 @@ fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
         }
 
         if (uses_setup and !has_cache) {
-            const fix: ?Fix = if (comptime std.mem.eql(u8, ca.setup_action, "actions/setup-go"))
-                buildSetupGoCacheFix(diag_list, job)
-            else
-                null;
+            const dispatched = dispatchCacheFix(diag_list, job, ca.setup_action);
+            const base_hint = ca.fix_hint_base;
+            const hint: []const u8 = if (dispatched.hint_extra) |extra| blk: {
+                const combined = std.fmt.allocPrint(
+                    diag_list.fixAllocator(),
+                    "{s}{s}",
+                    .{ base_hint, extra },
+                ) catch break :blk base_hint;
+                break :blk combined;
+            } else base_hint;
 
             diag_list.append(.{
                 .rule_id = "PERF001",
                 .severity = .warning,
                 .message = "Job uses " ++ ca.setup_action ++ " without caching. Add actions/cache or set 'cache' input.",
                 .span = Span.point(0, 0, 0),
-                .fix_hint = "Add 'cache: true' to the setup action's 'with' inputs, or add a separate actions/cache step.",
-                .fix = fix,
+                .fix_hint = hint,
+                .fix = dispatched.fix,
             }) catch return;
         }
     }
@@ -296,6 +421,9 @@ test "PERF001: detect missing cache for setup-go" {
 }
 
 test "PERF001: setup-go without with: attaches unsafe fix that adds a with block" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/setup-go@v5"),
@@ -318,7 +446,31 @@ test "PERF001: setup-go without with: attaches unsafe fix that adds a with block
     try std.testing.expectEqualStrings("\n        with:\n          cache: true", fix.edits[0].replacement);
 }
 
+test "PERF001: setup-go without go.sum suppresses fix" {
+    defer workspace.clear();
+    workspace.clear(); // explicit: no go.sum in workspace
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
 test "PERF001: setup-go with existing with: appends cache entry" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
     var with = workflow_types.StringMap.init(std.testing.allocator);
     defer with.deinit();
     try with.put("go-version", "1.21");
@@ -348,6 +500,9 @@ test "PERF001: setup-go with existing with: appends cache entry" {
 }
 
 test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
     var with = workflow_types.StringMap.init(std.testing.allocator);
     defer with.deinit();
     try with.put("cache", "");
@@ -371,7 +526,10 @@ test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key
     try std.testing.expect(diags.get(0).fix == null);
 }
 
-test "PERF001: setup-node/setup-python do not receive autofix" {
+test "PERF001: setup-node/setup-python do not receive autofix without lockfile" {
+    defer workspace.clear();
+    workspace.clear();
+
     const node_job = Job{
         .id = "build",
         .steps = &.{Step{
@@ -403,7 +561,173 @@ test "PERF001: setup-node/setup-python do not receive autofix" {
     try std.testing.expect(diags.get(0).fix == null);
 }
 
+test "PERF001: setup-node fix populated when node_cache=npm" {
+    workspace.set(.{ .node_cache = .npm });
+    defer workspace.clear();
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-node@v4"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings(
+        \\add "cache: npm" to actions/setup-node step(s)
+    , fix.description);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try std.testing.expectEqualStrings("\n        with:\n          cache: npm", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-node fix uses pnpm when node_cache=pnpm" {
+    workspace.set(.{ .node_cache = .pnpm });
+    defer workspace.clear();
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-node@v4"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings("\n        with:\n          cache: pnpm", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-node fix uses yarn when node_cache=yarn" {
+    workspace.set(.{ .node_cache = .yarn });
+    defer workspace.clear();
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-node@v4"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings("\n        with:\n          cache: yarn", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-node ambiguous lockfiles surface fix_hint listing them" {
+    const lockfiles = [_][]const u8{ "package-lock.json", "yarn.lock" };
+    workspace.set(.{ .ambiguous_node_lockfiles = &lockfiles });
+    defer workspace.clear();
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-node@v4"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+    const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
+    try std.testing.expect(std.mem.indexOf(u8, hint, "package-lock.json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "yarn.lock") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "node_cache_manager") != null);
+}
+
+test "PERF001: setup-python fix with python_cache=poetry" {
+    workspace.set(.{ .python_cache = .poetry });
+    defer workspace.clear();
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-python@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings(
+        \\add "cache: poetry" to actions/setup-python step(s)
+    , fix.description);
+    try std.testing.expectEqualStrings("\n        with:\n          cache: poetry", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-python fix with python_cache=pipenv" {
+    workspace.set(.{ .python_cache = .pipenv });
+    defer workspace.clear();
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-python@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings("\n        with:\n          cache: pipenv", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-python ambiguous lockfiles produce hint" {
+    const lockfiles = [_][]const u8{ "poetry.lock", "Pipfile.lock" };
+    workspace.set(.{ .ambiguous_python_lockfiles = &lockfiles });
+    defer workspace.clear();
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-python@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expect(diags.get(0).fix == null);
+    const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
+    try std.testing.expect(std.mem.indexOf(u8, hint, "python_cache_manager") != null);
+}
+
 test "PERF001: setup-go with missing span skips fix" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
     const job = Job{
         .id = "build",
         .steps = &.{Step{ .uses = ActionRef.parse("actions/setup-go@v5") }},
@@ -417,6 +741,9 @@ test "PERF001: setup-go with missing span skips fix" {
 }
 
 test "PERF001: multiple setup-go steps in one job produce a single multi-edit fix" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/setup-go@v5"),
@@ -443,6 +770,9 @@ test "PERF001: multiple setup-go steps in one job produce a single multi-edit fi
 }
 
 test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
     const yaml_parser_mod = @import("../yaml/parser.zig");
     const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
@@ -487,6 +817,46 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
     const cache_count = std.mem.count(u8, result.content, "cache: true");
     try std.testing.expectEqual(@as(usize, 2), cache_count);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "go-version: '1.21'") != null);
+}
+
+test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
+    workspace.set(.{ .node_cache = .npm });
+    defer workspace.clear();
+
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkCacheNotUsed(&wf.jobs[0], &diags);
+
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    const fixes = [_]Fix{fix};
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "cache: npm") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "with:") != null);
 }
 
 test "PERF001: no warning for unrelated actions" {
@@ -699,4 +1069,100 @@ test "PERF003: no warning without strategy" {
     defer diags.deinit();
     checkFailFastDisabled(&job, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: fixture harness applies expected fix" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    const node_ambiguous_lockfiles = [_][]const u8{ "package-lock.json", "yarn.lock" };
+
+    const Case = struct {
+        name: []const u8,
+        input_path: []const u8,
+        expected_path: ?[]const u8,
+        ctx: workspace.Context,
+    };
+
+    const cases = [_]Case{
+        .{
+            .name = "setup-node-npm",
+            .input_path = "tests/fixtures/perf001-cache/setup-node-npm/input.yml",
+            .expected_path = "tests/fixtures/perf001-cache/setup-node-npm/expected.yml",
+            .ctx = .{ .node_cache = .npm },
+        },
+        .{
+            .name = "setup-node-pnpm",
+            .input_path = "tests/fixtures/perf001-cache/setup-node-pnpm/input.yml",
+            .expected_path = "tests/fixtures/perf001-cache/setup-node-pnpm/expected.yml",
+            .ctx = .{ .node_cache = .pnpm },
+        },
+        .{
+            .name = "setup-python-poetry",
+            .input_path = "tests/fixtures/perf001-cache/setup-python-poetry/input.yml",
+            .expected_path = "tests/fixtures/perf001-cache/setup-python-poetry/expected.yml",
+            .ctx = .{ .python_cache = .poetry },
+        },
+        .{
+            .name = "setup-go-gosum",
+            .input_path = "tests/fixtures/perf001-cache/setup-go-gosum/input.yml",
+            .expected_path = "tests/fixtures/perf001-cache/setup-go-gosum/expected.yml",
+            .ctx = .{ .go_sum_present = true },
+        },
+        .{
+            .name = "setup-node-ambiguous",
+            .input_path = "tests/fixtures/perf001-cache/setup-node-ambiguous/input.yml",
+            .expected_path = null,
+            .ctx = .{ .ambiguous_node_lockfiles = &node_ambiguous_lockfiles },
+        },
+    };
+
+    // Fixture paths are relative to the repo root. Tests run with cwd = repo
+    // root under both `zig build test` and the local wrapper, so a runtime
+    // read keeps this harness independent of the build-system embed-dir
+    // wiring.
+    const cwd = std.fs.cwd();
+
+    for (cases) |case| {
+        workspace.set(case.ctx);
+        defer workspace.clear();
+
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const input = cwd.readFileAlloc(alloc, case.input_path, 64 * 1024) catch |err| {
+            std.debug.print("case '{s}': failed to read {s}: {s}\n", .{ case.name, case.input_path, @errorName(err) });
+            return err;
+        };
+
+        var yp = yaml_parser_mod.Parser.init(alloc, input);
+        defer yp.deinit();
+        const yaml_node = try yp.parse();
+        const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+        var diags = DiagnosticList.init(alloc);
+        checkCacheNotUsed(&wf.jobs[0], &diags);
+
+        try std.testing.expectEqual(@as(usize, 1), diags.len());
+
+        if (case.expected_path) |exp_path| {
+            const expected = try cwd.readFileAlloc(alloc, exp_path, 64 * 1024);
+            const fix = diags.get(0).fix orelse {
+                std.debug.print("case '{s}': expected fix, got null\n", .{case.name});
+                return error.TestExpectedFix;
+            };
+            const fixes = [_]Fix{fix};
+            const result = try fix_engine.applyFixes(std.testing.allocator, input, &fixes);
+            defer result.deinit(std.testing.allocator);
+
+            std.testing.expectEqualStrings(expected, result.content) catch |err| {
+                std.debug.print("case '{s}' output mismatch\n", .{case.name});
+                return err;
+            };
+        } else {
+            try std.testing.expect(diags.get(0).fix == null);
+        }
+    }
 }

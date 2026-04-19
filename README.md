@@ -154,6 +154,13 @@ rules:
     enabled: false         # Disable missing-step-name rule
   SEC007:
     severity: warning      # Upgrade from info to warning
+  # PERF001 picks a cache manager from lockfiles it detects in the
+  # workspace (package-lock.json / yarn.lock / pnpm-lock.yaml /
+  # Pipfile.lock / poetry.lock / requirements.txt / go.sum). Override
+  # the probe result when multiple lockfiles coexist or none are checked in.
+  PERF001:
+    node_cache_manager: pnpm     # one of: npm, yarn, pnpm
+    python_cache_manager: poetry # one of: pip, pipenv, poetry
 
 # Ignore specific files
 ignore:

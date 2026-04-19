@@ -1,8 +1,10 @@
 """Auto-fix idempotency: applying --fix and re-linting must reduce fixable diagnostics."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 from hypothesis import given, settings, HealthCheck
@@ -14,6 +16,8 @@ from tests.pbt.strategies import (
     workflow_with_bp004,
     workflow_with_bp005,
     workflow_with_perf001_setup_go,
+    workflow_with_perf001_setup_node,
+    workflow_with_perf001_setup_python,
     workflow_with_perm001_individual_write,
     workflow_with_perm002,
     workflow_yaml,
@@ -233,3 +237,113 @@ def test_fixed_file_is_still_parseable(zghalint_bin, content):
         )
     finally:
         os.unlink(path)
+
+
+# ============================================================
+# PERF001 lockfile-probed autofix (setup-node / setup-python)
+# ============================================================
+
+
+def _init_fake_repo(tmp: Path, workflow: str, lockfiles: list[str]) -> Path:
+    """Lay out a .git marker, workflow file, and named lockfiles under *tmp*.
+
+    Returns the workflow file path. The .git marker enables workspace root
+    detection so the lockfile probe runs against *tmp*.
+    """
+    (tmp / ".git").mkdir()
+    wf_dir = tmp / ".github" / "workflows"
+    wf_dir.mkdir(parents=True)
+    wf_path = wf_dir / "ci.yml"
+    wf_path.write_text(workflow)
+    for name in lockfiles:
+        (tmp / name).touch()
+    return wf_path
+
+
+def _count_rule(binary, path: Path, rule_id: str, cwd: Path) -> int:
+    result = run_zghalint(
+        binary,
+        "--format",
+        "json",
+        "--color",
+        "never",
+        str(path),
+        cwd=cwd,
+    )
+    if not result.stdout.strip():
+        return 0
+    data = json.loads(result.stdout)
+    return sum(1 for d in data["diagnostics"] if d["rule_id"] == rule_id)
+
+
+@given(content=workflow_with_perf001_setup_node())
+@PBT_SETTINGS
+def test_perf001_node_autofix_with_lockfile(zghalint_bin, content):
+    """With package-lock.json in the workspace, --fix-unsafe resolves PERF001 for setup-node."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        wf = _init_fake_repo(tmp, content, ["package-lock.json"])
+
+        before = _count_rule(zghalint_bin, wf, "PERF001", cwd=tmp)
+        run_zghalint(zghalint_bin, "--fix-unsafe", str(wf), cwd=tmp)
+        after = _count_rule(zghalint_bin, wf, "PERF001", cwd=tmp)
+
+        assert after <= before, (
+            f"--fix-unsafe increased PERF001: {before} → {after}\n"
+            f"Content after fix:\n{wf.read_text()}"
+        )
+
+
+@given(content=workflow_with_perf001_setup_python())
+@PBT_SETTINGS
+def test_perf001_python_autofix_with_lockfile(zghalint_bin, content):
+    """With poetry.lock in the workspace, --fix-unsafe resolves PERF001 for setup-python."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        wf = _init_fake_repo(tmp, content, ["poetry.lock"])
+
+        before = _count_rule(zghalint_bin, wf, "PERF001", cwd=tmp)
+        run_zghalint(zghalint_bin, "--fix-unsafe", str(wf), cwd=tmp)
+        after = _count_rule(zghalint_bin, wf, "PERF001", cwd=tmp)
+
+        assert after <= before, (
+            f"--fix-unsafe increased PERF001: {before} → {after}\n"
+            f"Content after fix:\n{wf.read_text()}"
+        )
+
+
+@given(content=workflow_with_perf001_setup_node())
+@PBT_SETTINGS
+def test_perf001_node_ambiguous_lockfiles_suppress_fix(zghalint_bin, content):
+    """Multiple node lockfiles → fix suppressed; hint must list both names."""
+    with tempfile.TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        wf = _init_fake_repo(tmp, content, ["package-lock.json", "yarn.lock"])
+
+        result = run_zghalint(
+            zghalint_bin,
+            "--format",
+            "json",
+            "--color",
+            "never",
+            str(wf),
+            cwd=tmp,
+        )
+        data = json.loads(result.stdout) if result.stdout.strip() else {"diagnostics": []}
+        perf001 = [d for d in data["diagnostics"] if d["rule_id"] == "PERF001"]
+        assert perf001, "PERF001 should still fire even when fix is suppressed"
+        hint = perf001[0].get("fix_hint", "")
+        assert "package-lock.json" in hint and "yarn.lock" in hint, (
+            f"Ambiguity hint missing lockfile names: {hint!r}"
+        )
+
+        # --fix-unsafe must not insert `cache:` into the setup-node step when
+        # the PERF001 fix is suppressed. Other rules (e.g. BP005) may still
+        # apply their own fixes, so we check the specific PERF001 invariant
+        # rather than full-file equality.
+        run_zghalint(zghalint_bin, "--fix-unsafe", str(wf), cwd=tmp)
+        after = wf.read_text()
+        assert "cache:" not in after, (
+            f"Ambiguous node lockfiles should suppress the PERF001 fix, "
+            f"but 'cache:' appeared in the workflow after --fix-unsafe:\n{after}"
+        )
