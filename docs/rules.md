@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **39 rules** across 7 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **43 rules** across 7 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
