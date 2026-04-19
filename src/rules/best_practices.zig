@@ -237,6 +237,29 @@ fn containsWindows(s: []const u8) bool {
 
 // ── BP005: Push trigger without concurrency ──
 
+fn buildPushConcurrencyFix(list: *DiagnosticList, wf: *const Workflow) ?Fix {
+    const insert_byte = wf.concurrency_insertion_byte orelse return null;
+
+    const subs = [_]fix_builder.SubEntry{
+        .{ .key = "group", .value = "${{ github.workflow }}-${{ github.ref }}" },
+        .{ .key = "cancel-in-progress", .value = "${{ github.event_name == 'pull_request' }}" },
+    };
+
+    const edits = fix_builder.insertMappingEntryBlock(
+        list.fixAllocator(),
+        .{ .byte = insert_byte, .indent = wf.top_level_indent },
+        "concurrency",
+        &subs,
+        2,
+    ) orelse return null;
+
+    return .{
+        .description = "insert top-level concurrency block",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
 fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
     var has_push = false;
     for (wf.on.events) |event| {
@@ -253,6 +276,7 @@ fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
             .message = "Workflow has 'push' trigger but no 'concurrency' setting. Rapid pushes may queue redundant runs.",
             .span = Span.point(0, 0, 0),
             .fix_hint = "Add a 'concurrency' group to cancel or queue redundant workflow runs.",
+            .fix = buildPushConcurrencyFix(diag_list, wf),
         }) catch return;
     }
 }
@@ -775,4 +799,94 @@ test "BP005: no warning without push trigger" {
     defer diags.deinit();
     checkPushConcurrency(&wf, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP005: fix metadata is attached with .unsafe" {
+    const events = [_]workflow_types.EventConfig{
+        .{ .event = .push, .name = "push" },
+    };
+    const wf = Workflow{
+        .on = .{ .events = &events },
+        .jobs = &.{},
+        .concurrency_insertion_byte = 10,
+        .top_level_indent = 0,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPushConcurrency(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expect(fix.safety == .unsafe);
+    try std.testing.expectEqualStrings("insert top-level concurrency block", fix.description);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+}
+
+test "BP005: fix is null when concurrency_insertion_byte is missing" {
+    const events = [_]workflow_types.EventConfig{
+        .{ .event = .push, .name = "push" },
+    };
+    const wf = Workflow{
+        .on = .{ .events = &events },
+        .jobs = &.{},
+        // concurrency_insertion_byte left null
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPushConcurrency(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP005: autofix inserts block-form concurrency after on: line" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkPushConcurrency(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+
+    const fixes = [_]Fix{fix};
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\concurrency:
+        \\  group: ${{ github.workflow }}-${{ github.ref }}
+        \\  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\
+    ,
+        result.content,
+    );
 }
