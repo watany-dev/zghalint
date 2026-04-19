@@ -204,6 +204,67 @@ def workflow_with_hardcoded_secret(draw: st.DrawFn) -> str:
 
 
 @st.composite
+def workflow_with_bp005(draw: st.DrawFn) -> str:
+    """Generate a workflow guaranteed to trigger BP005 (push without concurrency).
+
+    The workflow always includes a push trigger and never defines
+    concurrency, so BP005 fires. Other rules may fire as well.
+    """
+    runner = draw(st.sampled_from(_runners))
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "jobs:\n"
+        "  build:\n"
+        f"    runs-on: {runner}\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
+    )
+
+
+@st.composite
+def workflow_with_perm002(draw: st.DrawFn) -> str:
+    """Generate a workflow guaranteed to trigger PERM002 (missing job perms).
+
+    The job uses a third-party action and omits job-level permissions, so
+    PERM002 fires.
+    """
+    runner = draw(st.sampled_from(_runners))
+    action = draw(st.sampled_from([
+        "some-org/some-action@a5ac7e51b41094c92402da3b24376905380afc29",
+        "another-org/tool@a5ac7e51b41094c92402da3b24376905380afc29",
+    ]))
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "concurrency:\n"
+        "  group: ci-${{ github.ref }}\n"
+        "  cancel-in-progress: true\n"
+        "jobs:\n"
+        "  build:\n"
+        f"    runs-on: {runner}\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        f"      - uses: {action}\n"
+    )
+
+
+@st.composite
+def dependabot_with_dep001(draw: st.DrawFn) -> str:
+    """Generate a dependabot config guaranteed to trigger DEP001 (missing cooldown)."""
+    ecosystem = draw(st.sampled_from(["npm", "pip", "docker", "github-actions"]))
+    interval = draw(st.sampled_from(["daily", "weekly", "monthly"]))
+    return (
+        "version: 2\n"
+        "updates:\n"
+        f"  - package-ecosystem: \"{ecosystem}\"\n"
+        "    directory: \"/\"\n"
+        "    schedule:\n"
+        f"      interval: \"{interval}\"\n"
+    )
+
+
+@st.composite
 def workflow_pair_monotonic(draw: st.DrawFn) -> tuple[str, str]:
     """Generate (base, extended) where extended has strictly more issue-bearing steps.
 

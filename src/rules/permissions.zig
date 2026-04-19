@@ -91,6 +91,30 @@ fn checkPermissionsScope(perms: Permissions, diag_list: *DiagnosticList) void {
 
 // ── PERM002: Missing job-level permissions with third-party actions ──
 
+fn buildJobPermissionsFix(list: *DiagnosticList, job: *const Job) ?Fix {
+    const insert_byte = job.permissions_insertion_byte orelse return null;
+    if (job.job_indent == 0) return null;
+    const indent: u32 = job.job_indent - 1;
+
+    const subs = [_]fix_builder.SubEntry{
+        .{ .key = "contents", .value = "read" },
+    };
+
+    const edits = fix_builder.insertMappingEntryBlock(
+        list.fixAllocator(),
+        .{ .byte = insert_byte, .indent = indent },
+        "permissions",
+        &subs,
+        2,
+    ) orelse return null;
+
+    return .{
+        .description = "insert job-level permissions: contents: read",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
 fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.permissions != null) return;
 
@@ -107,6 +131,7 @@ fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
                 .message = "Job uses third-party actions without job-level 'permissions'. Define explicit permissions to limit token scope.",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "Add a 'permissions' block to this job to restrict the GITHUB_TOKEN scope.",
+                .fix = buildJobPermissionsFix(diag_list, job),
             }) catch return;
             return;
         }
@@ -283,6 +308,173 @@ test "PERM002: no warning with only run steps" {
     defer diags.deinit();
     checkJobPermissions(&job, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERM002: fix metadata is attached with .unsafe" {
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("some-org/some-action@v1") },
+        },
+        .job_indent = 3,
+        .permissions_insertion_byte = 50,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkJobPermissions(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expect(fix.safety == .unsafe);
+    try std.testing.expectEqualStrings("insert job-level permissions: contents: read", fix.description);
+}
+
+test "PERM002: fix is null when permissions_insertion_byte is missing" {
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("some-org/some-action@v1") },
+        },
+        .job_indent = 3,
+        // permissions_insertion_byte left null
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkJobPermissions(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERM002: fix is null when job_indent is zero" {
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("some-org/some-action@v1") },
+        },
+        .job_indent = 0,
+        .permissions_insertion_byte = 50,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkJobPermissions(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERM002: autofix inserts permissions block after runs-on" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: some-org/some-action@v1
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkJobPermissions(&wf.jobs[0], &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &.{fix});
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\      contents: read
+        \\    steps:
+        \\      - uses: some-org/some-action@v1
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "PERM002: multiple jobs get fixes applied in back-to-front order" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: some-org/some-action@v1
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: another-org/another-action@v2
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    for (wf.jobs) |*job| checkJobPermissions(job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+
+    const fixes = [_]Fix{
+        diags.get(0).fix orelse return error.TestExpectedNonNull,
+        diags.get(1).fix orelse return error.TestExpectedNonNull,
+    };
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\      contents: read
+        \\    steps:
+        \\      - uses: some-org/some-action@v1
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\      contents: read
+        \\    steps:
+        \\      - uses: another-org/another-action@v2
+        \\
+    ,
+        result.content,
+    );
 }
 
 // ── PERM001 autofix tests ──

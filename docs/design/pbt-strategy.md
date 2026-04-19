@@ -24,12 +24,12 @@ PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されてい�
 
 | ファイル | 行 | テスト数 | 主な不変条件 | 状態 |
 |---|---:|---:|---|---|
-| `tests/pbt/strategies.py` | 229 | – | 5 段階のジェネレータ（bytes → text → yaml-like → 構造的 workflow → pair） | OK |
+| `tests/pbt/strategies.py` | 291 | – | 5 段階のジェネレータ + Phase 2 挿入系 3 ルール専用誘発 strategy | OK |
 | `tests/pbt/conftest.py` | 115 | – | ReleaseSafe ビルド・subprocess 実行・config 書き出し | OK |
 | `tests/pbt/test_crash.py` | 87 | 4 | 任意入力で signal 終了しない | OK |
 | `tests/pbt/test_determinism.py` | 73 | – | 同一入力 → 同一出力 | OK |
 | `tests/pbt/test_monotonicity.py` | 128 | 3 | 問題追加で診断数が減らない / disable で増えない | 1 pass + **2 xfail** |
-| `tests/pbt/test_autofix_idempotency.py` | 112 | 4 | `--fix` 冪等・出力再 lint 可 | 3 pass + **1 xfail** |
+| `tests/pbt/test_autofix_idempotency.py` | 228 | 8 | `--fix` / `--fix-unsafe` 冪等・出力再 lint 可 | 7 pass + **1 xfail** |
 | `tests/pbt/test_security_detection.py` | 87 | 3 | SEC001/002/003 を必ず検出 | OK |
 | `tests/pbt/test_output_consistency.py` | 212 | – | JSON/SARIF スキーマ・summary 算術 | OK |
 
@@ -50,12 +50,12 @@ detection を直接保証しているのは **3 種のみ (27%)**。
 |---|:---:|---|
 | `security.zig` (SEC001/002/003) | ✅ | `test_security_detection.py` |
 | `expressions.zig` | ❌ | 1,667 行・既存単体テスト 190+ |
-| `permissions.zig` | ❌ | – |
-| `best_practices.zig` | ❌ | – |
+| `permissions.zig` (PERM002) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
+| `best_practices.zig` (BP005) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
 | `performance.zig` | ❌ | – |
 | `advisory.zig` | ❌ | 外部依存あり、生成困難可能性 |
 | `archived.zig` | ❌ | 同上 |
-| `dependabot.zig` | ❌ | – |
+| `dependabot.zig` (DEP001) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
 | `refconfusion.zig` | ❌ | – |
 | `stale_refs.zig` | ❌ | 外部依存あり |
 | `engine.zig` | (間接) | 全ルールの実行基盤 |
