@@ -211,7 +211,7 @@ fn lintDependabotFile(
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
-        all_diags.append(d) catch {};
+        all_diags.appendOwning(d) catch {};
     }
 }
 
@@ -314,13 +314,15 @@ fn lintFile(
     var diag_list = engine.run(allocator, &workflow);
     defer diag_list.deinit();
 
-    // Apply config: filter disabled rules, override severity, set file
+    // Apply config: filter disabled rules, override severity, set file.
+    // Use `appendOwning` because `diag_list`'s fix_arena is deinitialized when
+    // this function returns; Fix.edits would otherwise dangle.
     for (diag_list.items.items) |diag| {
         if (!config.isRuleEnabled(diag.rule_id)) continue;
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
-        all_diags.append(d) catch {};
+        all_diags.appendOwning(d) catch {};
     }
 }
 

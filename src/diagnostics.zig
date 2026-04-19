@@ -100,6 +100,16 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, diag);
     }
 
+    /// Append a Diagnostic, deep-cloning any embedded Fix into this list's
+    /// fix_arena. Use this when bringing diagnostics across DiagnosticList
+    /// boundaries; plain `append` keeps Fix slices borrowed from the source
+    /// list's arena, which dangles once that list is deinitialized.
+    pub fn appendOwning(self: *DiagnosticList, diag: Diagnostic) !void {
+        var d = diag;
+        if (diag.fix) |f| d.fix = try cloneFix(self.fix_arena.allocator(), f);
+        try self.items.append(self.allocator, d);
+    }
+
     /// Allocate a single Edit on the heap, tracked for cleanup on deinit.
     /// Returns a slice suitable for use in Fix.edits, or null on OOM.
     pub fn allocEdit(self: *DiagnosticList, edit: Edit) ?[]const Edit {
@@ -142,6 +152,20 @@ pub const DiagnosticList = struct {
         return a.span.start_col < b.span.start_col;
     }
 };
+
+fn cloneFix(alloc: std.mem.Allocator, src: Fix) !Fix {
+    const edits = try alloc.alloc(Edit, src.edits.len);
+    for (src.edits, 0..) |e, i| edits[i] = .{
+        .start_byte = e.start_byte,
+        .end_byte = e.end_byte,
+        .replacement = try alloc.dupe(u8, e.replacement),
+    };
+    return .{
+        .description = try alloc.dupe(u8, src.description),
+        .safety = src.safety,
+        .edits = edits,
+    };
+}
 
 // ============================================================
 // Tests
@@ -299,4 +323,60 @@ test "diagnostic list toOwnedSlice" {
 
     try std.testing.expectEqual(@as(usize, 1), slice.len);
     try std.testing.expectEqualStrings("T001", slice[0].rule_id);
+}
+
+test "appendOwning deep-clones fix across lists" {
+    var dst = DiagnosticList.init(std.testing.allocator);
+    defer dst.deinit();
+
+    {
+        var src = DiagnosticList.init(std.testing.allocator);
+        defer src.deinit();
+
+        const replacement = try src.fixAllocator().dupe(u8, "replacement-text");
+        const edits = src.allocEdit(.{
+            .start_byte = 10,
+            .end_byte = 20,
+            .replacement = replacement,
+        }) orelse return error.OutOfMemory;
+
+        const description = try src.fixAllocator().dupe(u8, "description-text");
+        try src.append(.{
+            .rule_id = "T1",
+            .severity = .warning,
+            .message = "msg",
+            .span = Span.point(1, 1, 0),
+            .fix = .{
+                .description = description,
+                .safety = .safe,
+                .edits = edits,
+            },
+        });
+
+        try dst.appendOwning(src.get(0));
+    }
+    // src.deinit() ran — arena backing the original Fix is gone.
+
+    const got = dst.get(0);
+    try std.testing.expect(got.fix != null);
+    try std.testing.expectEqualStrings("description-text", got.fix.?.description);
+    try std.testing.expectEqual(@as(usize, 1), got.fix.?.edits.len);
+    try std.testing.expectEqual(@as(usize, 10), got.fix.?.edits[0].start_byte);
+    try std.testing.expectEqual(@as(usize, 20), got.fix.?.edits[0].end_byte);
+    try std.testing.expectEqualStrings("replacement-text", got.fix.?.edits[0].replacement);
+}
+
+test "appendOwning without fix skips clone" {
+    var dst = DiagnosticList.init(std.testing.allocator);
+    defer dst.deinit();
+
+    try dst.appendOwning(.{
+        .rule_id = "T2",
+        .severity = .info,
+        .message = "msg",
+        .span = Span.point(2, 2, 0),
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), dst.len());
+    try std.testing.expect(dst.get(0).fix == null);
 }
