@@ -14,10 +14,10 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | 区分 | 件数 | 備考 |
 |------|------|------|
-| autofix 完全実装済み | 8 | `BP001`, `BP002`, `BP003`, `SEC004`, `SEC015`, `SEC017`, `DEP002`, `PERF003` |
+| autofix 完全実装済み | 9 | `BP001`, `BP002`, `BP003`, `SEC004`, `SEC007`, `SEC015`, `SEC017`, `DEP002`, `PERF003` |
 | autofix 部分実装 | 1 | `PERM001` は `write-all` のみ対応 |
-| autofix 未着手 | 33 | fix hint のみ、または診断のみ |
-| autofix 追加対象合計 | 34 | 部分実装の `PERM001` を含む |
+| autofix 未着手 | 32 | fix hint のみ、または診断のみ |
+| autofix 追加対象合計 | 33 | 部分実装の `PERM001` を含む |
 
 ## 既存 autofix 実装
 
@@ -28,6 +28,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `BP003` | 完全実装 | `src/rules/best_practices.zig` | `uses:` の deprecated version を置換表で更新 |
 | `PERM001` | 部分実装 | `src/rules/permissions.zig` | `write-all` を `{contents: read}` に置換 |
 | `SEC004` | 完全実装 | `src/rules/security.zig` | `permissions: write-all` を `{contents: read}` に置換 |
+| `SEC007` | 完全実装 | `src/rules/security.zig` | workflow 先頭へ `permissions: {contents: read}` を挿入（unsafe） |
 | `SEC015` | 完全実装 | `src/rules/security.zig` | checkout step に `persist-credentials: false` を挿入 |
 | `SEC017` | 完全実装 | `src/rules/security.zig` | `ACTIONS_ALLOW_UNSECURE_COMMANDS: true` を `false` に置換 |
 | `DEP002` | 完全実装 | `src/rules/dependabot.zig` | `insecure-external-code-execution: allow` を `deny` に置換 |
@@ -64,7 +65,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `SEC003` | 未実装 | 不可/非推奨 | 高 | 低 | secret 名を決められず機械修正不可 |
 | `SEC005` | 未実装 | 不可/非推奨 | 高 | 低 | trigger 変更や checkout 方針変更は意味変更が大きい |
 | `SEC006` | 未実装 | 不可/非推奨 | 高 | 低 | `if:` 条件の安全な書き換えを一般化しづらい |
-| `SEC007` | 未実装 | 条件付き可 | 中 | 中 | workflow 先頭へ最小 `permissions` を挿入できるが、実質 unsafe |
+| `SEC007` | 完全実装 | 条件付き可 | 中 | 中 | workflow 先頭へ `permissions: {contents: read}` を挿入。挿入位置は `Workflow.permissions_insertion_byte`、unsafe fix |
 | `SEC008` | 未実装 | 不可/非推奨 | 高 | 低 | `GITHUB_ENV` / `GITHUB_PATH` への書き込みは安全な代替が文脈依存 |
 | `SEC010` | 未実装 | 不可/非推奨 | 高 | 低 | `secrets: inherit` を明示列挙へ変換するには secret 一覧が必要 |
 | `SEC011` | 未実装 | 不可/非推奨 | 高 | 低 | どの個別 secret に分解すべきか推定不能 |
@@ -120,7 +121,6 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | ID | 理由 |
 |----|------|
-| `SEC007` | workflow-level `permissions` ひな形挿入 |
 | `PERM002` | job-level `permissions` ひな形挿入 |
 | `DEP001` | `cooldown` 雛形挿入 |
 | `BP005` | `concurrency` 雛形挿入 |
