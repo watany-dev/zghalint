@@ -2330,6 +2330,76 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
     try testing.expect(perm_pos < jobs_pos);
 }
 
+test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
+    // SEC007 と BP005 はいずれも `on:` 行末の同一 byte を anchor にしたゼロ幅挿入を発行する
+    // (src/workflow/parser.zig:59-60)。fix/engine.zig:flattenAndSort の tie-break は
+    // (start_byte, end_byte) 昇順 → reverse なので、両 edit が隣接挿入されても
+    // 構文上 valid な YAML になる。このテストは順序と再 parse 可能性をピン止めする。
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+    const best_practices = @import("best_practices.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+    best_practices.checkPushConcurrencyForTest(&wf, &list);
+
+    try testing.expectEqual(@as(usize, 2), list.len());
+
+    const fixes = try fix_engine.collectFixes(testing.allocator, list.items.items, true);
+    defer testing.allocator.free(fixes);
+    try testing.expectEqual(@as(usize, 2), fixes.len);
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, fixes);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), result.edits_applied);
+
+    // fix/engine.zig のソート安定性に依存する順序をピン止め。
+    // SEC007 (permissions, 1 行) が先、BP005 (concurrency, 3 行) が後に並ぶ。
+    try testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\permissions: {contents: read}
+        \\concurrency:
+        \\  group: ${{ github.workflow }}-${{ github.ref }}
+        \\  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ,
+        result.content,
+    );
+
+    // 再 parse で ParseError が出ないことを確認する。
+    var reparse = yaml_parser.Parser.init(alloc, result.content);
+    defer reparse.deinit();
+    _ = try reparse.parse();
+}
+
 // --- SEC008: github-env injection ---
 
 test "SEC008: dangerous context written to GITHUB_ENV" {

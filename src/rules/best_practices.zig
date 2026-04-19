@@ -260,6 +260,10 @@ fn buildPushConcurrencyFix(list: *DiagnosticList, wf: *const Workflow) ?Fix {
     };
 }
 
+pub fn checkPushConcurrencyForTest(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    checkPushConcurrency(wf, diag_list);
+}
+
 fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
     var has_push = false;
     for (wf.on.events) |event| {
