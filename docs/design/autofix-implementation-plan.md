@@ -14,10 +14,10 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | 区分 | 件数 | 備考 |
 |------|------|------|
-| autofix 完全実装済み | 9 | `BP001`, `BP002`, `BP003`, `SEC004`, `SEC007`, `SEC015`, `SEC017`, `DEP002`, `PERF003` |
+| autofix 完全実装済み | 12 | `BP001`, `BP002`, `BP003`, `BP005`, `DEP001`, `DEP002`, `PERF003`, `PERM002`, `SEC004`, `SEC007`, `SEC015`, `SEC017` |
 | autofix 部分実装 | 1 | `PERM001` は `write-all` のみ対応 |
-| autofix 未着手 | 32 | fix hint のみ、または診断のみ |
-| autofix 追加対象合計 | 33 | 部分実装の `PERM001` を含む |
+| autofix 未着手 | 29 | fix hint のみ、または診断のみ |
+| autofix 追加対象合計 | 30 | 部分実装の `PERM001` を含む |
 
 ## 既存 autofix 実装
 
@@ -31,7 +31,10 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `SEC007` | 完全実装 | `src/rules/security.zig` | workflow 先頭へ `permissions: {contents: read}` を挿入（unsafe） |
 | `SEC015` | 完全実装 | `src/rules/security.zig` | checkout step に `persist-credentials: false` を挿入 |
 | `SEC017` | 完全実装 | `src/rules/security.zig` | `ACTIONS_ALLOW_UNSECURE_COMMANDS: true` を `false` に置換 |
+| `DEP001` | 完全実装 | `src/rules/dependabot.zig` | dependabot entry 末尾に `cooldown:` ブロックを挿入（unsafe） |
 | `DEP002` | 完全実装 | `src/rules/dependabot.zig` | `insecure-external-code-execution: allow` を `deny` に置換 |
+| `BP005` | 完全実装 | `src/rules/best_practices.zig` | workflow 先頭へ `concurrency:` ブロックを挿入（unsafe） |
+| `PERM002` | 完全実装 | `src/rules/permissions.zig` | job の `runs-on:` 直後に `permissions: contents: read` を挿入（unsafe） |
 | `PERF003` | 完全実装 | `src/rules/performance.zig` | `fail-fast: false` エントリを削除（unsafe） |
 
 ## 評価基準
@@ -91,11 +94,11 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `BP002` | 完全実装 | 可 | 中 | 高 | `uses` が step mapping の先頭 key の場合のみ、action 名から step 名を生成して `uses:` の直前に挿入する。個別設計: `docs/design/bp002-autofix-design.md` |
 | `BP003` | 完全実装 | 可 | 中 | 高 | 既知の置換表により `uses:` の version 部分を機械置換する。個別設計: `docs/design/bp003-autofix-design.md` |
 | `BP004` | 未実装 | 条件付き可 | 中 | 中 | `shell: bash` / `pwsh` のどちらを入れるか方針決めが必要 |
-| `BP005` | 未実装 | 条件付き可 | 中 | 中 | workflow に標準 `concurrency` ブロックを挿入可能だが挙動変更が大きい |
+| `BP005` | 完全実装 | 条件付き可 | 中 | 中 | workflow 先頭へ block 形式 `concurrency:` を挿入（unsafe）。`Workflow.concurrency_insertion_byte` 活用 |
 | `BP007` | 未実装 | 不可/非推奨 | 高 | 低 | obfuscated 実行の安全な代替コマンドは自動生成できない |
 | `PERM001` | 部分実装 | 条件付き可 | 中 | 中 | 個別 `write` を `read` へ落とす autofix は可能だが unsafe |
-| `PERM002` | 未実装 | 条件付き可 | 中 | 中 | job-level `permissions` を挿入できるが最低権限の決定は unsafe |
-| `DEP001` | 未実装 | 条件付き可 | 中 | 中 | `cooldown` ブロックの雛形挿入は可能だが運用ポリシー依存 |
+| `PERM002` | 完全実装 | 条件付き可 | 中 | 中 | job の `runs-on:` 直後へ `permissions: contents: read` を挿入（unsafe）。`Job.permissions_insertion_byte` 活用 |
+| `DEP001` | 完全実装 | 条件付き可 | 中 | 中 | dependabot entry 末尾へ block 形式 `cooldown:` を挿入（unsafe）。`MappingEntry.full_span` 活用 |
 | `DEP002` | 未実装 | 可 | 低 | 高 | `insecure-external-code-execution: allow` を `deny` へ置換、または削除で対応可能。個別設計: `docs/design/dep002-autofix-design.md` |
 | `EXPR001` | 未実装 | 不可/非推奨 | 高 | 低 | 構文エラーの正解を機械推定できない |
 | `EXPR002` | 未実装 | 不可/非推奨 | 高 | 低 | unknown context の正しい候補が文脈依存 |
@@ -119,17 +122,17 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 ### Phase 2: unsafe fix と insertion 系の拡張
 
-Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）を次イテレーションの実装対象に確定した。
-詳細な決定と根拠は `docs/adr/0001-autofix-phase2-insertion-rules.md`、横断設計は `docs/design/autofix-phase2-insertion-design.md` を参照。
+Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）の実装が完了した。
+決定と根拠は `docs/adr/0001-autofix-phase2-insertion-rules.md`、横断設計は `docs/design/autofix-phase2-insertion-design.md` を参照。
 
-| ID | 次イテレーション対象 | 理由 |
+| ID | 状態 | 理由 |
 |----|:--:|------|
-| `BP005` | ✅ | `concurrency` 雛形挿入。`Workflow.concurrency_insertion_byte` 既存活用 |
-| `PERM002` | ✅ | job-level `permissions` ひな形挿入。`Job.permissions_insertion_byte` 既存活用 |
-| `DEP001` | ✅ | `cooldown` 雛形挿入。dependabot entry の `MappingEntry.full_span` 末尾に追加 |
-| `BP004` | | `shell` 既定値ポリシー確立後に実装 |
-| `PERM001` | | 個別 `write` を `read` へ落とす unsafe fix |
-| `PERF001` | | `cache:` の既定値ポリシー確立後に実装 |
+| `BP005` | 完了 | `concurrency` 雛形挿入。`Workflow.concurrency_insertion_byte` 既存活用 |
+| `PERM002` | 完了 | job-level `permissions` ひな形挿入。`Job.permissions_insertion_byte` 既存活用 |
+| `DEP001` | 完了 | `cooldown` 雛形挿入。dependabot entry の `MappingEntry.full_span` 末尾に追加 |
+| `BP004` | 未着手 | `shell` 既定値ポリシー確立後に実装 |
+| `PERM001` | 部分実装 | 個別 `write` を `read` へ落とす unsafe fix |
+| `PERF001` | 未着手 | `cache:` の既定値ポリシー確立後に実装 |
 
 ### Phase 3: 条件付きパターン変換
 
@@ -199,7 +202,7 @@ Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）を次�
 1. `SEC017`, `DEP002`, `PERF003`, `BP003`, `BP002` — 完了
 2. span 拡張と共通 edit builder 抽出 — 完了（`src/fix/builder.zig`）
 3. `SEC007` — 完了
-4. `BP005`, `PERM002`, `DEP001` — 次イテレーションで実装（`docs/adr/0001-autofix-phase2-insertion-rules.md`、`docs/design/autofix-phase2-insertion-design.md`）
+4. `BP005`, `PERM002`, `DEP001` — 完了（`docs/adr/0001-autofix-phase2-insertion-rules.md`、`docs/design/autofix-phase2-insertion-design.md`）
 5. `BP004`, `PERM001` 追加対応, `PERF001` — Phase 2 残、BP005/PERM002/DEP001 完了後
 6. 条件付き変換として `EXPR007`, `EXPR006`, `SEC014` を検討
 7. ネットワーク依存 autofix は別設計として切り出す
