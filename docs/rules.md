@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **44 rules** across 7 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **45 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -104,6 +104,14 @@ Validate Dependabot configuration files (`dependabot.yml`).
 |----|------|----------|-------------|
 | DEP001 | dependabot-cooldown | info | Dependabot updates should configure a cooldown period to avoid excessive PRs |
 | DEP002 | dependabot-execution | warning | `insecure-external-code-execution: allow` is a supply chain attack risk |
+
+## Runner Rules (RUNNER)
+
+Validate GitHub-hosted runner labels in `runs-on:`.
+
+| ID | Name | Severity | Description |
+|----|------|----------|-------------|
+| RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
 
 ---
 
