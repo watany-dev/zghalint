@@ -70,11 +70,15 @@ pub fn build(b: *std.Build) void {
     test_bin_step.dependOn(&install_cov_tests.step);
 
     // --- Executable tests ---
+    // link_libc is required because the imported lib_mod includes tests that
+    // call setenv/unsetenv via @extern; those symbols must resolve when the
+    // exe test binary is linked.
     const exe_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "zghalint", .module = lib_mod },
             },

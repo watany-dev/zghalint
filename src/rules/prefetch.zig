@@ -743,7 +743,8 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     // Stage a fresh entry at the real on-disk cache location so that
     // `disk_cache.load` (via XDG resolution) finds it.
     const now = std.time.timestamp();
-    const shas = [_]disk_cache.ShaEntry{.{ .sha = "abc123", .resolution = .no_tag }};
+    const fake_sha = "abc1230000000000000000000000000000000000";
+    const shas = [_]disk_cache.ShaEntry{.{ .sha = fake_sha, .resolution = .no_tag }};
     const named = [_]disk_cache.NamedEntry{.{ .ref = "main", .is_tag = true, .is_branch = true }};
     try disk_cache.save(testing.allocator, "acme", "tool", .{
         .cached_at = now,
@@ -760,7 +761,7 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     var repos: RepoSet = .{};
     try repos.put(alloc, repo_key, .{ .owner = "acme", .repo = "tool" });
     var sha_refs: ShaSet = .{};
-    try sha_refs.put(alloc, "acme/tool@abc123", .{ .owner = "acme", .repo = "tool", .sha = "abc123" });
+    try sha_refs.put(alloc, "acme/tool@" ++ fake_sha, .{ .owner = "acme", .repo = "tool", .sha = fake_sha });
     var named_refs: NamedSet = .{};
     try named_refs.put(alloc, "acme/tool@main", .{ .owner = "acme", .repo = "tool", .ref = "main" });
     var sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
@@ -790,7 +791,8 @@ test "applyResults: persists repo state to the provided cache dir" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const sha_res = [_]graphql.ShaTagResult{.{ .sha = "abcd", .resolution = .has_tag }};
+    const fake_sha = "abcd000000000000000000000000000000000000";
+    const sha_res = [_]graphql.ShaTagResult{.{ .sha = fake_sha, .resolution = .has_tag }};
     const named_res = [_]graphql.NamedRefResult{.{ .ref = "main", .is_tag = true, .is_branch = true }};
     const results = [_]graphql.RepoResult{
         .{
@@ -815,7 +817,7 @@ test "applyResults: persists repo state to the provided cache dir" {
     }
     try testing.expect(!loaded.archived.?);
     try testing.expectEqual(@as(usize, 1), loaded.shas.len);
-    try testing.expectEqualStrings("abcd", loaded.shas[0].sha);
+    try testing.expectEqualStrings(fake_sha, loaded.shas[0].sha);
     try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
     try testing.expectEqual(@as(usize, 1), loaded.named.len);
     try testing.expect(loaded.named[0].is_tag);

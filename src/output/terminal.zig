@@ -29,6 +29,23 @@ fn severityColor(sev: Severity) []const u8 {
     };
 }
 
+/// Emit bytes from an attacker-influenced string (file path, diagnostic
+/// message, workflow source line) while neutralising ANSI escapes. Control
+/// characters (< 0x20) and DEL are rewritten as `\xHH` so a malicious
+/// workflow cannot inject colors, clear the screen, or hide warnings in a
+/// CI log pipeline. Tab is preserved for source alignment.
+fn writeSanitized(writer: anytype, s: []const u8) !void {
+    for (s) |c| {
+        if (c == '\t') {
+            try writer.writeByte(c);
+        } else if (c < 0x20 or c == 0x7f) {
+            try writer.print("\\x{x:0>2}", .{c});
+        } else {
+            try writer.writeByte(c);
+        }
+    }
+}
+
 /// Render a single diagnostic to the writer with ANSI colors and source context.
 /// `source` is the full file source text (optional). If provided, the offending
 /// source line and caret indicators will be displayed.
@@ -42,9 +59,9 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, source: ?[]const u8, 
     const gray = if (use_color) Color.gray else "";
 
     // Header line: file:line:col: severity[RULE]: message
-    try writer.print("{s}{s}:{d}:{d}:{s} {s}{s}[{s}]{s}: {s}\n", .{
-        bold,
-        file_str,
+    try writer.print("{s}", .{bold});
+    try writeSanitized(writer, file_str);
+    try writer.print(":{d}:{d}:{s} {s}{s}[{s}]{s}: ", .{
         diag.span.start_line,
         diag.span.start_col,
         reset,
@@ -52,8 +69,9 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, source: ?[]const u8, 
         sev_str,
         diag.rule_id,
         reset,
-        diag.message,
     });
+    try writeSanitized(writer, diag.message);
+    try writer.writeByte('\n');
 
     // Source line + caret
     if (source) |src| {
@@ -62,7 +80,9 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, source: ?[]const u8, 
                 const line_num = diag.span.start_line;
                 // gutter
                 try writer.print("{s}  |{s}\n", .{ gray, reset });
-                try writer.print("{s}  {d} |{s} {s}\n", .{ cyan, line_num, reset, line });
+                try writer.print("{s}  {d} |{s} ", .{ cyan, line_num, reset });
+                try writeSanitized(writer, line);
+                try writer.writeByte('\n');
 
                 // caret line
                 try writer.print("{s}  |{s} ", .{ gray, reset });
@@ -84,7 +104,9 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, source: ?[]const u8, 
 
     // Fix hint
     if (diag.fix_hint) |hint| {
-        try writer.print("  {s}={s} {s}help:{s} {s}\n", .{ gray, reset, bold, reset, hint });
+        try writer.print("  {s}={s} {s}help:{s} ", .{ gray, reset, bold, reset });
+        try writeSanitized(writer, hint);
+        try writer.writeByte('\n');
     }
 }
 
@@ -257,6 +279,34 @@ test "renderDiagnostic without color" {
     try std.testing.expect(std.mem.indexOf(u8, output, "help:") != null);
     // No ANSI codes
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+}
+
+test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    // Evil file path, message, source line, and fix hint all carry ESC (0x1b)
+    // — a malicious workflow or filename must not be able to inject ANSI
+    // sequences into the CI operator's terminal.
+    const diag = Diagnostic{
+        .rule_id = "SEC001",
+        .severity = .@"error",
+        .file = ".github/workflows/\x1b[31mevil\x1b[0m.yml",
+        .message = "\x1b[2Jpwned",
+        .fix_hint = "\x1b[Hcursor-home",
+        .span = Span.point(1, 1, 0),
+    };
+    const src = "name: \"\x1b[32mOK\x1b[0m\"\n";
+
+    try renderDiagnostic(writer, diag, src, false);
+    const output = buf.items;
+
+    // No raw ESC (0x1b) anywhere in the output — the sanitizer must rewrite
+    // every attacker-supplied byte before it hits the terminal.
+    try std.testing.expect(std.mem.indexOfScalar(u8, output, 0x1b) == null);
+    // ESC is displayed as "\x1b" (backslash + x + two hex digits).
+    try std.testing.expect(std.mem.indexOf(u8, output, "\\x1b") != null);
 }
 
 test "renderDiagnostic no source no hint" {
