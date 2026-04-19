@@ -451,6 +451,42 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
 }
 
 // ============================================================
+// SEC009 - workflow_run triggered workflow checking out untrusted ref
+// ============================================================
+
+fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList) void {
+    var has_workflow_run = false;
+    for (wf.on.events) |event| {
+        if (event.event == .workflow_run) {
+            has_workflow_run = true;
+            break;
+        }
+    }
+    if (!has_workflow_run) return;
+
+    for (wf.jobs) |*job| {
+        for (job.steps) |*step| {
+            const action_ref = step.uses orelse continue;
+            if (!isCheckoutAction(action_ref)) continue;
+            const with_map = step.with orelse continue;
+            const ref_val = with_map.get("ref") orelse continue;
+            if (!containsDangerousWorkflowRunRef(ref_val)) continue;
+            list.append(.{
+                .rule_id = "SEC009",
+                .severity = .@"error",
+                .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, allowing arbitrary code execution from forks",
+                .span = Span.point(0, 0, 0),
+                .fix_hint = "do not check out untrusted refs in workflow_run; perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+            }) catch return;
+        }
+    }
+}
+
+fn containsDangerousWorkflowRunRef(ref_val: []const u8) bool {
+    return std.mem.indexOf(u8, ref_val, "github.event.workflow_run.") != null;
+}
+
+// ============================================================
 // SEC010 - secrets: inherit in reusable workflow calls
 // ============================================================
 
@@ -1501,6 +1537,14 @@ pub const security_rules = [_]Rule{
         .check_step = &checkGithubEnvInjection,
     },
     .{
+        .id = "SEC009",
+        .name = "workflow-run-untrusted-checkout",
+        .description = "workflow_run job checks out a ref from the triggering workflow, allowing arbitrary code execution from forks",
+        .severity = .@"error",
+        .category = .security,
+        .check_workflow = &checkWorkflowRunUntrustedCheckout,
+    },
+    .{
         .id = "SEC010",
         .name = "secrets-inherit",
         .description = "Reusable workflow calls should specify secrets explicitly instead of using inherit",
@@ -2143,6 +2187,94 @@ test "SEC005: non-PR-target with checkout (no false positive)" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+// --- SEC009: workflow_run untrusted checkout ---
+
+test "SEC009: workflow_run with checkout of workflow_run head_sha" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC009")) {
+            try testing.expect(d.severity == .@"error");
+            try testing.expect(d.fix_hint != null);
+            try testing.expect(d.fix_hint.?.len > 0);
+        }
+    }
+}
+
+test "SEC009: workflow_run with checkout of workflow_run head_branch" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.workflow_run.head_branch }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: workflow_run without checkout (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo safe" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: workflow_run checkout without ref (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
 // --- SEC006: Untrusted input in conditions ---

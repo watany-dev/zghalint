@@ -111,9 +111,9 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **43 rules** across 7 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **44 rules** across 7 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
-### Security (18 rules)
+### Security (19 rules)
 
 Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, and more.
 
