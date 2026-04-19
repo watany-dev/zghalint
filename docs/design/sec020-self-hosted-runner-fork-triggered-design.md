@@ -26,6 +26,7 @@ public リポジトリの self-hosted runner を fork 起動可能な trigger �
 
 - カスタムランナーラベル（`gpu-linux`, `my-runner` など）を self-hosted として推論する拡張
 - `${{ matrix.os }}` / `${{ inputs.runner }}` など動的 `runs-on` の式解決
+- YAML sequence 形式 `runs-on: [self-hosted, linux, x64]` の検出（現行 parser は `getScalar("runs-on")` のみ読むため `Job.runs_on` が null となり対象外）
 - `runs-on: { group: ..., labels: [...] }` オブジェクト形式のラベル配列を精密にパースすること（文字列部分一致のみ対応）
 - `if:` 条件による gate の意味論解釈（fork PR を除外しているかの判定）
 - リポジトリ visibility の自動検出（GitHub API 呼び出し）
@@ -60,13 +61,15 @@ workflow 単位の判定結果はループ前に 1 度だけ計算してキャ�
 
 ### 2. `runs_on` の self-hosted 判定は文字列部分一致のみ
 
-`std.mem.indexOf(u8, runs_on, "self-hosted") != null` で判定する。次の形式をすべて拾える。
+`std.mem.indexOf(u8, runs_on, "self-hosted") != null` で判定する。現行 parser (`src/workflow/parser.zig`) は `getScalar("runs-on")` で scalar のみを読むため、`Job.runs_on` に入りうるのは次の形式のみである。
 
 - `runs-on: self-hosted`
-- `runs-on: [self-hosted, linux, x64]`（parser 側でラベル配列を文字列結合して保持しているケース）
 - `runs-on: "self-hosted"`
+- `runs-on: self-hosted-gpu`（カスタムラベルが `self-hosted` を接頭辞に持つ単一 scalar）
 
-カスタムラベル（例 `gpu-linux`）を self-hosted と推論しようとすると false positive が増えるため、初版では確定的なリテラルケースに限る。matrix や inputs による動的値は `${{ ...` を含むので自然に除外される。
+YAML sequence 形式 `runs-on: [self-hosted, linux, x64]` は parser が scalar として扱わないため `Job.runs_on` が null となり本ルールでは検出しない（§2 非スコープ参照）。sequence 対応は `workflow/types.zig` の `runs_on` を `?[]const []const u8` 風の表現に拡張する必要があり、parser / types / バリデータを跨ぐ変更となるため別 PR に分離する（§10 参照）。
+
+カスタムラベル単体（例 `gpu-linux`）を self-hosted と推論しようとすると false positive が増えるため、初版では `self-hosted` リテラルを含む scalar に限る。matrix や inputs による動的値は `${{ ...` を含むので自然に除外される。
 
 ### 3. fork-accessible trigger 4 種を判定対象とする
 
@@ -195,7 +198,7 @@ or make the runner ephemeral
 | # | ケース |
 |---|---|
 | 1 | `runs-on: self-hosted` + `on: pull_request` → 発火 |
-| 2 | `runs-on: "[self-hosted, linux, x64]"` （配列リテラル文字列） → 発火 |
+| 2 | `runs-on: self-hosted-gpu` （self-hosted 接頭辞の単一 scalar） → 発火 |
 | 3 | `runs-on: self-hosted` + `on: pull_request_target` → 発火 |
 | 4 | `runs-on: self-hosted` + `on: issue_comment` → 発火 |
 | 5 | `runs-on: self-hosted` + `on: workflow_run` → 発火 |

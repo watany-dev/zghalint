@@ -4631,13 +4631,13 @@ test "SEC020: self-hosted + pull_request + public -> fires" {
     }
 }
 
-test "SEC020: array-literal runs_on string containing self-hosted -> fires" {
+test "SEC020: scalar runs_on with self-hosted prefix -> fires" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
     const eng = engine.Engine.init(&security_rules);
     const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "[self-hosted, linux, x64]", .permissions = Permissions{} },
+        .{ .id = "build", .runs_on = "self-hosted-gpu", .permissions = Permissions{} },
     };
     const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
     var list = eng.run(testing.allocator, &wf);
@@ -4695,7 +4695,7 @@ test "SEC020: multiple jobs, only self-hosted ones fire" {
     const jobs = [_]Job{
         .{ .id = "hosted", .runs_on = "ubuntu-latest", .permissions = Permissions{} },
         .{ .id = "selfa", .runs_on = "self-hosted", .permissions = Permissions{} },
-        .{ .id = "selfb", .runs_on = "[self-hosted, gpu]", .permissions = Permissions{} },
+        .{ .id = "selfb", .runs_on = "self-hosted-linux", .permissions = Permissions{} },
     };
     const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
     var list = eng.run(testing.allocator, &wf);
