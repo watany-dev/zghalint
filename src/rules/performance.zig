@@ -20,12 +20,25 @@ const Fix = diagnostics_mod.Fix;
 const CacheableSetup = struct {
     setup_action: []const u8,
     cache_key: []const u8,
+    fix_hint_base: []const u8,
 };
 
 const cacheable_setups = [_]CacheableSetup{
-    .{ .setup_action = "actions/setup-node", .cache_key = "cache" },
-    .{ .setup_action = "actions/setup-python", .cache_key = "cache" },
-    .{ .setup_action = "actions/setup-go", .cache_key = "cache" },
+    .{
+        .setup_action = "actions/setup-node",
+        .cache_key = "cache",
+        .fix_hint_base = "Set 'cache' to the package manager ('npm', 'yarn', or 'pnpm') in the action's 'with' inputs, or add a separate actions/cache step.",
+    },
+    .{
+        .setup_action = "actions/setup-python",
+        .cache_key = "cache",
+        .fix_hint_base = "Set 'cache' to the package manager ('pip', 'pipenv', or 'poetry') in the action's 'with' inputs, or add a separate actions/cache step.",
+    },
+    .{
+        .setup_action = "actions/setup-go",
+        .cache_key = "cache",
+        .fix_hint_base = "Add 'cache: true' to the setup action's 'with' inputs (requires go.sum), or add a separate actions/cache step.",
+    },
 };
 
 // ── PERF001: Cache not used ──
@@ -220,7 +233,7 @@ fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
 
         if (uses_setup and !has_cache) {
             const dispatched = dispatchCacheFix(diag_list, job, ca.setup_action);
-            const base_hint = "Add 'cache: true' to the setup action's 'with' inputs, or add a separate actions/cache step.";
+            const base_hint = ca.fix_hint_base;
             const hint: []const u8 = if (dispatched.hint_extra) |extra| blk: {
                 const combined = std.fmt.allocPrint(
                     diag_list.fixAllocator(),

@@ -346,9 +346,9 @@ def workflow_with_perf001_setup_node(draw: st.DrawFn) -> str:
     The autofix insertion is exercised via conftest's lockfile tmpdir; this
     strategy just emits a cache-less setup-node step so PERF001 fires.
 
-    Intentionally omits concurrency/permissions blocks so that other rules
-    remain free to vary diagnostic count — PERF001's presence alone is what
-    the caller tests.
+    Intentionally omits a concurrency block while keeping minimal permissions
+    so that other rules remain free to vary diagnostic count — PERF001's
+    presence alone is what the caller tests.
     """
     has_with = draw(st.booleans())
     node_version = draw(st.sampled_from(["'18'", "'20'", "'lts/*'"]))
