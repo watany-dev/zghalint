@@ -40,9 +40,7 @@ fn buildSetupGoCacheFix(diag_list: *DiagnosticList, job: *const Job) ?Fix {
         if (!std.mem.eql(u8, action_name, "actions/setup-go")) continue;
 
         if (step.with) |with| {
-            if (with.get("cache")) |val| {
-                if (val.len > 0) continue;
-            }
+            if (with.get("cache")) |_| continue;
         }
 
         const col = step.uses_key_col orelse continue;
@@ -347,6 +345,30 @@ test "PERF001: setup-go with existing with: appends cache entry" {
     try std.testing.expectEqual(@as(usize, 140), fix.edits[0].start_byte);
     try std.testing.expectEqual(@as(usize, 140), fix.edits[0].end_byte);
     try std.testing.expectEqualStrings("\n          cache: true", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key" {
+    var with = workflow_types.StringMap.init(std.testing.allocator);
+    defer with.deinit();
+    try with.put("cache", "");
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .with = with,
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+            .with_last_entry_end_byte = 140,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
 }
 
 test "PERF001: setup-node/setup-python do not receive autofix" {
