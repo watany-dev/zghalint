@@ -474,9 +474,9 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
-                .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, allowing arbitrary code execution from forks",
+                .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
                 .span = Span.point(0, 0, 0),
-                .fix_hint = "do not check out untrusted refs in workflow_run; perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+                .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
             }) catch return;
         }
     }
@@ -1539,7 +1539,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC009",
         .name = "workflow-run-untrusted-checkout",
-        .description = "workflow_run job checks out a ref from the triggering workflow, allowing arbitrary code execution from forks",
+        .description = "workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkWorkflowRunUntrustedCheckout,

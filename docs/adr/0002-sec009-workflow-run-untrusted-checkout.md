@@ -24,7 +24,6 @@ zghalint は 43 ルールを実装済みだが、`workflow_run` トリガー起�
 and workflows secure Part 2: Untrusted input" で明示的に警告した攻撃面である。
 
 本 ADR は grill-me セッションで確定した決定事項とその根拠を記録する。
-実装プランは `/root/.claude/plans/warm-waddling-hartmanis.md` に別途存在する。
 詳細設計は `docs/design/sec009-workflow-run-untrusted-checkout-design.md` に分離する。
 
 ## Decisions
