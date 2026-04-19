@@ -68,7 +68,7 @@ fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
                 .severity = .info,
                 .message = "Dependabot update is missing 'cooldown' configuration. Without cooldown, Dependabot may create excessive pull requests.",
                 .span = entry.span,
-                .fix_hint = "Add a 'cooldown' section to throttle update frequency (e.g., cooldown: { initial-interval: 5, max-interval: 30 }).",
+                .fix_hint = "Add a 'cooldown' section to throttle update frequency (e.g., cooldown:\n  default-days: 7).",
             };
             diag.fix = buildCooldownFix(diag_list, entry);
             diag_list.append(diag) catch return;

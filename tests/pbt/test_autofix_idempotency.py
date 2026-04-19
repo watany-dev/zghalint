@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import os
-import shutil
 import tempfile
 
 import pytest
-from hypothesis import given, settings, HealthCheck, assume
+from hypothesis import given, settings, HealthCheck
 from hypothesis import strategies as st
 
 from tests.pbt.conftest import run_zghalint, write_temp_workflow
