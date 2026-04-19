@@ -2,6 +2,7 @@ const std = @import("std");
 const yaml_parser = @import("yaml/parser.zig");
 const yaml_types = @import("yaml/types.zig");
 const diagnostics = @import("diagnostics.zig");
+const workspace = @import("workspace.zig");
 
 const Node = yaml_types.Node;
 const Severity = diagnostics.Severity;
@@ -50,12 +51,21 @@ pub const RuleOverride = struct {
     enabled: bool = true,
 };
 
+/// PERF001-specific overrides that force a cache manager value regardless of
+/// the lockfile probe result. Populated from `rules.PERF001.node_cache_manager`
+/// / `python_cache_manager` in .zghalint.yml.
+pub const Perf001Override = struct {
+    node_cache_manager: ?workspace.NodeCache = null,
+    python_cache_manager: ?workspace.PythonCache = null,
+};
+
 pub const Config = struct {
     rule_overrides: std.StringHashMap(RuleOverride),
     ignore_patterns: std.ArrayList([]const u8),
     output_format: OutputFormat = .terminal,
     color_mode: ColorMode = .auto,
     repo_visibility: Visibility = .unknown,
+    perf001: Perf001Override = .{},
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) Config {
@@ -134,6 +144,14 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                             }
                             if (rule_map.getScalar("enabled")) |en_str| {
                                 override.enabled = parseBool(en_str);
+                            }
+                            if (std.mem.eql(u8, rule_id, "PERF001")) {
+                                if (rule_map.getScalar("node_cache_manager")) |v| {
+                                    config.perf001.node_cache_manager = workspace.NodeCache.fromString(v);
+                                }
+                                if (rule_map.getScalar("python_cache_manager")) |v| {
+                                    config.perf001.python_cache_manager = workspace.PythonCache.fromString(v);
+                                }
                             }
                         },
                         else => {},
@@ -512,6 +530,52 @@ test "matchGlob empty pattern and string" {
 test "matchGlob star matches empty" {
     try std.testing.expect(matchGlob("*", ""));
     try std.testing.expect(matchGlob("*", "anything"));
+}
+
+test "parse PERF001 node_cache_manager override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\rules:
+        \\  PERF001:
+        \\    node_cache_manager: pnpm
+    ;
+
+    var config = try parseConfig(arena.allocator(), source);
+    defer config.deinit();
+
+    try std.testing.expectEqual(workspace.NodeCache.pnpm, config.perf001.node_cache_manager.?);
+    try std.testing.expect(config.perf001.python_cache_manager == null);
+}
+
+test "parse PERF001 python_cache_manager override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\rules:
+        \\  PERF001:
+        \\    python_cache_manager: poetry
+    ;
+
+    var config = try parseConfig(arena.allocator(), source);
+    defer config.deinit();
+
+    try std.testing.expectEqual(workspace.PythonCache.poetry, config.perf001.python_cache_manager.?);
+}
+
+test "PERF001 invalid cache manager is silently ignored" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\rules:
+        \\  PERF001:
+        \\    node_cache_manager: bun
+    ;
+
+    var config = try parseConfig(arena.allocator(), source);
+    defer config.deinit();
+
+    try std.testing.expect(config.perf001.node_cache_manager == null);
 }
 
 test "getEffectiveSeverity with override that has no severity set" {

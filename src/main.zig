@@ -413,6 +413,30 @@ fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
     return false;
 }
 
+/// Populate `workspace.current` from the repository containing `files[0]`.
+/// Errors are swallowed; PERF001 simply emits diagnostics without fix when
+/// probing fails. Config overrides take precedence over probe results.
+fn initWorkspaceContext(
+    arena: std.mem.Allocator,
+    files: []const []const u8,
+    config: *const Config,
+) void {
+    const hint = if (files.len > 0) files[0] else ".";
+    const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch return;
+    var ctx = zghalint.workspace.detectFromRoot(arena, root) catch zghalint.workspace.Context{};
+
+    if (config.perf001.node_cache_manager) |mgr| {
+        ctx.node_cache = mgr;
+        ctx.ambiguous_node_lockfiles = &.{};
+    }
+    if (config.perf001.python_cache_manager) |mgr| {
+        ctx.python_cache = mgr;
+        ctx.ambiguous_python_lockfiles = &.{};
+    }
+
+    zghalint.workspace.set(ctx);
+}
+
 pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -476,6 +500,13 @@ pub fn main() !u8 {
         stderr.writeAll("No workflow files found.\n") catch {};
         return 0;
     }
+
+    // Probe the workspace for lockfiles so PERF001 can emit concrete
+    // `cache: <manager>` fixes for setup-node / setup-python / setup-go.
+    var workspace_arena = std.heap.ArenaAllocator.init(allocator);
+    defer workspace_arena.deinit();
+    initWorkspaceContext(workspace_arena.allocator(), files, &config);
+    defer zghalint.workspace.clear();
 
     // Set a 10-second deadline for all network operations to prevent hangs
     zghalint.rules.engine.setNetworkDeadline(10 * std.time.ns_per_s);

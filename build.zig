@@ -1,5 +1,9 @@
 const std = @import("std");
 
+fn addFixtureEmbedPath(b: *std.Build, mod: *std.Build.Module) void {
+    mod.addEmbedPath(b.path("tests/fixtures"));
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -10,6 +14,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    addFixtureEmbedPath(b, lib_mod);
 
     // --- Library artifact ---
     const lib = b.addLibrary(.{
@@ -45,24 +50,26 @@ pub fn build(b: *std.Build) void {
 
     // --- Library tests ---
     // Tests link libc so env-mutating helpers (setenv/unsetenv) are resolved.
-    const lib_unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
+    const lib_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
     });
+    addFixtureEmbedPath(b, lib_test_mod);
+    const lib_unit_tests = b.addTest(.{ .root_module = lib_test_mod });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     // --- Coverage support: install test binary (LLVM backend for kcov compatibility) ---
+    const cov_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    addFixtureEmbedPath(b, cov_test_mod);
     const cov_unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
+        .root_module = cov_test_mod,
         .use_llvm = true,
     });
     const install_cov_tests = b.addInstallArtifact(cov_unit_tests, .{});

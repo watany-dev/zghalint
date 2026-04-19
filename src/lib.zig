@@ -74,6 +74,8 @@ pub const Config = config.Config;
 pub const OutputFormat = config.OutputFormat;
 pub const ColorMode = config.ColorMode;
 
+pub const workspace = @import("workspace.zig");
+
 test {
     _ = @import("yaml/tokenizer.zig");
     _ = @import("yaml/types.zig");
@@ -104,4 +106,5 @@ test {
     _ = @import("fix/builder.zig");
     _ = @import("config.zig");
     _ = @import("util.zig");
+    _ = @import("workspace.zig");
 }
