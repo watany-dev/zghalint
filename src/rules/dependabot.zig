@@ -14,6 +14,41 @@ const Fix = diagnostics_mod.Fix;
 
 // ── DEP001: dependabot-cooldown ──
 
+fn buildCooldownFix(list: *DiagnosticList, entry: yaml_types.Mapping) ?Fix {
+    if (entry.entries.len == 0) return null;
+
+    // 1-based column → 0-based indent (空白数)
+    const indent_col = entry.entries[0].key.span.start_col;
+    if (indent_col == 0) return null;
+    const indent: u32 = @intCast(indent_col - 1);
+
+    // flow-style entry の場合 full_span が null になる。いずれか 1 つでも欠けて
+    // いれば anchor の信頼性が崩れるため fix を付けない。
+    var end_byte: usize = 0;
+    for (entry.entries) |e| {
+        const fs = e.full_span orelse return null;
+        end_byte = fs.end_byte;
+    }
+
+    const subs = [_]fix_builder.SubEntry{
+        .{ .key = "default-days", .value = "7" },
+    };
+
+    const edits = fix_builder.insertMappingEntryBlock(
+        list.fixAllocator(),
+        .{ .byte = end_byte, .indent = indent },
+        "cooldown",
+        &subs,
+        2,
+    ) orelse return null;
+
+    return .{
+        .description = "insert cooldown block",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
 fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
     const updates_node = root.get("updates") orelse return;
     const items = switch (updates_node) {
@@ -28,13 +63,15 @@ fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
         };
 
         if (entry.get("cooldown") == null) {
-            diag_list.append(.{
+            var diag = diagnostics_mod.Diagnostic{
                 .rule_id = "DEP001",
                 .severity = .info,
                 .message = "Dependabot update is missing 'cooldown' configuration. Without cooldown, Dependabot may create excessive pull requests.",
                 .span = entry.span,
                 .fix_hint = "Add a 'cooldown' section to throttle update frequency (e.g., cooldown: { initial-interval: 5, max-interval: 30 }).",
-            }) catch return;
+            };
+            diag.fix = buildCooldownFix(diag_list, entry);
+            diag_list.append(diag) catch return;
         }
     }
 }
@@ -440,6 +477,139 @@ test "lintDependabot: non-mapping root is gracefully handled" {
     defer diags.deinit();
     lintDependabot(node, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "DEP001: fix metadata is attached with .unsafe" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const node = try parseYamlWithArena(&arena,
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    directory: "/"
+        \\    schedule:
+        \\      interval: "weekly"
+    );
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    lintDependabot(node, &diags);
+
+    var found = false;
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
+            const fix = d.fix orelse return error.TestExpectedNonNull;
+            try std.testing.expect(fix.safety == .unsafe);
+            try std.testing.expectEqualStrings("insert cooldown block", fix.description);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "DEP001: autofix inserts cooldown at end of entry (block form)" {
+    const source =
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    directory: "/"
+        \\    schedule:
+        \\      interval: "weekly"
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const node = try parseYamlWithArena(&arena, source);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    lintDependabot(node, &diags);
+
+    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
+    defer std.testing.allocator.free(fixes);
+    try std.testing.expectEqual(@as(usize, 1), fixes.len);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    directory: "/"
+        \\    schedule:
+        \\      interval: "weekly"
+        \\    cooldown:
+        \\      default-days: 7
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "DEP001: fix is null for flow-style mapping entry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const node = try parseYamlWithArena(&arena,
+        \\version: 2
+        \\updates:
+        \\  - { package-ecosystem: "npm", directory: "/" }
+    );
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    lintDependabot(node, &diags);
+
+    var found = false;
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
+            try std.testing.expect(d.fix == null);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "DEP001 + DEP002: coexist on the same entry" {
+    const source =
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    directory: "/"
+        \\    schedule:
+        \\      interval: "weekly"
+        \\    insecure-external-code-execution: allow
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const node = try parseYamlWithArena(&arena, source);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    lintDependabot(node, &diags);
+
+    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
+    defer std.testing.allocator.free(fixes);
+    try std.testing.expectEqual(@as(usize, 2), fixes.len);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\version: 2
+        \\updates:
+        \\  - package-ecosystem: "npm"
+        \\    directory: "/"
+        \\    schedule:
+        \\      interval: "weekly"
+        \\    insecure-external-code-execution: deny
+        \\    cooldown:
+        \\      default-days: 7
+        \\
+    ,
+        result.content,
+    );
 }
 
 test "rule descriptors are valid" {
