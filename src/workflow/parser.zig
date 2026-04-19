@@ -16,6 +16,11 @@ const ParsedStringMap = struct {
     meta: types.ScalarValueMetaMap,
 };
 
+const ParsedPermissions = struct {
+    permissions: types.Permissions,
+    meta: ?types.PermissionsMeta,
+};
+
 /// Parse a YAML AST Node into a Workflow struct
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
     const root = switch (node) {
@@ -39,10 +44,15 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     var workflow = types.Workflow{
         .name = root.getScalar("name"),
         .on = trigger,
-        .permissions = if (root.get("permissions")) |n| try parsePermissions(n) else null,
         .concurrency = if (root.get("concurrency")) |n| try parseConcurrency(n) else null,
         .jobs = jobs,
     };
+
+    if (root.get("permissions")) |n| {
+        const parsed = try parsePermissions(n);
+        workflow.permissions = parsed.permissions;
+        workflow.permissions_meta = parsed.meta;
+    }
 
     if (root.get("env")) |n| {
         const parsed = try parseStringMapWithMeta(allocator, n);
@@ -314,7 +324,9 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
     }
 
     if (m.get("permissions")) |n| {
-        job.permissions = try parsePermissions(n);
+        const parsed = try parsePermissions(n);
+        job.permissions = parsed.permissions;
+        job.permissions_meta = parsed.meta;
     }
     if (m.get("env")) |n| {
         const parsed = try parseStringMapWithMeta(allocator, n);
@@ -443,7 +455,7 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
     return step;
 }
 
-fn parsePermissions(node: Node) ParseError!types.Permissions {
+fn parsePermissions(node: Node) ParseError!ParsedPermissions {
     switch (node) {
         .scalar => |s| {
             var perms = types.Permissions{ .value_span = s.span };
@@ -452,17 +464,48 @@ fn parsePermissions(node: Node) ParseError!types.Permissions {
             } else if (std.mem.eql(u8, s.value, "write-all")) {
                 perms.write_all = true;
             }
-            return perms;
+            return .{ .permissions = perms, .meta = null };
         },
         .mapping => |m| {
             var perms = types.Permissions{ .value_span = m.span };
+            var meta = types.PermissionsMeta{};
             for (m.entries) |entry| {
                 const level = parsePermissionLevel(entry.value) orelse continue;
                 setPermissionField(&perms, entry.key.value, level);
+                setPermissionMetaField(&meta, entry.key.value, entry.value);
             }
-            return perms;
+            return .{ .permissions = perms, .meta = meta };
         },
         else => return error.InvalidValue,
+    }
+}
+
+fn setPermissionMetaField(meta: *types.PermissionsMeta, key: []const u8, value: Node) void {
+    const scalar_span: yaml.Span = switch (value) {
+        .scalar => |s| s.span,
+        else => return,
+    };
+    const fields = .{
+        .{ "actions", &meta.actions },
+        .{ "attestations", &meta.attestations },
+        .{ "checks", &meta.checks },
+        .{ "contents", &meta.contents },
+        .{ "deployments", &meta.deployments },
+        .{ "discussions", &meta.discussions },
+        .{ "id-token", &meta.id_token },
+        .{ "issues", &meta.issues },
+        .{ "packages", &meta.packages },
+        .{ "pages", &meta.pages },
+        .{ "pull-requests", &meta.pull_requests },
+        .{ "repository-projects", &meta.repository_projects },
+        .{ "security-events", &meta.security_events },
+        .{ "statuses", &meta.statuses },
+    };
+    inline for (fields) |f| {
+        if (std.mem.eql(u8, key, f[0])) {
+            f[1].* = scalar_span;
+            return;
+        }
     }
 }
 
@@ -863,15 +906,17 @@ test "parseTrigger schedule" {
 }
 
 test "parsePermissions read-all" {
-    const perms = try parsePermissions(mkScalar("read-all"));
-    try testing.expect(perms.read_all);
-    try testing.expect(!perms.write_all);
+    const parsed = try parsePermissions(mkScalar("read-all"));
+    try testing.expect(parsed.permissions.read_all);
+    try testing.expect(!parsed.permissions.write_all);
+    try testing.expect(parsed.meta == null);
 }
 
 test "parsePermissions write-all" {
-    const perms = try parsePermissions(mkScalar("write-all"));
-    try testing.expect(perms.write_all);
-    try testing.expect(!perms.read_all);
+    const parsed = try parsePermissions(mkScalar("write-all"));
+    try testing.expect(parsed.permissions.write_all);
+    try testing.expect(!parsed.permissions.read_all);
+    try testing.expect(parsed.meta == null);
 }
 
 test "parsePermissions individual scopes" {
@@ -881,11 +926,16 @@ test "parsePermissions individual scopes" {
         .{ .key = mkScalarS("issues"), .value = mkScalar("none"), .span = mkSpan() },
     };
 
-    const perms = try parsePermissions(mkMapping(&entries));
-    try testing.expectEqual(types.PermissionLevel.read, perms.contents.?);
-    try testing.expectEqual(types.PermissionLevel.write, perms.pull_requests.?);
-    try testing.expectEqual(types.PermissionLevel.none, perms.issues.?);
-    try testing.expect(perms.actions == null);
+    const parsed = try parsePermissions(mkMapping(&entries));
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.contents.?);
+    try testing.expectEqual(types.PermissionLevel.write, parsed.permissions.pull_requests.?);
+    try testing.expectEqual(types.PermissionLevel.none, parsed.permissions.issues.?);
+    try testing.expect(parsed.permissions.actions == null);
+    const meta = parsed.meta orelse return error.TestExpectedNonNull;
+    try testing.expect(meta.contents != null);
+    try testing.expect(meta.pull_requests != null);
+    try testing.expect(meta.issues != null);
+    try testing.expect(meta.actions == null);
 }
 
 test "parseConcurrency scalar" {
@@ -1425,20 +1475,20 @@ test "parsePermissions ignores invalid permission level" {
         .{ .key = mkScalarS("pull-requests"), .value = mkScalar("read"), .span = mkSpan() },
     };
 
-    const perms = try parsePermissions(mkMapping(&entries));
+    const parsed = try parsePermissions(mkMapping(&entries));
     // Invalid levels should be skipped (orelse continue)
-    try testing.expect(perms.contents == null);
-    try testing.expect(perms.issues == null);
+    try testing.expect(parsed.permissions.contents == null);
+    try testing.expect(parsed.permissions.issues == null);
     // Valid level should be set
-    try testing.expectEqual(types.PermissionLevel.read, perms.pull_requests.?);
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.pull_requests.?);
 }
 
 test "parsePermissions with empty mapping" {
     var entries = [_]yaml.MappingEntry{};
-    const perms = try parsePermissions(mkMapping(&entries));
-    try testing.expect(!perms.read_all);
-    try testing.expect(!perms.write_all);
-    try testing.expect(perms.contents == null);
+    const parsed = try parsePermissions(mkMapping(&entries));
+    try testing.expect(!parsed.permissions.read_all);
+    try testing.expect(!parsed.permissions.write_all);
+    try testing.expect(parsed.permissions.contents == null);
 }
 
 test "parseTrigger null value" {

@@ -203,17 +203,37 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
 
 // ── BP004: Cross-platform shell not specified ──
 
+fn buildCrossPlatformShellFix(list: *DiagnosticList, step: *const Step) ?Fix {
+    const insert_byte = step.shell_insertion_byte orelse return null;
+    if (step.span.start_col == 0) return null;
+    const indent: u32 = step.span.start_col - 1;
+
+    const edits = fix_builder.insertMappingEntry(
+        list.fixAllocator(),
+        .{ .byte = insert_byte, .indent = indent },
+        "shell",
+        "bash",
+    ) orelse return null;
+
+    return .{
+        .description = "add shell: bash to cross-platform run step",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
 fn checkCrossPlatformShell(job: *const Job, diag_list: *DiagnosticList) void {
     if (!hasWindowsTarget(job)) return;
 
-    for (job.steps) |step| {
+    for (job.steps) |*step| {
         if (step.run != null and step.shell == null) {
             diag_list.append(.{
                 .rule_id = "BP004",
                 .severity = .warning,
                 .message = "Step with 'run' does not specify 'shell' in a job targeting Windows. Default shells differ across platforms.",
-                .span = Span.point(0, 0, 0),
+                .span = step.span,
                 .fix_hint = "Add 'shell: bash' or 'shell: pwsh' to ensure consistent behavior.",
+                .fix = buildCrossPlatformShellFix(diag_list, step),
             }) catch return;
         }
     }
@@ -759,6 +779,98 @@ test "BP004: no warning without windows" {
     defer diags.deinit();
     checkCrossPlatformShell(&job, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: no fix when shell_insertion_byte is missing" {
+    const job = Job{
+        .id = "test",
+        .runs_on = "windows-latest",
+        .steps = &.{
+            Step{ .name = "Build", .run = "make build" },
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCrossPlatformShell(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP004: attaches unsafe fix when shell_insertion_byte and span are present" {
+    const job = Job{
+        .id = "test",
+        .runs_on = "windows-latest",
+        .steps = &.{
+            Step{
+                .run = "make build",
+                .span = .{
+                    .start_line = 7,
+                    .start_col = 9,
+                    .end_line = 7,
+                    .end_col = 20,
+                    .start_byte = 0,
+                    .end_byte = 0,
+                },
+                .shell_insertion_byte = 42,
+            },
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCrossPlatformShell(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqual(FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try std.testing.expectEqual(@as(usize, 42), fix.edits[0].start_byte);
+    try std.testing.expectEqual(@as(usize, 42), fix.edits[0].end_byte);
+    try std.testing.expectEqualStrings("        shell: bash\n", fix.edits[0].replacement);
+}
+
+test "BP004: autofix applied to YAML source inserts shell: bash after run" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: windows-latest
+        \\    steps:
+        \\      - run: make build
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkCrossPlatformShell(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqual(FixSafety.unsafe, fix.safety);
+
+    const fixes = [_]Fix{fix};
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "shell: bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "run: make build") != null);
+
+    const run_pos = std.mem.indexOf(u8, result.content, "run: make build").?;
+    const shell_pos = std.mem.indexOf(u8, result.content, "shell: bash").?;
+    try std.testing.expect(run_pos < shell_pos);
 }
 
 test "BP005: detect push without concurrency" {

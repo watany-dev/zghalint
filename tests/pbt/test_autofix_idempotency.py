@@ -11,7 +11,10 @@ from hypothesis import strategies as st
 from tests.pbt.conftest import run_zghalint, write_temp_workflow
 from tests.pbt.strategies import (
     dependabot_with_dep001,
+    workflow_with_bp004,
     workflow_with_bp005,
+    workflow_with_perf001_setup_go,
+    workflow_with_perm001_individual_write,
     workflow_with_perm002,
     workflow_yaml,
 )
@@ -127,6 +130,9 @@ def _cleanup_dependabot(path: str) -> None:
 @given(content=st.one_of(
     workflow_with_bp005(),
     workflow_with_perm002(),
+    workflow_with_perm001_individual_write(),
+    workflow_with_bp004(),
+    workflow_with_perf001_setup_go(),
 ))
 @PBT_SETTINGS
 def test_unsafe_fix_reduces_diagnostics_workflow(zghalint_bin, content):
@@ -164,6 +170,9 @@ def test_unsafe_fix_reduces_diagnostics_dependabot(zghalint_bin, content):
 @given(content=st.one_of(
     workflow_with_bp005(),
     workflow_with_perm002(),
+    workflow_with_perm001_individual_write(),
+    workflow_with_bp004(),
+    workflow_with_perf001_setup_go(),
 ))
 @PBT_SETTINGS
 def test_double_unsafe_fix_is_idempotent_workflow(zghalint_bin, content):

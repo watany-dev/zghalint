@@ -29,6 +29,62 @@ const cacheable_setups = [_]CacheableSetup{
 
 // ── PERF001: Cache not used ──
 
+fn buildSetupGoCacheFix(diag_list: *DiagnosticList, job: *const Job) ?Fix {
+    const alloc = diag_list.fixAllocator();
+
+    var edits = std.ArrayList(diagnostics_mod.Edit){};
+
+    for (job.steps) |step| {
+        const action_ref = step.uses orelse continue;
+        const action_name = util.actionBaseName(action_ref.raw);
+        if (!std.mem.eql(u8, action_name, "actions/setup-go")) continue;
+
+        if (step.with) |with| {
+            if (with.get("cache")) |_| continue;
+        }
+
+        const col = step.uses_key_col orelse continue;
+        if (col == 0) continue;
+
+        if (step.with != null) {
+            const anchor = step.with_last_entry_end_byte orelse continue;
+            const appended = fix_builder.appendMappingEntry(
+                alloc,
+                anchor,
+                col + 1,
+                "cache",
+                "true",
+            ) orelse continue;
+            edits.appendSlice(alloc, appended) catch continue;
+        } else {
+            const anchor = step.uses_value_end_byte orelse continue;
+            const parent_indent = alloc.alloc(u8, col - 1) catch continue;
+            @memset(parent_indent, ' ');
+            const child_indent = alloc.alloc(u8, col + 1) catch continue;
+            @memset(child_indent, ' ');
+            const replacement = std.fmt.allocPrint(
+                alloc,
+                "\n{s}with:\n{s}cache: true",
+                .{ parent_indent, child_indent },
+            ) catch continue;
+            edits.append(alloc, .{
+                .start_byte = anchor,
+                .end_byte = anchor,
+                .replacement = replacement,
+            }) catch continue;
+        }
+    }
+
+    if (edits.items.len == 0) return null;
+
+    const owned = edits.toOwnedSlice(alloc) catch return null;
+    return .{
+        .description = "add cache: true to actions/setup-go step(s)",
+        .safety = .unsafe,
+        .edits = owned,
+    };
+}
+
 fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
     inline for (cacheable_setups) |ca| {
         var uses_setup = false;
@@ -57,12 +113,18 @@ fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
         }
 
         if (uses_setup and !has_cache) {
+            const fix: ?Fix = if (comptime std.mem.eql(u8, ca.setup_action, "actions/setup-go"))
+                buildSetupGoCacheFix(diag_list, job)
+            else
+                null;
+
             diag_list.append(.{
                 .rule_id = "PERF001",
                 .severity = .warning,
                 .message = "Job uses " ++ ca.setup_action ++ " without caching. Add actions/cache or set 'cache' input.",
                 .span = Span.point(0, 0, 0),
                 .fix_hint = "Add 'cache: true' to the setup action's 'with' inputs, or add a separate actions/cache step.",
+                .fix = fix,
             }) catch return;
         }
     }
@@ -231,6 +293,200 @@ test "PERF001: detect missing cache for setup-go" {
     defer diags.deinit();
     checkCacheNotUsed(&job, &diags);
     try std.testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "PERF001: setup-go without with: attaches unsafe fix that adds a with block" {
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try std.testing.expectEqual(@as(usize, 100), fix.edits[0].start_byte);
+    try std.testing.expectEqual(@as(usize, 100), fix.edits[0].end_byte);
+    try std.testing.expectEqualStrings("\n        with:\n          cache: true", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-go with existing with: appends cache entry" {
+    var with = workflow_types.StringMap.init(std.testing.allocator);
+    defer with.deinit();
+    try with.put("go-version", "1.21");
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .with = with,
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+            .with_last_entry_end_byte = 140,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try std.testing.expectEqual(@as(usize, 140), fix.edits[0].start_byte);
+    try std.testing.expectEqual(@as(usize, 140), fix.edits[0].end_byte);
+    try std.testing.expectEqualStrings("\n          cache: true", fix.edits[0].replacement);
+}
+
+test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key" {
+    var with = workflow_types.StringMap.init(std.testing.allocator);
+    defer with.deinit();
+    try with.put("cache", "");
+
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .with = with,
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+            .with_last_entry_end_byte = 140,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERF001: setup-node/setup-python do not receive autofix" {
+    const node_job = Job{
+        .id = "build",
+        .steps = &.{Step{
+            .uses = ActionRef.parse("actions/setup-node@v4"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        }},
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&node_job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+
+    diags.deinit();
+    diags = DiagnosticList.init(std.testing.allocator);
+    const python_job = Job{
+        .id = "build",
+        .steps = &.{Step{
+            .uses = ActionRef.parse("actions/setup-python@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+        }},
+    };
+    checkCacheNotUsed(&python_job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERF001: setup-go with missing span skips fix" {
+    const job = Job{
+        .id = "build",
+        .steps = &.{Step{ .uses = ActionRef.parse("actions/setup-go@v5") }},
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERF001: multiple setup-go steps in one job produce a single multi-edit fix" {
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 50,
+        },
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .uses_key_col = 9,
+            .uses_value_end_byte = 120,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqual(@as(usize, 2), fix.edits.len);
+    try std.testing.expectEqual(@as(usize, 50), fix.edits[0].start_byte);
+    try std.testing.expectEqual(@as(usize, 120), fix.edits[1].start_byte);
+}
+
+test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/setup-go@v5
+        \\        with:
+        \\          go-version: '1.21'
+        \\      - uses: actions/setup-go@v5
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkCacheNotUsed(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 2), fix.edits.len);
+
+    const fixes = [_]Fix{fix};
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+
+    const cache_count = std.mem.count(u8, result.content, "cache: true");
+    try std.testing.expectEqual(@as(usize, 2), cache_count);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "go-version: '1.21'") != null);
 }
 
 test "PERF001: no warning for unrelated actions" {

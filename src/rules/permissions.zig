@@ -11,6 +11,7 @@ const Step = engine.Step;
 const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const Permissions = workflow_types.Permissions;
+const PermissionsMeta = workflow_types.PermissionsMeta;
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Fix = diagnostics.Fix;
@@ -20,12 +21,12 @@ const Edit = diagnostics.Edit;
 
 fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
-        checkPermissionsScope(perms, diag_list);
+        checkPermissionsScope(perms, wf.permissions_meta, diag_list);
     }
 
     for (wf.jobs) |job| {
         if (job.permissions) |perms| {
-            checkPermissionsScope(perms, diag_list);
+            checkPermissionsScope(perms, job.permissions_meta, diag_list);
         }
     }
 }
@@ -46,7 +47,26 @@ fn makeWriteAllFix(diag_list: *DiagnosticList, value_span: Span) ?Fix {
     };
 }
 
-fn checkPermissionsScope(perms: Permissions, diag_list: *DiagnosticList) void {
+fn makeDowngradeToReadFix(diag_list: *DiagnosticList, yaml_key: []const u8, value_span: Span) ?Fix {
+    const edits = fix_builder.replaceScalar(
+        diag_list.fixAllocator(),
+        value_span,
+        .plain,
+        "read",
+    ) orelse return null;
+    const description = std.fmt.allocPrint(
+        diag_list.fixAllocator(),
+        "Downgrade '{s}: write' to 'read'",
+        .{yaml_key},
+    ) catch return null;
+    return .{
+        .description = description,
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
+fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, diag_list: *DiagnosticList) void {
     if (perms.write_all) {
         const span = perms.value_span orelse Span.point(0, 0, 0);
         diag_list.append(.{
@@ -60,30 +80,52 @@ fn checkPermissionsScope(perms: Permissions, diag_list: *DiagnosticList) void {
         return;
     }
 
-    // Check individual write permissions
-    const write_fields = .{
-        perms.contents,
-        perms.packages,
-        perms.actions,
-        perms.security_events,
-        perms.deployments,
-        perms.id_token,
-        perms.pull_requests,
-        perms.issues,
-        perms.statuses,
-        perms.checks,
+    // Individual write permissions across all 14 scope keys.
+    // `id-token` is detected with a dedicated hint (OIDC context) and no autofix,
+    // because the GitHub Actions spec does not allow `id-token: read`.
+    const fields = .{
+        .{ "actions", perms.actions, if (meta) |m| m.actions else null },
+        .{ "attestations", perms.attestations, if (meta) |m| m.attestations else null },
+        .{ "checks", perms.checks, if (meta) |m| m.checks else null },
+        .{ "contents", perms.contents, if (meta) |m| m.contents else null },
+        .{ "deployments", perms.deployments, if (meta) |m| m.deployments else null },
+        .{ "discussions", perms.discussions, if (meta) |m| m.discussions else null },
+        .{ "id-token", perms.id_token, if (meta) |m| m.id_token else null },
+        .{ "issues", perms.issues, if (meta) |m| m.issues else null },
+        .{ "packages", perms.packages, if (meta) |m| m.packages else null },
+        .{ "pages", perms.pages, if (meta) |m| m.pages else null },
+        .{ "pull-requests", perms.pull_requests, if (meta) |m| m.pull_requests else null },
+        .{ "repository-projects", perms.repository_projects, if (meta) |m| m.repository_projects else null },
+        .{ "security-events", perms.security_events, if (meta) |m| m.security_events else null },
+        .{ "statuses", perms.statuses, if (meta) |m| m.statuses else null },
     };
 
-    inline for (write_fields) |field| {
-        if (field) |level| {
-            if (level == .write) {
-                diag_list.append(.{
-                    .rule_id = "PERM001",
-                    .severity = .info,
-                    .message = "Broad write permission detected. Ensure this is necessary.",
-                    .span = Span.point(0, 0, 0),
-                    .fix_hint = "Consider if 'read' permission would suffice instead of 'write'.",
-                }) catch return;
+    inline for (fields) |f| {
+        const key: []const u8 = f[0];
+        const level: ?workflow_types.PermissionLevel = f[1];
+        const value_span: ?Span = f[2];
+        if (level) |lvl| {
+            if (lvl == .write) {
+                const is_id_token = comptime std.mem.eql(u8, key, "id-token");
+                const span = value_span orelse Span.point(0, 0, 0);
+                if (is_id_token) {
+                    diag_list.append(.{
+                        .rule_id = "PERM001",
+                        .severity = .info,
+                        .message = "id-token: write grants OIDC token issuance. Ensure this job needs OIDC.",
+                        .span = span,
+                        .fix_hint = "id-token: write enables OIDC. Remove this entry if OIDC is not used.",
+                    }) catch return;
+                } else {
+                    diag_list.append(.{
+                        .rule_id = "PERM001",
+                        .severity = .info,
+                        .message = "Broad write permission detected. Ensure this is necessary.",
+                        .span = span,
+                        .fix_hint = "Consider if 'read' permission would suffice instead of 'write'.",
+                        .fix = if (value_span) |vs| makeDowngradeToReadFix(diag_list, key, vs) else null,
+                    }) catch return;
+                }
             }
         }
     }
@@ -493,7 +535,7 @@ test "PERM001: autofix replaces write-all with minimal permissions" {
     const perms = Permissions{ .write_all = true, .value_span = value_span };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, &diags);
+    checkPermissionsScope(perms, null, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -512,18 +554,176 @@ test "PERM001: no fix when value_span is null" {
     const perms = Permissions{ .write_all = true };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, &diags);
+    checkPermissionsScope(perms, null, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
 }
 
-test "PERM001: no fix for individual write permissions" {
+test "PERM001: no fix for individual write when meta is null" {
     const perms = Permissions{ .contents = .write };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, &diags);
+    checkPermissionsScope(perms, null, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
+}
+
+// ── PERM001 per-field autofix (14-field coverage + id-token carve-out) ──
+
+test "PERM001: per-field autofix downgrades contents: write to read" {
+    const fix_engine = @import("../fix/engine.zig");
+    const source = "permissions:\n  contents: write\n";
+    // `write` occupies cols 13..17 on line 2, bytes 25..30 (0-based end exclusive).
+    const value_span = Span{
+        .start_line = 2,
+        .start_col = 13,
+        .end_line = 2,
+        .end_col = 18,
+        .start_byte = 25,
+        .end_byte = 30,
+    };
+    const perms = Permissions{ .contents = .write };
+    const meta = PermissionsMeta{ .contents = value_span };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, meta, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try std.testing.expectEqualStrings("PERM001", diag.rule_id);
+    try std.testing.expectEqual(diagnostics.Severity.info, diag.severity);
+    const fix = diag.fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &.{fix});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("permissions:\n  contents: read\n", result.content);
+}
+
+test "PERM001: id-token: write emits dedicated hint without autofix" {
+    const value_span = Span{
+        .start_line = 2,
+        .start_col = 13,
+        .end_line = 2,
+        .end_col = 18,
+        .start_byte = 26,
+        .end_byte = 31,
+    };
+    const perms = Permissions{ .id_token = .write };
+    const meta = PermissionsMeta{ .id_token = value_span };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, meta, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try std.testing.expectEqualStrings("PERM001", diag.rule_id);
+    try std.testing.expect(diag.fix == null);
+    const hint = diag.fix_hint orelse return error.TestExpectedNonNull;
+    try std.testing.expect(std.mem.indexOf(u8, hint, "OIDC") != null);
+    try std.testing.expect(std.mem.indexOf(u8, hint, "'read'") == null);
+}
+
+test "PERM001: detects write on previously uncovered scopes (attestations/discussions/pages/repository-projects)" {
+    const perms = Permissions{
+        .attestations = .write,
+        .discussions = .write,
+        .pages = .write,
+        .repository_projects = .write,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, null, &diags);
+
+    try std.testing.expectEqual(@as(usize, 4), diags.len());
+}
+
+test "PERM001: autofix applies to all 13 non-id-token scopes via the engine" {
+    const fix_engine = @import("../fix/engine.zig");
+    const source = "permissions:\n  pages: write\n";
+    // `write` at bytes 22..27.
+    const value_span = Span{
+        .start_line = 2,
+        .start_col = 10,
+        .end_line = 2,
+        .end_col = 15,
+        .start_byte = 22,
+        .end_byte = 27,
+    };
+    const perms = Permissions{ .pages = .write };
+    const meta = PermissionsMeta{ .pages = value_span };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, meta, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, &.{fix});
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("permissions:\n  pages: read\n", result.content);
+}
+
+test "PERM001: id-token mixed with other writes produces per-field fixes except id-token" {
+    const source =
+        \\permissions:
+        \\  contents: write
+        \\  id-token: write
+        \\
+    ;
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const wrapped = try std.fmt.allocPrint(alloc,
+        \\name: t
+        \\on: push
+        \\{s}jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+        \\
+    , .{source});
+
+    var yp = yaml_parser_mod.Parser.init(alloc, wrapped);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkBroadPermissions(&wf, &diags);
+
+    // Two diagnostics (contents + id-token), but only contents carries a fix.
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+    var fix_count: usize = 0;
+    var has_id_token_diag = false;
+    for (0..diags.len()) |i| {
+        const diag = diags.get(i);
+        if (diag.fix != null) fix_count += 1;
+        if (std.mem.indexOf(u8, diag.message, "id-token") != null) has_id_token_diag = true;
+    }
+    try std.testing.expectEqual(@as(usize, 1), fix_count);
+    try std.testing.expect(has_id_token_diag);
+
+    var fixes_buf: [1]Fix = undefined;
+    var n: usize = 0;
+    for (0..diags.len()) |i| {
+        if (diags.get(i).fix) |f| {
+            fixes_buf[n] = f;
+            n += 1;
+        }
+    }
+    const result = try fix_engine.applyFixes(std.testing.allocator, wrapped, fixes_buf[0..n]);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "contents: read") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "id-token: write") != null);
 }

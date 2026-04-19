@@ -250,6 +250,96 @@ def workflow_with_perm002(draw: st.DrawFn) -> str:
 
 
 @st.composite
+def workflow_with_perm001_individual_write(draw: st.DrawFn) -> str:
+    """Generate a workflow guaranteed to trigger PERM001 with an individual write permission.
+
+    The workflow sets one permission scope to write (excluding id-token, which
+    has a dedicated hint without autofix). Other rules may fire as well.
+    """
+    scope = draw(st.sampled_from([
+        "contents", "pull-requests", "issues", "actions", "packages",
+        "deployments", "checks", "statuses", "security-events",
+        "attestations", "discussions", "pages", "repository-projects",
+    ]))
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "permissions:\n"
+        f"  {scope}: write\n"
+        "concurrency:\n"
+        "  group: ci-${{ github.ref }}\n"
+        "  cancel-in-progress: true\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
+    )
+
+
+@st.composite
+def workflow_with_bp004(draw: st.DrawFn) -> str:
+    """Generate a workflow guaranteed to trigger BP004 (missing shell on Windows).
+
+    The job targets a Windows runner and has a run step without shell.
+    """
+    runner = draw(st.sampled_from(["windows-latest", "windows-2022"]))
+    cmd = draw(st.sampled_from(_safe_commands))
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "concurrency:\n"
+        "  group: ci-${{ github.ref }}\n"
+        "  cancel-in-progress: true\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "jobs:\n"
+        "  build:\n"
+        f"    runs-on: {runner}\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        "      - name: Build\n"
+        f"        run: {cmd}\n"
+    )
+
+
+@st.composite
+def workflow_with_perf001_setup_go(draw: st.DrawFn) -> str:
+    """Generate a workflow guaranteed to trigger PERF001 (setup-go without cache).
+
+    Emits setup-go both with and without an existing with: block to exercise
+    both autofix anchors (appendMappingEntry and the block-synthesis path).
+    """
+    has_with = draw(st.booleans())
+    go_version = draw(st.sampled_from(["'1.21'", "'1.22'", "stable"]))
+    if has_with:
+        setup_step = (
+            "      - uses: actions/setup-go@a5ac7e51b41094c92402da3b24376905380afc29\n"
+            "        with:\n"
+            f"          go-version: {go_version}\n"
+        )
+    else:
+        setup_step = "      - uses: actions/setup-go@a5ac7e51b41094c92402da3b24376905380afc29\n"
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "concurrency:\n"
+        "  group: ci-${{ github.ref }}\n"
+        "  cancel-in-progress: true\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
+        f"{setup_step}"
+    )
+
+
+@st.composite
 def dependabot_with_dep001(draw: st.DrawFn) -> str:
     """Generate a dependabot config guaranteed to trigger DEP001 (missing cooldown)."""
     ecosystem = draw(st.sampled_from(["npm", "pip", "docker", "github-actions"]))
