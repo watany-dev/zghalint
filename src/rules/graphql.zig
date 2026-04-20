@@ -56,6 +56,10 @@ pub const RepoResult = struct {
     named_results: []const NamedRefResult = &.{},
     /// True if the API returned the repo as missing / permission-denied.
     missing: bool = false,
+    /// False when more tag pages exist beyond what we fetched (pageInfo.hasNextPage=true
+    /// or the legacy 100-node heuristic fired). Callers that need to know every tag SHA
+    /// must consult this flag before trusting a negative match.
+    tag_oids_complete: bool = true,
 };
 
 // ============================================================
@@ -89,10 +93,12 @@ pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
 
         if (repo.sha_refs.len > 0) {
             // Fetch up to 100 tags; inline-dereference annotated tags so we
-            // see the underlying commit oid in a single round trip.
+            // see the underlying commit oid in a single round trip. pageInfo
+            // lets the caller detect when more pages exist and mark affected
+            // SHA lookups as unknown rather than falsely claiming no_tag.
             try buf.appendSlice(
                 allocator,
-                " tagNodes: refs(refPrefix:\"refs/tags/\", first:100) { nodes { name target { oid ... on Tag { target { oid } } } } }",
+                " tagNodes: refs(refPrefix:\"refs/tags/\", first:100) { pageInfo { hasNextPage endCursor } nodes { name target { oid ... on Tag { target { oid } } } } }",
             );
         }
 
@@ -287,23 +293,17 @@ fn parseRepoObject(
         result.named_results = named;
     }
 
+    // Detect pagination state for tagNodes. pageInfo.hasNextPage is
+    // authoritative when present; otherwise fall back to the legacy
+    // heuristic that treats a full 100-node page as "could have more"
+    // so pre-pageInfo test fixtures keep the same unknown/no_tag split.
+    result.tag_oids_complete = tagNodesComplete(obj);
+
     if (repo.sha_refs.len > 0) {
         // Collect all commit oids reachable from tag refs.
         var resolutions = try allocator.alloc(ShaTagResult, repo.sha_refs.len);
         const tag_shas = collectTagCommitShas(allocator, obj) catch &[_][]const u8{};
         defer if (tag_shas.len > 0) allocator.free(tag_shas);
-
-        const tag_nodes_val = obj.get("tagNodes");
-        const hit_page_limit = switch (tag_nodes_val orelse std.json.Value{ .null = {} }) {
-            .object => |nodes_obj| blk: {
-                const nodes_val = nodes_obj.get("nodes") orelse break :blk false;
-                break :blk switch (nodes_val) {
-                    .array => |arr| arr.items.len >= 100,
-                    else => false,
-                };
-            },
-            else => false,
-        };
 
         for (repo.sha_refs, 0..) |sha, j| {
             var found = false;
@@ -313,13 +313,34 @@ fn parseRepoObject(
                     break;
                 }
             }
-            const resolution: ShaTagResolution = if (found) .has_tag else if (hit_page_limit) .unknown else .no_tag;
+            const resolution: ShaTagResolution = if (found) .has_tag else if (!result.tag_oids_complete) .unknown else .no_tag;
             resolutions[j] = .{ .sha = sha, .resolution = resolution };
         }
         result.sha_results = resolutions;
     }
 
     return result;
+}
+
+fn tagNodesComplete(obj: std.json.ObjectMap) bool {
+    const tag_nodes_val = obj.get("tagNodes") orelse return true;
+    const nodes_obj = switch (tag_nodes_val) {
+        .object => |o| o,
+        else => return true,
+    };
+    if (nodes_obj.get("pageInfo")) |pi_val| {
+        if (pi_val == .object) {
+            if (pi_val.object.get("hasNextPage")) |hnp_val| {
+                if (hnp_val == .bool) return !hnp_val.bool;
+            }
+        }
+    }
+    const nodes_val = nodes_obj.get("nodes") orelse return true;
+    const count = switch (nodes_val) {
+        .array => |arr| arr.items.len,
+        else => return true,
+    };
+    return count < 100;
 }
 
 fn refAliasExists(obj: std.json.ObjectMap, alias: []const u8) bool {
@@ -407,12 +428,13 @@ test "buildQuery: named refs produce tag_ and branch_ aliases" {
     try testing.expect(std.mem.indexOf(u8, q, "tag_1: ref(qualifiedName:\"refs/tags/v4\")") != null);
 }
 
-test "buildQuery: sha refs pull in tagNodes subquery" {
+test "buildQuery: sha refs pull in tagNodes subquery with pageInfo" {
     const shas = [_][]const u8{"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"};
     const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
     const q = try buildQuery(testing.allocator, &repos);
     defer testing.allocator.free(q);
     try testing.expect(std.mem.indexOf(u8, q, "tagNodes: refs(refPrefix:\"refs/tags/\", first:100)") != null);
+    try testing.expect(std.mem.indexOf(u8, q, "pageInfo { hasNextPage endCursor }") != null);
     try testing.expect(std.mem.indexOf(u8, q, "... on Tag { target { oid } }") != null);
 }
 
@@ -516,7 +538,39 @@ test "parseResponse: errors[].type RATE_LIMITED wins even if data is also presen
     try testing.expectError(error.RateLimited, parseResponse(arena.allocator(), body, &repos));
 }
 
-test "parseResponse: 100 tag nodes without match yields unknown (page-limit fallback)" {
+test "parseResponse: pageInfo.hasNextPage=true marks non-match unknown even under 100 nodes" {
+    // Authoritative pagination: 2 nodes is well below 100, but hasNextPage=true
+    // tells us more pages exist → any non-matching SHA must stay unknown.
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[{"name":"v1","target":{"oid":"aa"}},{"name":"v2","target":{"oid":"bb"}}]}}}}
+    ;
+    const shas = [_][]const u8{ "aa", "cc" };
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(ShaTagResolution.unknown, results[0].sha_results[1].resolution);
+    try testing.expect(!results[0].tag_oids_complete);
+}
+
+test "parseResponse: pageInfo.hasNextPage=false keeps no_tag for non-match" {
+    // Authoritative pagination with hasNextPage=false: 2 known tags, cc not
+    // among them → no_tag even though <100 nodes.
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[{"name":"v1","target":{"oid":"aa"}},{"name":"v2","target":{"oid":"bb"}}]}}}}
+    ;
+    const shas = [_][]const u8{ "aa", "cc" };
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[1].resolution);
+    try testing.expect(results[0].tag_oids_complete);
+}
+
+test "parseResponse: 100 tag nodes without match yields unknown (legacy heuristic)" {
     // Build a "data":{"r0":{...}} body with exactly 100 tagNodes entries.
     var buf = std.ArrayList(u8){};
     defer buf.deinit(testing.allocator);
