@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **45 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **46 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -35,6 +35,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC015 | artipacked | warning | Checkout with persisted credentials followed by `upload-artifact` can leak `GITHUB_TOKEN` |
 | SEC016 | cache-poisoning | warning | Cache usage in release/deploy workflows risks cache poisoning attacks |
 | SEC017 | insecure-commands | warning | `ACTIONS_ALLOW_UNSECURE_COMMANDS` re-enables deprecated insecure workflow commands |
+| SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:` |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
 
