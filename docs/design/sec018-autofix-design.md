@@ -28,7 +28,7 @@
 |---|---|---|
 | `isCheckoutAction` | `src/rules/security.zig:273-277` | owner=`actions` / repo=`checkout` の判定。そのまま再利用 |
 | `hasPersistCredentialsFalse` | `src/rules/security.zig:1007-1011` | `with.get("persist-credentials") == "false"` 判定。SEC015 から呼ばれている |
-| `buildPersistCredentialsFix` | `src/rules/security.zig:1045-1079` | SEC015 用の挿入 autofix。`with == null` / `with` 存在の 2 分岐を既に実装 |
+| `buildPersistCredentialsFix` → `buildPersistCredentialsFalseFix` | `src/rules/security.zig:1050-1090` | SEC015 用の挿入 autofix。`with == null` / `with` 存在の 2 分岐を既に実装。SEC018 実装時に description / safety を引数化して共有 helper 化済み |
 | `Step.uses_value_end_byte` | `src/workflow/types.zig:247-278` | `with == null` 時の挿入 anchor |
 | `Step.with_last_entry_end_byte` | `src/workflow/types.zig:247-278` | `with` 存在時の挿入 anchor |
 | `Step.uses_key_col` | `src/workflow/types.zig:247-278` | インデント計算用（1-based 列番号） |
@@ -55,13 +55,14 @@ const PersistCredentialsState = enum { not_set, explicit_true, explicit_false };
 fn classifyPersistCredentials(step: *const Step) PersistCredentialsState {
     const with_map = step.with orelse return .not_set;
     const val = with_map.get("persist-credentials") orelse return .not_set;
-    if (std.mem.eql(u8, val, "false")) return .explicit_false;
-    if (std.mem.eql(u8, val, "true")) return .explicit_true;
+    if (std.ascii.eqlIgnoreCase(val, "false")) return .explicit_false;
+    if (std.ascii.eqlIgnoreCase(val, "true")) return .explicit_true;
     return .not_set; // value が想定外なら保守的に発火
 }
 ```
 
 `.explicit_true` は autofix 不可なぶん診断メッセージを強めにして `fix_hint` を付ける。
+YAML 1.1 の `True` / `FALSE` 等の大文字変種もスカラー文字列として現れるため、`std.ascii.eqlIgnoreCase` で比較する（PR #46 のレビュー対応）。
 
 ### 2. `buildPersistCredentialsFix` は共有 helper に格上げする
 
@@ -84,15 +85,15 @@ fn buildPersistCredentialsFalseFix(
 
 ### 3. Autofix 挿入戦略
 
-既存 `buildPersistCredentialsFix` (`src/rules/security.zig:1045-1079`) に完全準拠する。
+共有 helper `buildPersistCredentialsFalseFix` (`src/rules/security.zig:1050-1090`) を SEC015 / SEC018 双方から呼ぶ。
 
 | 状態 | 挿入点 | 挿入内容 | 使用 helper |
 |---|---|---|---|
-| `with == null` | `step.uses_value_end_byte` | `\n{indent(col)}with:\n{indent(col+2)}persist-credentials: false` | `std.fmt.allocPrint` |
-| `with` 存在・キー未設定 | `step.with_last_entry_end_byte` | `\n{indent(col+2)}persist-credentials: false` | `fix_builder.appendMappingEntry(alloc, insert_at, col + 2, "persist-credentials", "false")` |
+| `with == null` | `step.uses_value_end_byte` | `\n{indent(col-1)}with:\n{indent(col+1)}persist-credentials: false` | `std.fmt.allocPrint` |
+| `with` 存在・キー未設定 | `step.with_last_entry_end_byte` | `\n{indent(col+1)}persist-credentials: false` | `fix_builder.appendMappingEntry(alloc, insert_at, col + 1, "persist-credentials", "false")` |
 | `persist-credentials: true` 明示 | — | autofix 不可 | `fix_hint` のみ |
 
-インデント幅は `step.uses_key_col orelse 6` を使う（SEC015 のデフォルトと揃える）。
+`step.uses_key_col` は **1-based** 列番号なので、親 `with:` の左余白は `col - 1` スペース、子 `persist-credentials:` は `col + 1` スペース。PERF001 の `buildCacheFix` (`src/rules/performance.zig:84-86`) と同じパターン。`uses_key_col` が未設定の場合は `orelse 7` でデフォルト化し、`col == 0` は guard で早期 return する。
 
 ### 4. safety は `.unsafe`
 
@@ -143,12 +144,13 @@ fix_hint = "add 'with.persist-credentials: false' unless you need git push / gh 
 ### 変更対象
 
 - `src/rules/security.zig`
-  - `classifyPersistCredentials` 追加
+  - `classifyPersistCredentials` 追加（`std.ascii.eqlIgnoreCase` で大文字変種に対応）
   - `checkCheckoutPersistCredentials` 追加（step-level check）
   - `buildPersistCredentialsFix` を `buildPersistCredentialsFalseFix` にリネーム + `description` / `safety` 引数化
-  - SEC015 の呼び出し箇所（`src/rules/security.zig:1045-1079` 付近で呼んでいる側）を新シグネチャに合わせて更新
-  - `security_rules` 配列に `SEC018` エントリ追加
-  - SEC018 のインラインテスト追加
+  - 同 helper の indent を 1-based 前提で `col - 1` / `col + 1` に修正（`col == 0` guard 追加、PERF001 と同じパターン）
+  - SEC015 の呼び出し箇所を新シグネチャに合わせて更新
+  - `security_rules` 配列に `SEC018` エントリ追加（SEC015 と SEC019 の間）
+  - SEC018 のインラインテスト追加（大文字変種の回帰テスト含む）
 
 ### 変更しないもの
 
@@ -168,9 +170,10 @@ TDD の各ケースを `src/rules/security.zig` のテストブロックに追�
 2. **persist-credentials 未設定**（`with` 存在・他キーのみ）→ diagnostic 発火 + `fix != null`
 3. **persist-credentials: true 明示** → diagnostic 発火 + `fix == null`
 4. **persist-credentials: false 明示** → diagnostic 発火なし
-5. **autofix edit 内容検証**（`with == null` 系）: replacement が `\n      with:\n        persist-credentials: false` であること
-6. **autofix edit 内容検証**（`with` 存在系）: replacement が `\n        persist-credentials: false` であること
+5. **autofix edit 内容検証**（`with == null` 系）: replacement に `with:` と `persist-credentials: false` が含まれ、子インデントが親 + 2 スペース（`col - 1` / `col + 1`）で整列していること
+6. **autofix edit 内容検証**（`with` 存在系）: replacement が `persist-credentials: false` を含み、`start_byte == step.with_last_entry_end_byte`
 7. **fix/engine.zig 経由で YAML に適用した結果**: YAML が parse 可能な整形された状態であること
+8. **YAML boolean の大文字変種**（`True` / `FALSE`）: 正しく explicit_true / explicit_false に分類されること（PR #46 レビュー対応）
 
 ### テストヘルパ
 
@@ -202,8 +205,10 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `docs/design/sec017-autofix-design.md` — 本設計書の節構成テンプレート
 - `src/rules/security.zig:273-277` — `isCheckoutAction`
 - `src/rules/security.zig:1007-1011` — `hasPersistCredentialsFalse`
-- `src/rules/security.zig:1013-1079` — SEC015 (artipacked) 実装、共有化元の `buildPersistCredentialsFix`
-- `src/rules/security.zig:1472` — `security_rules` 配列
+- `src/rules/security.zig:1013-1048` — SEC015 (artipacked) の `checkArtipacked`
+- `src/rules/security.zig:1050-1090` — 共有 helper `buildPersistCredentialsFalseFix`（SEC015 / SEC018 共用）
+- `src/rules/security.zig:1096-1135` — `classifyPersistCredentials` / `checkCheckoutPersistCredentials`
+- `src/rules/security.zig:1528` — `security_rules` 配列（SEC018 は SEC015 と SEC019 の間に登録済み）
 - `src/workflow/types.zig:247-278` — `Step` 構造体（autofix 用 span 全て既存）
 - `src/fix/builder.zig` — `appendMappingEntry`
 - `src/diagnostics.zig:36-45` — `FixSafety` 定義
