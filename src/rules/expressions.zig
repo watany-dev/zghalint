@@ -606,7 +606,7 @@ pub fn validateExpression(
         }) catch return;
         return;
     };
-    validateNode(allocator, &node, base_span, list, expr_base_byte);
+    validateNode(allocator, &node, base_span, list, expr_base_byte, null);
 }
 
 fn validateNode(
@@ -615,16 +615,17 @@ fn validateNode(
     span: Span,
     list: *DiagnosticList,
     expr_base_byte: usize,
+    parent: ?*const ExprNode,
 ) void {
     switch (node.kind) {
         .context_access => validateContextAccess(allocator, node.value, span, list),
-        .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte),
+        .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent),
         .binary_op, .unary_op => {
             if (node.kind == .binary_op) {
                 checkUnsoundCondition(allocator, node, span, list);
             }
             for (node.children) |*child| {
-                validateNode(allocator, child, span, list, expr_base_byte);
+                validateNode(allocator, child, span, list, expr_base_byte, node);
             }
         },
         .string_literal, .number_literal, .boolean_literal, .null_literal => {},
@@ -706,6 +707,7 @@ fn validateFunctionCall(
     span: Span,
     list: *DiagnosticList,
     expr_base_byte: usize,
+    parent: ?*const ExprNode,
 ) void {
     const name = node.value;
     const arg_count: u8 = @intCast(node.children.len);
@@ -745,7 +747,7 @@ fn validateFunctionCall(
     // EXPR006: contains() with string literal may cause unsound substring matching
     if (std.mem.eql(u8, name, "contains") and node.children.len == 2) {
         if (node.children[1].kind == .string_literal) {
-            const fix = buildContainsEqFix(list, node, expr_base_byte);
+            const fix = buildContainsEqFix(list, node, expr_base_byte, parent);
             list.append(.{
                 .rule_id = "EXPR006",
                 .severity = .warning,
@@ -759,25 +761,32 @@ fn validateFunctionCall(
 
     // Validate arguments recursively
     for (node.children) |*child| {
-        validateNode(allocator, child, span, list, expr_base_byte);
+        validateNode(allocator, child, span, list, expr_base_byte, node);
     }
 }
 
 // ============================================================
-// EXPR006 V1 autofix: contains(ctx, 'lit') → ctx == 'lit'
+// EXPR006 autofix: contains(ctx, 'lit') → ctx == 'lit'
+//                  !contains(ctx, 'lit') → ctx != 'lit'   (V2)
 // ============================================================
 
-/// Build an unsafe Edit for the narrow V1 pattern
-/// `contains(context.path, 'literal')` → `context.path == 'literal'`.
+/// Build an unsafe Edit for one of:
+///   * `contains(context.path, 'literal')` → `context.path == 'literal'` (V1)
+///   * `!contains(context.path, 'literal')` → `context.path != 'literal'` (V2)
 ///
-/// Returns null when any V1 exclusion applies:
+/// When `parent` is a unary `!` wrapping this `contains()` call, the Edit
+/// range is widened to span the leading `!` and an inequality operator is
+/// emitted. Otherwise a V1 equality Edit is produced.
+///
+/// Returns null when any of the following exclusions apply:
 ///   * first arg is not a bare `context_access` (function calls / literals rejected)
 ///   * context path contains `.*` or `[` (array / bracket access rejected)
-///   * literal has a `''` escape in its interior (V1 keeps replacement byte-identical)
+///   * literal has a `''` escape in its interior (kept byte-identical)
 fn buildContainsEqFix(
     list: *DiagnosticList,
     node: *const ExprNode,
     expr_base_byte: usize,
+    parent: ?*const ExprNode,
 ) ?Fix {
     const ctx = &node.children[0];
     const lit = &node.children[1];
@@ -793,16 +802,24 @@ fn buildContainsEqFix(
         if (std.mem.indexOfScalar(u8, interior, '\'') != null) return null;
     }
 
+    const is_negated = blk: {
+        const p = parent orelse break :blk false;
+        if (p.kind != .unary_op) break :blk false;
+        break :blk std.mem.eql(u8, p.value, "!");
+    };
+
     const alloc = list.fixAllocator();
-    const replacement = std.fmt.allocPrint(alloc, "{s} == {s}", .{ ctx.value, lit.value }) catch return null;
+    const op: []const u8 = if (is_negated) "!=" else "==";
+    const replacement = std.fmt.allocPrint(alloc, "{s} {s} {s}", .{ ctx.value, op, lit.value }) catch return null;
     const edits = alloc.alloc(Edit, 1) catch return null;
+    const start: usize = if (is_negated) expr_base_byte + parent.?.start_byte else expr_base_byte + node.start_byte;
     edits[0] = .{
-        .start_byte = expr_base_byte + node.start_byte,
+        .start_byte = start,
         .end_byte = expr_base_byte + node.end_byte,
         .replacement = replacement,
     };
     return .{
-        .description = "replace contains() with exact equality",
+        .description = if (is_negated) "replace !contains() with exact inequality" else "replace contains() with exact equality",
         .safety = .unsafe,
         .edits = edits,
     };
@@ -1848,20 +1865,26 @@ test "EXPR006 fix: honors expr_base_byte offset" {
     try std.testing.expectEqual(@as(usize, 128), edit.end_byte);
 }
 
-test "EXPR006 fix: NOT emitted for !contains(ctx, 'lit') (V1 scope)" {
+test "EXPR006 fix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit'" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "!contains(github.ref, 'release')", Span.point(1, 1, 0), &list, 0);
-    // V1: fix is emitted on the inner contains regardless of parent;
-    // current node cannot see the `!` parent, so V1 still emits a fix here.
-    // V2 (separate iteration) will suppress it and instead rewrite the whole !contains().
-    // For V1 we document that the fix IS emitted but the integration test at the
-    // step/job level is responsible for not surfacing it until V2.
+    const src = "!contains(github.ref, 'release')";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    const diag = list.get(0);
+    try std.testing.expectEqualStrings("EXPR006", diag.rule_id);
+    try std.testing.expect(diag.fix != null);
+    const fix = diag.fix.?;
+    try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    const edit = fix.edits[0];
+    // The replacement spans the entire !contains(...) including the leading '!'.
+    try std.testing.expectEqual(@as(usize, 0), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, src.len), edit.end_byte);
+    try std.testing.expectEqualStrings("github.ref != 'release'", edit.replacement);
 }
 
 test "EXPR006 fix: no fix when first arg is function_call" {
@@ -2188,4 +2211,54 @@ test "EXPR006 autofix: --fix (safe only) does not apply EXPR006 fixes" {
         if (std.mem.eql(u8, f.description, "replace contains() with exact equality")) saw_contains_fix = true;
     }
     try std.testing.expect(saw_contains_fix);
+}
+
+test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-end" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    if: "!contains(github.ref, 'release')"
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkJob(&wf.jobs[0], &diags);
+
+    var fix_list = std.ArrayList(Fix){};
+    defer fix_list.deinit(std.testing.allocator);
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
+            if (d.fix) |f| try fix_list.append(std.testing.allocator, f);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), fix_list.items.len);
+    try std.testing.expectEqualStrings(
+        "replace !contains() with exact inequality",
+        fix_list.items[0].description,
+    );
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, fix_list.items);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "if: \"github.ref != 'release'\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
 }
