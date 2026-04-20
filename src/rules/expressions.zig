@@ -895,6 +895,19 @@ fn getArenaAllocator() std.mem.Allocator {
     return std.heap.page_allocator;
 }
 
+/// Return the absolute byte offset of the first character of the scalar's
+/// `value` (the content, not the raw token). For quoted scalars the YAML
+/// parser's `value_span.start_byte` points at the opening quote and `value`
+/// begins one byte later; for plain scalars they coincide. Block / folded
+/// scalars are not yet supported for autofix byte tracking and return the
+/// span as-is (callers currently skip autofix in those cases).
+fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) usize {
+    return switch (meta.style) {
+        .single_quoted, .double_quoted => meta.value_span.start_byte + 1,
+        else => meta.value_span.start_byte,
+    };
+}
+
 pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
     const span = Span.point(0, 0, 0);
@@ -907,7 +920,7 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
 
     // Check 'if' field
     if (step.if_condition) |if_val| {
-        const if_base: usize = if (step.if_condition_meta) |m| m.value_span.start_byte else 0;
+        const if_base: usize = if (step.if_condition_meta) |m| scalarValueStartByte(m) else 0;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
             findAndValidateExpressions(allocator, if_val, span, list, if_base);
         } else {
@@ -931,7 +944,7 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
         for (env_map.keys(), env_map.values()) |key, value| {
             const base: usize = blk: {
                 if (step.env_meta) |meta| {
-                    if (meta.get(key)) |m| break :blk m.value_span.start_byte;
+                    if (meta.get(key)) |m| break :blk scalarValueStartByte(m);
                 }
                 break :blk 0;
             };
@@ -946,7 +959,7 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
 
     // Check 'if' field
     if (job.if_condition) |if_val| {
-        const if_base: usize = if (job.if_condition_meta) |m| m.value_span.start_byte else 0;
+        const if_base: usize = if (job.if_condition_meta) |m| scalarValueStartByte(m) else 0;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
             findAndValidateExpressions(allocator, if_val, span, list, if_base);
         } else {
@@ -963,7 +976,7 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
         for (env_map.keys(), env_map.values()) |key, value| {
             const base: usize = blk: {
                 if (job.env_meta) |meta| {
-                    if (meta.get(key)) |m| break :blk m.value_span.start_byte;
+                    if (meta.get(key)) |m| break :blk scalarValueStartByte(m);
                 }
                 break :blk 0;
             };
@@ -2035,4 +2048,144 @@ test "checkJob EXPR007: if condition with bare literal" {
         }
     }
     try std.testing.expect(found);
+}
+
+// ============================================================
+// EXPR006 V1 autofix integration tests
+// ============================================================
+
+test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    if: "contains(github.ref, 'main')"
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkJob(&wf.jobs[0], &diags);
+
+    var fix_list = std.ArrayList(Fix){};
+    defer fix_list.deinit(std.testing.allocator);
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
+            if (d.fix) |f| try fix_list.append(std.testing.allocator, f);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), fix_list.items.len);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, fix_list.items);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    // The YAML double-quoted wrapper is preserved around the new expression.
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "if: \"github.ref == 'main'\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
+}
+
+test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    if: "${{ contains(github.event_name, 'push') }}"
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkJob(&wf.jobs[0], &diags);
+
+    var fix_list = std.ArrayList(Fix){};
+    defer fix_list.deinit(std.testing.allocator);
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
+            if (d.fix) |f| try fix_list.append(std.testing.allocator, f);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), fix_list.items.len);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, fix_list.items);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "${{ github.event_name == 'push' }}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
+}
+
+test "EXPR006 autofix: --fix (safe only) does not apply EXPR006 fixes" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    if: "contains(github.ref, 'main')"
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkJob(&wf.jobs[0], &diags);
+
+    const safe_only = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, false);
+    defer std.testing.allocator.free(safe_only);
+    for (safe_only) |f| {
+        try std.testing.expect(!std.mem.eql(u8, f.description, "replace contains() with exact equality"));
+    }
+
+    const unsafe_too = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
+    defer std.testing.allocator.free(unsafe_too);
+    var saw_contains_fix = false;
+    for (unsafe_too) |f| {
+        if (std.mem.eql(u8, f.description, "replace contains() with exact equality")) saw_contains_fix = true;
+    }
+    try std.testing.expect(saw_contains_fix);
 }
