@@ -1150,7 +1150,7 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
 
         var hit = false;
         for (entry.shas) |sha| {
-            if (std.mem.eql(u8, ref, sha)) {
+            if (std.ascii.eqlIgnoreCase(ref, sha)) {
                 hit = true;
                 break;
             }
@@ -5669,4 +5669,19 @@ test "SC002: docker action skipped" {
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC002"));
+}
+
+test "SC002: uppercase SHA still fires (case-insensitive match)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("tj-actions/changed-files@0E58ED8671D6B60D0890C21B07F8835ACE038E67") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC002"));
 }
