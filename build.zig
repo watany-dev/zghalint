@@ -14,7 +14,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    addFixtureEmbedPath(b, lib_mod);
 
     // --- Library artifact ---
     const lib = b.addLibrary(.{
