@@ -158,6 +158,8 @@ rules:
   # workspace (package-lock.json / yarn.lock / pnpm-lock.yaml /
   # Pipfile.lock / poetry.lock / requirements.txt / go.sum). Override
   # the probe result when multiple lockfiles coexist or none are checked in.
+  # It also flags oven-sh/setup-bun without actions/cache, and
+  # astral-sh/setup-uv with `enable-cache: false` (no autofix for either).
   PERF001:
     node_cache_manager: pnpm     # one of: npm, yarn, pnpm
     python_cache_manager: poetry # one of: pip, pipenv, poetry

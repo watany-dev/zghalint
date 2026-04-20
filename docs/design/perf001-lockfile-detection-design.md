@@ -154,3 +154,45 @@ rules:
 5. `src/main.zig` で probe → workspace.set
 6. テスト & fixtures 追加
 7. docs (`autofix-implementation-plan.md`, README) 更新
+
+## 独立 setup action の取り扱い (bun / uv)
+
+`actions/setup-node` と `actions/setup-python` はいずれも `cache:` input で公式
+に bun / uv をサポートしない。これらは `oven-sh/setup-bun` / `astral-sh/setup-uv`
+という独立した action として提供されているため、PERF001 では別系統のロジック
+を追加する。関連 ADR: `docs/adr/0005-perf001-bun-uv-extension.md`。
+
+### SetupKind の分類
+
+`src/rules/performance.zig` の `CacheableSetup` に `kind: SetupKind` を追加し、
+以下 3 分類で検査ロジックを分岐する:
+
+| Kind | 対象 action | 警告条件 | autofix |
+|---|---|---|---|
+| `.with_cache_input` | `actions/setup-node` / `actions/setup-python` / `actions/setup-go` | `cache:` 未設定かつ `actions/cache` 不在 | lockfile 推論に従って生成 |
+| `.bun_independent` | `oven-sh/setup-bun` | setup-bun 使用かつ `actions/cache` 不在 | なし（手動追加をガイド） |
+| `.uv_independent` | `astral-sh/setup-uv` | `with.enable-cache == "false"` が明示 | なし |
+
+### bun の lockfile hint
+
+`Context.bun_lockfile_present` は `bun.lock` OR `bun.lockb` の OR 判定で設定する。
+bun の警告は lockfile 有無と独立して発火するが、`bun_lockfile_present == false`
+の場合は `fix_hint` に「Note: no bun.lock or bun.lockb detected at the workspace
+root」を追記してユーザへ追加情報を提供する。
+
+### uv の inverse logic
+
+uv は `enable-cache: auto` (GitHub-hosted runner で ON、self-hosted で OFF) が
+デフォルト。通常は追加設定不要なため、PERF001 は `with.enable-cache == "false"`
+が明示された場合のみ警告する。`enable-cache` 未指定 or `true` は無警告とする。
+文字列比較のため、YAML boolean と quoted string の双方が `"false"` に正規化
+される前提で動く（`src/workflow/parser.zig` の `parseStringMap` が値をそのまま
+スカラ文字列として保持する挙動に依存）。
+
+### 例外: fix 非対応の根拠
+
+- bun は `with.cache` のような input を持たず、挿入すべき key が存在しない
+- uv は `enable-cache: false` を削除するか `true` に書き換える操作がユーザ判断
+  に依存する（意図的に無効化している可能性がある）ため、自動修正は危険
+
+両 kind は `dispatchCacheFix` に到達せず、`fix = null` を固定する。

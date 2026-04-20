@@ -1,0 +1,10 @@
+name: CI
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: "false"
+      - run: uv sync
