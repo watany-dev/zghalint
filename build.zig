@@ -8,11 +8,16 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Strip debug info from Release-mode distribution binaries.
+    // Debug keeps symbols for local development; tests retain debug info for stack traces / kcov.
+    const strip_release: ?bool = if (optimize == .Debug) null else true;
+
     // --- Library module ---
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip_release,
     });
 
     // --- Library artifact ---
@@ -27,6 +32,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip_release,
         .imports = &.{
             .{ .name = "zghalint", .module = lib_mod },
         },
