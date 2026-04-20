@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **46 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **47 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -46,6 +46,7 @@ Detect supply chain risks in action and container image references.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | SC001 | unpinned-images | warning | Container images should be pinned to a SHA256 digest for supply chain security |
+| SC002 | compromised-action-sha | error | Action references a SHA or tag of a known-compromised release |
 | SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database |
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
 | SC005 | stale-action-refs | info | SHA-pinned action does not correspond to any known Git tag |

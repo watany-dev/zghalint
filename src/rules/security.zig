@@ -10,6 +10,7 @@ const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
 const refconfusion = @import("refconfusion.zig");
 const config_mod = @import("../config.zig");
+const compromised_data = @import("data/compromised_actions.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -1134,6 +1135,54 @@ fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) voi
     list.append(diag) catch return;
 }
 
+// ── SC002: Compromised action SHA / tag ──
+
+fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
+    const action_ref = step.uses orelse return;
+    if (action_ref.is_local or action_ref.is_docker) return;
+    const owner = action_ref.owner orelse return;
+    const repo = action_ref.repo orelse return;
+    const ref = action_ref.ref orelse return;
+
+    for (compromised_data.compromised_actions) |entry| {
+        if (!std.mem.eql(u8, owner, entry.owner)) continue;
+        if (!std.mem.eql(u8, repo, entry.repo)) continue;
+
+        var hit = false;
+        for (entry.shas) |sha| {
+            if (std.ascii.eqlIgnoreCase(ref, sha)) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) {
+            for (entry.tags) |tag| {
+                if (std.mem.eql(u8, ref, tag)) {
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        if (!hit) return;
+
+        const alloc = list.fixAllocator();
+        const message = std.fmt.allocPrint(
+            alloc,
+            "{s}/{s}@{s} is a known compromised action (disclosed {s}, see {s})",
+            .{ owner, repo, ref, entry.disclosed, entry.advisory_url },
+        ) catch return;
+
+        list.append(.{
+            .rule_id = "SC002",
+            .severity = .@"error",
+            .message = message,
+            .span = Span.point(0, 0, 0),
+            .fix_hint = "rollback to a pre-incident SHA or migrate to a trusted fork; do not re-pin to any tag of this action",
+        }) catch return;
+        return;
+    }
+}
+
 // ============================================================
 // Shared helpers
 // ============================================================
@@ -1680,6 +1729,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_workflow = &checkSelfHostedRunnerForkTriggeredWorkflow,
+    },
+    .{
+        .id = "SC002",
+        .name = "compromised-action-sha",
+        .description = "Action references a SHA or tag of a known-compromised release",
+        .severity = .@"error",
+        .category = .dependency,
+        .check_step = &checkCompromisedAction,
     },
     .{
         .id = "SC001",
@@ -5518,4 +5575,113 @@ test "SEC020: disabled via config suppresses after engine run" {
         }
     }
     try testing.expectEqual(@as(usize, 0), remaining);
+}
+
+// ── SC002: compromised-action-sha ──
+
+test "SC002: compromised SHA fires error" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("tj-actions/changed-files@0e58ed8671d6b60d0890c21b07f8835ace038e67") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC002"));
+    const diag = findDiagnostic(&list, "SC002").?;
+    try testing.expectEqual(Severity.@"error", diag.severity);
+}
+
+test "SC002: compromised tag fires error" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("tj-actions/changed-files@v44") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC002"));
+}
+
+test "SC002: same owner/repo with non-compromised SHA does not fire" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("tj-actions/changed-files@1111111111111111111111111111111111111111") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC002"));
+}
+
+test "SC002: same SHA on different owner/repo does not fire" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("other-owner/other-repo@0e58ed8671d6b60d0890c21b07f8835ace038e67") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC002"));
+}
+
+test "SC002: local action skipped" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("./local-action") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC002"));
+}
+
+test "SC002: docker action skipped" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("docker://alpine:latest") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC002"));
+}
+
+test "SC002: uppercase SHA still fires (case-insensitive match)" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("tj-actions/changed-files@0E58ED8671D6B60D0890C21B07F8835ACE038E67") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC002"));
 }
