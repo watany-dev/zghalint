@@ -101,6 +101,7 @@ test {
     _ = @import("rules/prefetch.zig");
     _ = @import("rules/graphql.zig");
     _ = @import("rules/disk_cache.zig");
+    _ = @import("rules/data/compromised_actions.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
