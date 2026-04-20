@@ -576,7 +576,18 @@ const valid_functions = [_]FuncSpec{
     .{ .name = "failure", .min_args = 0, .max_args = 0 },
 };
 
-pub fn validateExpression(allocator: std.mem.Allocator, expr: []const u8, base_span: Span, list: *DiagnosticList) void {
+/// Validate an expression.
+///
+/// `expr_base_byte` is the byte offset in the source file at which `expr`
+/// begins. It is used when constructing autofix Edit byte ranges; diagnostics
+/// themselves continue to use `base_span` for reporting.
+pub fn validateExpression(
+    allocator: std.mem.Allocator,
+    expr: []const u8,
+    base_span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: usize,
+) void {
     var parser = ExprParser.init(allocator, expr);
     const node = parser.parse() catch |err| {
         const msg = switch (err) {
@@ -593,19 +604,25 @@ pub fn validateExpression(allocator: std.mem.Allocator, expr: []const u8, base_s
         }) catch return;
         return;
     };
-    validateNode(allocator, &node, base_span, list);
+    validateNode(allocator, &node, base_span, list, expr_base_byte);
 }
 
-fn validateNode(allocator: std.mem.Allocator, node: *const ExprNode, span: Span, list: *DiagnosticList) void {
+fn validateNode(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: usize,
+) void {
     switch (node.kind) {
         .context_access => validateContextAccess(allocator, node.value, span, list),
-        .function_call => validateFunctionCall(allocator, node, span, list),
+        .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte),
         .binary_op, .unary_op => {
             if (node.kind == .binary_op) {
                 checkUnsoundCondition(allocator, node, span, list);
             }
             for (node.children) |*child| {
-                validateNode(allocator, child, span, list);
+                validateNode(allocator, child, span, list, expr_base_byte);
             }
         },
         .string_literal, .number_literal, .boolean_literal, .null_literal => {},
@@ -681,7 +698,13 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
     }
 }
 
-fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, span: Span, list: *DiagnosticList) void {
+fn validateFunctionCall(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: usize,
+) void {
     const name = node.value;
     const arg_count: u8 = @intCast(node.children.len);
 
@@ -732,7 +755,7 @@ fn validateFunctionCall(allocator: std.mem.Allocator, node: *const ExprNode, spa
 
     // Validate arguments recursively
     for (node.children) |*child| {
-        validateNode(allocator, child, span, list);
+        validateNode(allocator, child, span, list, expr_base_byte);
     }
 }
 
@@ -766,7 +789,18 @@ fn checkUnsoundCondition(allocator: std.mem.Allocator, node: *const ExprNode, sp
 // ============================================================
 
 /// Find all ${{ ... }} expressions in a string and validate each.
-pub fn findAndValidateExpressions(allocator: std.mem.Allocator, text: []const u8, base_span: Span, list: *DiagnosticList) void {
+///
+/// `text_base_byte` is the byte offset in the source file at which `text`
+/// begins. For each inner `${{ ... }}` the trimmed expression's absolute
+/// offset is forwarded to `validateExpression` so EXPR006 autofix can emit
+/// byte-accurate Edits.
+pub fn findAndValidateExpressions(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    base_span: Span,
+    list: *DiagnosticList,
+    text_base_byte: usize,
+) void {
     var pos: usize = 0;
     while (pos + 2 < text.len) {
         if (text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{') {
@@ -774,7 +808,17 @@ pub fn findAndValidateExpressions(allocator: std.mem.Allocator, text: []const u8
             if (std.mem.indexOf(u8, text[expr_start..], "}}")) |end_offset| {
                 const expr_content = text[expr_start .. expr_start + end_offset];
                 const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
-                validateExpression(allocator, trimmed, base_span, list);
+                // Compute leading trim offset so `trimmed`'s absolute byte is accurate.
+                const leading_trim = blk: {
+                    var i: usize = 0;
+                    while (i < expr_content.len) : (i += 1) {
+                        const c = expr_content[i];
+                        if (c != ' ' and c != '\t' and c != '\n' and c != '\r') break;
+                    }
+                    break :blk i;
+                };
+                const expr_base_byte = text_base_byte + expr_start + leading_trim;
+                validateExpression(allocator, trimmed, base_span, list, expr_base_byte);
                 pos = expr_start + end_offset + 2;
             } else {
                 list.append(.{
@@ -808,32 +852,41 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
 
     // Check 'run' field
     if (step.run) |run_val| {
-        findAndValidateExpressions(allocator, run_val, span, list);
+        const run_base: usize = if (step.run_value_span) |s| s.start_byte else 0;
+        findAndValidateExpressions(allocator, run_val, span, list, run_base);
     }
 
     // Check 'if' field
     if (step.if_condition) |if_val| {
+        const if_base: usize = if (step.if_condition_meta) |m| m.value_span.start_byte else 0;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, span, list);
+            findAndValidateExpressions(allocator, if_val, span, list, if_base);
         } else {
             const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
             if (trimmed.len > 0) {
-                validateExpression(allocator, trimmed, span, list);
+                const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
+                validateExpression(allocator, trimmed, span, list, if_base + leading);
             }
         }
     }
 
-    // Check 'with' values
+    // Check 'with' values — no autofix tracking; byte base is 0.
     if (step.with) |with_map| {
         for (with_map.values()) |value| {
-            findAndValidateExpressions(allocator, value, span, list);
+            findAndValidateExpressions(allocator, value, span, list, 0);
         }
     }
 
-    // Check 'env' values
+    // Check 'env' values — use env_meta when available for accurate byte tracking.
     if (step.env) |env_map| {
-        for (env_map.values()) |value| {
-            findAndValidateExpressions(allocator, value, span, list);
+        for (env_map.keys(), env_map.values()) |key, value| {
+            const base: usize = blk: {
+                if (step.env_meta) |meta| {
+                    if (meta.get(key)) |m| break :blk m.value_span.start_byte;
+                }
+                break :blk 0;
+            };
+            findAndValidateExpressions(allocator, value, span, list, base);
         }
     }
 }
@@ -844,20 +897,28 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
 
     // Check 'if' field
     if (job.if_condition) |if_val| {
+        const if_base: usize = if (job.if_condition_meta) |m| m.value_span.start_byte else 0;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, span, list);
+            findAndValidateExpressions(allocator, if_val, span, list, if_base);
         } else {
             const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
             if (trimmed.len > 0) {
-                validateExpression(allocator, trimmed, span, list);
+                const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
+                validateExpression(allocator, trimmed, span, list, if_base + leading);
             }
         }
     }
 
     // Check 'env' values
     if (job.env) |env_map| {
-        for (env_map.values()) |value| {
-            findAndValidateExpressions(allocator, value, span, list);
+        for (env_map.keys(), env_map.values()) |key, value| {
+            const base: usize = blk: {
+                if (job.env_meta) |meta| {
+                    if (meta.get(key)) |m| break :blk m.value_span.start_byte;
+                }
+                break :blk 0;
+            };
+            findAndValidateExpressions(allocator, value, span, list, base);
         }
     }
 }
@@ -1179,7 +1240,7 @@ test "validate: valid expression github.sha" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.sha", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.sha", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1189,7 +1250,7 @@ test "validate: valid expression github.ref" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.ref == 'refs/heads/main'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.ref == 'refs/heads/main'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1199,7 +1260,7 @@ test "validate: valid function contains" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(github.event_name, 'push')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "contains(github.event_name, 'push')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
@@ -1210,7 +1271,7 @@ test "validate: valid function success" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "success()", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "success()", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1220,7 +1281,7 @@ test "validate: valid expression with runner.os" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "runner.os == 'Linux'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "runner.os == 'Linux'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1230,7 +1291,7 @@ test "validate: valid complex expression" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name == 'push' && contains(github.ref, 'main')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.event_name == 'push' && contains(github.ref, 'main')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
@@ -1250,7 +1311,7 @@ test "validate: valid contexts env, secrets, matrix, steps, needs, inputs, vars,
         "job.status",                  "jobs.build.result",
     };
     for (contexts) |ctx| {
-        validateExpression(arena.allocator(), ctx, span, &list);
+        validateExpression(arena.allocator(), ctx, span, &list, 0);
     }
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
@@ -1261,7 +1322,7 @@ test "validate: unknown context" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "unknown.property", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "unknown.property", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR002", list.get(0).rule_id);
 }
@@ -1272,7 +1333,7 @@ test "validate: unknown github property" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.nonexistent_prop", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.nonexistent_prop", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR003", list.get(0).rule_id);
 }
@@ -1283,7 +1344,7 @@ test "validate: unknown runner property" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "runner.nonexistent", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "runner.nonexistent", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR003", list.get(0).rule_id);
 }
@@ -1294,7 +1355,7 @@ test "validate: unknown function" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "unknownFunc()", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "unknownFunc()", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR004", list.get(0).rule_id);
 }
@@ -1305,7 +1366,7 @@ test "validate: wrong arg count for contains" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(github.ref)", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "contains(github.ref)", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
 }
@@ -1316,7 +1377,7 @@ test "validate: wrong arg count for success" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "success('unexpected')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "success('unexpected')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
 }
@@ -1325,7 +1386,7 @@ test "validate: empty expression" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(std.testing.allocator, "", Span.point(1, 1, 0), &list);
+    validateExpression(std.testing.allocator, "", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
 }
@@ -1336,7 +1397,7 @@ test "validate: syntax error unclosed paren" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "(github.sha", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "(github.sha", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
 }
@@ -1349,7 +1410,7 @@ test "find expressions: single expression in string" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha }}", Span.point(1, 1, 0), &list);
+    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha }}", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1359,7 +1420,7 @@ test "find expressions: multiple expressions" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "${{ github.sha }} and ${{ github.ref }}", Span.point(1, 1, 0), &list);
+    findAndValidateExpressions(arena.allocator(), "${{ github.sha }} and ${{ github.ref }}", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1369,7 +1430,7 @@ test "find expressions: unclosed expression" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha", Span.point(1, 1, 0), &list);
+    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
 }
@@ -1378,7 +1439,7 @@ test "find expressions: no expressions in plain text" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(std.testing.allocator, "echo hello world", Span.point(1, 1, 0), &list);
+    findAndValidateExpressions(std.testing.allocator, "echo hello world", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1388,7 +1449,7 @@ test "find expressions: expression with unknown context" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "${{ badcontext.value }}", Span.point(1, 1, 0), &list);
+    findAndValidateExpressions(arena.allocator(), "${{ badcontext.value }}", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR002", list.get(0).rule_id);
 }
@@ -1491,7 +1552,7 @@ test "validate: all valid functions with correct args" {
         "failure()",
     };
     for (exprs) |expr| {
-        validateExpression(arena.allocator(), expr, span, &list);
+        validateExpression(arena.allocator(), expr, span, &list, 0);
     }
     // contains('hello', 'ell') triggers EXPR006
     try std.testing.expectEqual(@as(usize, 1), list.len());
@@ -1511,7 +1572,7 @@ test "validate: all valid github properties" {
         "github.run_id",     "github.run_number", "github.token",
     };
     for (props) |prop| {
-        validateExpression(arena.allocator(), prop, span, &list);
+        validateExpression(arena.allocator(), prop, span, &list, 0);
     }
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
@@ -1528,7 +1589,7 @@ test "validate: all valid runner properties" {
         "runner.temp", "runner.tool_cache", "runner.debug",
     };
     for (props) |prop| {
-        validateExpression(arena.allocator(), prop, span, &list);
+        validateExpression(arena.allocator(), prop, span, &list, 0);
     }
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
@@ -1541,7 +1602,7 @@ test "validate: hashFiles with multiple args" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "hashFiles('**/package-lock.json', '**/yarn.lock')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "hashFiles('**/package-lock.json', '**/yarn.lock')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1551,7 +1612,7 @@ test "validate: format with multiple args" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "format('{0}-{1}', github.ref, github.sha)", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "format('{0}-{1}', github.ref, github.sha)", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1561,7 +1622,7 @@ test "validate: nested function calls" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(toJSON(github.event), 'push')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "contains(toJSON(github.event), 'push')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
@@ -1572,7 +1633,7 @@ test "validate: complex logical expression" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "!cancelled() && (success() || failure())", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "!cancelled() && (success() || failure())", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1582,7 +1643,7 @@ test "validate: toJSON wrong args" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "toJSON(github.event, 'extra')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "toJSON(github.event, 'extra')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
 }
@@ -1595,7 +1656,7 @@ test "EXPR006: contains with string literal second arg" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(github.ref, 'main')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "contains(github.ref, 'main')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
     try std.testing.expectEqual(Severity.warning, list.get(0).severity);
@@ -1608,7 +1669,7 @@ test "EXPR006: contains in complex expression" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(github.ref, 'main') && github.event_name == 'push'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "contains(github.ref, 'main') && github.event_name == 'push'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
@@ -1619,7 +1680,7 @@ test "EXPR006: contains nested in not" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "!contains(github.ref, 'release')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "!contains(github.ref, 'release')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
@@ -1630,7 +1691,7 @@ test "EXPR006: multiple contains calls" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(github.ref, 'main') || contains(github.actor, 'bot')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "contains(github.ref, 'main') || contains(github.actor, 'bot')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 2), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
     try std.testing.expectEqualStrings("EXPR006", list.get(1).rule_id);
@@ -1642,7 +1703,7 @@ test "EXPR006: no warning for startsWith" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "startsWith(github.ref, 'refs/heads/main')", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "startsWith(github.ref, 'refs/heads/main')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1652,7 +1713,7 @@ test "EXPR006: no warning for exact comparison" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.ref == 'refs/heads/main'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.ref == 'refs/heads/main'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1662,7 +1723,7 @@ test "EXPR006: no warning for non-literal second arg" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(github.ref, github.base_ref)", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "contains(github.ref, github.base_ref)", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1699,7 +1760,7 @@ test "validate EXPR007: bare string literal right of ||" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
     try std.testing.expectEqual(Severity.warning, list.get(0).severity);
@@ -1711,7 +1772,7 @@ test "validate EXPR007: bare string literal right of &&" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name != 'push' && 'pull_request'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.event_name != 'push' && 'pull_request'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
 }
@@ -1722,7 +1783,7 @@ test "validate EXPR007: bare string literal left of ||" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
 }
@@ -1733,7 +1794,7 @@ test "validate EXPR007: bare number literal right of ||" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
 }
@@ -1744,7 +1805,7 @@ test "validate EXPR007: no false positive for proper comparison" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name == 'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.event_name == 'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1754,7 +1815,7 @@ test "validate EXPR007: no false positive for function call operands" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "success() || failure()", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "success() || failure()", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1764,7 +1825,7 @@ test "validate EXPR007: no false positive for boolean literal" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "true || github.event_name == 'push'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "true || github.event_name == 'push'", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1774,7 +1835,7 @@ test "validate EXPR007: multiple bare literals in chained ||" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request' || 'workflow_dispatch'", Span.point(1, 1, 0), &list);
+    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request' || 'workflow_dispatch'", Span.point(1, 1, 0), &list, 0);
     var expr007_count: usize = 0;
     for (list.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR007")) expr007_count += 1;
