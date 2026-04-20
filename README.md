@@ -111,9 +111,9 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **44 rules** across 7 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **46 rules** across 8 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
-### Security (19 rules)
+### Security (20 rules)
 
 Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, and more.
 
@@ -140,6 +140,10 @@ Overly broad scopes, missing job-level permissions.
 ### Dependencies (2 rules)
 
 Dependabot cooldown configuration, insecure external code execution settings.
+
+### Runner (1 rule)
+
+Deprecated or retired `runs-on:` label detection.
 
 ## Configuration
 
