@@ -236,6 +236,10 @@ pub const ExprNode = struct {
     /// for literals: the value; for ops: the operator
     value: []const u8,
     children: []const ExprNode,
+    /// Byte offset of the node's first token within the expression source string
+    start_byte: u32 = 0,
+    /// Byte offset one past the node's last token within the expression source string
+    end_byte: u32 = 0,
 };
 
 // ============================================================
@@ -292,7 +296,13 @@ pub const ExprParser = struct {
             const children = try self.allocator.alloc(ExprNode, 2);
             children[0] = left;
             children[1] = right;
-            left = ExprNode{ .kind = .binary_op, .value = op, .children = children };
+            left = ExprNode{
+                .kind = .binary_op,
+                .value = op,
+                .children = children,
+                .start_byte = children[0].start_byte,
+                .end_byte = children[1].end_byte,
+            };
         }
         return left;
     }
@@ -306,7 +316,13 @@ pub const ExprParser = struct {
             const children = try self.allocator.alloc(ExprNode, 2);
             children[0] = left;
             children[1] = right;
-            left = ExprNode{ .kind = .binary_op, .value = op, .children = children };
+            left = ExprNode{
+                .kind = .binary_op,
+                .value = op,
+                .children = children,
+                .start_byte = children[0].start_byte,
+                .end_byte = children[1].end_byte,
+            };
         }
         return left;
     }
@@ -320,7 +336,13 @@ pub const ExprParser = struct {
             const children = try self.allocator.alloc(ExprNode, 2);
             children[0] = left;
             children[1] = right;
-            left = ExprNode{ .kind = .binary_op, .value = op, .children = children };
+            left = ExprNode{
+                .kind = .binary_op,
+                .value = op,
+                .children = children,
+                .start_byte = children[0].start_byte,
+                .end_byte = children[1].end_byte,
+            };
         }
         return left;
     }
@@ -328,11 +350,18 @@ pub const ExprParser = struct {
     fn parseUnary(self: *ExprParser) ParseError!ExprNode {
         if (self.current.kind == .not_op) {
             const op = self.current.value;
+            const op_start = self.current.pos;
             self.advance();
             const operand = try self.parseUnary();
             const children = try self.allocator.alloc(ExprNode, 1);
             children[0] = operand;
-            return ExprNode{ .kind = .unary_op, .value = op, .children = children };
+            return ExprNode{
+                .kind = .unary_op,
+                .value = op,
+                .children = children,
+                .start_byte = @intCast(op_start),
+                .end_byte = operand.end_byte,
+            };
         }
         return self.parsePrimary();
     }
@@ -341,13 +370,27 @@ pub const ExprParser = struct {
         switch (self.current.kind) {
             .string_literal => {
                 const val = self.current.value;
+                const start = self.current.pos;
                 self.advance();
-                return ExprNode{ .kind = .string_literal, .value = val, .children = &.{} };
+                return ExprNode{
+                    .kind = .string_literal,
+                    .value = val,
+                    .children = &.{},
+                    .start_byte = @intCast(start),
+                    .end_byte = @intCast(start + val.len),
+                };
             },
             .number => {
                 const val = self.current.value;
+                const start = self.current.pos;
                 self.advance();
-                return ExprNode{ .kind = .number_literal, .value = val, .children = &.{} };
+                return ExprNode{
+                    .kind = .number_literal,
+                    .value = val,
+                    .children = &.{},
+                    .start_byte = @intCast(start),
+                    .end_byte = @intCast(start + val.len),
+                };
             },
             .open_paren => {
                 self.advance();
@@ -361,23 +404,36 @@ pub const ExprParser = struct {
             },
             .identifier => {
                 const name = self.current.value;
+                const name_start = self.current.pos;
                 self.advance();
 
                 // Check for boolean/null literals
                 if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false")) {
-                    return ExprNode{ .kind = .boolean_literal, .value = name, .children = &.{} };
+                    return ExprNode{
+                        .kind = .boolean_literal,
+                        .value = name,
+                        .children = &.{},
+                        .start_byte = @intCast(name_start),
+                        .end_byte = @intCast(name_start + name.len),
+                    };
                 }
                 if (std.mem.eql(u8, name, "null")) {
-                    return ExprNode{ .kind = .null_literal, .value = name, .children = &.{} };
+                    return ExprNode{
+                        .kind = .null_literal,
+                        .value = name,
+                        .children = &.{},
+                        .start_byte = @intCast(name_start),
+                        .end_byte = @intCast(name_start + name.len),
+                    };
                 }
 
                 // Function call: identifier followed by (
                 if (self.current.kind == .open_paren) {
-                    return self.parseFunctionCall(name);
+                    return self.parseFunctionCall(name, name_start);
                 }
 
                 // Context access: identifier possibly followed by dots
-                return self.parseContextAccess(name);
+                return self.parseContextAccess(name, name_start);
             },
             .@"error" => {
                 self.error_message = "invalid token in expression";
@@ -390,7 +446,7 @@ pub const ExprParser = struct {
         }
     }
 
-    fn parseFunctionCall(self: *ExprParser, name: []const u8) ParseError!ExprNode {
+    fn parseFunctionCall(self: *ExprParser, name: []const u8, name_start: usize) ParseError!ExprNode {
         self.advance(); // skip '('
         var args = std.ArrayList(ExprNode){};
 
@@ -408,23 +464,34 @@ pub const ExprParser = struct {
             self.error_message = "missing closing parenthesis in function call";
             return ParseError.UnclosedParen;
         }
+        const close_paren_pos = self.current.pos;
         self.advance();
 
         const children = args.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
-        return ExprNode{ .kind = .function_call, .value = name, .children = children };
+        return ExprNode{
+            .kind = .function_call,
+            .value = name,
+            .children = children,
+            .start_byte = @intCast(name_start),
+            .end_byte = @intCast(close_paren_pos + 1),
+        };
     }
 
-    fn parseContextAccess(self: *ExprParser, first: []const u8) ParseError!ExprNode {
+    fn parseContextAccess(self: *ExprParser, first: []const u8, first_start: usize) ParseError!ExprNode {
         var parts = std.ArrayList(u8){};
         parts.appendSlice(self.allocator, first) catch return ParseError.OutOfMemory;
+        var last_end: usize = first_start + first.len;
 
         while (self.current.kind == .dot) {
+            last_end = self.current.pos + 1;
             parts.append(self.allocator, '.') catch return ParseError.OutOfMemory;
             self.advance();
             if (self.current.kind == .identifier) {
+                last_end = self.current.pos + self.current.value.len;
                 parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
                 self.advance();
             } else if (self.current.kind == .star) {
+                last_end = self.current.pos + 1;
                 parts.append(self.allocator, '*') catch return ParseError.OutOfMemory;
                 self.advance();
             } else {
@@ -449,11 +516,18 @@ pub const ExprParser = struct {
                 self.error_message = "missing closing bracket";
                 return ParseError.UnexpectedToken;
             }
+            last_end = self.current.pos + 1;
             self.advance();
         }
 
         const path = parts.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
-        return ExprNode{ .kind = .context_access, .value = path, .children = &.{} };
+        return ExprNode{
+            .kind = .context_access,
+            .value = path,
+            .children = &.{},
+            .start_byte = @intCast(first_start),
+            .end_byte = @intCast(last_end),
+        };
     }
 };
 
@@ -1015,6 +1089,86 @@ test "parser: unclosed function call error" {
     var parser = ExprParser.init(arena.allocator(), "contains(github.ref");
     const result = parser.parse();
     try std.testing.expectError(ParseError.UnclosedParen, result);
+}
+
+// --- Byte offset tests ---
+
+test "parser: byte offsets for string literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "'hello'";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.string_literal, node.kind);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+}
+
+test "parser: byte offsets for context access" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "github.ref";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.context_access, node.kind);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+}
+
+test "parser: byte offsets for function call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "contains(github.ref, 'main')";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.function_call, node.kind);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+
+    // First arg: github.ref at [9, 19)
+    const arg0 = node.children[0];
+    try std.testing.expectEqual(NodeKind.context_access, arg0.kind);
+    try std.testing.expectEqual(@as(u32, 9), arg0.start_byte);
+    try std.testing.expectEqual(@as(u32, 19), arg0.end_byte);
+
+    // Second arg: 'main' at [21, 27)
+    const arg1 = node.children[1];
+    try std.testing.expectEqual(NodeKind.string_literal, arg1.kind);
+    try std.testing.expectEqual(@as(u32, 21), arg1.start_byte);
+    try std.testing.expectEqual(@as(u32, 27), arg1.end_byte);
+}
+
+test "parser: byte offsets for unary not" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "!cancelled()";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.unary_op, node.kind);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+}
+
+test "parser: byte offsets for binary op" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "github.ref == 'main'";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.binary_op, node.kind);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+}
+
+test "parser: byte offsets for star context access" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "github.event.commits.*.message";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.context_access, node.kind);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
 }
 
 // --- Validator Tests ---
