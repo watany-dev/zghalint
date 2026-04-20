@@ -254,6 +254,8 @@ pub const Step = struct {
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
     if_condition: ?[]const u8 = null,
+    /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
+    if_condition_meta: ?ScalarValueMeta = null,
     continue_on_error: bool = false,
     timeout_minutes: ?u32 = null,
     working_directory: ?[]const u8 = null,
@@ -315,6 +317,8 @@ pub const Job = struct {
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
     if_condition: ?[]const u8 = null,
+    /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
+    if_condition_meta: ?ScalarValueMeta = null,
     timeout_minutes: ?u32 = null,
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
