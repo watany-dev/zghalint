@@ -1096,8 +1096,8 @@ const PersistCredentialsState = enum { not_set, explicit_true, explicit_false };
 fn classifyPersistCredentials(step: *const Step) PersistCredentialsState {
     const with_map = step.with orelse return .not_set;
     const val = with_map.get("persist-credentials") orelse return .not_set;
-    if (std.mem.eql(u8, val, "false")) return .explicit_false;
-    if (std.mem.eql(u8, val, "true")) return .explicit_true;
+    if (std.ascii.eqlIgnoreCase(val, "false")) return .explicit_false;
+    if (std.ascii.eqlIgnoreCase(val, "true")) return .explicit_true;
     return .not_set;
 }
 
@@ -4465,6 +4465,43 @@ test "SEC018: autofix appends entry when with already exists" {
     try testing.expectEqual(@as(usize, 80), fix.edits[0].start_byte);
     try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") == null);
     try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
+}
+
+test "SEC018: YAML-boolean capitalization variants are classified correctly" {
+    const eng = engine.Engine.init(&security_rules);
+
+    var with_false_caps = workflow_types.StringMap.init(testing.allocator);
+    with_false_caps.put("persist-credentials", "False") catch unreachable;
+    defer with_false_caps.deinit();
+    const steps_false = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with_false_caps },
+    };
+    const jobs_false = [_]Job{.{ .id = "build", .steps = &steps_false, .permissions = Permissions{} }};
+    const wf_false = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs_false, .permissions = Permissions{} };
+    var list_false = eng.run(testing.allocator, &wf_false);
+    defer list_false.deinit();
+    try testing.expect(!hasDiagnostic(&list_false, "SEC018"));
+
+    var with_true_caps = workflow_types.StringMap.init(testing.allocator);
+    with_true_caps.put("persist-credentials", "TRUE") catch unreachable;
+    defer with_true_caps.deinit();
+    const steps_true = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .with = with_true_caps,
+            .uses_key_col = 8,
+            .uses_value_end_byte = 50,
+            .with_last_entry_end_byte = 80,
+        },
+    };
+    const jobs_true = [_]Job{.{ .id = "build", .steps = &steps_true, .permissions = Permissions{} }};
+    const wf_true = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs_true, .permissions = Permissions{} };
+    var list_true = eng.run(testing.allocator, &wf_true);
+    defer list_true.deinit();
+    try testing.expect(hasDiagnostic(&list_true, "SEC018"));
+    const diag = findDiagnostic(&list_true, "SEC018").?;
+    try testing.expect(diag.fix == null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "explicitly set to true") != null);
 }
 
 test "SEC018: non-checkout action does not trigger" {
