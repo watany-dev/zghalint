@@ -441,7 +441,11 @@ fn tryGraphQlBatch(
     var idx: usize = 0;
     while (idx < inputs.len) {
         if (engine.isNetworkDeadlineExceeded()) return idx > 0;
-        const end = @min(idx + graphql.max_repos_per_batch, inputs.len);
+        // Use the impostor-aware batch size only when this tail of inputs
+        // actually contains an SC008 request. Purely SC004/5/6 batches
+        // keep the larger per-post throughput.
+        const batch_limit = graphql.maxReposPerBatch(inputs[idx..]);
+        const end = @min(idx + batch_limit, inputs.len);
         const chunk = inputs[idx..end];
 
         const results = graphql.batchQuery(scratch, chunk) catch |err| switch (err) {

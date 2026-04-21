@@ -100,11 +100,25 @@ pub const RepoResult = struct {
 // Query building
 // ============================================================
 
-/// Maximum repos per batch. SC008's branchNodes + defaultBranchRef roughly
-/// doubles the node count per repo, so we lower this from 30 to keep us
-/// well below GraphQL's default node limit of 500k even when impostor
-/// checks are active.
-pub const max_repos_per_batch: usize = 20;
+/// Maximum repos per batch for non-SC008 queries. SC004/SC005/SC006-only
+/// runs keep this throughput because their node cost per repo is small.
+pub const max_repos_per_batch: usize = 30;
+
+/// Reduced batch size for batches that include at least one SC008 lookup.
+/// branchNodes + defaultBranchRef roughly doubles the node count per repo,
+/// so we lower this so the query stays well below GraphQL's default node
+/// limit of 500k.
+pub const max_repos_per_batch_with_impostor: usize = 20;
+
+/// Pick the batch size appropriate for `repos`: fall back to the
+/// impostor-aware limit whenever any repo needs SC008 data, so a single
+/// SC008 request doesn't push the whole batch over the node ceiling.
+pub fn maxReposPerBatch(repos: []const RepoInput) usize {
+    for (repos) |r| {
+        if (r.needs_impostor) return max_repos_per_batch_with_impostor;
+    }
+    return max_repos_per_batch;
+}
 
 /// Append the `, first:100[, after:"<cursor>"]` argument tail to a
 /// `refs(refPrefix:"...")` call. Cursor strings come from GitHub's
@@ -969,11 +983,26 @@ test "buildQuery: tags_cursor and branches_cursor emit after: arguments" {
     try testing.expect(std.mem.indexOf(u8, q, "branchNodes: refs(refPrefix:\"refs/heads/\", first:100, after:\"BRANCHCURSOR==\")") != null);
 }
 
-test "buildQuery: max_repos_per_batch lowered to 20 for impostor headroom" {
-    // Deliberate constant assertion: dropping below 20 again would silently
-    // shrink batch sizes; raising it without re-evaluating GraphQL node cost
-    // could blow past the 500k node ceiling once branchNodes is included.
-    try testing.expectEqual(@as(usize, 20), max_repos_per_batch);
+test "maxReposPerBatch: impostor-free batches keep the larger limit" {
+    // Deliberate constant assertion: SC004/SC005/SC006-only queries stay
+    // cheap, so they shouldn't pay the SC008 batch-size penalty.
+    try testing.expectEqual(@as(usize, 30), max_repos_per_batch);
+    try testing.expectEqual(@as(usize, 20), max_repos_per_batch_with_impostor);
+    const inputs = [_]RepoInput{
+        .{ .owner = "a", .repo = "a" },
+        .{ .owner = "b", .repo = "b" },
+    };
+    try testing.expectEqual(@as(usize, 30), maxReposPerBatch(&inputs));
+}
+
+test "maxReposPerBatch: any impostor need shrinks the batch to 20" {
+    // branchNodes + defaultBranchRef roughly doubles the per-repo node cost,
+    // so even one SC008 request must drop the whole batch below 500k nodes.
+    const inputs = [_]RepoInput{
+        .{ .owner = "a", .repo = "a" },
+        .{ .owner = "b", .repo = "b", .needs_impostor = true },
+    };
+    try testing.expectEqual(@as(usize, 20), maxReposPerBatch(&inputs));
 }
 
 test "parseResponse: branchNodes populates branch_oids" {
