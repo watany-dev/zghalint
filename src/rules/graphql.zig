@@ -33,6 +33,15 @@ pub const RepoInput = struct {
     sha_refs: []const []const u8 = &.{},
     /// Non-SHA refs for SC006 (ref confusion): "is this name both tag + branch?"
     named_refs: []const []const u8 = &.{},
+    /// SC008: also fetch branch HEAD oids and the default branch so prefetch
+    /// can decide reachability for `sha_refs`. Implies `sha_refs.len > 0`.
+    needs_impostor: bool = false,
+    /// Continuation cursor for tagNodes pagination (per-repo). When set,
+    /// emitted as `after:"<cursor>"` in the refs(refPrefix:"refs/tags/")
+    /// argument list. null on the first page.
+    tags_cursor: ?[]const u8 = null,
+    /// Continuation cursor for branchNodes pagination. Same semantics.
+    branches_cursor: ?[]const u8 = null,
 };
 
 pub const ShaTagResolution = enum { has_tag, no_tag, unknown };
@@ -48,6 +57,14 @@ pub const NamedRefResult = struct {
     is_branch: bool,
 };
 
+/// A ref name paired with its target commit OID. Used for both branch HEAD
+/// listings (SC008 step2 reachability) and the suggested-tag listings that
+/// SC008 surfaces in fix_hint.
+pub const NamedOid = struct {
+    name: []const u8,
+    oid: []const u8,
+};
+
 pub const RepoResult = struct {
     owner: []const u8,
     repo: []const u8,
@@ -60,15 +77,48 @@ pub const RepoResult = struct {
     /// or the legacy 100-node heuristic fired). Callers that need to know every tag SHA
     /// must consult this flag before trusting a negative match.
     tag_oids_complete: bool = true,
+    /// All tag (name, commit oid) pairs from the fetched page, with
+    /// annotated tags resolved to their underlying commit oid. Populated
+    /// whenever tagNodes was requested.
+    tag_oids: []const NamedOid = &.{},
+    /// All branch (name, head oid) pairs from the fetched page. Populated
+    /// only when `needs_impostor` was set on the request.
+    branch_oids: []const NamedOid = &.{},
+    /// Mirror of tag_oids_complete for the branches listing.
+    branch_oids_complete: bool = true,
+    /// Default branch (name + head oid). Populated when `needs_impostor`.
+    default_branch: ?NamedOid = null,
+    /// pageInfo.endCursor for tagNodes when more pages exist; null when
+    /// the fetch is complete.
+    tags_next_cursor: ?[]const u8 = null,
+    /// pageInfo.endCursor for branchNodes when more pages exist; null when
+    /// the fetch is complete.
+    branches_next_cursor: ?[]const u8 = null,
 };
 
 // ============================================================
 // Query building
 // ============================================================
 
-/// Maximum repos per batch. Each repo can add ~1 + 2*named_refs fields; 30
-/// keeps us well below GraphQL's default node limit of 500k.
-pub const max_repos_per_batch: usize = 30;
+/// Maximum repos per batch. SC008's branchNodes + defaultBranchRef roughly
+/// doubles the node count per repo, so we lower this from 30 to keep us
+/// well below GraphQL's default node limit of 500k even when impostor
+/// checks are active.
+pub const max_repos_per_batch: usize = 20;
+
+/// Append the `, first:100[, after:"<cursor>"]` argument tail to a
+/// `refs(refPrefix:"...")` call. Cursor strings come from GitHub's
+/// pageInfo.endCursor and are opaque base64 — we trust them as-is.
+fn writePagedRefArgs(
+    allocator: Allocator,
+    buf: *std.ArrayList(u8),
+    cursor: ?[]const u8,
+) !void {
+    try buf.appendSlice(allocator, ", first:100");
+    if (cursor) |c| {
+        try buf.writer(allocator).print(", after:\"{s}\"", .{c});
+    }
+}
 
 /// Build a GraphQL query body for the given repo inputs. Caller owns the
 /// returned slice.
@@ -84,6 +134,15 @@ pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
             .{ idx, repo.owner, repo.repo },
         );
 
+        if (repo.needs_impostor) {
+            // SC008 step3 / fix_hint candidate. Default branch resolves to a
+            // single ref; we always have it for a non-archived public repo.
+            try buf.appendSlice(
+                allocator,
+                " defaultBranchRef { name target { oid } }",
+            );
+        }
+
         for (repo.named_refs, 0..) |named, j| {
             try buf.writer(allocator).print(
                 " tag_{d}: ref(qualifiedName:\"refs/tags/{s}\") {{ name }} branch_{d}: ref(qualifiedName:\"refs/heads/{s}\") {{ name }}",
@@ -96,9 +155,23 @@ pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
             // see the underlying commit oid in a single round trip. pageInfo
             // lets the caller detect when more pages exist and mark affected
             // SHA lookups as unknown rather than falsely claiming no_tag.
+            try buf.appendSlice(allocator, " tagNodes: refs(refPrefix:\"refs/tags/\"");
+            try writePagedRefArgs(allocator, &buf, repo.tags_cursor);
             try buf.appendSlice(
                 allocator,
-                " tagNodes: refs(refPrefix:\"refs/tags/\", first:100) { pageInfo { hasNextPage endCursor } nodes { name target { oid ... on Tag { target { oid } } } } }",
+                ") { pageInfo { hasNextPage endCursor } nodes { name target { oid ... on Tag { target { oid } } } } }",
+            );
+        }
+
+        if (repo.needs_impostor and repo.sha_refs.len > 0) {
+            // SC008 step2: enumerate branch HEAD oids. Each branch's
+            // target.oid is the head commit; no annotated-ref dereferencing
+            // is needed because branches always point at commits.
+            try buf.appendSlice(allocator, " branchNodes: refs(refPrefix:\"refs/heads/\"");
+            try writePagedRefArgs(allocator, &buf, repo.branches_cursor);
+            try buf.appendSlice(
+                allocator,
+                ") { pageInfo { hasNextPage endCursor } nodes { name target { oid } } }",
             );
         }
 
@@ -297,18 +370,20 @@ fn parseRepoObject(
     // authoritative when present; otherwise fall back to the legacy
     // heuristic that treats a full 100-node page as "could have more"
     // so pre-pageInfo test fixtures keep the same unknown/no_tag split.
-    result.tag_oids_complete = tagNodesComplete(obj);
+    result.tag_oids_complete = refsListingComplete(obj, "tagNodes");
+    result.tags_next_cursor = refsListingNextCursor(obj, "tagNodes");
 
     if (repo.sha_refs.len > 0) {
-        // Collect all commit oids reachable from tag refs.
-        var resolutions = try allocator.alloc(ShaTagResult, repo.sha_refs.len);
-        const tag_shas = collectTagCommitShas(allocator, obj) catch &[_][]const u8{};
-        defer if (tag_shas.len > 0) allocator.free(tag_shas);
+        // Collect all (name, commit oid) pairs reachable from tag refs.
+        // Names are kept so SC008 fix_hint can list candidate tag pins.
+        const tag_oids = collectTagOids(allocator, obj) catch &[_]NamedOid{};
+        result.tag_oids = tag_oids;
 
+        var resolutions = try allocator.alloc(ShaTagResult, repo.sha_refs.len);
         for (repo.sha_refs, 0..) |sha, j| {
             var found = false;
-            for (tag_shas) |oid| {
-                if (std.mem.eql(u8, oid, sha)) {
+            for (tag_oids) |entry| {
+                if (std.mem.eql(u8, entry.oid, sha)) {
                     found = true;
                     break;
                 }
@@ -319,28 +394,89 @@ fn parseRepoObject(
         result.sha_results = resolutions;
     }
 
+    if (repo.needs_impostor) {
+        result.branch_oids_complete = refsListingComplete(obj, "branchNodes");
+        result.branches_next_cursor = refsListingNextCursor(obj, "branchNodes");
+        result.branch_oids = collectBranchOids(allocator, obj) catch &[_]NamedOid{};
+        result.default_branch = parseDefaultBranchRef(obj);
+    }
+
     return result;
 }
 
-fn tagNodesComplete(obj: std.json.ObjectMap) bool {
-    const tag_nodes_val = obj.get("tagNodes") orelse return true;
-    const nodes_obj = switch (tag_nodes_val) {
+fn parseDefaultBranchRef(obj: std.json.ObjectMap) ?NamedOid {
+    const ref_val = obj.get("defaultBranchRef") orelse return null;
+    const ref_obj = switch (ref_val) {
+        .object => |o| o,
+        else => return null,
+    };
+    const name_val = ref_obj.get("name") orelse return null;
+    const name = switch (name_val) {
+        .string => |s| s,
+        else => return null,
+    };
+    const target_val = ref_obj.get("target") orelse return null;
+    const target = switch (target_val) {
+        .object => |o| o,
+        else => return null,
+    };
+    const oid_val = target.get("oid") orelse return null;
+    const oid = switch (oid_val) {
+        .string => |s| s,
+        else => return null,
+    };
+    return .{ .name = name, .oid = oid };
+}
+
+/// True iff every page of the named refs(...) listing has been fetched.
+/// pageInfo.hasNextPage is authoritative when present; otherwise the
+/// legacy heuristic (full 100-node page = "could have more") preserves
+/// behaviour for pre-pageInfo fixtures.
+fn refsListingComplete(obj: std.json.ObjectMap, listing_name: []const u8) bool {
+    const listing_val = obj.get(listing_name) orelse return true;
+    const listing_obj = switch (listing_val) {
         .object => |o| o,
         else => return true,
     };
-    if (nodes_obj.get("pageInfo")) |pi_val| {
+    if (listing_obj.get("pageInfo")) |pi_val| {
         if (pi_val == .object) {
             if (pi_val.object.get("hasNextPage")) |hnp_val| {
                 if (hnp_val == .bool) return !hnp_val.bool;
             }
         }
     }
-    const nodes_val = nodes_obj.get("nodes") orelse return true;
+    const nodes_val = listing_obj.get("nodes") orelse return true;
     const count = switch (nodes_val) {
         .array => |arr| arr.items.len,
         else => return true,
     };
     return count < 100;
+}
+
+/// Return pageInfo.endCursor when `hasNextPage` is true; null otherwise.
+/// Caller owns nothing — the slice points into the parsed JSON arena.
+fn refsListingNextCursor(obj: std.json.ObjectMap, listing_name: []const u8) ?[]const u8 {
+    const listing_val = obj.get(listing_name) orelse return null;
+    const listing_obj = switch (listing_val) {
+        .object => |o| o,
+        else => return null,
+    };
+    const pi_val = listing_obj.get("pageInfo") orelse return null;
+    const pi = switch (pi_val) {
+        .object => |o| o,
+        else => return null,
+    };
+    const hnp_val = pi.get("hasNextPage") orelse return null;
+    const has_next = switch (hnp_val) {
+        .bool => |b| b,
+        else => return null,
+    };
+    if (!has_next) return null;
+    const cursor_val = pi.get("endCursor") orelse return null;
+    return switch (cursor_val) {
+        .string => |s| s,
+        else => null,
+    };
 }
 
 fn refAliasExists(obj: std.json.ObjectMap, alias: []const u8) bool {
@@ -351,27 +487,53 @@ fn refAliasExists(obj: std.json.ObjectMap, alias: []const u8) bool {
     };
 }
 
-fn collectTagCommitShas(
+/// Collect (tag name, commit oid) pairs from tagNodes. For lightweight
+/// tags, oid == target.oid (the commit). For annotated tags, oid ==
+/// target.target.oid (the dereferenced commit). When both are present
+/// (annotated tag schema), only the inner commit oid is recorded so a
+/// SHA-pin matched against the tag object oid is correctly detected as
+/// an impostor on the *commit*.
+fn collectTagOids(
     allocator: Allocator,
     obj: std.json.ObjectMap,
-) ![]const []const u8 {
-    const tag_nodes_val = obj.get("tagNodes") orelse return &[_][]const u8{};
-    const tag_nodes_obj = switch (tag_nodes_val) {
+) ![]const NamedOid {
+    return collectRefOids(allocator, obj, "tagNodes", true);
+}
+
+fn collectBranchOids(
+    allocator: Allocator,
+    obj: std.json.ObjectMap,
+) ![]const NamedOid {
+    return collectRefOids(allocator, obj, "branchNodes", false);
+}
+
+fn collectRefOids(
+    allocator: Allocator,
+    obj: std.json.ObjectMap,
+    listing_name: []const u8,
+    follow_inner_target: bool,
+) ![]const NamedOid {
+    const listing_val = obj.get(listing_name) orelse return &[_]NamedOid{};
+    const listing_obj = switch (listing_val) {
         .object => |o| o,
-        else => return &[_][]const u8{},
+        else => return &[_]NamedOid{},
     };
-    const nodes_val = tag_nodes_obj.get("nodes") orelse return &[_][]const u8{};
+    const nodes_val = listing_obj.get("nodes") orelse return &[_]NamedOid{};
     const nodes = switch (nodes_val) {
         .array => |a| a.items,
-        else => return &[_][]const u8{},
+        else => return &[_]NamedOid{},
     };
 
-    var shas = std.ArrayList([]const u8){};
-    errdefer shas.deinit(allocator);
+    var entries = std.ArrayList(NamedOid){};
+    errdefer entries.deinit(allocator);
 
     for (nodes) |node_val| {
         const node = switch (node_val) {
             .object => |o| o,
+            else => continue,
+        };
+        const name = switch (node.get("name") orelse continue) {
+            .string => |s| s,
             else => continue,
         };
         const target_val = node.get("target") orelse continue;
@@ -380,21 +542,28 @@ fn collectTagCommitShas(
             else => continue,
         };
 
-        // Direct oid (lightweight tag points at commit, or Tag.target.oid
-        // for annotated tags sits one level deeper).
-        if (target.get("oid")) |oid_val| {
-            if (oid_val == .string) try shas.append(allocator, oid_val.string);
-        }
-        if (target.get("target")) |inner_val| {
-            if (inner_val == .object) {
-                if (inner_val.object.get("oid")) |oid2| {
-                    if (oid2 == .string) try shas.append(allocator, oid2.string);
+        // Annotated tag: prefer the inner commit oid. Fall back to the
+        // outer oid (lightweight tag / branch HEAD).
+        if (follow_inner_target) {
+            if (target.get("target")) |inner_val| {
+                if (inner_val == .object) {
+                    if (inner_val.object.get("oid")) |oid_inner| {
+                        if (oid_inner == .string) {
+                            try entries.append(allocator, .{ .name = name, .oid = oid_inner.string });
+                            continue;
+                        }
+                    }
                 }
+            }
+        }
+        if (target.get("oid")) |oid_val| {
+            if (oid_val == .string) {
+                try entries.append(allocator, .{ .name = name, .oid = oid_val.string });
             }
         }
     }
 
-    return shas.toOwnedSlice(allocator);
+    return entries.toOwnedSlice(allocator);
 }
 
 // ============================================================
@@ -744,6 +913,189 @@ test "parseResponse: non-object root returns ParseFailed" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
+}
+
+test "buildQuery: branchNodes only appears when needs_impostor=true" {
+    const shas = [_][]const u8{"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"};
+
+    // Without needs_impostor: tagNodes present, branchNodes absent.
+    const repos_off = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    const q_off = try buildQuery(testing.allocator, &repos_off);
+    defer testing.allocator.free(q_off);
+    try testing.expect(std.mem.indexOf(u8, q_off, "tagNodes:") != null);
+    try testing.expect(std.mem.indexOf(u8, q_off, "branchNodes:") == null);
+    try testing.expect(std.mem.indexOf(u8, q_off, "defaultBranchRef") == null);
+
+    // With needs_impostor: branchNodes + defaultBranchRef appear.
+    const repos_on = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .sha_refs = &shas,
+        .needs_impostor = true,
+    }};
+    const q_on = try buildQuery(testing.allocator, &repos_on);
+    defer testing.allocator.free(q_on);
+    try testing.expect(std.mem.indexOf(u8, q_on, "branchNodes: refs(refPrefix:\"refs/heads/\", first:100)") != null);
+    try testing.expect(std.mem.indexOf(u8, q_on, "defaultBranchRef { name target { oid } }") != null);
+}
+
+test "buildQuery: needs_impostor without sha_refs still skips branchNodes" {
+    // branchNodes is only useful when we have SHAs to reach. defaultBranchRef
+    // however is cheap and always emitted with needs_impostor.
+    const repos = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .needs_impostor = true,
+    }};
+    const q = try buildQuery(testing.allocator, &repos);
+    defer testing.allocator.free(q);
+    try testing.expect(std.mem.indexOf(u8, q, "branchNodes:") == null);
+    try testing.expect(std.mem.indexOf(u8, q, "defaultBranchRef") != null);
+}
+
+test "buildQuery: tags_cursor and branches_cursor emit after: arguments" {
+    const shas = [_][]const u8{"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"};
+    const repos = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .sha_refs = &shas,
+        .needs_impostor = true,
+        .tags_cursor = "TAGCURSOR==",
+        .branches_cursor = "BRANCHCURSOR==",
+    }};
+    const q = try buildQuery(testing.allocator, &repos);
+    defer testing.allocator.free(q);
+    try testing.expect(std.mem.indexOf(u8, q, "tagNodes: refs(refPrefix:\"refs/tags/\", first:100, after:\"TAGCURSOR==\")") != null);
+    try testing.expect(std.mem.indexOf(u8, q, "branchNodes: refs(refPrefix:\"refs/heads/\", first:100, after:\"BRANCHCURSOR==\")") != null);
+}
+
+test "buildQuery: max_repos_per_batch lowered to 20 for impostor headroom" {
+    // Deliberate constant assertion: dropping below 20 again would silently
+    // shrink batch sizes; raising it without re-evaluating GraphQL node cost
+    // could blow past the 500k node ceiling once branchNodes is included.
+    try testing.expectEqual(@as(usize, 20), max_repos_per_batch);
+}
+
+test "parseResponse: branchNodes populates branch_oids" {
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"branchNodes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"name":"main","target":{"oid":"mainoid"}},{"name":"dev","target":{"oid":"devoid"}}]}}}}
+    ;
+    const shas = [_][]const u8{"any"};
+    const repos = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .sha_refs = &shas,
+        .needs_impostor = true,
+    }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(@as(usize, 2), results[0].branch_oids.len);
+    try testing.expectEqualStrings("main", results[0].branch_oids[0].name);
+    try testing.expectEqualStrings("mainoid", results[0].branch_oids[0].oid);
+    try testing.expectEqualStrings("dev", results[0].branch_oids[1].name);
+    try testing.expectEqualStrings("devoid", results[0].branch_oids[1].oid);
+    try testing.expect(results[0].branch_oids_complete);
+    try testing.expect(results[0].branches_next_cursor == null);
+}
+
+test "parseResponse: branchNodes hasNextPage=true sets branch_oids_complete=false and surfaces cursor" {
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"branchNodes":{"pageInfo":{"hasNextPage":true,"endCursor":"BCUR=="},"nodes":[{"name":"main","target":{"oid":"mainoid"}}]}}}}
+    ;
+    const shas = [_][]const u8{"any"};
+    const repos = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .sha_refs = &shas,
+        .needs_impostor = true,
+    }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(!results[0].branch_oids_complete);
+    try testing.expect(results[0].branches_next_cursor != null);
+    try testing.expectEqualStrings("BCUR==", results[0].branches_next_cursor.?);
+}
+
+test "parseResponse: tagNodes hasNextPage=true also surfaces tags_next_cursor" {
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":true,"endCursor":"TCUR=="},"nodes":[{"name":"v1","target":{"oid":"aa"}}]}}}}
+    ;
+    const shas = [_][]const u8{"aa"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(!results[0].tag_oids_complete);
+    try testing.expect(results[0].tags_next_cursor != null);
+    try testing.expectEqualStrings("TCUR==", results[0].tags_next_cursor.?);
+}
+
+test "parseResponse: defaultBranchRef populates default_branch" {
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"defaultBranchRef":{"name":"main","target":{"oid":"defaultoid"}}}}}
+    ;
+    const repos = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .needs_impostor = true,
+    }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(results[0].default_branch != null);
+    try testing.expectEqualStrings("main", results[0].default_branch.?.name);
+    try testing.expectEqualStrings("defaultoid", results[0].default_branch.?.oid);
+}
+
+test "parseResponse: missing defaultBranchRef leaves default_branch null" {
+    const body =
+        \\{"data":{"r0":{"isArchived":false}}}
+    ;
+    const repos = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .needs_impostor = true,
+    }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(results[0].default_branch == null);
+}
+
+test "parseResponse: needs_impostor + branch HEAD oid match (used downstream by SC008 step2)" {
+    // The graphql layer doesn't itself decide impostor status; it just
+    // surfaces branch_oids so prefetch can short-circuit step2 without an
+    // extra REST call. This test pins the data path: the (name,oid) pair
+    // we expect to use as the "branch HEAD = pinned SHA" check is present.
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"branchNodes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"name":"feature","target":{"oid":"sha-of-pinned"}}]}}}}
+    ;
+    const shas = [_][]const u8{"sha-of-pinned"};
+    const repos = [_]RepoInput{.{
+        .owner = "o",
+        .repo = "r",
+        .sha_refs = &shas,
+        .needs_impostor = true,
+    }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    var found = false;
+    for (results[0].branch_oids) |b| {
+        if (std.mem.eql(u8, b.oid, "sha-of-pinned")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
 }
 
 test "batchQuery: no GITHUB_TOKEN in env returns NoToken" {
