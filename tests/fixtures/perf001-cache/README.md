@@ -10,6 +10,8 @@ autofix. Each subdirectory represents a scenario:
 | `setup-python-poetry/` | `python_cache = .poetry` | fix inserts `cache: poetry` |
 | `setup-go-gosum/` | `go_sum_present = true` | fix inserts `cache: true` |
 | `setup-node-ambiguous/` | `ambiguous_node_lockfiles = [...]` | fix suppressed, diagnostic only |
+| `setup-bun-lock/` | `bun_lockfile_present = true` | diagnostic only (no autofix for bun) |
+| `setup-uv-disabled/` | empty | diagnostic only when `enable-cache: false` is explicit |
 
 Each directory contains:
 

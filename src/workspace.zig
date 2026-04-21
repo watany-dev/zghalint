@@ -45,6 +45,7 @@ pub const Context = struct {
     node_cache: ?NodeCache = null,
     python_cache: ?PythonCache = null,
     go_sum_present: bool = false,
+    bun_lockfile_present: bool = false,
     ambiguous_node_lockfiles: []const []const u8 = &.{},
     ambiguous_python_lockfiles: []const []const u8 = &.{},
 };
@@ -162,7 +163,17 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
         break :blk true;
     };
 
-    var ctx = Context{ .go_sum_present = go_sum_present };
+    // --- Bun ---
+    const bun_lockfile_present = blk: {
+        if (dir.access("bun.lock", .{})) |_| break :blk true else |_| {}
+        if (dir.access("bun.lockb", .{})) |_| break :blk true else |_| {}
+        break :blk false;
+    };
+
+    var ctx = Context{
+        .go_sum_present = go_sum_present,
+        .bun_lockfile_present = bun_lockfile_present,
+    };
 
     const node_unique = node_manager_set.count();
     if (node_unique == 1) {
@@ -308,6 +319,41 @@ test "detectFromRoot detects go.sum" {
 
     const ctx = try detectFromRoot(testing.allocator, abs);
     try testing.expect(ctx.go_sum_present);
+}
+
+test "detectFromRoot detects bun.lock" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "bun.lock", .data = "" });
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.bun_lockfile_present);
+}
+
+test "detectFromRoot detects bun.lockb" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "bun.lockb", .data = "" });
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.bun_lockfile_present);
+}
+
+test "detectFromRoot leaves bun_lockfile_present false without bun lockfile" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(!ctx.bun_lockfile_present);
 }
 
 test "detectFromRoot returns empty Context for missing dir" {
