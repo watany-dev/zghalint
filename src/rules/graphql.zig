@@ -33,8 +33,11 @@ pub const RepoInput = struct {
     sha_refs: []const []const u8 = &.{},
     /// Non-SHA refs for SC006 (ref confusion): "is this name both tag + branch?"
     named_refs: []const []const u8 = &.{},
-    /// SC008: also fetch branch HEAD oids and the default branch so prefetch
-    /// can decide reachability for `sha_refs`. Implies `sha_refs.len > 0`.
+    /// SC008: also fetch the default branch (always) and branch HEAD oids
+    /// (only when `sha_refs.len > 0`) so prefetch can decide reachability
+    /// for the SHAs in `sha_refs`. Setting this with an empty `sha_refs`
+    /// is allowed but only yields `defaultBranchRef`; `branchNodes` is
+    /// skipped because it has no caller.
     needs_impostor: bool = false,
     /// Continuation cursor for tagNodes pagination (per-repo). When set,
     /// emitted as `after:"<cursor>"` in the refs(refPrefix:"refs/tags/")
