@@ -91,6 +91,12 @@ pub fn prefetchAllWithOptions(
     var pending_compares = std.ArrayList(PendingCompare){};
     defer pending_compares.deinit(scratch);
 
+    // Buffer GraphQL results so persistence runs after SC008's compare
+    // phase has populated the impostor cache. Otherwise the disk_cache
+    // entry would miss step3/4 verdicts on warm runs.
+    var pending_persist = std.ArrayList(graphql.RepoResult){};
+    defer pending_persist.deinit(scratch);
+
     const used_graphql = tryGraphQlBatch(
         scratch,
         ref_sets,
@@ -99,6 +105,7 @@ pub fn prefetchAllWithOptions(
         refconf_active,
         impostor_active,
         &pending_compares,
+        &pending_persist,
     );
 
     if (!used_graphql) {
@@ -111,6 +118,12 @@ pub fn prefetchAllWithOptions(
     // for any SHAs the GraphQL data couldn't classify directly.
     if (impostor_active and pending_compares.items.len > 0) {
         runImpostorCompares(scratch, pending_compares.items);
+    }
+
+    // Persist all GraphQL repo results now that the impostor cache is
+    // fully populated. Failures are non-fatal (best-effort warm-run hint).
+    for (pending_persist.items) |res| {
+        persistRepoResult(scratch, res, null);
     }
 
     return .{
@@ -299,6 +312,11 @@ fn applyCacheEntry(
 /// blocks the lint run. `dir_override` lets tests redirect the write to a
 /// `std.testing.tmpDir`; in production callers pass null to route through
 /// the XDG-resolved cache dir.
+///
+/// SC008's branch listing, default branch, and per-SHA verdicts are also
+/// captured here when `impostor.isActive()`. The verdicts are read back
+/// out of the impostor module's module-level cache, so callers must run
+/// `runImpostorCompares` first if step3/4 results are expected on disk.
 fn persistRepoResult(
     scratch: Allocator,
     res: graphql.RepoResult,
@@ -321,6 +339,33 @@ fn persistRepoResult(
                 list[i] = .{ .ref = nr.ref, .is_tag = nr.is_tag, .is_branch = nr.is_branch };
             }
             break :blk list;
+        },
+        .branches = blk: {
+            if (res.branch_oids.len == 0) break :blk &.{};
+            var list = scratch.alloc(disk_cache.BranchEntry, res.branch_oids.len) catch return;
+            for (res.branch_oids, 0..) |b, i| {
+                list[i] = .{ .name = b.name, .oid = b.oid };
+            }
+            break :blk list;
+        },
+        .default_branch = if (res.default_branch) |db|
+            disk_cache.BranchEntry{ .name = db.name, .oid = db.oid }
+        else
+            null,
+        .impostor = blk: {
+            if (!impostor.isActive() or res.sha_results.len == 0) break :blk &.{};
+            var list = std.ArrayList(disk_cache.ImpostorEntry){};
+            defer list.deinit(scratch);
+            for (res.sha_results) |sr| {
+                const cached = impostor.lookupCachedImpostorResult(res.owner, res.repo, sr.sha) orelse continue;
+                const status: disk_cache.ImpostorStatus = switch (cached.status) {
+                    .legitimate => .legitimate,
+                    .impostor => .impostor,
+                    .unknown => .unknown,
+                };
+                list.append(scratch, .{ .sha = sr.sha, .status = status }) catch break :blk &.{};
+            }
+            break :blk list.toOwnedSlice(scratch) catch &.{};
         },
     };
     if (dir_override) |dir| {
@@ -349,6 +394,7 @@ fn tryGraphQlBatch(
     refconf_active: bool,
     impostor_active: bool,
     pending: *std.ArrayList(PendingCompare),
+    persist_buffer: ?*std.ArrayList(graphql.RepoResult),
 ) bool {
     if (sets.repos.count() == 0) return false;
 
@@ -380,6 +426,7 @@ fn tryGraphQlBatch(
             refconf_active,
             impostor_active,
             pending,
+            persist_buffer,
             null,
         );
         idx = end;
@@ -456,6 +503,7 @@ fn applyResults(
     refconf_active: bool,
     impostor_active: bool,
     pending: ?*std.ArrayList(PendingCompare),
+    persist_buffer: ?*std.ArrayList(graphql.RepoResult),
     persist_dir: ?std.fs.Dir,
 ) void {
     for (results) |res| {
@@ -485,7 +533,15 @@ fn applyResults(
         if (impostor_active) {
             classifyImpostorFromGraphql(scratch, res, pending);
         }
-        persistRepoResult(scratch, res, persist_dir);
+        // When the caller buffers persistence (production path) we defer
+        // until after SC008's compare phase so the impostor verdicts make
+        // it into the disk_cache entry. With no buffer (test path) persist
+        // immediately so single-test assertions still see the file land.
+        if (persist_buffer) |buf| {
+            buf.append(scratch, res) catch persistRepoResult(scratch, res, persist_dir);
+        } else {
+            persistRepoResult(scratch, res, persist_dir);
+        }
     }
 }
 
@@ -981,7 +1037,7 @@ test "applyResults: missing entries are skipped (no rule init required)" {
     };
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    applyResults(arena.allocator(), &results, true, true, true, false, null, null);
+    applyResults(arena.allocator(), &results, true, true, true, false, null, null, null);
 }
 
 test "prefetchAllWithOptions: deadline-expired short-circuits but still counts refs" {
@@ -1108,7 +1164,7 @@ test "applyResults: persists repo state to the provided cache dir" {
         },
     };
 
-    applyResults(alloc, &results, true, true, true, false, null, tmp.dir);
+    applyResults(alloc, &results, true, true, true, false, null, null, tmp.dir);
 
     // The cache file should exist and reload cleanly.
     const loaded = disk_cache.loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
@@ -1126,6 +1182,69 @@ test "applyResults: persists repo state to the provided cache dir" {
     try testing.expectEqual(@as(usize, 1), loaded.named.len);
     try testing.expect(loaded.named[0].is_tag);
     try testing.expect(loaded.named[0].is_branch);
+}
+
+test "persistRepoResult: writes branches/default_branch/impostor (v2)" {
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sha = "1111111111111111111111111111111111111111";
+    const branch_head = "2222222222222222222222222222222222222222";
+
+    impostor.setCachedImpostorResult("o", "r", sha, .{ .status = .impostor });
+
+    const sha_res = [_]graphql.ShaTagResult{.{ .sha = sha, .resolution = .no_tag }};
+    const branches = [_]graphql.NamedOid{.{ .name = "main", .oid = branch_head }};
+    const tag_oids = [_]graphql.NamedOid{.{ .name = "v1", .oid = "3333333333333333333333333333333333333333" }};
+    const default_branch: graphql.NamedOid = .{ .name = "main", .oid = branch_head };
+
+    const res: graphql.RepoResult = .{
+        .owner = "o",
+        .repo = "r",
+        .archived = false,
+        .sha_results = &sha_res,
+        .tag_oids = &tag_oids,
+        .branch_oids = &branches,
+        .default_branch = default_branch,
+    };
+
+    persistRepoResult(alloc, res, tmp.dir);
+
+    const loaded = disk_cache.loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        for (loaded.shas) |s| testing.allocator.free(s.sha);
+        testing.allocator.free(loaded.shas);
+        for (loaded.named) |n| testing.allocator.free(n.ref);
+        testing.allocator.free(loaded.named);
+        for (loaded.branches) |b| {
+            testing.allocator.free(b.name);
+            testing.allocator.free(b.oid);
+        }
+        testing.allocator.free(loaded.branches);
+        if (loaded.default_branch) |db| {
+            testing.allocator.free(db.name);
+            testing.allocator.free(db.oid);
+        }
+        for (loaded.impostor) |im| testing.allocator.free(im.sha);
+        testing.allocator.free(loaded.impostor);
+    }
+
+    try testing.expectEqual(@as(usize, 1), loaded.branches.len);
+    try testing.expectEqualStrings("main", loaded.branches[0].name);
+    try testing.expectEqualStrings(branch_head, loaded.branches[0].oid);
+    try testing.expect(loaded.default_branch != null);
+    try testing.expectEqualStrings("main", loaded.default_branch.?.name);
+    try testing.expectEqual(@as(usize, 1), loaded.impostor.len);
+    try testing.expectEqualStrings(sha, loaded.impostor[0].sha);
+    try testing.expectEqual(disk_cache.ImpostorStatus.impostor, loaded.impostor[0].status);
 }
 
 // ============================================================

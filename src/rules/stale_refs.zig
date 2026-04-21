@@ -59,6 +59,21 @@ pub fn isActive() bool {
     return tag_cache != null;
 }
 
+/// Look up the cached tag resolution for `(owner, repo, sha)`. Returns
+/// `null` if the cache is offline or has no entry. Exposed so engine
+/// post-processing can decide whether SC005 actually fired for a step
+/// when deciding to dedupe overlapping SC008 verdicts.
+pub fn lookupCachedTagResult(
+    owner: []const u8,
+    repo: []const u8,
+    sha: []const u8,
+) ?TagResolution {
+    const cache = tag_cache orelse return null;
+    const alloc = if (stale_refs_arena) |*arena| arena.allocator() else return null;
+    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return null;
+    return cache.get(key);
+}
+
 /// Pre-populate the tag resolution cache. Used by the prefetch orchestrator
 /// to install batched GraphQL/REST results before the engine runs.
 pub fn setCachedTagResult(

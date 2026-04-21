@@ -60,6 +60,81 @@ pub const Engine = struct {
 };
 
 // ============================================================
+// Post-processing: dedupe overlapping SC005/SC008 diagnostics
+// ============================================================
+
+const stale_refs = @import("stale_refs.zig");
+const impostor = @import("impostor.zig");
+
+/// Walk `workflow` and drop any SC005 diagnostic whose underlying step
+/// also fired SC008-impostor. Both rules visit steps in identical order
+/// (engine.run iterates `rules` outer, `steps` inner), so the K-th SC005
+/// diagnostic in `list` corresponds to the K-th step that satisfied
+/// SC005's emission condition. We rebuild the same K-th counter here by
+/// re-querying the cached tag resolution + impostor verdict for each
+/// step, then strike the matching SC005 entries from the list.
+///
+/// SC008 is structurally a stricter version of SC005 (impostor implies
+/// no_tag), so this hides the SC005 noise without affecting the case
+/// where SC005 fires alone on a no_tag-but-legitimate SHA.
+pub fn postProcess(
+    allocator: std.mem.Allocator,
+    workflow: *const Workflow,
+    list: *DiagnosticList,
+) void {
+    var drop = std.ArrayList(usize){};
+    defer drop.deinit(allocator);
+
+    var k_sc005: usize = 0;
+    for (workflow.jobs) |*job| {
+        for (job.steps) |*step| {
+            const action_ref = step.uses orelse continue;
+            if (!action_ref.is_pinned) continue;
+            if (action_ref.is_local or action_ref.is_docker) continue;
+            const owner = action_ref.owner orelse continue;
+            const repo = action_ref.repo orelse continue;
+            const sha = action_ref.ref orelse continue;
+            if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) continue;
+            if (!isValidSha(sha)) continue;
+
+            // Did SC005 actually fire for this step?
+            const tag_res = stale_refs.lookupCachedTagResult(owner, repo, sha) orelse continue;
+            if (tag_res != .no_tag) continue;
+            defer k_sc005 += 1;
+
+            // Same step also flagged as impostor → drop the K-th SC005.
+            if (impostor.shaIsCachedImpostor(owner, repo, sha)) {
+                drop.append(allocator, k_sc005) catch return;
+            }
+        }
+    }
+
+    if (drop.items.len == 0) return;
+
+    // Walk the list once, removing diagnostics whose K-th-SC005 index
+    // appears in `drop`. Iterating from the front and rewriting in-place
+    // avoids quadratic shifts.
+    var seen_sc005: usize = 0;
+    var write: usize = 0;
+    var read: usize = 0;
+    while (read < list.items.items.len) : (read += 1) {
+        const d = list.items.items[read];
+        const is_sc005 = std.mem.eql(u8, d.rule_id, "SC005");
+        if (is_sc005) {
+            const should_drop = blk: {
+                for (drop.items) |idx| if (idx == seen_sc005) break :blk true;
+                break :blk false;
+            };
+            seen_sc005 += 1;
+            if (should_drop) continue;
+        }
+        if (write != read) list.items.items[write] = d;
+        write += 1;
+    }
+    list.items.shrinkRetainingCapacity(write);
+}
+
+// ============================================================
 // Network deadline
 // ============================================================
 
@@ -494,4 +569,149 @@ test "isNetworkDeadlineExceeded: past deadline returns true" {
     network_deadline_ns = std.time.nanoTimestamp() - 1;
     defer clearNetworkDeadline();
     try std.testing.expect(isNetworkDeadlineExceeded());
+}
+
+// ============================================================
+// postProcess tests
+// ============================================================
+
+test "postProcess: drops SC005 when same step is impostor" {
+    stale_refs.initStaleRefs(std.testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    impostor.initImpostor(std.testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    const owner = "evil";
+    const repo = "action";
+    const sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    stale_refs.setCachedTagResult(owner, repo, sha, .no_tag);
+    impostor.setCachedImpostorResult(owner, repo, sha, .{ .status = .impostor });
+
+    const steps = [_]Step{.{ .uses = ActionRef.parse("evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") }};
+    const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
+    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "SC005",
+        .severity = .info,
+        .message = "stale",
+        .span = Span.point(0, 0, 0),
+    });
+    try list.append(.{
+        .rule_id = "SC008",
+        .severity = .warning,
+        .message = "impostor",
+        .span = Span.point(0, 0, 0),
+    });
+
+    postProcess(std.testing.allocator, &wf, &list);
+
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("SC008", list.get(0).rule_id);
+}
+
+test "postProcess: keeps SC005 when impostor is legitimate" {
+    stale_refs.initStaleRefs(std.testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    impostor.initImpostor(std.testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    const owner = "ok";
+    const repo = "lib";
+    const sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    stale_refs.setCachedTagResult(owner, repo, sha, .no_tag);
+    impostor.setCachedImpostorResult(owner, repo, sha, .{ .status = .legitimate });
+
+    const steps = [_]Step{.{ .uses = ActionRef.parse("ok/lib@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }};
+    const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
+    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "SC005",
+        .severity = .info,
+        .message = "stale",
+        .span = Span.point(0, 0, 0),
+    });
+
+    postProcess(std.testing.allocator, &wf, &list);
+
+    // legitimate verdict → SC005 stays (SC008 wouldn't have fired anyway).
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("SC005", list.get(0).rule_id);
+}
+
+test "postProcess: drops only the matching SC005 entry, not unrelated ones" {
+    stale_refs.initStaleRefs(std.testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    impostor.initImpostor(std.testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    // Two no_tag SHAs: A is impostor, B is legitimate. Engine emits one
+    // SC005 per step in step order. We must drop only the SC005 for A.
+    const sha_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const sha_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    stale_refs.setCachedTagResult("o", "a", sha_a, .no_tag);
+    stale_refs.setCachedTagResult("o", "b", sha_b, .no_tag);
+    impostor.setCachedImpostorResult("o", "a", sha_a, .{ .status = .impostor });
+    impostor.setCachedImpostorResult("o", "b", sha_b, .{ .status = .legitimate });
+
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("o/a@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") },
+        .{ .uses = ActionRef.parse("o/b@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") },
+    };
+    const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
+    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "SC005",
+        .severity = .info,
+        .message = "stale-A",
+        .span = Span.point(0, 0, 0),
+    });
+    try list.append(.{
+        .rule_id = "SC005",
+        .severity = .info,
+        .message = "stale-B",
+        .span = Span.point(0, 0, 0),
+    });
+    try list.append(.{
+        .rule_id = "SC008",
+        .severity = .warning,
+        .message = "impostor-A",
+        .span = Span.point(0, 0, 0),
+    });
+
+    postProcess(std.testing.allocator, &wf, &list);
+
+    try std.testing.expectEqual(@as(usize, 2), list.len());
+    // The remaining SC005 must be the B one (we dropped index 0).
+    try std.testing.expectEqualStrings("SC005", list.get(0).rule_id);
+    try std.testing.expectEqualStrings("stale-B", list.get(0).message);
+    try std.testing.expectEqualStrings("SC008", list.get(1).rule_id);
+}
+
+test "postProcess: no-op when impostor module offline" {
+    // stale_refs offline → lookupCachedTagResult returns null → no drops.
+    const steps = [_]Step{.{ .uses = ActionRef.parse("o/r@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }};
+    const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
+    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "SC005",
+        .severity = .info,
+        .message = "stale",
+        .span = Span.point(0, 0, 0),
+    });
+
+    postProcess(std.testing.allocator, &wf, &list);
+
+    try std.testing.expectEqual(@as(usize, 1), list.len());
 }
