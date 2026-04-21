@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **46 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **47 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -50,6 +50,7 @@ Detect supply chain risks in action and container image references.
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
 | SC005 | stale-action-refs | info | SHA-pinned action does not correspond to any known Git tag |
 | SC006 | ref-confusion | warning | Action ref matches both a tag and branch, creating exploitable ambiguity |
+| SC008 | impostor-commit | warning | SHA-pinned action ref is not reachable from any branch or tag of the upstream repo |
 
 ## Performance Rules (PERF)
 
