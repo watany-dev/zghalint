@@ -449,7 +449,11 @@ fn buildRepoInputs(
     var shas_by_repo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
     var named_by_repo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
 
-    if (stale_active) {
+    // SC008 also needs per-repo SHA lists so it can decide which SHAs to
+    // classify against branch/tag oids. Populate the shared map whenever
+    // either SC005 or SC008 is active so SC008 doesn't silently lose data
+    // when the user only opted into impostor checks.
+    if (stale_active or impostor_active) {
         var it = sets.sha_refs.valueIterator();
         while (it.next()) |sha_key| {
             const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ sha_key.owner, sha_key.repo });
@@ -1024,4 +1028,26 @@ test "buildRepoInputs: impostor_active sets needs_impostor only when SHAs exist"
     }
     try testing.expect(inputs[has_idx].needs_impostor);
     try testing.expect(!inputs[none_idx].needs_impostor);
+}
+
+test "buildRepoInputs: impostor_active populates sha slice even when stale_active is false" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var repos: RepoSet = .{};
+    try repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+
+    var sha_refs: ShaSet = .{};
+    try sha_refs.put(alloc, "o/r@aa", .{ .owner = "o", .repo = "r", .sha = "aa" });
+
+    const named_refs: NamedSet = .{};
+
+    const sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
+    // stale_active=false, refconf_active=false, impostor_active=true.
+    const inputs = try buildRepoInputs(alloc, sets, false, false, true);
+
+    try testing.expectEqual(@as(usize, 1), inputs.len);
+    try testing.expectEqual(@as(usize, 1), inputs[0].sha_refs.len);
+    try testing.expect(inputs[0].needs_impostor);
 }
