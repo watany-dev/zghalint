@@ -84,7 +84,7 @@ pub fn prefetchAllWithOptions(
 
     var cache_hits: usize = 0;
     if (!opts.no_cache) {
-        cache_hits = applyDiskCache(scratch, &ref_sets, archived_active, stale_active, refconf_active);
+        cache_hits = applyDiskCache(scratch, &ref_sets, archived_active, stale_active, refconf_active, impostor_active);
     }
 
     // Try the GraphQL batch path first (folds archived + SHA + named ref
@@ -226,6 +226,7 @@ fn applyDiskCache(
     archived_active: bool,
     stale_active: bool,
     refconf_active: bool,
+    impostor_active: bool,
 ) usize {
     var hits: usize = 0;
 
@@ -242,7 +243,18 @@ fn applyDiskCache(
         const repo = val_ptr.repo;
 
         const entry = disk_cache.load(scratch, owner, repo) orelse continue;
-        hits += applyCacheEntry(scratch, sets, repo_key, owner, repo, entry, archived_active, stale_active, refconf_active);
+        hits += applyCacheEntry(
+            scratch,
+            sets,
+            repo_key,
+            owner,
+            repo,
+            entry,
+            archived_active,
+            stale_active,
+            refconf_active,
+            impostor_active,
+        );
     }
 
     return hits;
@@ -261,6 +273,7 @@ fn applyCacheEntry(
     archived_active: bool,
     stale_active: bool,
     refconf_active: bool,
+    impostor_active: bool,
 ) usize {
     var hits: usize = 0;
 
@@ -304,6 +317,22 @@ fn applyCacheEntry(
                 _ = sets.named_refs.remove(ref_buf.items);
                 hits += 1;
             }
+        }
+    }
+
+    // SC008 verdicts are keyed by the same (owner, repo, sha) tuple that
+    // stale_refs uses, so we unconditionally seed the impostor cache from
+    // disk when the rule is active. The fix_hint candidates are lost across
+    // process boundaries because suggested_tags/default live in the arena;
+    // the next compare phase re-supplies them if needed.
+    if (impostor_active) {
+        for (entry.impostor) |e| {
+            const mapped_status: impostor.ImpostorStatus = switch (e.status) {
+                .legitimate => .legitimate,
+                .impostor => .impostor,
+                .unknown => .unknown,
+            };
+            impostor.setCachedImpostorResult(owner, repo, e.sha, .{ .status = mapped_status });
         }
     }
 
@@ -740,7 +769,7 @@ test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits
         .named = @constCast(&named),
     };
 
-    const hits = applyCacheEntry(alloc, &sets, repo_key, "o", "r", entry, true, true, true);
+    const hits = applyCacheEntry(alloc, &sets, repo_key, "o", "r", entry, true, true, true, false);
     try testing.expectEqual(@as(usize, 3), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
@@ -773,11 +802,49 @@ test "applyCacheEntry: inactive rules skip corresponding categories" {
     };
 
     // archived_active=true, stale_active=false, refconf_active=false
-    const hits = applyCacheEntry(alloc, &sets, "o/r", "o", "r", entry, true, false, false);
+    const hits = applyCacheEntry(alloc, &sets, "o/r", "o", "r", entry, true, false, false, false);
     try testing.expectEqual(@as(usize, 1), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 1), sets.sha_refs.count()); // untouched
     try testing.expectEqual(@as(usize, 1), sets.named_refs.count()); // untouched
+}
+
+test "applyCacheEntry: impostor_active hydrates SC008 verdicts from disk" {
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sets = RefSets{
+        .repos = .{},
+        .sha_refs = .{},
+        .named_refs = .{},
+    };
+    defer sets.repos.deinit(alloc);
+    defer sets.sha_refs.deinit(alloc);
+    defer sets.named_refs.deinit(alloc);
+
+    const sha_legit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const sha_imp = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const imp_entries = [_]disk_cache.ImpostorEntry{
+        .{ .sha = sha_legit, .status = .legitimate },
+        .{ .sha = sha_imp, .status = .impostor },
+    };
+    const entry: disk_cache.CachedRepo = .{
+        .impostor = @constCast(&imp_entries),
+    };
+
+    _ = applyCacheEntry(alloc, &sets, "o/r", "o", "r", entry, false, false, false, true);
+
+    const legit = impostor.lookupCachedImpostorResult("o", "r", sha_legit) orelse
+        return error.TestExpectedNonNull;
+    try testing.expectEqual(impostor.ImpostorStatus.legitimate, legit.status);
+
+    const imp = impostor.lookupCachedImpostorResult("o", "r", sha_imp) orelse
+        return error.TestExpectedNonNull;
+    try testing.expectEqual(impostor.ImpostorStatus.impostor, imp.status);
 }
 
 test "applyResults: missing entries are skipped (no rule init required)" {
@@ -877,7 +944,7 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     try named_refs.put(alloc, "acme/tool@main", .{ .owner = "acme", .repo = "tool", .ref = "main" });
     var sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
 
-    const hits = applyDiskCache(alloc, &sets, true, true, true);
+    const hits = applyDiskCache(alloc, &sets, true, true, true, false);
     try testing.expectEqual(@as(usize, 3), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
