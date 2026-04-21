@@ -111,22 +111,26 @@ pub fn postProcess(
 
     if (drop.items.len == 0) return;
 
-    // Walk the list once, removing diagnostics whose K-th-SC005 index
-    // appears in `drop`. Iterating from the front and rewriting in-place
-    // avoids quadratic shifts.
+    // `drop` is built in ascending k_sc005 order by the outer loop above,
+    // so a single forward cursor into it is enough to answer
+    // "should the next SC005 be dropped?" in O(1). This replaces the
+    // per-diagnostic scan over `drop` with a single linear pass, so the
+    // whole post-process is O(n) in the number of diagnostics.
     var seen_sc005: usize = 0;
+    var drop_cursor: usize = 0;
     var write: usize = 0;
     var read: usize = 0;
     while (read < list.items.items.len) : (read += 1) {
         const d = list.items.items[read];
         const is_sc005 = std.mem.eql(u8, d.rule_id, "SC005");
         if (is_sc005) {
-            const should_drop = blk: {
-                for (drop.items) |idx| if (idx == seen_sc005) break :blk true;
-                break :blk false;
-            };
+            const should_drop = drop_cursor < drop.items.len and
+                drop.items[drop_cursor] == seen_sc005;
             seen_sc005 += 1;
-            if (should_drop) continue;
+            if (should_drop) {
+                drop_cursor += 1;
+                continue;
+            }
         }
         if (write != read) list.items.items[write] = d;
         write += 1;
