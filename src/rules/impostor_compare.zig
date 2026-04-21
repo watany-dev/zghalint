@@ -224,10 +224,15 @@ fn compareRest(
     if (!engine.isValidGitRef(base)) return .unknown;
     if (!engine.isValidSha(head)) return .unknown;
 
+    // Branch/tag names can contain '/' (e.g. "release/v1.0"). Percent-encode
+    // the base segment so the compare endpoint doesn't route those characters
+    // as extra path components and force us into a fail-closed unknown.
+    const base_encoded = percentEncodePathSegment(scratch, base) orelse return .unknown;
+
     const url = std.fmt.allocPrint(
         scratch,
         "https://api.github.com/repos/{s}/{s}/compare/{s}...{s}",
-        .{ owner, repo, base, head },
+        .{ owner, repo, base_encoded, head },
     ) catch return .unknown;
 
     var aw: std.Io.Writer.Allocating = .init(scratch);
@@ -292,6 +297,47 @@ fn bridgeOids(scratch: Allocator, src: []const graphql.NamedOid) []const imposto
 
 fn bridgeSingle(src: graphql.NamedOid) impostor.NamedOid {
     return .{ .name = src.name, .oid = src.oid };
+}
+
+// ============================================================
+// URL helpers
+// ============================================================
+
+/// Percent-encode bytes that aren't RFC 3986 unreserved so they're safe to
+/// embed in a single URL path segment. Returns the input unchanged when
+/// nothing needs encoding. Null return signals allocation failure.
+fn percentEncodePathSegment(scratch: Allocator, s: []const u8) ?[]const u8 {
+    var n_encoded: usize = 0;
+    for (s) |c| {
+        if (!isUnreserved(c)) n_encoded += 1;
+    }
+    if (n_encoded == 0) return s;
+
+    const out = scratch.alloc(u8, s.len + n_encoded * 2) catch return null;
+    var i: usize = 0;
+    for (s) |c| {
+        if (isUnreserved(c)) {
+            out[i] = c;
+            i += 1;
+        } else {
+            out[i] = '%';
+            out[i + 1] = hexDigit(@intCast((c >> 4) & 0xf));
+            out[i + 2] = hexDigit(@intCast(c & 0xf));
+            i += 3;
+        }
+    }
+    return out;
+}
+
+fn isUnreserved(c: u8) bool {
+    return switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
+        else => false,
+    };
+}
+
+fn hexDigit(v: u4) u8 {
+    return if (v < 10) '0' + @as(u8, v) else 'A' + @as(u8, v) - 10;
 }
 
 // ============================================================
@@ -500,4 +546,34 @@ test "compareRest: invalid component arguments fail closed to unknown without ne
     try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "..", "main", "0000000000000000000000000000000000000000"));
     try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "r", "../evil", "0000000000000000000000000000000000000000"));
     try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "r", "main", "not-a-sha"));
+}
+
+test "percentEncodePathSegment: refs with slashes are encoded" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const out = percentEncodePathSegment(alloc, "release/v1.0").?;
+    try testing.expectEqualStrings("release%2Fv1.0", out);
+}
+
+test "percentEncodePathSegment: plain ref passes through unchanged" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const s = "main";
+    const out = percentEncodePathSegment(alloc, s).?;
+    // Unchanged inputs return the original slice without allocation.
+    try testing.expectEqual(s.ptr, out.ptr);
+    try testing.expectEqualStrings("main", out);
+}
+
+test "percentEncodePathSegment: nested slashes and dots encode correctly" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const out = percentEncodePathSegment(alloc, "feature/foo/bar-1.2_3").?;
+    try testing.expectEqualStrings("feature%2Ffoo%2Fbar-1.2_3", out);
 }
