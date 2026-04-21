@@ -319,8 +319,12 @@ fn lintFile(
     defer diag_list.deinit();
 
     // Strip SC005 entries that overlap with SC008 verdicts so the user
-    // doesn't see two diagnostics for the same impostor SHA.
-    zghalint.rules.engine.postProcess(allocator, &workflow, &diag_list);
+    // doesn't see two diagnostics for the same impostor SHA. Guard on
+    // SC008 being enabled in the config; otherwise SC008 itself would
+    // get filtered out below, leaving neither diagnostic visible.
+    if (config.isRuleEnabled("SC008")) {
+        zghalint.rules.engine.postProcess(allocator, &workflow, &diag_list);
+    }
 
     // Apply config: filter disabled rules, override severity, set file.
     // Use `appendOwning` because `diag_list`'s fix_arena is deinitialized when
