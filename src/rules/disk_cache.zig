@@ -6,16 +6,26 @@
 //! skip GraphQL entirely when every queried SHA / named ref is already
 //! present in a fresh cache file.
 //!
-//! The on-disk format is a minimal JSON document:
+//! The on-disk format is a minimal JSON document. Two schema versions
+//! are supported:
 //!
 //! ```json
+//! // v2 (current; cache_format=2)
 //! {
+//!   "cache_format": 2,
 //!   "cached_at": 1713400000,
 //!   "archived": true,
 //!   "shas":  [["<sha>", "h"|"n"|"u"], ...],
-//!   "named": [["<ref>", 0|1, 0|1], ...]
+//!   "named": [["<ref>", 0|1, 0|1], ...],
+//!   "branches": [["<name>", "<oid>"], ...],
+//!   "default_branch": ["<name>", "<oid>"],
+//!   "impostor": [["<sha>", "l"|"i"|"u"], ...]
 //! }
 //! ```
+//!
+//! v1 entries (no `cache_format` field, or `cache_format=1`) are loaded
+//! with empty branches/impostor/default_branch. The next save promotes
+//! them to v2.
 
 const std = @import("std");
 const graphql = @import("graphql.zig");
@@ -25,6 +35,11 @@ const Allocator = std.mem.Allocator;
 
 pub const cache_ttl_s: i64 = 24 * 60 * 60;
 const cache_subdir = "zghalint/repos";
+
+/// Current on-disk schema version. Bumped when adding fields that older
+/// readers would silently misinterpret. Older files (no field, or =1)
+/// are tolerated and migrated on the next save.
+pub const cache_format_current: u8 = 2;
 
 // ============================================================
 // Public types
@@ -41,11 +56,37 @@ pub const NamedEntry = struct {
     is_branch: bool,
 };
 
+pub const BranchEntry = struct {
+    name: []const u8,
+    oid: []const u8,
+};
+
+/// Mirrors `impostor.ImpostorStatus` but is duplicated here to avoid a
+/// circular import (impostor.zig depends on diagnostics, disk_cache must
+/// stay leaf-level for the persistence pipeline). Translation happens in
+/// the prefetch layer, identical to how `graphql.ShaTagResolution` and
+/// `stale_refs.TagResolution` are kept apart.
+pub const ImpostorStatus = enum { legitimate, impostor, unknown };
+
+pub const ImpostorEntry = struct {
+    sha: []const u8,
+    status: ImpostorStatus,
+};
+
 pub const CachedRepo = struct {
     cached_at: i64 = 0,
     archived: ?bool = null,
     shas: []ShaEntry = &.{},
     named: []NamedEntry = &.{},
+    /// SC008 step2 inputs: branch names + HEAD oids snapshotted at
+    /// fetch time. Empty for v1 entries.
+    branches: []BranchEntry = &.{},
+    /// SC008 step3 input: default branch name + HEAD oid. null for v1
+    /// entries or when GraphQL didn't surface it.
+    default_branch: ?BranchEntry = null,
+    /// SC008 final verdicts. Empty for v1 entries; populated as the
+    /// compare phase decides each SHA.
+    impostor: []ImpostorEntry = &.{},
 };
 
 // ============================================================
@@ -196,7 +237,83 @@ pub fn loadFromDir(
         }
     }
 
+    if (obj.get("branches")) |v| {
+        if (v == .array) {
+            var list = std.ArrayList(BranchEntry){};
+            defer list.deinit(allocator);
+            for (v.array.items) |entry| {
+                if (entry != .array) continue;
+                const fields = entry.array.items;
+                if (fields.len < 2) continue;
+                if (fields[0] != .string or fields[1] != .string) continue;
+                if (!engine.isValidGitRef(fields[0].string)) continue;
+                if (!engine.isValidSha(fields[1].string)) continue;
+                const name_copy = allocator.dupe(u8, fields[0].string) catch continue;
+                const oid_copy = allocator.dupe(u8, fields[1].string) catch {
+                    allocator.free(name_copy);
+                    continue;
+                };
+                list.append(allocator, .{ .name = name_copy, .oid = oid_copy }) catch continue;
+            }
+            result.branches = list.toOwnedSlice(allocator) catch &.{};
+        }
+    }
+
+    if (obj.get("default_branch")) |v| {
+        if (v == .array and v.array.items.len >= 2) {
+            const name_v = v.array.items[0];
+            const oid_v = v.array.items[1];
+            if (name_v == .string and oid_v == .string and
+                engine.isValidGitRef(name_v.string) and engine.isValidSha(oid_v.string))
+            {
+                if (allocator.dupe(u8, name_v.string)) |name_copy| {
+                    if (allocator.dupe(u8, oid_v.string)) |oid_copy| {
+                        result.default_branch = .{ .name = name_copy, .oid = oid_copy };
+                    } else |_| {
+                        allocator.free(name_copy);
+                    }
+                } else |_| {}
+            }
+        }
+    }
+
+    if (obj.get("impostor")) |v| {
+        if (v == .array) {
+            var list = std.ArrayList(ImpostorEntry){};
+            defer list.deinit(allocator);
+            for (v.array.items) |entry| {
+                if (entry != .array) continue;
+                const fields = entry.array.items;
+                if (fields.len < 2) continue;
+                if (fields[0] != .string or fields[1] != .string) continue;
+                if (!engine.isValidSha(fields[0].string)) continue;
+                const status = parseImpostorCode(fields[1].string) orelse continue;
+                const sha_copy = allocator.dupe(u8, fields[0].string) catch continue;
+                list.append(allocator, .{ .sha = sha_copy, .status = status }) catch continue;
+            }
+            result.impostor = list.toOwnedSlice(allocator) catch &.{};
+        }
+    }
+
     return result;
+}
+
+fn parseImpostorCode(code: []const u8) ?ImpostorStatus {
+    if (code.len != 1) return null;
+    return switch (code[0]) {
+        'l' => .legitimate,
+        'i' => .impostor,
+        'u' => .unknown,
+        else => null,
+    };
+}
+
+fn impostorCode(status: ImpostorStatus) u8 {
+    return switch (status) {
+        .legitimate => 'l',
+        .impostor => 'i',
+        .unknown => 'u',
+    };
 }
 
 fn parseResolutionCode(code: []const u8) ?graphql.ShaTagResolution {
@@ -253,7 +370,8 @@ pub fn saveToDir(
     var buf = std.ArrayList(u8){};
     defer buf.deinit(allocator);
 
-    try buf.writer(allocator).print("{{\"cached_at\":{d}", .{entry.cached_at});
+    try buf.writer(allocator).print("{{\"cache_format\":{d}", .{cache_format_current});
+    try buf.writer(allocator).print(",\"cached_at\":{d}", .{entry.cached_at});
 
     if (entry.archived) |b| {
         try buf.writer(allocator).print(",\"archived\":{s}", .{if (b) "true" else "false"});
@@ -271,6 +389,25 @@ pub fn saveToDir(
     for (entry.named, 0..) |n, i| {
         if (i != 0) try buf.append(allocator, ',');
         try buf.writer(allocator).print("[\"{s}\",{d},{d}]", .{ n.ref, @intFromBool(n.is_tag), @intFromBool(n.is_branch) });
+    }
+
+    try buf.appendSlice(allocator, "],\"branches\":[");
+    for (entry.branches, 0..) |b, i| {
+        if (i != 0) try buf.append(allocator, ',');
+        try buf.writer(allocator).print("[\"{s}\",\"{s}\"]", .{ b.name, b.oid });
+    }
+    try buf.append(allocator, ']');
+
+    if (entry.default_branch) |db| {
+        try buf.writer(allocator).print(",\"default_branch\":[\"{s}\",\"{s}\"]", .{ db.name, db.oid });
+    } else {
+        try buf.appendSlice(allocator, ",\"default_branch\":null");
+    }
+
+    try buf.appendSlice(allocator, ",\"impostor\":[");
+    for (entry.impostor, 0..) |im, i| {
+        if (i != 0) try buf.append(allocator, ',');
+        try buf.writer(allocator).print("[\"{s}\",\"{c}\"]", .{ im.sha, impostorCode(im.status) });
     }
 
     try buf.appendSlice(allocator, "]}");
@@ -354,12 +491,7 @@ test "saveToDir/loadFromDir round-trips all fields" {
     try saveToDir(tmp.dir, testing.allocator, "actions", "checkout", entry);
     const loaded = loadFromDir(tmp.dir, testing.allocator, "actions", "checkout") orelse
         return error.TestExpectedNonNull;
-    defer {
-        for (loaded.shas) |s| testing.allocator.free(s.sha);
-        testing.allocator.free(loaded.shas);
-        for (loaded.named) |n| testing.allocator.free(n.ref);
-        testing.allocator.free(loaded.named);
-    }
+    defer freeLoaded(loaded);
 
     try testing.expectEqual(now, loaded.cached_at);
     try testing.expect(loaded.archived.?);
@@ -372,6 +504,31 @@ test "saveToDir/loadFromDir round-trips all fields" {
     try testing.expect(!loaded.named[0].is_tag);
     try testing.expect(loaded.named[0].is_branch);
     try testing.expect(loaded.named[1].is_tag);
+    // v1-style entry (no branches/impostor/default) round-trips with empty
+    // SC008 fields preserved.
+    try testing.expectEqual(@as(usize, 0), loaded.branches.len);
+    try testing.expectEqual(@as(usize, 0), loaded.impostor.len);
+    try testing.expect(loaded.default_branch == null);
+}
+
+/// Free every owned slice inside a loaded CachedRepo. Helper to keep
+/// the per-test cleanup blocks short.
+fn freeLoaded(loaded: CachedRepo) void {
+    for (loaded.shas) |s| testing.allocator.free(s.sha);
+    testing.allocator.free(loaded.shas);
+    for (loaded.named) |n| testing.allocator.free(n.ref);
+    testing.allocator.free(loaded.named);
+    for (loaded.branches) |b| {
+        testing.allocator.free(b.name);
+        testing.allocator.free(b.oid);
+    }
+    testing.allocator.free(loaded.branches);
+    if (loaded.default_branch) |db| {
+        testing.allocator.free(db.name);
+        testing.allocator.free(db.oid);
+    }
+    for (loaded.impostor) |im| testing.allocator.free(im.sha);
+    testing.allocator.free(loaded.impostor);
 }
 
 test "loadFromDir: missing file returns null" {
@@ -574,6 +731,150 @@ test "loadFromDir: invalid git refs are dropped" {
     }
     try testing.expectEqual(@as(usize, 1), loaded.named.len);
     try testing.expectEqualStrings("main", loaded.named[0].ref);
+}
+
+test "parseImpostorCode round-trips" {
+    try testing.expectEqual(ImpostorStatus.legitimate, parseImpostorCode("l").?);
+    try testing.expectEqual(ImpostorStatus.impostor, parseImpostorCode("i").?);
+    try testing.expectEqual(ImpostorStatus.unknown, parseImpostorCode("u").?);
+    try testing.expect(parseImpostorCode("L") == null);
+    try testing.expect(parseImpostorCode("li") == null);
+    try testing.expect(parseImpostorCode("") == null);
+    try testing.expect(parseImpostorCode("x") == null);
+}
+
+test "impostorCode maps each enum variant" {
+    try testing.expectEqual(@as(u8, 'l'), impostorCode(.legitimate));
+    try testing.expectEqual(@as(u8, 'i'), impostorCode(.impostor));
+    try testing.expectEqual(@as(u8, 'u'), impostorCode(.unknown));
+}
+
+test "saveToDir/loadFromDir: v2 round-trips branches/default_branch/impostor" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const branches = [_]BranchEntry{
+        .{ .name = "main", .oid = "1111111111111111111111111111111111111111" },
+        .{ .name = "release-1.x", .oid = "2222222222222222222222222222222222222222" },
+    };
+    const impostor_entries = [_]ImpostorEntry{
+        .{ .sha = "3333333333333333333333333333333333333333", .status = .legitimate },
+        .{ .sha = "4444444444444444444444444444444444444444", .status = .impostor },
+        .{ .sha = "5555555555555555555555555555555555555555", .status = .unknown },
+    };
+    const default_branch: BranchEntry = .{
+        .name = "main",
+        .oid = "1111111111111111111111111111111111111111",
+    };
+    const now = std.time.timestamp();
+    const entry: CachedRepo = .{
+        .cached_at = now,
+        .archived = false,
+        .branches = @constCast(&branches),
+        .default_branch = default_branch,
+        .impostor = @constCast(&impostor_entries),
+    };
+
+    try saveToDir(tmp.dir, testing.allocator, "actions", "checkout", entry);
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "actions", "checkout") orelse
+        return error.TestExpectedNonNull;
+    defer freeLoaded(loaded);
+
+    try testing.expectEqual(@as(usize, 2), loaded.branches.len);
+    try testing.expectEqualStrings("main", loaded.branches[0].name);
+    try testing.expectEqualStrings("1111111111111111111111111111111111111111", loaded.branches[0].oid);
+    try testing.expectEqualStrings("release-1.x", loaded.branches[1].name);
+    try testing.expectEqualStrings("2222222222222222222222222222222222222222", loaded.branches[1].oid);
+
+    try testing.expect(loaded.default_branch != null);
+    try testing.expectEqualStrings("main", loaded.default_branch.?.name);
+    try testing.expectEqualStrings("1111111111111111111111111111111111111111", loaded.default_branch.?.oid);
+
+    try testing.expectEqual(@as(usize, 3), loaded.impostor.len);
+    try testing.expectEqualStrings("3333333333333333333333333333333333333333", loaded.impostor[0].sha);
+    try testing.expectEqual(ImpostorStatus.legitimate, loaded.impostor[0].status);
+    try testing.expectEqual(ImpostorStatus.impostor, loaded.impostor[1].status);
+    try testing.expectEqual(ImpostorStatus.unknown, loaded.impostor[2].status);
+}
+
+test "loadFromDir: v1 legacy entry (no cache_format/branches/impostor) loads with empty SC008 fields" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+
+    // Hand-crafted v1 file: no cache_format, no branches, no impostor,
+    // no default_branch. Reader must tolerate the absent fields and
+    // default them to empty / null without bailing on the load.
+    const now = std.time.timestamp();
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"cached_at\":{d},\"archived\":false,\"shas\":[[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[[\"main\",0,1]]}}",
+        .{now},
+    );
+    defer testing.allocator.free(body);
+    try file.writeAll(body);
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer freeLoaded(loaded);
+
+    try testing.expectEqual(@as(usize, 1), loaded.shas.len);
+    try testing.expectEqual(@as(usize, 1), loaded.named.len);
+    try testing.expectEqual(@as(usize, 0), loaded.branches.len);
+    try testing.expectEqual(@as(usize, 0), loaded.impostor.len);
+    try testing.expect(loaded.default_branch == null);
+}
+
+test "loadFromDir: tolerates malformed branches/impostor/default_branch entries" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+
+    // Each entry is malformed in one of the validated dimensions:
+    //   * non-array element
+    //   * arity mismatch
+    //   * non-string fields
+    //   * invalid ref name (path traversal)
+    //   * invalid sha (non-hex / wrong length)
+    //   * unknown impostor status code
+    // Only the trailing well-formed entries survive.
+    const now = std.time.timestamp();
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"cached_at\":{d},\"archived\":false," ++
+            "\"shas\":[],\"named\":[]," ++
+            "\"branches\":[42,[\"only\"],[\"../bad\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]," ++
+            "[\"main\",\"zz\"],[\"main\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]]," ++
+            "\"default_branch\":[\"../bad\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]," ++
+            "\"impostor\":[5,[\"only\"],[\"zz\",\"l\"],[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"X\"]," ++
+            "[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"i\"]]}}",
+        .{now},
+    );
+    defer testing.allocator.free(body);
+    try file.writeAll(body);
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer freeLoaded(loaded);
+
+    try testing.expectEqual(@as(usize, 1), loaded.branches.len);
+    try testing.expectEqualStrings("main", loaded.branches[0].name);
+    try testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", loaded.branches[0].oid);
+
+    // default_branch with an invalid ref name must drop to null, not crash.
+    try testing.expect(loaded.default_branch == null);
+
+    try testing.expectEqual(@as(usize, 1), loaded.impostor.len);
+    try testing.expectEqualStrings("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", loaded.impostor[0].sha);
+    try testing.expectEqual(ImpostorStatus.impostor, loaded.impostor[0].status);
 }
 
 test "saveToDir: refuses to write through a pre-existing symlink" {

@@ -8,6 +8,7 @@ const fix_builder = @import("../fix/builder.zig");
 const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
+const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
@@ -1787,6 +1788,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .dependency,
         .check_step = &refconfusion.checkRefConfusion,
+    },
+    .{
+        .id = "SC008",
+        .name = "impostor-commit",
+        .description = "SHA-pinned action ref is not reachable from any branch or tag of the upstream repo",
+        .severity = .warning,
+        .category = .dependency,
+        .check_step = &impostor.checkImpostorCommit,
     },
     .{
         .id = "BP007",

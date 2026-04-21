@@ -55,6 +55,8 @@ pub const rules = struct {
     pub const dependabot = @import("rules/dependabot.zig");
     pub const archived = @import("rules/archived.zig");
     pub const stale_refs = @import("rules/stale_refs.zig");
+    pub const impostor = @import("rules/impostor.zig");
+    pub const impostor_compare = @import("rules/impostor_compare.zig");
     pub const runner = @import("rules/runner.zig");
     pub const http_client = @import("rules/http_client.zig");
     pub const prefetch = @import("rules/prefetch.zig");
@@ -96,6 +98,8 @@ test {
     _ = @import("rules/dependabot.zig");
     _ = @import("rules/archived.zig");
     _ = @import("rules/stale_refs.zig");
+    _ = @import("rules/impostor.zig");
+    _ = @import("rules/impostor_compare.zig");
     _ = @import("rules/runner.zig");
     _ = @import("rules/http_client.zig");
     _ = @import("rules/prefetch.zig");
