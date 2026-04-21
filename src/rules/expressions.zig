@@ -580,15 +580,18 @@ const valid_functions = [_]FuncSpec{
 
 /// Validate an expression.
 ///
-/// `expr_base_byte` is the byte offset in the source file at which `expr`
-/// begins. It is used when constructing autofix Edit byte ranges; diagnostics
-/// themselves continue to use `base_span` for reporting.
+/// `expr_base_byte` is the absolute byte offset in the source file at which
+/// `expr` begins. It is used when constructing autofix Edit byte ranges;
+/// diagnostics themselves continue to use `base_span` for reporting.
+/// Pass `null` when the base byte cannot be determined reliably (e.g.
+/// values whose scalar style makes the byte math ambiguous): autofix
+/// generation is skipped in that case while diagnostics remain emitted.
 pub fn validateExpression(
     allocator: std.mem.Allocator,
     expr: []const u8,
     base_span: Span,
     list: *DiagnosticList,
-    expr_base_byte: usize,
+    expr_base_byte: ?usize,
 ) void {
     var parser = ExprParser.init(allocator, expr);
     const node = parser.parse() catch |err| {
@@ -614,7 +617,7 @@ fn validateNode(
     node: *const ExprNode,
     span: Span,
     list: *DiagnosticList,
-    expr_base_byte: usize,
+    expr_base_byte: ?usize,
     parent: ?*const ExprNode,
 ) void {
     switch (node.kind) {
@@ -706,7 +709,7 @@ fn validateFunctionCall(
     node: *const ExprNode,
     span: Span,
     list: *DiagnosticList,
-    expr_base_byte: usize,
+    expr_base_byte: ?usize,
     parent: ?*const ExprNode,
 ) void {
     const name = node.value;
@@ -785,9 +788,13 @@ fn validateFunctionCall(
 fn buildContainsEqFix(
     list: *DiagnosticList,
     node: *const ExprNode,
-    expr_base_byte: usize,
+    expr_base_byte: ?usize,
     parent: ?*const ExprNode,
 ) ?Fix {
+    // If the caller could not determine a reliable absolute byte base, we
+    // cannot produce a well-targeted Edit. Emit the diagnostic only.
+    const base = expr_base_byte orelse return null;
+
     const ctx = &node.children[0];
     const lit = &node.children[1];
 
@@ -812,10 +819,10 @@ fn buildContainsEqFix(
     const op: []const u8 = if (is_negated) "!=" else "==";
     const replacement = std.fmt.allocPrint(alloc, "{s} {s} {s}", .{ ctx.value, op, lit.value }) catch return null;
     const edits = alloc.alloc(Edit, 1) catch return null;
-    const start: usize = if (is_negated) expr_base_byte + parent.?.start_byte else expr_base_byte + node.start_byte;
+    const start: usize = if (is_negated) base + parent.?.start_byte else base + node.start_byte;
     edits[0] = .{
         .start_byte = start,
-        .end_byte = expr_base_byte + node.end_byte,
+        .end_byte = base + node.end_byte,
         .replacement = replacement,
     };
     return .{
@@ -856,16 +863,18 @@ fn checkUnsoundCondition(allocator: std.mem.Allocator, node: *const ExprNode, sp
 
 /// Find all ${{ ... }} expressions in a string and validate each.
 ///
-/// `text_base_byte` is the byte offset in the source file at which `text`
-/// begins. For each inner `${{ ... }}` the trimmed expression's absolute
-/// offset is forwarded to `validateExpression` so EXPR006 autofix can emit
-/// byte-accurate Edits.
+/// `text_base_byte` is the absolute byte offset in the source file at which
+/// `text` begins. For each inner `${{ ... }}` the trimmed expression's
+/// absolute offset is forwarded to `validateExpression` so EXPR006 autofix
+/// can emit byte-accurate Edits. Pass `null` when the base byte cannot be
+/// determined reliably; in that case diagnostics are still emitted but the
+/// autofix Edit is suppressed (see `validateExpression`).
 pub fn findAndValidateExpressions(
     allocator: std.mem.Allocator,
     text: []const u8,
     base_span: Span,
     list: *DiagnosticList,
-    text_base_byte: usize,
+    text_base_byte: ?usize,
 ) void {
     var pos: usize = 0;
     while (pos + 2 < text.len) {
@@ -883,7 +892,7 @@ pub fn findAndValidateExpressions(
                     }
                     break :blk i;
                 };
-                const expr_base_byte = text_base_byte + expr_start + leading_trim;
+                const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
                 validateExpression(allocator, trimmed, base_span, list, expr_base_byte);
                 pos = expr_start + end_offset + 2;
             } else {
@@ -915,13 +924,16 @@ fn getArenaAllocator() std.mem.Allocator {
 /// Return the absolute byte offset of the first character of the scalar's
 /// `value` (the content, not the raw token). For quoted scalars the YAML
 /// parser's `value_span.start_byte` points at the opening quote and `value`
-/// begins one byte later; for plain scalars they coincide. Block / folded
-/// scalars are not yet supported for autofix byte tracking and return the
-/// span as-is (callers currently skip autofix in those cases).
-fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) usize {
+/// begins one byte later; for plain scalars they coincide. For block
+/// scalars (`|` / `>`) the parser's span points at the indicator while
+/// `value` begins after the first newline — the exact content-start byte
+/// is not preserved, so this function returns `null` to signal that fix
+/// byte ranges cannot be derived from this meta.
+fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
     return switch (meta.style) {
+        .plain => meta.value_span.start_byte,
         .single_quoted, .double_quoted => meta.value_span.start_byte + 1,
-        else => meta.value_span.start_byte,
+        .literal, .folded => null,
     };
 }
 
@@ -929,41 +941,45 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
     const span = Span.point(0, 0, 0);
 
-    // Check 'run' field
+    // Check 'run' field — the scalar style is not tracked, and `run:` is
+    // very commonly a block scalar (`|` / `>`) whose content-start byte
+    // cannot be recovered from `value_span`. Pass null so autofix byte
+    // ranges are never computed from an unreliable base.
     if (step.run) |run_val| {
-        const run_base: usize = if (step.run_value_span) |s| s.start_byte else 0;
-        findAndValidateExpressions(allocator, run_val, span, list, run_base);
+        findAndValidateExpressions(allocator, run_val, span, list, null);
     }
 
     // Check 'if' field
     if (step.if_condition) |if_val| {
-        const if_base: usize = if (step.if_condition_meta) |m| scalarValueStartByte(m) else 0;
+        const if_base: ?usize = if (step.if_condition_meta) |m| scalarValueStartByte(m) else null;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
             findAndValidateExpressions(allocator, if_val, span, list, if_base);
         } else {
             const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
             if (trimmed.len > 0) {
                 const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-                validateExpression(allocator, trimmed, span, list, if_base + leading);
+                const abs: ?usize = if (if_base) |b| b + leading else null;
+                validateExpression(allocator, trimmed, span, list, abs);
             }
         }
     }
 
-    // Check 'with' values — no autofix tracking; byte base is 0.
+    // Check 'with' values — per-entry scalar spans are not captured, so the
+    // absolute byte base is unknown. Suppress fix generation.
     if (step.with) |with_map| {
         for (with_map.values()) |value| {
-            findAndValidateExpressions(allocator, value, span, list, 0);
+            findAndValidateExpressions(allocator, value, span, list, null);
         }
     }
 
     // Check 'env' values — use env_meta when available for accurate byte tracking.
     if (step.env) |env_map| {
         for (env_map.keys(), env_map.values()) |key, value| {
-            const base: usize = blk: {
+            const base: ?usize = blk: {
                 if (step.env_meta) |meta| {
                     if (meta.get(key)) |m| break :blk scalarValueStartByte(m);
                 }
-                break :blk 0;
+                break :blk null;
             };
             findAndValidateExpressions(allocator, value, span, list, base);
         }
@@ -976,14 +992,15 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
 
     // Check 'if' field
     if (job.if_condition) |if_val| {
-        const if_base: usize = if (job.if_condition_meta) |m| scalarValueStartByte(m) else 0;
+        const if_base: ?usize = if (job.if_condition_meta) |m| scalarValueStartByte(m) else null;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
             findAndValidateExpressions(allocator, if_val, span, list, if_base);
         } else {
             const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
             if (trimmed.len > 0) {
                 const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-                validateExpression(allocator, trimmed, span, list, if_base + leading);
+                const abs: ?usize = if (if_base) |b| b + leading else null;
+                validateExpression(allocator, trimmed, span, list, abs);
             }
         }
     }
@@ -991,11 +1008,11 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     // Check 'env' values
     if (job.env) |env_map| {
         for (env_map.keys(), env_map.values()) |key, value| {
-            const base: usize = blk: {
+            const base: ?usize = blk: {
                 if (job.env_meta) |meta| {
                     if (meta.get(key)) |m| break :blk scalarValueStartByte(m);
                 }
-                break :blk 0;
+                break :blk null;
             };
             findAndValidateExpressions(allocator, value, span, list, base);
         }
@@ -2261,4 +2278,137 @@ test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "if: \"github.ref != 'release'\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
+}
+
+// --- EXPR006 autofix suppression: byte base unreliable ---
+
+test "EXPR006 fix: suppressed when expr_base_byte is null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "contains(github.ref, 'main')", Span.point(1, 1, 0), &list, null);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    const diag = list.get(0);
+    try std.testing.expectEqualStrings("EXPR006", diag.rule_id);
+    try std.testing.expect(diag.fix == null);
+}
+
+test "EXPR006 autofix: suppressed for `with:` values" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\          condition: ${{ contains(github.ref, 'main') }}
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkStep(&wf.jobs[0].steps[0], &diags);
+
+    // If EXPR006 fires for this path, it must not carry a fix. Whether the
+    // diagnostic fires at all for `with:` values is a separate concern handled
+    // by other rules/tests.
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
+            try std.testing.expect(d.fix == null);
+        }
+    }
+}
+
+test "EXPR006 autofix: suppressed for `run:` values" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `run:` is commonly a block scalar; even plain-scalar form is treated
+    // conservatively because the style is not tracked on Step.run_value_span.
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ${{ contains(github.ref, 'main') }}
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkStep(&wf.jobs[0].steps[0], &diags);
+
+    // If EXPR006 fires for this path, it must not carry a fix.
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
+            try std.testing.expect(d.fix == null);
+        }
+    }
+}
+
+test "EXPR006 autofix: suppressed for block-scalar `if:` value" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Folded block scalar for `if:`. The YAML parser's value_span starts at
+    // `>` while the .value slice starts after the newline, so the absolute
+    // byte base cannot be recovered and fix emission must be suppressed.
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    if: >
+        \\      contains(github.ref, 'main')
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkJob(&wf.jobs[0], &diags);
+
+    var saw_diag = false;
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
+            saw_diag = true;
+            try std.testing.expect(d.fix == null);
+        }
+    }
+    try std.testing.expect(saw_diag);
 }
