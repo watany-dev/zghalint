@@ -330,24 +330,34 @@ fn checkUvCache(
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
+    var uv_cache_disabled = false;
+    var has_cache_step = false;
+
     for (job.steps) |step| {
         const action_ref = step.uses orelse continue;
         const action_name = util.actionBaseName(action_ref.raw);
+
+        if (std.mem.eql(u8, action_name, "actions/cache")) {
+            has_cache_step = true;
+            continue;
+        }
+
         if (!std.mem.eql(u8, action_name, ca.setup_action)) continue;
 
         const with = step.with orelse continue;
         const enable_cache_val = with.get(ca.cache_key) orelse continue;
-        if (!std.mem.eql(u8, enable_cache_val, "false")) continue;
-
-        diag_list.append(.{
-            .rule_id = "PERF001",
-            .severity = .warning,
-            .message = "Job uses astral-sh/setup-uv with 'enable-cache: false'. Remove the input or set it to 'true' to restore built-in caching.",
-            .span = Span.point(0, 0, 0),
-            .fix_hint = ca.fix_hint_base,
-        }) catch return;
-        return;
+        if (std.mem.eql(u8, enable_cache_val, "false")) uv_cache_disabled = true;
     }
+
+    if (!uv_cache_disabled or has_cache_step) return;
+
+    diag_list.append(.{
+        .rule_id = "PERF001",
+        .severity = .warning,
+        .message = "Job uses astral-sh/setup-uv with 'enable-cache: false' and no actions/cache step. Remove the input, set it to 'true', or add an actions/cache step.",
+        .span = Span.point(0, 0, 0),
+        .fix_hint = ca.fix_hint_base,
+    }) catch return;
 }
 
 // ── PERF002: Redundant checkout ──
@@ -1071,6 +1081,22 @@ test "PERF001: setup-uv with enable-cache=false warns" {
     try std.testing.expect(diags.get(0).fix == null);
     const msg = diags.get(0).message;
     try std.testing.expect(std.mem.indexOf(u8, msg, "enable-cache") != null);
+}
+
+test "PERF001: setup-uv with enable-cache=false but actions/cache present does not warn" {
+    var with = workflow_types.StringMap.init(std.testing.allocator);
+    defer with.deinit();
+    try with.put("enable-cache", "false");
+
+    const steps = [_]Step{
+        Step{ .uses = ActionRef.parse("astral-sh/setup-uv@v3"), .with = with },
+        Step{ .uses = ActionRef.parse("actions/cache@v4") },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
 test "PERF002: detect redundant checkout" {

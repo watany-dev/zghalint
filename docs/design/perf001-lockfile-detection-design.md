@@ -171,7 +171,7 @@ rules:
 |---|---|---|---|
 | `.with_cache_input` | `actions/setup-node` / `actions/setup-python` / `actions/setup-go` | `cache:` 未設定かつ `actions/cache` 不在 | lockfile 推論に従って生成 |
 | `.bun_independent` | `oven-sh/setup-bun` | setup-bun 使用かつ `actions/cache` 不在 | なし（手動追加をガイド） |
-| `.uv_independent` | `astral-sh/setup-uv` | `with.enable-cache == "false"` が明示 | なし |
+| `.uv_independent` | `astral-sh/setup-uv` | `with.enable-cache == "false"` 明示かつ `actions/cache` 不在 | なし |
 
 ### bun の lockfile hint
 
@@ -188,6 +188,12 @@ uv は `enable-cache: auto` (GitHub-hosted runner で ON、self-hosted で OFF) 
 文字列比較のため、YAML boolean と quoted string の双方が `"false"` に正規化
 される前提で動く（`src/workflow/parser.zig` の `parseStringMap` が値をそのまま
 スカラ文字列として保持する挙動に依存）。
+
+さらに、同一ジョブ内に `actions/cache` ステップが存在する場合は警告を抑止
+する。`enable-cache: false` + 自前 `actions/cache` の組み合わせは「built-in
+cache を意図的に切って外部 cache で代替する」正当な構成のため、setup-node
+/ setup-python / setup-go / setup-bun と同じく `actions/cache` の存在を
+補完と扱う。
 
 ### 例外: fix 非対応の根拠
 

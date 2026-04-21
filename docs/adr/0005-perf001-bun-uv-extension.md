@@ -66,7 +66,8 @@ runtime installer のうち以下 2 種は別系統の action として提供さ
 ### D4. uv は inverse logic、`enable-cache: "false"` 明示時のみ警告
 
 - `astral-sh/setup-uv` ステップを検出し、`with.enable-cache == "false"` が
-  明示されている場合のみ warning を出す
+  明示され **かつ** 同一ジョブ内に `actions/cache` ステップが無い場合のみ
+  warning を出す
 - autofix は生成しない（ユーザ判断が必要）
 - 根拠:
   - uv のデフォルトは `enable-cache: auto`（GitHub-hosted で ON / self-hosted
@@ -74,6 +75,9 @@ runtime installer のうち以下 2 種は別系統の action として提供さ
   - `enable-cache` 未指定 or `true` で警告すると false positive が多発する
   - `false` 明示はユーザが意図的に無効化している可能性もあるため、自動修正
     （削除 or `true` 化）は危険
+  - `actions/cache` 併用による補完は他の setup-* / setup-bun と同じ扱いで、
+    「uv 組み込みキャッシュを無効化して自前 `actions/cache` を使う」構成を
+    false positive にしない
 
 ### D5. YAML boolean の文字列比較
 
