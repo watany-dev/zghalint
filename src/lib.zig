@@ -62,6 +62,7 @@ pub const rules = struct {
     pub const prefetch = @import("rules/prefetch.zig");
     pub const graphql = @import("rules/graphql.zig");
     pub const disk_cache = @import("rules/disk_cache.zig");
+    pub const rest_fallback = @import("rules/rest_fallback.zig");
 };
 
 pub const fix = struct {
@@ -105,6 +106,7 @@ test {
     _ = @import("rules/prefetch.zig");
     _ = @import("rules/graphql.zig");
     _ = @import("rules/disk_cache.zig");
+    _ = @import("rules/rest_fallback.zig");
     _ = @import("rules/data/compromised_actions.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
