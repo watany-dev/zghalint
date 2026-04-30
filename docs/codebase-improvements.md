@@ -8,6 +8,7 @@
 | `writeJsonString()` | `json.zig:77-96`, `sarif.zig:115-134` | JSON文字列エスケープが完全重複 |
 | `makeWriteAllFix()` | `security.zig:174-185`, `permissions.zig:34-45` | パラメータ名以外同一 |
 | write-all権限チェック | `security.zig:187-200`, `permissions.zig:48-59` | ルールID・メッセージ以外同一 |
+| ~~HTTP fetch テンプレート~~ | ~~archived/stale_refs(×2)/refconfusion/impostor_compare~~ | ~~writer 確保＋ヘッダ＋fetch＋ステータス分岐の同型コードが 5 箇所に散在~~（**`rest_fallback.zig` に集約済み。残るは `impostor_compare.compareRest` のみ**） |
 
 **対策**: 共有ユーティリティモジュールへの抽出
 
@@ -176,5 +177,6 @@ Step の `run`, `with`, `env` を順にチェックする同一パターンが4�
 | **6** | step/jobラッパー対の統合 | security.zig内8ラッパーの削減 |
 | **7** | デッドコード削除 | 不要コードの除去 |
 | **8** | `makeWriteAllFix` / write-allチェックの統合 | security.zig/permissions.zig間の重複解消 |
+| ~~**9**~~ | ~~HTTP fetch テンプレートを `http_client` / `rest_fallback` に集約~~ | ~~archived/stale_refs/refconfusion 4 箇所の同型コード解消~~（**完了**：A3＋B3 リファクタで `rest_fallback.zig` に集約。後続 tidy で `impostor_compare.compareRest` を `fetchAuthenticatedJson` に揃える） |
 
 全体として、コード重複を **20-25%** 削減可能と見込まれる。

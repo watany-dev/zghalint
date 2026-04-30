@@ -74,12 +74,16 @@ src/rules/
 ├── http_client.zig   # 共有 std.http.Client + Mutex + 共通ヘッダ
 ├── graphql.zig       # バッチ query builder / parser / POST driver
 ├── disk_cache.zig    # per-repo JSON キャッシュ（TTL 24h）
+├── rest_fallback.zig # GraphQL 不可時の単発 REST 呼び出し（SC004/005/006 共通）
 ├── prefetch.zig      # オーケストレータ（disk → GraphQL → REST の 3 層）
 ├── advisory.zig      # SC003
-├── archived.zig      # SC004
-├── stale_refs.zig    # SC005
-└── refconfusion.zig  # SC006
+├── archived.zig      # SC004（fetch 実装は rest_fallback に委譲）
+├── stale_refs.zig    # SC005（fetch 実装は rest_fallback に委譲）
+└── refconfusion.zig  # SC006（fetch 実装は rest_fallback に委譲）
 ```
+
+REST 個別実装は `rest_fallback.zig` に集約されており、SC004/005/006 の各
+rule モジュールは結果を受け取りキャッシュに格納するロジックだけを持つ。
 
 各 rule モジュールは以下の公開 API を持つ:
 
@@ -87,8 +91,10 @@ src/rules/
 |-----|------|
 | `isActive() bool` | prefetch が fetch を issue すべきかの判定 |
 | `setCached*(...)` | prefetch が結果を注入する入口 |
-| `fetch*Pub(...)` | prefetch が直接 REST を叩くためのラッパ |
 | `getArenaAllocator()` | prefetch が rule 寿命の allocator を借りるためのヘルパ |
+
+prefetch から REST を直接叩く経路は `rest_fallback.fetch*` を使う。
+旧設計の `fetch*Pub(...)` ブリッジは `rest_fallback` 抽出に伴い廃止した。
 
 ## 4. 型定義
 
@@ -106,7 +112,27 @@ pub const FetchError = error{
     FetchFailed,
     NetworkDeadlineExceeded,
 };
+
+pub const FetchedError = FetchError || error{OutOfMemory};
+
+pub const FetchedBody = struct {
+    status: std.http.Status,
+    body: []u8,
+    allocator: Allocator,
+    pub fn deinit(self: *FetchedBody) void;
+};
+
+pub fn fetchAuthenticatedJson(
+    allocator: Allocator,
+    url: []const u8,
+) FetchedError!FetchedBody;
 ```
+
+`fetchAuthenticatedJson` は URL 構築・allocating writer 確保・標準ヘッダ
+組み立て・GitHub `Accept`/`Authorization` 付与・fetch 実行までの定型 8
+ステップを 1 関数にまとめたもの。ステータスは生のまま `FetchedBody.status`
+として返すので、`.ok` / `.not_found` / `.forbidden` / `.too_many_requests`
+の意味付けは呼び出し側（`rest_fallback`）が担う。
 
 ### 4.2 `graphql.zig`
 
@@ -164,6 +190,57 @@ dir-taking variants exist so unit tests can drive persistence against
 `load` parses JSON into an internal arena and only copies the strings
 it returns onto the caller's allocator, so passing a GPA is safe.
 
+### 4.5 `rest_fallback.zig`
+
+GraphQL 経路が使えない場合（`GITHUB_TOKEN` 不在、二次レート制限、
+HTTP 失敗など）に SC004/005/006 が必要な情報を REST で 1 件ずつ取得する
+共通レイヤ。`http_client.fetchAuthenticatedJson` を使うので、TLS/TCP
+セッションは共有クライアントで再利用される。
+
+```zig
+pub const RestError = http_client.FetchedError || error{
+    HttpError,
+    JsonParseError,
+    UnexpectedFormat,
+    MissingField,
+};
+
+pub const TagResolution = enum { has_tag, no_tag, unknown };
+pub const RefStatus = enum { ambiguous, not_ambiguous, fetch_failed };
+
+pub fn fetchArchiveStatus(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+) RestError!bool;
+
+pub fn resolveTagForSha(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    sha: []const u8,
+) RestError!TagResolution;
+
+pub fn queryRefStatus(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    ref: []const u8,
+) RefStatus;
+
+pub fn resetRateLimit() void;
+pub fn isRateLimited() bool;
+```
+
+`TagResolution` / `RefStatus` の正規定義はここに置き、`stale_refs.zig`
+と `refconfusion.zig` は `pub const TagResolution = rest_fallback.TagResolution;`
+の形で再エクスポートする。これにより `rest_fallback → stale_refs/refconfusion`
+の循環 import を避けつつ、既存の呼び出し元が参照していた型名を保てる。
+
+`queryRefStatus` 内のレート制限フラグ（`rate_limited`）は本モジュールが
+所有する。`refconfusion.{init,deinit}` から `resetRateLimit()` を呼び、
+`http_client.fetch` が 403/429 を返した時点で以降のリクエストを短絡する。
+
 ### 4.4 `prefetch.zig`
 
 ```zig
@@ -207,6 +284,9 @@ main.zig
   │         │    └─ persistRepoResult で disk_cache.save/saveToDir に保存
   │         └─ REST fallback
   │              ├─ fetchRepos / fetchShaRefs / fetchNamedRefs
+  │              │    └─ rest_fallback.fetchArchiveStatus /
+  │              │       rest_fallback.resolveTagForSha /
+  │              │       rest_fallback.queryRefStatus
   │              └─ 各 rule の setCached* を直接呼ぶ（ディスク保存はしない）
   ├─ for each file: parseWorkflow → engine.run（すでに caches は埋まっている）
   └─ output
@@ -223,6 +303,14 @@ main.zig
 ## 6. エラー型
 
 - `http_client.FetchError`: 共有クライアント呼び出しの I/O 層エラー。
+- `http_client.FetchedError = FetchError || error{OutOfMemory}`:
+  `fetchAuthenticatedJson` が body を allocator に書き出すため、I/O 層に
+  `OutOfMemory` を加えたもの。
+- `rest_fallback.RestError`: GraphQL を経由しない単発 REST 呼び出しの
+  失敗集合。`http_client.FetchedError` を包含し、それに `HttpError`
+  （非 200 ステータス）/ `JsonParseError` / `UnexpectedFormat` /
+  `MissingField` を加えたもの。SC004/005/006 のルール本体は以前
+  暗黙に同名のエラーを投げていたが、すべて `RestError` に統合された。
 - `graphql.GraphQlError`: `NoToken` は token 不在、`RequestFailed` は
   HTTP 層失敗、`ParseFailed` は JSON 不整合、`RateLimited` は 403/429 の
   HTTP ステータス、もしくは body の `errors[].type == "RATE_LIMITED"`。
