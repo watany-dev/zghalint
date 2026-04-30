@@ -625,7 +625,7 @@ fn validateNode(
         .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent),
         .binary_op, .unary_op => {
             if (node.kind == .binary_op) {
-                checkUnsoundCondition(allocator, node, span, list);
+                checkUnsoundCondition(allocator, node, span, list, expr_base_byte);
             }
             for (node.children) |*child| {
                 validateNode(allocator, child, span, list, expr_base_byte, node);
@@ -836,7 +836,13 @@ fn buildContainsEqFix(
 // EXPR007: unsound-condition — bare literal in logical operator
 // ============================================================
 
-fn checkUnsoundCondition(allocator: std.mem.Allocator, node: *const ExprNode, span: Span, list: *DiagnosticList) void {
+fn checkUnsoundCondition(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: ?usize,
+) void {
     if (!std.mem.eql(u8, node.value, "||") and !std.mem.eql(u8, node.value, "&&")) return;
 
     for (node.children) |*child| {
@@ -846,15 +852,101 @@ fn checkUnsoundCondition(allocator: std.mem.Allocator, node: *const ExprNode, sp
                 "unsound condition: bare literal {s} as operand of '{s}' is always truthy",
                 .{ child.value, node.value },
             ) catch "unsound condition: bare literal in logical operator";
+            const fix = buildExpr007Fix(list, node, child, expr_base_byte);
             list.append(.{
                 .rule_id = "EXPR007",
                 .severity = .warning,
                 .message = msg,
                 .span = span,
-                .fix_hint = "use an explicit comparison, e.g. github.event_name == 'push' || github.event_name == 'pull_request'",
+                .fix_hint = if (std.mem.eql(u8, node.value, "||"))
+                    "use an explicit comparison, e.g. github.event_name == 'push' || github.event_name == 'pull_request'"
+                else
+                    "use an explicit comparison, e.g. github.event_name != 'push' && github.event_name != 'pull_request'",
+                .fix = fix,
             }) catch return;
         }
     }
+}
+
+// ============================================================
+// EXPR007 autofix: a == 'x' || 'y'  →  a == 'x' || a == 'y'
+//                  a != 'x' && 'y'  →  a != 'x' && a != 'y'
+// ============================================================
+
+/// Build an unsafe Edit that expands a bare string literal operand of `||` /
+/// `&&` into an explicit comparison borrowed from its sibling.
+///
+/// Eligibility (V1):
+///   * the parent logical op pairs with the sibling comparator:
+///       - `||` requires sibling op `==`
+///       - `&&` requires sibling op `!=`
+///   * the sibling is a direct `binary_op` whose left child is `context_access`
+///     and whose right child is a `string_literal`
+///   * the bare literal is a `string_literal` (number_literal is V2 / not handled)
+///   * neither literal contains a `''` escape in its interior
+///   * the LHS context path contains neither `.*` nor `[`
+///   * `expr_base_byte` is non-null (otherwise byte math is unreliable)
+///
+/// Returns null when any condition fails. The Edit replaces the bare
+/// literal's byte range with `"{ctx_path} {op} {literal_value}"`.
+fn buildExpr007Fix(
+    list: *DiagnosticList,
+    node: *const ExprNode,
+    bare: *const ExprNode,
+    expr_base_byte: ?usize,
+) ?Fix {
+    const base = expr_base_byte orelse return null;
+
+    if (bare.kind != .string_literal) return null;
+    if (node.children.len != 2) return null;
+
+    const op: []const u8 = if (std.mem.eql(u8, node.value, "||"))
+        "=="
+    else if (std.mem.eql(u8, node.value, "&&"))
+        "!="
+    else
+        return null;
+
+    const sibling: *const ExprNode = blk: {
+        if (&node.children[0] == bare) break :blk &node.children[1];
+        if (&node.children[1] == bare) break :blk &node.children[0];
+        return null;
+    };
+
+    if (sibling.kind != .binary_op) return null;
+    if (!std.mem.eql(u8, sibling.value, op)) return null;
+    if (sibling.children.len != 2) return null;
+
+    const lhs = &sibling.children[0];
+    const rhs = &sibling.children[1];
+    if (lhs.kind != .context_access) return null;
+    if (rhs.kind != .string_literal) return null;
+
+    if (std.mem.indexOf(u8, lhs.value, ".*") != null) return null;
+    if (std.mem.indexOfScalar(u8, lhs.value, '[') != null) return null;
+
+    if (!literalInteriorIsClean(bare.value)) return null;
+    if (!literalInteriorIsClean(rhs.value)) return null;
+
+    const alloc = list.fixAllocator();
+    const replacement = std.fmt.allocPrint(alloc, "{s} {s} {s}", .{ lhs.value, op, bare.value }) catch return null;
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{
+        .start_byte = base + bare.start_byte,
+        .end_byte = base + bare.end_byte,
+        .replacement = replacement,
+    };
+    return .{
+        .description = "expand bare literal into explicit comparison",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
+fn literalInteriorIsClean(lit_value: []const u8) bool {
+    if (lit_value.len < 2) return true;
+    const interior = lit_value[1 .. lit_value.len - 1];
+    return std.mem.indexOfScalar(u8, interior, '\'') == null;
 }
 
 // ============================================================
@@ -2411,4 +2503,263 @@ test "EXPR006 autofix: suppressed for block-scalar `if:` value" {
         }
     }
     try std.testing.expect(saw_diag);
+}
+
+// --- EXPR007 V1 autofix tests ---
+
+fn firstFix(list: DiagnosticList, rule_id: []const u8) ?Fix {
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, rule_id)) {
+            if (d.fix) |f| return f;
+        }
+    }
+    return null;
+}
+
+test "EXPR007 fix: rewrites bare string right of ||" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const src = "github.event_name == 'push' || 'pull_request'";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    const edit = fix.edits[0];
+    // The replacement covers the bare literal exactly, including its quotes.
+    try std.testing.expectEqual(@as(usize, std.mem.indexOf(u8, src, "'pull_request'").?), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, src.len), edit.end_byte);
+    try std.testing.expectEqualStrings("github.event_name == 'pull_request'", edit.replacement);
+}
+
+test "EXPR007 fix: rewrites bare string left of ||" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const src = "'pull_request' || github.event_name == 'push'";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    const edit = fix.edits[0];
+    try std.testing.expectEqual(@as(usize, 0), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, "'pull_request'".len), edit.end_byte);
+    try std.testing.expectEqualStrings("github.event_name == 'pull_request'", edit.replacement);
+}
+
+test "EXPR007 fix: rewrites bare string with && and !=" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const src = "github.event_name != 'push' && 'pull_request'";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqualStrings("github.event_name != 'pull_request'", fix.edits[0].replacement);
+}
+
+test "EXPR007 fix: honors expr_base_byte offset" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const src = "github.event_name == 'push' || 'pull_request'";
+    const base: usize = 100;
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, base);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    const lit_offset = std.mem.indexOf(u8, src, "'pull_request'").?;
+    try std.testing.expectEqual(@as(usize, base + lit_offset), fix.edits[0].start_byte);
+    try std.testing.expectEqual(@as(usize, base + src.len), fix.edits[0].end_byte);
+}
+
+test "EXPR007 fix: no fix when sibling is function_call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "success() || 'pull_request'", Span.point(1, 1, 0), &list, 0);
+    var saw_diag = false;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
+            saw_diag = true;
+            try std.testing.expect(d.fix == null);
+        }
+    }
+    try std.testing.expect(saw_diag);
+}
+
+test "EXPR007 fix: no fix when LHS is not context_access" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "'a' == 'push' || 'pull_request'", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix when LHS path contains .* (array access)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event.commits.*.message == 'wip' || 'fixup'", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix when LHS path contains [ (bracket access)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event['ref'] == 'main' || 'release'", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix when bare literal contains '' escape" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.ref == 'main' || 'it''s'", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix when sibling literal contains '' escape" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.ref == 'it''s' || 'main'", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix for || with != mismatch (tautology)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.ref != 'main' || 'release'", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix for && with == mismatch (always false)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.ref == 'main' && 'release'", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix for bare number literal in V1" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
+}
+
+test "EXPR007 fix: no fix at outer || when sibling is itself a chain" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    // Tree: ((github.event_name == 'push') || 'pull_request') || 'workflow_dispatch'
+    // Inner || matches V1 and gets a fix; outer || sibling is a binary_op '||' (not '==')
+    // and must not produce a fix.
+    const src = "github.event_name == 'push' || 'pull_request' || 'workflow_dispatch'";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+
+    var fix_count: usize = 0;
+    var diag_count: usize = 0;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
+            diag_count += 1;
+            if (d.fix != null) fix_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), diag_count);
+    try std.testing.expectEqual(@as(usize, 1), fix_count);
+}
+
+test "EXPR007 fix: suppressed when expr_base_byte is null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request'", Span.point(1, 1, 0), &list, null);
+    var saw_diag = false;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
+            saw_diag = true;
+            try std.testing.expect(d.fix == null);
+        }
+    }
+    try std.testing.expect(saw_diag);
+}
+
+test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    if: github.event_name == 'push' || 'pull_request'
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(alloc);
+    checkJob(&wf.jobs[0], &diags);
+
+    var fix_list = std.ArrayList(Fix){};
+    defer fix_list.deinit(std.testing.allocator);
+    for (diags.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
+            if (d.fix) |f| try fix_list.append(std.testing.allocator, f);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), fix_list.items.len);
+
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, fix_list.items);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        result.content,
+        "if: github.event_name == 'push' || github.event_name == 'pull_request'",
+    ) != null);
 }

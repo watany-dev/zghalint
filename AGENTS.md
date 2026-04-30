@@ -41,6 +41,9 @@ Do not skip these checks.
 - `src/lib.zig` - Library public API and test orchestration
 - `src/config.zig` - Configuration parsing and rule overrides (`.zghalint.yml`)
 - `src/diagnostics.zig` - Diagnostic types, severity, categories
+- `src/util.zig` - Shared helpers (e.g. step name generation for autofix)
+- `src/fix/` - Auto-fix engine
+  - `engine.zig` - Collect and apply `--fix` / `--fix-unsafe` rewrites in place
 - `src/rules/` - Linting rule implementations
   - `engine.zig` - Rule execution framework
   - `security.zig` - Security checks
@@ -48,6 +51,15 @@ Do not skip these checks.
   - `performance.zig` - Performance optimization rules
   - `best_practices.zig` - Best practice checks
   - `permissions.zig` - Permission model validation
+  - `advisory.zig` - Known-vulnerable action detection (SC003)
+  - `archived.zig` - Archived repository detection (SC004)
+  - `stale_refs.zig` - SHA-to-tag resolution (SC005)
+  - `refconfusion.zig` - Tag/branch ref confusion (SC006)
+  - `dependabot.zig` - Dependabot configuration checks
+  - `http_client.zig` - Shared `std.http.Client` for GitHub API reuse
+  - `graphql.zig` - GitHub GraphQL batching (SC004-SC006 in 1-2 POSTs)
+  - `disk_cache.zig` - Per-repo JSON cache (24h TTL) for warm runs
+  - `prefetch.zig` - Orchestrator: disk -> GraphQL -> REST fallback
 - `src/workflow/` - Workflow data structures and parsing
   - `types.zig` - Workflow, Job, Step, Trigger types
   - `parser.zig` - Workflow structure parser
@@ -66,6 +78,8 @@ Do not skip these checks.
 - `--config <path>` - Load rule overrides from `.zghalint.yml`
 - `--format <fmt>` - Output format (`terminal`, `json`, `sarif`; default: `terminal`)
 - `--color <mode>` - Color control (`auto`, `always`, `never`; default: `auto`)
+- `--quick` / `--offline` - Disable network requests; use local data/cache only
+- `--no-cache` - Bypass the on-disk prefetch cache and refetch from GitHub
 - `--fix` - Apply safe auto-fixes and rewrite files in place
 - `--fix-unsafe` - Apply all auto-fixes, including unsafe ones
 - `-h`, `--help` - Show help

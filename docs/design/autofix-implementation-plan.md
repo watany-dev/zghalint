@@ -7,17 +7,17 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 ## 対象と集計単位
 
 - 集計単位は CLI 上の「ルール数」ではなく、最終的に `Diagnostic.rule_id` として出力される診断 ID 単位とする
-- `docs/rules.md` の 38 rules に対し、autofix 設計上の対象診断 ID は 42 件ある
-- 差分の理由は `EXPR` がエンジン上は 1 ルールだが、`EXPR001` から `EXPR007` を個別診断として出力しているため
+- `docs/rules.md` の 48 rules（診断 ID ベース）と本書の対象診断 ID は一致する
+- `EXPR` はエンジン上は 1 ルールだが、`EXPR001` から `EXPR007` を個別診断として出力するため、エンジンルール基準で数えると 42 件になる
 
 ## 現状サマリ
 
 | 区分 | 件数 | 備考 |
 |------|------|------|
-| autofix 完全実装済み | 16 | `BP001`, `BP002`, `BP003`, `BP004`, `BP005`, `DEP001`, `DEP002`, `EXPR006`, `PERF001`(setup-node/-python/-go, lockfile 検出), `PERF003`, `PERM001`, `PERM002`, `SEC004`, `SEC007`, `SEC015`, `SEC017` |
+| autofix 完全実装済み | 17 | `BP001`, `BP002`, `BP003`, `BP004`, `BP005`, `DEP001`, `DEP002`, `EXPR006`, `EXPR007`, `PERF001`(setup-node/-python/-go, lockfile 検出), `PERF003`, `PERM001`, `PERM002`, `SEC004`, `SEC007`, `SEC015`, `SEC017` |
 | autofix 部分実装 | 0 | — |
-| autofix 未着手 | 26 | fix hint のみ、または診断のみ |
-| autofix 追加対象合計 | 26 | |
+| autofix 未着手 | 25 | fix hint のみ、または診断のみ |
+| autofix 追加対象合計 | 25 | |
 
 ## 既存 autofix 実装
 
@@ -79,7 +79,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `SEC013` | 未実装 | 不可/非推奨 | 高 | 低 | credentials をどの secret に置き換えるか決められない |
 | `SEC014` | 未実装 | 条件付き可 | 高 | 低 | `github.actor` を `github.event.sender.type` 等へ書き換えるには式パターン限定が必要 |
 | `SEC016` | 未実装 | 不可/非推奨 | 高 | 低 | cache 削除や trigger 制限は意味変更が大きい |
-| `SEC017` | 未実装 | 条件付き可 | 中 | 高 | workflow parser / model に `env` value span/style を保持すれば `false` 置換で対応可能。個別設計: `docs/design/sec017-autofix-design.md` |
+| `SEC017` | 完全実装 | 条件付き可 | 中 | 高 | workflow parser / model の `env` value span を活用し、`true` を `false` へ置換（実装済み）。個別設計: `docs/design/sec017-autofix-design.md` |
 | `SEC019` | 未実装 | 不可/非推奨 | 高 | 低 | `env:` へ持ち上げるには参照名の決定と複数箇所書換えが必要 |
 | `SC001` | 未実装 | 条件付き可 | 高 | 低 | digest 解決にレジストリ参照が必要。ネットワーク依存 |
 | `SC003` | 未実装 | 条件付き可 | 高 | 低 | advisory の patched version がある場合のみ候補生成可能。unsafe 寄り |
@@ -93,7 +93,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 |----|------|----------|--------|--------|------|
 | `PERF001` | 完全実装（setup-node / setup-python / setup-go） | 可 | 中 | 中 | 起動時 lockfile probe で setup-node/python/go 向け `cache: <manager>` を付与（全 unsafe）。曖昧ケースは fix 抑止。`.zghalint.yml` で override 可 |
 | `PERF002` | 未実装 | 不可/非推奨 | 高 | 低 | redundant checkout を削除するか `path` を足すかが文脈依存 |
-| `PERF003` | 未実装 | 可 | 低 | 高 | `fail-fast: false` の削除、または `true` 置換で対応可能。unsafe fix 扱いが妥当 |
+| `PERF003` | 完全実装 | 可 | 低 | 高 | `fail-fast: false` エントリを削除（unsafe fix）で実装済み |
 | `BP002` | 完全実装 | 可 | 中 | 高 | `uses` が step mapping の先頭 key の場合のみ、action 名から step 名を生成して `uses:` の直前に挿入する。個別設計: `docs/design/bp002-autofix-design.md` |
 | `BP003` | 完全実装 | 可 | 中 | 高 | 既知の置換表により `uses:` の version 部分を機械置換する。個別設計: `docs/design/bp003-autofix-design.md` |
 | `BP004` | 完全実装 | 条件付き可 | 中 | 中 | Windows-targeting ジョブの `run` step に `shell: bash` を挿入（unsafe） |
@@ -102,26 +102,28 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `PERM001` | 完全実装 | 条件付き可 | 中 | 中 | 14 scope 全てで個別 `write` を検出、`id-token` 以外は `read` へ降格（unsafe）。`id-token` は専用 hint |
 | `PERM002` | 完全実装 | 条件付き可 | 中 | 中 | job の `runs-on:` 直後へ `permissions: contents: read` を挿入（unsafe）。`Job.permissions_insertion_byte` 活用 |
 | `DEP001` | 完全実装 | 条件付き可 | 中 | 中 | dependabot entry 末尾へ block 形式 `cooldown:` を挿入（unsafe）。`MappingEntry.full_span` 活用 |
-| `DEP002` | 未実装 | 可 | 低 | 高 | `insecure-external-code-execution: allow` を `deny` へ置換、または削除で対応可能。個別設計: `docs/design/dep002-autofix-design.md` |
+| `DEP002` | 完全実装 | 可 | 低 | 高 | `insecure-external-code-execution: allow` を `deny` へ置換（実装済み）。個別設計: `docs/design/dep002-autofix-design.md` |
 | `EXPR001` | 未実装 | 不可/非推奨 | 高 | 低 | 構文エラーの正解を機械推定できない |
 | `EXPR002` | 未実装 | 不可/非推奨 | 高 | 低 | unknown context の正しい候補が文脈依存 |
 | `EXPR003` | 未実装 | 不可/非推奨 | 高 | 低 | property 名の typo 自動修正は誤爆しやすい |
 | `EXPR004` | 未実装 | 不可/非推奨 | 高 | 低 | unknown function の候補生成が不安定 |
 | `EXPR005` | 未実装 | 不可/非推奨 | 高 | 低 | 引数追加・削除の正解を決められない |
 | `EXPR006` | 完全実装 | 条件付き可 | 高 | 中 | `contains(ctx, 'lit')` → `ctx == 'lit'` / `!contains(ctx, 'lit')` → `ctx != 'lit'`（unsafe）。`.*`・`[`・`''` エスケープ含みや非 context 第一引数は fix 抑止。個別設計: `docs/design/expr006-autofix-design.md` |
-| `EXPR007` | 未実装 | 条件付き可 | 高 | 中 | `a == 'x' || 'y'` 系の限定パターンなら機械展開できる |
+| `EXPR007` | 完全実装（V1: `||` + `==` / `&&` + `!=`） | 条件付き可 | 高 | 中 | 兄弟 `binary_op` の LHS context path を流用し、裸の string_literal を `{ctx} {op} {literal}` へ展開（unsafe）。`||`/`&&` と `==`/`!=` のミスマッチ・chain・number_literal・`.*`/`[` 含み・`''` エスケープ含みは fix 抑止 |
 
 ## 優先実装候補
 
 ### Phase 1: 先に着手すべきもの
 
-| ID | 理由 |
-|----|------|
-| `SEC017` | `env` value span/style の最小拡張で着手でき、セキュリティ効果が高い |
-| `DEP002` | Dependabot 設定の 1 箇所置換で済む |
-| `PERF003` | 単純削除で済み、edit も作りやすい |
-| `BP003` | 既存の置換表をそのまま使える |
-| `BP002` | 生成ロジックは必要だが、ローカル情報だけで完結する |
+Phase 1 候補は全て実装完了済み。
+
+| ID | 状態 | 理由 |
+|----|:--:|------|
+| `SEC017` | 完了 | `env` value span/style の最小拡張で着手でき、セキュリティ効果が高い |
+| `DEP002` | 完了 | Dependabot 設定の 1 箇所置換で済む |
+| `PERF003` | 完了 | 単純削除で済み、edit も作りやすい |
+| `BP003` | 完了 | 既存の置換表をそのまま使える |
+| `BP002` | 完了 | 生成ロジックは必要だが、ローカル情報だけで完結する |
 
 ### Phase 2: unsafe fix と insertion 系の拡張
 
@@ -142,7 +144,7 @@ Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）の実�
 | ID | 状態 | 理由 |
 |----|:--:|------|
 | `EXPR006` | 完了 | `contains(ctx, 'lit')` / `!contains(ctx, 'lit')` を `==` / `!=` へ変換（unsafe）。個別設計: `docs/design/expr006-autofix-design.md` |
-| `EXPR007` | 未実装 | 限定パターンでの式展開が可能 |
+| `EXPR007` | 完了 | V1: `||`+`==` / `&&`+`!=` の直接ペアで、兄弟比較の LHS context path を流用して裸 string_literal を `{ctx} {op} {literal}` へ展開（unsafe）。chain・number_literal・operator ミスマッチは fix 抑止 |
 | `SEC014` | 未実装 | 一部の bot 判定式だけを対象にした rewrite が考えられる |
 
 ### Backlog: ネットワーク依存 or 非推奨
@@ -209,8 +211,9 @@ Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）の実�
 5. `BP004`, `PERM001` 追加対応, `PERF001`(setup-go のみ) — 完了（`docs/adr/0002-autofix-phase2-remainder.md`、`docs/design/autofix-phase2-remainder-design.md`）
 6. `PERF001` の setup-node / setup-python / setup-go (lockfile 検出) — 完了（`docs/adr/0004-perf001-cache-extension.md`、`docs/design/perf001-lockfile-detection-design.md`）
 7. `EXPR006` の条件付き変換 autofix — 完了（V1: `contains()` → `==`、V2: `!contains()` → `!=`、`docs/design/expr006-autofix-design.md`）
-8. 条件付き変換の残り（`EXPR007`, `SEC014`）を検討
-9. ネットワーク依存 autofix は別設計として切り出す
+8. `EXPR007` の条件付き変換 autofix — 完了（V1: `||`+`==` / `&&`+`!=` の直接ペアでの式展開）
+9. 条件付き変換の残り（`SEC014`）を検討
+10. ネットワーク依存 autofix は別設計として切り出す
 
 ## TDD 方針
 
