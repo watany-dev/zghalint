@@ -21,13 +21,18 @@ const Allocator = std.mem.Allocator;
 // Public types
 // ============================================================
 
-pub const RestError = error{
-    FetchFailed,
+/// The error set used by every public function in this module.
+///
+/// It is built on top of `http_client.FetchedError` so that transport-level
+/// failures (`NotInitialized`, `FetchFailed`, `NetworkDeadlineExceeded`,
+/// `OutOfMemory`) propagate to callers without being collapsed, and adds the
+/// REST-specific failure modes that come from interpreting GitHub responses
+/// (`HttpError`, `JsonParseError`, `UnexpectedFormat`, `MissingField`).
+pub const RestError = http_client.FetchedError || error{
     HttpError,
     JsonParseError,
     UnexpectedFormat,
     MissingField,
-    OutOfMemory,
 };
 
 pub const TagResolution = enum {
@@ -66,13 +71,10 @@ pub fn isRateLimited() bool {
 /// Fetch the `archived` flag for `owner/repo` via the REST endpoint
 /// `GET /repos/{owner}/{repo}`.
 pub fn fetchArchiveStatus(allocator: Allocator, owner: []const u8, repo: []const u8) RestError!bool {
-    const url = std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}", .{ owner, repo }) catch return error.OutOfMemory;
+    const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}", .{ owner, repo });
     defer allocator.free(url);
 
-    var resp = http_client.fetchAuthenticatedJson(allocator, url) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.FetchFailed,
-    };
+    var resp = try http_client.fetchAuthenticatedJson(allocator, url);
     defer resp.deinit();
 
     if (resp.status != .ok) return error.HttpError;
@@ -108,17 +110,14 @@ pub fn resolveTagForSha(
     repo: []const u8,
     sha: []const u8,
 ) RestError!TagResolution {
-    const url = std.fmt.allocPrint(
+    const url = try std.fmt.allocPrint(
         allocator,
         "https://api.github.com/repos/{s}/{s}/git/matching-refs/tags/?per_page=100",
         .{ owner, repo },
-    ) catch return error.OutOfMemory;
+    );
     defer allocator.free(url);
 
-    var resp = http_client.fetchAuthenticatedJson(allocator, url) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.FetchFailed,
-    };
+    var resp = try http_client.fetchAuthenticatedJson(allocator, url);
     defer resp.deinit();
 
     if (resp.status != .ok) return TagResolution.unknown;
@@ -174,17 +173,14 @@ fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8
 }
 
 fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []const u8, tag_sha: []const u8) RestError![]const u8 {
-    const url = std.fmt.allocPrint(
+    const url = try std.fmt.allocPrint(
         allocator,
         "https://api.github.com/repos/{s}/{s}/git/tags/{s}",
         .{ owner, repo, tag_sha },
-    ) catch return error.OutOfMemory;
+    );
     defer allocator.free(url);
 
-    var resp = http_client.fetchAuthenticatedJson(allocator, url) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.FetchFailed,
-    };
+    var resp = try http_client.fetchAuthenticatedJson(allocator, url);
     defer resp.deinit();
 
     if (resp.status != .ok) return error.HttpError;
