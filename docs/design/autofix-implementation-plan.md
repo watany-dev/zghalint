@@ -14,10 +14,10 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 
 | 区分 | 件数 | 備考 |
 |------|------|------|
-| autofix 完全実装済み | 15 | `BP001`, `BP002`, `BP003`, `BP004`, `BP005`, `DEP001`, `DEP002`, `PERF001`(setup-node/-python/-go, lockfile 検出), `PERF003`, `PERM001`, `PERM002`, `SEC004`, `SEC007`, `SEC015`, `SEC017` |
+| autofix 完全実装済み | 16 | `BP001`, `BP002`, `BP003`, `BP004`, `BP005`, `DEP001`, `DEP002`, `EXPR006`, `PERF001`(setup-node/-python/-go, lockfile 検出), `PERF003`, `PERM001`, `PERM002`, `SEC004`, `SEC007`, `SEC015`, `SEC017` |
 | autofix 部分実装 | 0 | — |
-| autofix 未着手 | 27 | fix hint のみ、または診断のみ |
-| autofix 追加対象合計 | 27 | |
+| autofix 未着手 | 26 | fix hint のみ、または診断のみ |
+| autofix 追加対象合計 | 26 | |
 
 ## 既存 autofix 実装
 
@@ -38,6 +38,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `PERF003` | 完全実装 | `src/rules/performance.zig` | `fail-fast: false` エントリを削除（unsafe） |
 | `BP004` | 完全実装 | `src/rules/best_practices.zig` | Windows-targeting ジョブの `run` step に `shell: bash` を挿入（unsafe） |
 | `PERF001` | 完全実装（setup-node / setup-python / setup-go） | `src/rules/performance.zig`, `src/workspace.zig` | 起動時の lockfile probe で `node_cache` / `python_cache` / `go_sum_present` を判定し、setup-node/python/go step に `cache: <manager>` を追加（全 unsafe）。曖昧時は fix 抑止し fix_hint に lockfile 一覧を提示。`.zghalint.yml` の `rules.PERF001.node_cache_manager` / `python_cache_manager` で上書き可 |
+| `EXPR006` | 完全実装（V1: `contains()` / V2: `!contains()`） | `src/rules/expressions.zig` | `contains(ctx, 'lit')` を `ctx == 'lit'`、`!contains(ctx, 'lit')` を `ctx != 'lit'` へ置換（unsafe）。第一引数が `context_access` かつ path に `.*` / `[` を含まない、リテラル内に `''` エスケープを含まないケースに限定。個別設計: `docs/design/expr006-autofix-design.md` |
 
 ## 評価基準
 
@@ -107,7 +108,7 @@ GitHub Actions / Dependabot 向けルールのうち、autofix が未実装ま�
 | `EXPR003` | 未実装 | 不可/非推奨 | 高 | 低 | property 名の typo 自動修正は誤爆しやすい |
 | `EXPR004` | 未実装 | 不可/非推奨 | 高 | 低 | unknown function の候補生成が不安定 |
 | `EXPR005` | 未実装 | 不可/非推奨 | 高 | 低 | 引数追加・削除の正解を決められない |
-| `EXPR006` | 未実装 | 条件付き可 | 高 | 中 | `contains()` を `==` や `startsWith()` に変換できるのは一部パターンのみ |
+| `EXPR006` | 完全実装 | 条件付き可 | 高 | 中 | `contains(ctx, 'lit')` → `ctx == 'lit'` / `!contains(ctx, 'lit')` → `ctx != 'lit'`（unsafe）。`.*`・`[`・`''` エスケープ含みや非 context 第一引数は fix 抑止。個別設計: `docs/design/expr006-autofix-design.md` |
 | `EXPR007` | 未実装 | 条件付き可 | 高 | 中 | `a == 'x' || 'y'` 系の限定パターンなら機械展開できる |
 
 ## 優先実装候補
@@ -138,11 +139,11 @@ Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）の実�
 
 ### Phase 3: 条件付きパターン変換
 
-| ID | 理由 |
-|----|------|
-| `EXPR007` | 限定パターンでの式展開が可能 |
-| `EXPR006` | 一部の `contains()` を safer な比較へ変換できる |
-| `SEC014` | 一部の bot 判定式だけを対象にした rewrite が考えられる |
+| ID | 状態 | 理由 |
+|----|:--:|------|
+| `EXPR006` | 完了 | `contains(ctx, 'lit')` / `!contains(ctx, 'lit')` を `==` / `!=` へ変換（unsafe）。個別設計: `docs/design/expr006-autofix-design.md` |
+| `EXPR007` | 未実装 | 限定パターンでの式展開が可能 |
+| `SEC014` | 未実装 | 一部の bot 判定式だけを対象にした rewrite が考えられる |
 
 ### Backlog: ネットワーク依存 or 非推奨
 
@@ -207,8 +208,9 @@ Phase 2 のうち挿入系 3 ルール（`BP005`, `PERM002`, `DEP001`）の実�
 4. `BP005`, `PERM002`, `DEP001` — 完了（`docs/adr/0001-autofix-phase2-insertion-rules.md`、`docs/design/autofix-phase2-insertion-design.md`）
 5. `BP004`, `PERM001` 追加対応, `PERF001`(setup-go のみ) — 完了（`docs/adr/0002-autofix-phase2-remainder.md`、`docs/design/autofix-phase2-remainder-design.md`）
 6. `PERF001` の setup-node / setup-python / setup-go (lockfile 検出) — 完了（`docs/adr/0004-perf001-cache-extension.md`、`docs/design/perf001-lockfile-detection-design.md`）
-7. 条件付き変換として `EXPR007`, `EXPR006`, `SEC014` を検討
-8. ネットワーク依存 autofix は別設計として切り出す
+7. `EXPR006` の条件付き変換 autofix — 完了（V1: `contains()` → `==`、V2: `!contains()` → `!=`、`docs/design/expr006-autofix-design.md`）
+8. 条件付き変換の残り（`EXPR007`, `SEC014`）を検討
+9. ネットワーク依存 autofix は別設計として切り出す
 
 ## TDD 方針
 

@@ -296,6 +296,12 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
         }
     }
     job.if_condition = m.getScalar("if");
+    if (m.get("if")) |n| {
+        switch (n) {
+            .scalar => |s| job.if_condition_meta = .{ .value_span = s.span, .style = s.style },
+            else => {},
+        }
+    }
     job.uses = m.getScalar("uses");
 
     // Insertion anchor for job-level `permissions:` / `concurrency:` lands after
@@ -387,6 +393,12 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
     step.run = m.getScalar("run");
     step.shell = m.getScalar("shell");
     step.if_condition = m.getScalar("if");
+    if (m.get("if")) |n| {
+        switch (n) {
+            .scalar => |s| step.if_condition_meta = .{ .value_span = s.span, .style = s.style },
+            else => {},
+        }
+    }
     step.working_directory = m.getScalar("working-directory");
 
     // Capture `run:` value span and the insertion anchor for a sibling `shell:`.
@@ -1227,6 +1239,54 @@ test "parseJob with timeout and strategy" {
     try testing.expect(job.continue_on_error);
     try testing.expectEqualStrings("success()", job.if_condition.?);
     try testing.expect(job.strategy.?.fail_fast);
+}
+
+test "parseStep captures if_condition_meta" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Simulate `if: contains(github.ref, 'main')` where the value starts at byte 4.
+    const if_value_span = mkSpanBytes(4, 32);
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
+        .{
+            .key = mkScalarS("if"),
+            .value = mkScalarStyled("contains(github.ref, 'main')", .plain, if_value_span),
+            .span = mkSpan(),
+        },
+    };
+
+    const step = try parseStep(arena.allocator(), mkMapping(&entries));
+    try testing.expect(step.if_condition_meta != null);
+    try testing.expectEqual(@as(usize, 4), step.if_condition_meta.?.value_span.start_byte);
+    try testing.expectEqual(@as(usize, 32), step.if_condition_meta.?.value_span.end_byte);
+    try testing.expectEqual(yaml.ScalarStyle.plain, step.if_condition_meta.?.style);
+}
+
+test "parseJob captures if_condition_meta with double-quoted style" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var step_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
+    };
+    var step_items = [_]Node{mkMapping(&step_entries)};
+
+    const if_value_span = mkSpanBytes(10, 50);
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
+        .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
+        .{
+            .key = mkScalarS("if"),
+            .value = mkScalarStyled("${{ contains(github.ref, 'main') }}", .double_quoted, if_value_span),
+            .span = mkSpan(),
+        },
+    };
+
+    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    try testing.expect(job.if_condition_meta != null);
+    try testing.expectEqual(@as(usize, 10), job.if_condition_meta.?.value_span.start_byte);
+    try testing.expectEqual(yaml.ScalarStyle.double_quoted, job.if_condition_meta.?.style);
 }
 
 test "parseWorkflow with env and concurrency" {
