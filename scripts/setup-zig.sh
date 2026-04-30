@@ -117,12 +117,15 @@ run_build() {
       exec "$out/bin/zghalint" "${run_args[@]}"
       ;;
     test)
-      "$REAL_ZIG" test -fllvm -Mroot=src/lib.zig
-      "$REAL_ZIG" test -fllvm --dep zghalint \
+      # `-lc` mirrors build.zig's `link_libc = true` on the test modules so that
+      # libc's setenv/unsetenv (referenced via @extern from env-mutating tests in
+      # src/rules/{http_client,disk_cache,graphql,prefetch}.zig) resolve at link.
+      "$REAL_ZIG" test -fllvm -lc -Mroot=src/lib.zig
+      "$REAL_ZIG" test -fllvm -lc --dep zghalint \
         -Mroot=src/main.zig -Mzghalint=src/lib.zig
       ;;
     test-bin)
-      "$REAL_ZIG" test -fllvm --test-no-exec \
+      "$REAL_ZIG" test -fllvm -lc --test-no-exec \
         -femit-bin="$out/bin/test" \
         -Mroot=src/lib.zig
       ;;
