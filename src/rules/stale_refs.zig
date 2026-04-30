@@ -4,7 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
-const http_client = @import("http_client.zig");
+const rest_fallback = @import("rest_fallback.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -16,11 +16,10 @@ const isValidGitHubComponent = engine.isValidGitHubComponent;
 // Types
 // ============================================================
 
-pub const TagResolution = enum {
-    has_tag,
-    no_tag,
-    unknown,
-};
+/// Re-exported from `rest_fallback.zig` so callers and tests that imported
+/// `stale_refs.TagResolution` keep working. The canonical definition lives
+/// alongside the REST resolver to avoid a circular import.
+pub const TagResolution = rest_fallback.TagResolution;
 
 // ============================================================
 // Module-level cache
@@ -97,7 +96,7 @@ pub fn resolveTagForShaPub(
     repo: []const u8,
     sha: []const u8,
 ) !TagResolution {
-    return resolveTagForSha(allocator, owner, repo, sha);
+    return rest_fallback.resolveTagForSha(allocator, owner, repo, sha);
 }
 
 /// Return the arena allocator used for cache keys, so the prefetch
@@ -121,7 +120,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     const key = std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
 
     const resolution = cache.get(key) orelse blk: {
-        const result = resolveTagForSha(allocator, owner, repo, sha) catch TagResolution.unknown;
+        const result = rest_fallback.resolveTagForSha(allocator, owner, repo, sha) catch TagResolution.unknown;
         cache.put(key, result) catch return;
         break :blk result;
     };
@@ -135,162 +134,6 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
             .fix_hint = "verify the SHA corresponds to a tagged release",
         }) catch return;
     }
-}
-
-// ============================================================
-// HTTP fetch
-// ============================================================
-
-fn resolveTagForSha(allocator: Allocator, owner: []const u8, repo: []const u8, sha: []const u8) !TagResolution {
-    const url = try std.fmt.allocPrint(
-        allocator,
-        "https://api.github.com/repos/{s}/{s}/git/matching-refs/tags/?per_page=100",
-        .{ owner, repo },
-    );
-
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-
-    const auth_value = http_client.getAuthHeader(allocator);
-    defer if (auth_value) |auth| allocator.free(auth);
-
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
-
-    const result = http_client.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
-    }) catch return error.FetchFailed;
-
-    if (result.status != .ok) return TagResolution.unknown;
-
-    var response_list = aw.toArrayList();
-    defer response_list.deinit(allocator);
-
-    return matchShaInRefs(allocator, response_list.items, sha, owner, repo);
-}
-
-// ============================================================
-// JSON parsing and SHA matching
-// ============================================================
-
-fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8, owner: []const u8, repo: []const u8) TagResolution {
-    const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch return .unknown;
-
-    const items = switch (root) {
-        .array => |arr| arr.items,
-        else => return .unknown,
-    };
-
-    if (items.len == 0) return .unknown;
-
-    // Collect annotated tag SHAs for deferred dereferencing
-    var annotated_shas: [64][]const u8 = undefined;
-    var annotated_count: usize = 0;
-
-    // Pass 1: check lightweight tags (object.type == "commit")
-    for (items) |item| {
-        const obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const ref_obj_val = obj.get("object") orelse continue;
-        const ref_obj = switch (ref_obj_val) {
-            .object => |o| o,
-            else => continue,
-        };
-
-        const obj_sha = getJsonString(ref_obj, "sha") orelse continue;
-        const obj_type = getJsonString(ref_obj, "type") orelse continue;
-
-        if (std.mem.eql(u8, obj_type, "commit")) {
-            if (std.mem.eql(u8, obj_sha, target_sha)) return .has_tag;
-        } else if (std.mem.eql(u8, obj_type, "tag")) {
-            if (annotated_count < annotated_shas.len) {
-                annotated_shas[annotated_count] = obj_sha;
-                annotated_count += 1;
-            }
-        }
-    }
-
-    // Pass 2: dereference annotated tags
-    for (annotated_shas[0..annotated_count]) |tag_sha| {
-        const commit_sha = dereferenceAnnotatedTag(allocator, owner, repo, tag_sha) catch continue;
-        if (std.mem.eql(u8, commit_sha, target_sha)) return .has_tag;
-    }
-
-    // Pagination guard: if we got a full page, there may be more tags
-    if (items.len >= 100) return .unknown;
-
-    return .no_tag;
-}
-
-fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []const u8, tag_sha: []const u8) ![]const u8 {
-    const url = try std.fmt.allocPrint(
-        allocator,
-        "https://api.github.com/repos/{s}/{s}/git/tags/{s}",
-        .{ owner, repo, tag_sha },
-    );
-
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
-
-    const auth_value = http_client.getAuthHeader(allocator);
-    defer if (auth_value) |auth| allocator.free(auth);
-
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
-
-    const result = http_client.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
-    }) catch return error.FetchFailed;
-
-    if (result.status != .ok) return error.HttpError;
-
-    var response_list = aw.toArrayList();
-    defer response_list.deinit(allocator);
-
-    return parseTagObject(response_list.items);
-}
-
-/// Parse a Git tag object response and extract the target commit SHA.
-/// Response format: { "object": { "sha": "...", "type": "commit" } }
-fn parseTagObject(body: []const u8) ![]const u8 {
-    // Use a stack-allocated buffer to avoid leaking into the arena
-    var buf: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-
-    const root = std.json.parseFromSliceLeaky(std.json.Value, fba.allocator(), body, .{}) catch return error.JsonParseError;
-
-    const obj = switch (root) {
-        .object => |o| o,
-        else => return error.UnexpectedFormat,
-    };
-
-    const inner_val = obj.get("object") orelse return error.UnexpectedFormat;
-    const inner = switch (inner_val) {
-        .object => |o| o,
-        else => return error.UnexpectedFormat,
-    };
-
-    const obj_type = getJsonString(inner, "type") orelse return error.UnexpectedFormat;
-    // Only dereference one level; nested tag objects are treated as unknown
-    if (!std.mem.eql(u8, obj_type, "commit")) return error.UnexpectedFormat;
-
-    return getJsonString(inner, "sha") orelse error.UnexpectedFormat;
-}
-
-fn getJsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const val = obj.get(key) orelse return null;
-    return switch (val) {
-        .string => |s| s,
-        else => null,
-    };
 }
 
 // ============================================================
@@ -630,163 +473,6 @@ test "SC005: offline mode (null cache) produces no diagnostic" {
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
-}
-
-// -- JSON parsing tests --
-
-test "matchShaInRefs: lightweight tag match" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body =
-        \\[{"ref":"refs/tags/v1.0.0","object":{"sha":"abc123abc123abc123abc123abc123abc123abc1","type":"commit"}}]
-    ;
-    const result = matchShaInRefs(arena.allocator(), body, "abc123abc123abc123abc123abc123abc123abc1", "o", "r");
-    try testing.expectEqual(TagResolution.has_tag, result);
-}
-
-test "matchShaInRefs: no match returns no_tag" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body =
-        \\[{"ref":"refs/tags/v1.0.0","object":{"sha":"abc123abc123abc123abc123abc123abc123abc1","type":"commit"}}]
-    ;
-    const result = matchShaInRefs(arena.allocator(), body, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
-    try testing.expectEqual(TagResolution.no_tag, result);
-}
-
-test "matchShaInRefs: empty array returns unknown" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body = "[]";
-    const result = matchShaInRefs(arena.allocator(), body, "abc123abc123abc123abc123abc123abc123abc1", "o", "r");
-    try testing.expectEqual(TagResolution.unknown, result);
-}
-
-test "matchShaInRefs: invalid JSON returns unknown" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body = "not json";
-    const result = matchShaInRefs(arena.allocator(), body, "abc123abc123abc123abc123abc123abc123abc1", "o", "r");
-    try testing.expectEqual(TagResolution.unknown, result);
-}
-
-test "matchShaInRefs: non-array JSON returns unknown" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body =
-        \\{"message":"Not Found"}
-    ;
-    const result = matchShaInRefs(arena.allocator(), body, "abc123abc123abc123abc123abc123abc123abc1", "o", "r");
-    try testing.expectEqual(TagResolution.unknown, result);
-}
-
-test "matchShaInRefs: multiple lightweight tags, one matches" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body =
-        \\[
-        \\  {"ref":"refs/tags/v1.0.0","object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"commit"}},
-        \\  {"ref":"refs/tags/v2.0.0","object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","type":"commit"}}
-        \\]
-    ;
-    const result = matchShaInRefs(arena.allocator(), body, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "o", "r");
-    try testing.expectEqual(TagResolution.has_tag, result);
-}
-
-test "parseTagObject: valid commit tag object" {
-    const body =
-        \\{"tag":"v1.0.0","object":{"sha":"abc123abc123abc123abc123abc123abc123abc1","type":"commit"}}
-    ;
-    const sha = try parseTagObject(body);
-    try testing.expectEqualStrings("abc123abc123abc123abc123abc123abc123abc1", sha);
-}
-
-test "parseTagObject: nested tag object returns error" {
-    const body =
-        \\{"tag":"v1.0.0","object":{"sha":"abc123","type":"tag"}}
-    ;
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
-}
-
-test "parseTagObject: malformed JSON returns error" {
-    try testing.expectError(error.JsonParseError, parseTagObject("not json"));
-}
-
-test "parseTagObject: missing object field returns error" {
-    const body =
-        \\{"tag":"v1.0.0"}
-    ;
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
-}
-
-test "matchShaInRefs: annotated tags fail to dereference offline -> no_tag" {
-    // Five annotated tags, no network available (engine sets a past deadline
-    // so shared HTTP fetches short-circuit). Dereferencing fails for each,
-    // so none match → items.len < 100 → no_tag.
-    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
-    defer engine.clearNetworkDeadline();
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body =
-        \\[
-        \\  {"ref":"refs/tags/v1","object":{"sha":"tagsha111111111111111111111111111111111","type":"tag"}},
-        \\  {"ref":"refs/tags/v2","object":{"sha":"tagsha222222222222222222222222222222222","type":"tag"}}
-        \\]
-    ;
-    const result = matchShaInRefs(arena.allocator(), body, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
-    try testing.expectEqual(TagResolution.no_tag, result);
-}
-
-test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(testing.allocator);
-    try buf.append(testing.allocator, '[');
-    var i: usize = 0;
-    while (i < 100) : (i += 1) {
-        if (i != 0) try buf.append(testing.allocator, ',');
-        try buf.writer(testing.allocator).print(
-            "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
-            .{ i, i },
-        );
-    }
-    try buf.append(testing.allocator, ']');
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const result = matchShaInRefs(arena.allocator(), buf.items, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
-    try testing.expectEqual(TagResolution.unknown, result);
-}
-
-test "matchShaInRefs: non-object items and missing object/type are skipped" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const body =
-        \\[
-        \\  42,
-        \\  {"ref":"refs/tags/v0"},
-        \\  {"ref":"refs/tags/v1","object":"not-an-object"},
-        \\  {"ref":"refs/tags/v2","object":{"type":"commit"}},
-        \\  {"ref":"refs/tags/v3","object":{"sha":"abc"}},
-        \\  {"ref":"refs/tags/v4","object":{"sha":"hit","type":"commit"}}
-        \\]
-    ;
-    const result = matchShaInRefs(arena.allocator(), body, "hit", "o", "r");
-    try testing.expectEqual(TagResolution.has_tag, result);
-}
-
-test "parseTagObject: non-object inner 'object' returns error" {
-    const body =
-        \\{"tag":"v1","object":"not-an-object"}
-    ;
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
-}
-
-test "parseTagObject: inner missing sha returns error" {
-    const body =
-        \\{"tag":"v1","object":{"type":"commit"}}
-    ;
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
 }
 
 test "SC005: invalid owner characters rejected" {

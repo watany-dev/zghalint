@@ -3,7 +3,7 @@ const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
-const http_client = @import("http_client.zig");
+const rest_fallback = @import("rest_fallback.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -18,11 +18,10 @@ const isValidGitRef = engine.isValidGitRef;
 // Ref confusion status
 // ============================================================
 
-pub const RefStatus = enum {
-    ambiguous,
-    not_ambiguous,
-    fetch_failed,
-};
+/// Re-exported from `rest_fallback.zig` so callers and tests that imported
+/// `refconfusion.RefStatus` keep working. The canonical definition lives
+/// alongside the REST resolver to avoid a circular import.
+pub const RefStatus = rest_fallback.RefStatus;
 
 // ============================================================
 // Module-level state
@@ -30,7 +29,6 @@ pub const RefStatus = enum {
 
 var ref_cache: ?std.StringHashMap(RefStatus) = null;
 var ref_arena: ?std.heap.ArenaAllocator = null;
-var rate_limited: bool = false;
 
 // ============================================================
 // Public API
@@ -44,7 +42,7 @@ pub fn initRefConfusion(backing_allocator: Allocator, offline: bool) void {
     if (ref_arena) |*arena| {
         ref_cache = std.StringHashMap(RefStatus).init(arena.allocator());
     }
-    rate_limited = false;
+    rest_fallback.resetRateLimit();
 }
 
 /// Release all ref-confusion memory.
@@ -54,7 +52,7 @@ pub fn deinitRefConfusion() void {
         ref_arena = null;
     }
     ref_cache = null;
-    rate_limited = false;
+    rest_fallback.resetRateLimit();
 }
 
 /// Returns `true` if ref-confusion is live (non-offline) so a prefetcher
@@ -86,7 +84,7 @@ pub fn queryRefStatusPub(
     repo: []const u8,
     ref: []const u8,
 ) RefStatus {
-    return queryRefStatus(allocator, owner, repo, ref);
+    return rest_fallback.queryRefStatus(allocator, owner, repo, ref);
 }
 
 /// Return the arena allocator used for cache keys, so the prefetch
@@ -120,7 +118,7 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     }
 
     // Query GitHub API
-    const status = queryRefStatus(allocator, owner, repo, ref);
+    const status = rest_fallback.queryRefStatus(allocator, owner, repo, ref);
     cache.put(key, status) catch return;
 
     if (status == .ambiguous) {
@@ -142,51 +140,6 @@ fn emitDiagnostic(list: *DiagnosticList, owner: []const u8, repo: []const u8, re
         .span = Span.point(0, 0, 0),
         .fix_hint = "pin to a full 40-character commit SHA to avoid ref confusion",
     }) catch return;
-}
-
-// ============================================================
-// HTTP fetch
-// ============================================================
-
-fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8) RefStatus {
-    if (rate_limited) return .fetch_failed;
-
-    const tag_exists = checkRefExists(allocator, owner, repo, ref, "tags") orelse {
-        return .fetch_failed;
-    };
-    const branch_exists = checkRefExists(allocator, owner, repo, ref, "heads") orelse {
-        return .fetch_failed;
-    };
-
-    if (tag_exists and branch_exists) return .ambiguous;
-    return .not_ambiguous;
-}
-
-/// Check if a ref exists under the given ref_type ("tags" or "heads").
-/// Returns true if exists (HTTP 200), false if not (HTTP 404), null on error.
-fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8, ref_type: []const u8) ?bool {
-    const url = std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}/git/ref/{s}/{s}", .{ owner, repo, ref_type, ref }) catch return null;
-
-    const auth_value = http_client.getAuthHeader(allocator);
-    defer if (auth_value) |auth| allocator.free(auth);
-
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
-
-    const result = http_client.fetch(.{
-        .location = .{ .url = url },
-        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
-    }) catch return null;
-
-    if (result.status == .ok) return true;
-    if (result.status == .not_found) return false;
-
-    // Rate-limited or other error
-    if (result.status == .forbidden or result.status == .too_many_requests) {
-        rate_limited = true;
-    }
-    return null;
 }
 
 // ============================================================

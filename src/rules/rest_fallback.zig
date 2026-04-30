@@ -347,3 +347,124 @@ test "rate_limited flag round-trip" {
     resetRateLimit();
     try testing.expect(!isRateLimited());
 }
+
+test "parseArchivedField: non-bool archived returns UnexpectedFormat" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\{"archived":"yes"}
+    ;
+    try testing.expectError(
+        error.UnexpectedFormat,
+        parseArchivedField(arena.allocator(), body),
+    );
+}
+
+test "parseTagObject: malformed JSON returns error" {
+    try testing.expectError(error.JsonParseError, parseTagObject("not json"));
+}
+
+test "parseTagObject: missing object field returns error" {
+    const body =
+        \\{"tag":"v1.0.0"}
+    ;
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+}
+
+test "parseTagObject: non-object inner 'object' returns error" {
+    const body =
+        \\{"tag":"v1","object":"not-an-object"}
+    ;
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+}
+
+test "parseTagObject: inner missing sha returns error" {
+    const body =
+        \\{"tag":"v1","object":{"type":"commit"}}
+    ;
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+}
+
+test "matchShaInRefs: invalid JSON returns unknown" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = matchShaInRefs(arena.allocator(), "not json", "abc", "o", "r");
+    try testing.expectEqual(TagResolution.unknown, result);
+}
+
+test "matchShaInRefs: non-array JSON returns unknown" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\{"message":"Not Found"}
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "abc", "o", "r");
+    try testing.expectEqual(TagResolution.unknown, result);
+}
+
+test "matchShaInRefs: multiple lightweight tags, one matches" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  {"ref":"refs/tags/v1.0.0","object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"commit"}},
+        \\  {"ref":"refs/tags/v2.0.0","object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","type":"commit"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "o", "r");
+    try testing.expectEqual(TagResolution.has_tag, result);
+}
+
+test "matchShaInRefs: annotated tags fail to dereference offline -> no_tag" {
+    const engine = @import("engine.zig");
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  {"ref":"refs/tags/v1","object":{"sha":"tagsha111111111111111111111111111111111","type":"tag"}},
+        \\  {"ref":"refs/tags/v2","object":{"sha":"tagsha222222222222222222222222222222222","type":"tag"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
+    try testing.expectEqual(TagResolution.no_tag, result);
+}
+
+test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    try buf.append(testing.allocator, '[');
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        if (i != 0) try buf.append(testing.allocator, ',');
+        try buf.writer(testing.allocator).print(
+            "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
+            .{ i, i },
+        );
+    }
+    try buf.append(testing.allocator, ']');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = matchShaInRefs(arena.allocator(), buf.items, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
+    try testing.expectEqual(TagResolution.unknown, result);
+}
+
+test "matchShaInRefs: non-object items and missing object/type are skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  42,
+        \\  {"ref":"refs/tags/v0"},
+        \\  {"ref":"refs/tags/v1","object":"not-an-object"},
+        \\  {"ref":"refs/tags/v2","object":{"type":"commit"}},
+        \\  {"ref":"refs/tags/v3","object":{"sha":"abc"}},
+        \\  {"ref":"refs/tags/v4","object":{"sha":"hit","type":"commit"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "hit", "o", "r");
+    try testing.expectEqual(TagResolution.has_tag, result);
+}
