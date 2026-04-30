@@ -101,6 +101,53 @@ pub fn fetch(
 }
 
 // ============================================================
+// High-level GET helper
+// ============================================================
+
+pub const FetchedError = FetchError || error{OutOfMemory};
+
+/// Owned response body together with the HTTP status returned by GitHub.
+/// Callers must invoke `deinit()` to free the body slice.
+pub const FetchedBody = struct {
+    status: std.http.Status,
+    body: []u8,
+    allocator: Allocator,
+
+    pub fn deinit(self: *FetchedBody) void {
+        self.allocator.free(self.body);
+        self.body = &.{};
+    }
+};
+
+/// Issue a GET against `url` with the standard GitHub REST headers and the
+/// optional `Authorization` header derived from `GITHUB_TOKEN`. The response
+/// body is returned as an owned slice; the status is left untouched so callers
+/// retain their existing branching semantics (e.g. `.ok` vs `.not_found`).
+pub fn fetchAuthenticatedJson(
+    allocator: Allocator,
+    url: []const u8,
+) FetchedError!FetchedBody {
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+
+    const auth_value = getAuthHeader(allocator);
+    defer if (auth_value) |auth| allocator.free(auth);
+
+    var headers_buf: [3]std.http.Header = undefined;
+    const header_count = writeStandardHeaders(&headers_buf, auth_value);
+
+    const result = try fetch(.{
+        .location = .{ .url = url },
+        .response_writer = &aw.writer,
+        .headers = .{ .user_agent = .{ .override = user_agent } },
+        .extra_headers = headers_buf[0..header_count],
+    });
+
+    const body = try aw.toOwnedSlice();
+    return .{ .status = result.status, .body = body, .allocator = allocator };
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -191,6 +238,20 @@ test "fetch: returns NetworkDeadlineExceeded when deadline has passed" {
     defer engine.clearNetworkDeadline();
 
     const result = fetch(.{ .location = .{ .url = "http://127.0.0.1:1/irrelevant" } });
+    try testing.expectError(error.NetworkDeadlineExceeded, result);
+}
+
+test "fetchAuthenticatedJson: returns NotInitialized when client not started" {
+    if (client_initialized) return error.SkipZigTest;
+    const result = fetchAuthenticatedJson(testing.allocator, "http://localhost/does-not-matter");
+    try testing.expectError(error.NotInitialized, result);
+}
+
+test "fetchAuthenticatedJson: short-circuits on expired deadline" {
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    const result = fetchAuthenticatedJson(testing.allocator, "http://127.0.0.1:1/irrelevant");
     try testing.expectError(error.NetworkDeadlineExceeded, result);
 }
 
