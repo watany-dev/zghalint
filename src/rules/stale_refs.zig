@@ -87,18 +87,6 @@ pub fn setCachedTagResult(
     tag_cache.?.put(key, resolution) catch return;
 }
 
-/// Resolve the tag relationship for a SHA by calling GitHub's REST API.
-/// Exposed so the prefetch orchestrator can batch calls without going
-/// through the lazy per-step path.
-pub fn resolveTagForShaPub(
-    allocator: Allocator,
-    owner: []const u8,
-    repo: []const u8,
-    sha: []const u8,
-) !TagResolution {
-    return rest_fallback.resolveTagForSha(allocator, owner, repo, sha);
-}
-
 /// Return the arena allocator used for cache keys, so the prefetch
 /// orchestrator can stage allocations that live for the rule's lifetime.
 pub fn getArenaAllocator() ?Allocator {

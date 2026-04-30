@@ -75,18 +75,6 @@ pub fn setCachedRefResult(
     ref_cache.?.put(key, status) catch return;
 }
 
-/// Query GitHub for the status of a ref. Exposed for the prefetch
-/// orchestrator so it can batch ref lookups instead of hitting the
-/// lazy per-step path.
-pub fn queryRefStatusPub(
-    allocator: Allocator,
-    owner: []const u8,
-    repo: []const u8,
-    ref: []const u8,
-) RefStatus {
-    return rest_fallback.queryRefStatus(allocator, owner, repo, ref);
-}
-
 /// Return the arena allocator used for cache keys, so the prefetch
 /// orchestrator can stage allocations that live for the rule's lifetime.
 pub fn getArenaAllocator() ?Allocator {

@@ -53,12 +53,6 @@ pub fn isActive() bool {
     return !is_offline and archived_arena != null;
 }
 
-/// Fetch archive status via GitHub REST. Exposed so the prefetch
-/// orchestrator can batch calls outside the lazy per-step path.
-pub fn fetchArchiveStatusPub(allocator: Allocator, owner: []const u8, repo: []const u8) !bool {
-    return rest_fallback.fetchArchiveStatus(allocator, owner, repo);
-}
-
 /// Return the arena allocator used for cache keys, so the prefetch
 /// orchestrator can stage allocations that live for the rule's lifetime.
 pub fn getArenaAllocator() ?Allocator {
