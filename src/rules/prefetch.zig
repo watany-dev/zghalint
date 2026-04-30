@@ -23,6 +23,7 @@ const impostor_compare = @import("impostor_compare.zig");
 const graphql = @import("graphql.zig");
 const disk_cache = @import("disk_cache.zig");
 const http_client = @import("http_client.zig");
+const rest_fallback = @import("rest_fallback.zig");
 
 const PendingCompare = impostor_compare.PendingCompare;
 
@@ -593,7 +594,7 @@ fn fetchRepos(scratch: Allocator, set: RepoSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
         if (engine.isNetworkDeadlineExceeded()) return;
-        const is_archived = archived.fetchArchiveStatusPub(scratch, key.owner, key.repo) catch continue;
+        const is_archived = rest_fallback.fetchArchiveStatus(scratch, key.owner, key.repo) catch continue;
         archived.setCachedResult(key.owner, key.repo, is_archived);
     }
 }
@@ -602,7 +603,7 @@ fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
         if (engine.isNetworkDeadlineExceeded()) return;
-        const resolution = stale_refs.resolveTagForShaPub(scratch, key.owner, key.repo, key.sha) catch stale_refs.TagResolution.unknown;
+        const resolution = rest_fallback.resolveTagForSha(scratch, key.owner, key.repo, key.sha) catch rest_fallback.TagResolution.unknown;
         stale_refs.setCachedTagResult(key.owner, key.repo, key.sha, resolution);
     }
 }
@@ -611,7 +612,7 @@ fn fetchNamedRefs(scratch: Allocator, set: NamedSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
         if (engine.isNetworkDeadlineExceeded()) return;
-        const status = refconfusion.queryRefStatusPub(scratch, key.owner, key.repo, key.ref);
+        const status = rest_fallback.queryRefStatus(scratch, key.owner, key.repo, key.ref);
         refconfusion.setCachedRefResult(key.owner, key.repo, key.ref, status);
     }
 }
