@@ -858,7 +858,10 @@ fn checkUnsoundCondition(
                 .severity = .warning,
                 .message = msg,
                 .span = span,
-                .fix_hint = "use an explicit comparison, e.g. github.event_name == 'push' || github.event_name == 'pull_request'",
+                .fix_hint = if (std.mem.eql(u8, node.value, "||"))
+                    "use an explicit comparison, e.g. github.event_name == 'push' || github.event_name == 'pull_request'"
+                else
+                    "use an explicit comparison, e.g. github.event_name != 'push' && github.event_name != 'pull_request'",
                 .fix = fix,
             }) catch return;
         }
