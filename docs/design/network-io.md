@@ -190,7 +190,7 @@ dir-taking variants exist so unit tests can drive persistence against
 `load` parses JSON into an internal arena and only copies the strings
 it returns onto the caller's allocator, so passing a GPA is safe.
 
-### 4.5 `rest_fallback.zig`
+### 4.4 `rest_fallback.zig`
 
 GraphQL 経路が使えない場合（`GITHUB_TOKEN` 不在、二次レート制限、
 HTTP 失敗など）に SC004/005/006 が必要な情報を REST で 1 件ずつ取得する
@@ -241,7 +241,7 @@ pub fn isRateLimited() bool;
 所有する。`refconfusion.{init,deinit}` から `resetRateLimit()` を呼び、
 `http_client.fetch` が 403/429 を返した時点で以降のリクエストを短絡する。
 
-### 4.4 `prefetch.zig`
+### 4.5 `prefetch.zig`
 
 ```zig
 pub const Stats = struct {
