@@ -124,6 +124,12 @@ Separate structural cleanup from behavioral changes where practical.
 
 Split work into the smallest meaningful increment and finish each increment completely before moving on.
 
-## Codex Skills
+## Agent Skills
 
 Codex-specific skills for this repository live under `.agents/skills/`.
+Cursor also discovers skills from `.agents/skills/` (via the `.cursor/skills` symlink),
+and Claude Code reads `.claude/skills/`.
+
+`ponytail-review` (diff review for over-engineering) and `ponytail-audit`
+(whole-repo audit) are installed for all three hosts. They are vendored from
+[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (MIT).
