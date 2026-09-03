@@ -544,18 +544,21 @@ const valid_contexts = [_][]const u8{
 };
 
 const github_properties = [_][]const u8{
-    "sha",              "ref",               "ref_name",
-    "ref_type",         "actor",             "repository",
-    "repository_owner", "event_name",        "event",
-    "workspace",        "action",            "action_path",
-    "action_ref",       "action_repository", "action_status",
-    "workflow",         "workflow_ref",      "workflow_sha",
-    "job",              "run_id",            "run_number",
-    "run_attempt",      "server_url",        "api_url",
-    "graphql_url",      "head_ref",          "base_ref",
-    "token",            "path",              "env",
-    "output",           "step_summary",      "repositoryUrl",
-    "triggering_actor", "retention_days",
+    "sha",                       "ref",                 "ref_name",
+    "ref_type",                  "actor",               "repository",
+    "repository_owner",          "event_name",          "event",
+    "workspace",                 "action",              "action_path",
+    "action_ref",                "action_repository",   "action_status",
+    "workflow",                  "workflow_ref",        "workflow_sha",
+    "job",                       "run_id",              "run_number",
+    "run_attempt",               "server_url",          "api_url",
+    "graphql_url",               "head_ref",            "base_ref",
+    "token",                     "path",                "env",
+    "output",                    "step_summary",        "repositoryUrl",
+    "triggering_actor",          "retention_days",      "actor_id",
+    "artifact_cache_size_limit", "event_path",          "ref_protected",
+    "repository_id",             "repository_owner_id", "repository_visibility",
+    "secret_source",             "state",
 };
 
 const runner_properties = [_][]const u8{
@@ -1524,6 +1527,30 @@ test "validate: unknown github property" {
     validateExpression(arena.allocator(), "github.nonexistent_prop", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR003", list.get(0).rule_id);
+}
+
+test "validate: known github properties are not reported" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const props = [_][]const u8{
+        "github.actor_id",
+        "github.artifact_cache_size_limit",
+        "github.event_path",
+        "github.ref_protected",
+        "github.repository_id",
+        "github.repository_owner_id",
+        "github.repository_visibility",
+        "github.secret_source",
+        "github.state",
+    };
+    for (props) |expr| {
+        var list = DiagnosticList.init(std.testing.allocator);
+        defer list.deinit();
+
+        validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
+        try std.testing.expectEqual(@as(usize, 0), list.len());
+    }
 }
 
 test "validate: unknown runner property" {
