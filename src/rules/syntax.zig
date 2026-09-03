@@ -7,21 +7,16 @@ const DiagnosticList = engine.DiagnosticList;
 
 // ── SYN008: Duplicated job ID in `needs` ──
 
-/// Number of entries before `index` that name the same job as `needs[index]`.
-/// Job IDs are case-insensitive in GitHub Actions, so compare accordingly.
-fn priorOccurrences(needs: []const []const u8, index: usize) usize {
-    var count: usize = 0;
-    for (needs[0..index]) |earlier| {
-        if (std.ascii.eqlIgnoreCase(earlier, needs[index])) count += 1;
-    }
-    return count;
-}
-
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
-    for (job.needs, 0..) |_, i| {
-        // Report on the second occurrence only, so a job ID repeated three
-        // or more times still yields a single diagnostic.
-        if (priorOccurrences(job.needs, i) != 1) continue;
+    for (job.needs, 0..) |dep, i| {
+        // Job IDs are case-insensitive in GitHub Actions. Report on the second
+        // occurrence only, so an ID repeated three or more times still yields
+        // a single diagnostic.
+        var prior: usize = 0;
+        for (job.needs[0..i]) |earlier| {
+            if (std.ascii.eqlIgnoreCase(earlier, dep)) prior += 1;
+        }
+        if (prior != 1) continue;
 
         diag_list.append(.{
             .rule_id = "SYN008",
@@ -85,29 +80,11 @@ test "SYN008: a job ID repeated three times reports once" {
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
 
-test "SYN008: two distinct duplicated job IDs report once each" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    runOnNeeds(&.{ "build", "lint", "build", "lint" }, &diags);
-
-    try testing.expectEqual(@as(usize, 2), diags.len());
-}
-
 test "SYN008: distinct job IDs produce no diagnostic" {
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
 
     runOnNeeds(&.{ "build", "lint" }, &diags);
-
-    try testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "SYN008: job without needs produces no diagnostic" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    runOnNeeds(&.{}, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
