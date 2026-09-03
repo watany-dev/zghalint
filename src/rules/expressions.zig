@@ -579,6 +579,7 @@ const valid_functions = [_]FuncSpec{
     .{ .name = "always", .min_args = 0, .max_args = 0 },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0 },
     .{ .name = "failure", .min_args = 0, .max_args = 0 },
+    .{ .name = "case", .min_args = 3, .max_args = 255 },
 };
 
 /// Validate an expression.
@@ -1573,6 +1574,29 @@ test "validate: unknown function" {
     validateExpression(arena.allocator(), "unknownFunc()", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR004", list.get(0).rule_id);
+}
+
+test "validate: case() is a known function" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    // With a trailing default, and at the 3-argument minimum without one.
+    validateExpression(arena.allocator(), "case(github.ref_name, 'main', 'prod', 'staging')", Span.point(1, 1, 0), &list, 0);
+    validateExpression(arena.allocator(), "case(github.ref_name, 'main', 'prod')", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "validate: case() with too few arguments" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "case(github.ref_name, 'main')", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
 }
 
 test "validate: wrong arg count for contains" {
