@@ -184,69 +184,37 @@ pub fn lookupContext(name: []const u8) ?TypeRef {
 // Function signatures
 // ============================================================
 
+/// One entry per function: every overload of a GitHub Actions function shares
+/// a return type, so only the accepted argument count varies. Argument types
+/// are EXPR018's job and are not modelled here.
 pub const FuncSig = struct {
+    name: []const u8,
     min_args: u8,
     max_args: u8,
-    /// Parameter types, checked from the front. Argument type mismatches are
-    /// not diagnosed in V1 (ADR D4); the table exists for overload selection.
-    params: []const TypeRef = &.{},
     ret: TypeRef,
-    /// The last parameter type repeats for the remaining arguments.
-    variadic: bool = false,
 };
-
-pub const FuncOverloads = struct {
-    name: []const u8,
-    sigs: []const FuncSig,
-};
-
-const no_args = [_]TypeRef{};
 
 /// Sorted by name. Lookup is case-sensitive, matching the current EXPR004
 /// behaviour (actionlint is case-insensitive; changing that is a separate
 /// compatibility decision).
-const functions = [_]FuncOverloads{
-    .{ .name = "always", .sigs = &.{.{ .min_args = 0, .max_args = 0, .params = &no_args, .ret = boolean }} },
-    .{ .name = "cancelled", .sigs = &.{.{ .min_args = 0, .max_args = 0, .params = &no_args, .ret = boolean }} },
-    .{ .name = "case", .sigs = &.{.{
-        .min_args = 3,
-        .max_args = 255,
-        .params = &.{ boolean, any, any },
-        .ret = any,
-        .variadic = true,
-    }} },
-    .{ .name = "contains", .sigs = &.{
-        .{ .min_args = 2, .max_args = 2, .params = &.{ string, string }, .ret = boolean },
-        .{ .min_args = 2, .max_args = 2, .params = &.{ &t.type_array_any, any }, .ret = boolean },
-    } },
-    .{ .name = "endsWith", .sigs = &.{.{ .min_args = 2, .max_args = 2, .params = &.{ string, string }, .ret = boolean }} },
-    .{ .name = "failure", .sigs = &.{.{ .min_args = 0, .max_args = 0, .params = &no_args, .ret = boolean }} },
-    .{ .name = "format", .sigs = &.{.{
-        .min_args = 1,
-        .max_args = 255,
-        .params = &.{ string, any },
-        .ret = string,
-        .variadic = true,
-    }} },
-    .{ .name = "fromJSON", .sigs = &.{.{ .min_args = 1, .max_args = 1, .params = &.{string}, .ret = any }} },
-    .{ .name = "hashFiles", .sigs = &.{.{
-        .min_args = 1,
-        .max_args = 255,
-        .params = &.{string},
-        .ret = string,
-        .variadic = true,
-    }} },
-    .{ .name = "join", .sigs = &.{
-        .{ .min_args = 1, .max_args = 1, .params = &.{&t.type_array_any}, .ret = string },
-        .{ .min_args = 2, .max_args = 2, .params = &.{ &t.type_array_any, string }, .ret = string },
-    } },
-    .{ .name = "startsWith", .sigs = &.{.{ .min_args = 2, .max_args = 2, .params = &.{ string, string }, .ret = boolean }} },
-    .{ .name = "success", .sigs = &.{.{ .min_args = 0, .max_args = 0, .params = &no_args, .ret = boolean }} },
-    .{ .name = "toJSON", .sigs = &.{.{ .min_args = 1, .max_args = 1, .params = &.{any}, .ret = string }} },
+const functions = [_]FuncSig{
+    .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
+    .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },
+    .{ .name = "case", .min_args = 3, .max_args = 255, .ret = any },
+    .{ .name = "contains", .min_args = 2, .max_args = 2, .ret = boolean },
+    .{ .name = "endsWith", .min_args = 2, .max_args = 2, .ret = boolean },
+    .{ .name = "failure", .min_args = 0, .max_args = 0, .ret = boolean },
+    .{ .name = "format", .min_args = 1, .max_args = 255, .ret = string },
+    .{ .name = "fromJSON", .min_args = 1, .max_args = 1, .ret = any },
+    .{ .name = "hashFiles", .min_args = 1, .max_args = 255, .ret = string },
+    .{ .name = "join", .min_args = 1, .max_args = 2, .ret = string },
+    .{ .name = "startsWith", .min_args = 2, .max_args = 2, .ret = boolean },
+    .{ .name = "success", .min_args = 0, .max_args = 0, .ret = boolean },
+    .{ .name = "toJSON", .min_args = 1, .max_args = 1, .ret = string },
 };
 
 /// Returns null for an unknown function name (EXPR004).
-pub fn lookupFunction(name: []const u8) ?[]const FuncSig {
+pub fn lookupFunction(name: []const u8) ?*const FuncSig {
     var lo: usize = 0;
     var hi: usize = functions.len;
     while (lo < hi) {
@@ -254,21 +222,10 @@ pub fn lookupFunction(name: []const u8) ?[]const FuncSig {
         switch (std.mem.order(u8, functions[mid].name, name)) {
             .lt => lo = mid + 1,
             .gt => hi = mid,
-            .eq => return functions[mid].sigs,
+            .eq => return &functions[mid],
         }
     }
     return null;
-}
-
-/// Accepted argument count across every overload of `name`.
-pub fn arityOf(sigs: []const FuncSig) struct { min: u8, max: u8 } {
-    var min: u8 = 255;
-    var max: u8 = 0;
-    for (sigs) |sig| {
-        if (sig.min_args < min) min = sig.min_args;
-        if (sig.max_args > max) max = sig.max_args;
-    }
-    return .{ .min = min, .max = max };
 }
 
 // ============================================================
@@ -296,7 +253,7 @@ test "catalog: context table is sorted" {
 }
 
 test "catalog: function table is sorted" {
-    try std.testing.expect(isSorted(FuncOverloads, &functions));
+    try std.testing.expect(isSorted(FuncSig, &functions));
 }
 
 test "catalog: object props are sorted for binary search" {
@@ -329,14 +286,13 @@ test "catalog: github.event is loose" {
 
 test "catalog: lookupFunction is case-sensitive" {
     try std.testing.expect(lookupFunction("contains") != null);
-    try std.testing.expectEqual(@as(?[]const FuncSig, null), lookupFunction("Contains"));
+    try std.testing.expectEqual(@as(?*const FuncSig, null), lookupFunction("Contains"));
 }
 
 test "catalog: arity of overloaded join" {
-    const sigs = lookupFunction("join").?;
-    const arity = arityOf(sigs);
-    try std.testing.expectEqual(@as(u8, 1), arity.min);
-    try std.testing.expectEqual(@as(u8, 2), arity.max);
+    const sig = lookupFunction("join").?;
+    try std.testing.expectEqual(@as(u8, 1), sig.min_args);
+    try std.testing.expectEqual(@as(u8, 2), sig.max_args);
 }
 
 test "catalog: contexts awaiting overlay stay loose" {

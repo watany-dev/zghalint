@@ -14,38 +14,9 @@ const TypeRef = t.TypeRef;
 const any = &t.type_any;
 
 /// Context types for one workflow. Overlays (steps / matrix / needs / inputs /
-/// secrets) are added in T4; until then the environment is empty and every
-/// lookup falls through to the builtin catalog.
+/// secrets) are added in T4; until then every lookup goes to the builtin catalog.
 pub const TypeEnv = struct {
-    /// Overlays are keyed by first-level context name only, so there are at
-    /// most a handful of them (steps / matrix / needs / inputs / secrets /
-    /// env / vars / jobs). A flat array beats a hash map here and keeps the
-    /// binary free of another map instantiation (ADR D7 size budget).
-    const max_overlays = 12;
-
-    overlays: [max_overlays]Overlay = undefined,
-    overlay_count: usize = 0,
-    /// Replacement for `github.event.inputs` (workflow_dispatch overlay).
-    github_event_inputs: ?TypeRef = null,
-
-    const Overlay = struct { name: []const u8, ty: TypeRef };
-
-    pub fn put(self: *TypeEnv, name: []const u8, ty: TypeRef) error{Overflow}!void {
-        for (self.overlays[0..self.overlay_count]) |*entry| {
-            if (std.mem.eql(u8, entry.name, name)) {
-                entry.ty = ty;
-                return;
-            }
-        }
-        if (self.overlay_count == max_overlays) return error.Overflow;
-        self.overlays[self.overlay_count] = .{ .name = name, .ty = ty };
-        self.overlay_count += 1;
-    }
-
-    pub fn lookup(self: *const TypeEnv, name: []const u8) ?TypeRef {
-        for (self.overlays[0..self.overlay_count]) |entry| {
-            if (std.mem.eql(u8, entry.name, name)) return entry.ty;
-        }
+    pub fn lookup(_: *const TypeEnv, name: []const u8) ?TypeRef {
         return catalog.lookupContext(name);
     }
 };
@@ -123,13 +94,6 @@ fn stripQuotes(s: []const u8) []const u8 {
     return s;
 }
 
-/// Top-level context name of a path (the part before the first `.` or `[`).
-pub fn contextNameOf(path: []const u8) []const u8 {
-    var end: usize = 0;
-    while (end < path.len and path[end] != '.' and path[end] != '[') : (end += 1) {}
-    return path[0..end];
-}
-
 /// Walk a context path and infer its type, reporting the first type error.
 pub fn walkPath(path: []const u8, env: *const TypeEnv) WalkResult {
     var iter = SegmentIter{ .path = path };
@@ -165,10 +129,6 @@ fn applySegment(recv: TypeRef, seg: Segment, receiver_path: []const u8, env: *co
 fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8, env: *const TypeEnv) WalkResult {
     switch (recv.kind) {
         .object => {
-            // workflow_dispatch overlay for github.event.inputs.
-            if (recv == &catalog.github_event and std.mem.eql(u8, name, "inputs")) {
-                if (env.github_event_inputs) |ty| return .{ .ty = ty };
-            }
             if (t.findProp(recv, name)) |ty| return .{ .ty = ty };
             return switch (recv.shape) {
                 .map => .{ .ty = recv.elem orelse any },
@@ -206,12 +166,12 @@ fn objectFilter(recv: TypeRef, receiver_path: []const u8) WalkResult {
         .any => return .{ .ty = any },
         .array => return .{ .ty = &t.type_array_any },
         .object => {
-            // Element type is the merge of every value type; without an arena a
-            // heterogeneous object collapses to array<any>, which is safe.
+            // Element type is the merge of every value type; a heterogeneous
+            // object collapses to array<any>, which is safe.
             var elem: ?TypeRef = if (recv.shape == .map) recv.elem else null;
             if (elem == null) {
                 for (recv.props) |p| {
-                    elem = if (elem) |e| t.merge(null, e, p.ty) else p.ty;
+                    elem = if (elem) |e| t.merge(e, p.ty) else p.ty;
                 }
             }
             const e = elem orelse any;
@@ -236,16 +196,6 @@ fn indexString(recv: TypeRef, key: []const u8, receiver_path: []const u8, env: *
     };
 }
 
-/// Type rule for numeric subscripts. The parser rejects `arr[0]` today
-/// (EXPR001); the rule is defined ahead of that follow-up.
-pub fn indexNumber(recv: TypeRef) TypeRef {
-    return switch (recv.kind) {
-        .array => recv.elem orelse any,
-        .object, .any => any,
-        else => any,
-    };
-}
-
 // ============================================================
 // typeOf
 // ============================================================
@@ -253,12 +203,11 @@ pub fn indexNumber(recv: TypeRef) TypeRef {
 pub fn typeOf(node: *const ExprNode, env: *const TypeEnv) TypeRef {
     return switch (node.kind) {
         .context_access => walkPath(node.value, env).ty,
-        .function_call => functionReturnType(node, env),
+        .function_call => functionReturnType(node),
         .binary_op => blk: {
             if (isCompareOp(node.value)) break :blk &t.type_bool;
             if (node.children.len == 2) {
                 break :blk t.merge(
-                    null,
                     typeOf(&node.children[0], env),
                     typeOf(&node.children[1], env),
                 );
@@ -273,31 +222,10 @@ pub fn typeOf(node: *const ExprNode, env: *const TypeEnv) TypeRef {
     };
 }
 
-fn functionReturnType(node: *const ExprNode, env: *const TypeEnv) TypeRef {
-    const sigs = catalog.lookupFunction(node.value) orelse return any;
+fn functionReturnType(node: *const ExprNode) TypeRef {
     if (std.mem.eql(u8, node.value, "fromJSON")) return fromJsonType(node);
-
-    if (sigs.len == 1) return sigs[0].ret;
-
-    // Overload resolution: prefer a signature every argument is assignable to;
-    // otherwise merge the return types (they collapse to `any` on conflict).
-    for (sigs) |sig| {
-        if (node.children.len < sig.min_args or node.children.len > sig.max_args) continue;
-        var ok = true;
-        for (sig.params, 0..) |param, i| {
-            if (i >= node.children.len) break;
-            const arg = typeOf(&node.children[i], env);
-            if (arg.kind == .any) continue;
-            if (!t.assignable(param, arg)) {
-                ok = false;
-                break;
-            }
-        }
-        if (ok) return sig.ret;
-    }
-    var ret = sigs[0].ret;
-    for (sigs[1..]) |sig| ret = t.merge(null, ret, sig.ret);
-    return ret;
+    const sig = catalog.lookupFunction(node.value) orelse return any;
+    return sig.ret;
 }
 
 /// `fromJSON('<literal>')` infers a shallow type from the literal. Anything
@@ -330,11 +258,11 @@ pub fn isCompareOp(op: []const u8) bool {
     return isEqualityOp(op) or isRelationalOp(op);
 }
 
-pub fn isEqualityOp(op: []const u8) bool {
+fn isEqualityOp(op: []const u8) bool {
     return std.mem.eql(u8, op, "==") or std.mem.eql(u8, op, "!=");
 }
 
-pub fn isRelationalOp(op: []const u8) bool {
+fn isRelationalOp(op: []const u8) bool {
     return std.mem.eql(u8, op, "<") or std.mem.eql(u8, op, ">") or
         std.mem.eql(u8, op, "<=") or std.mem.eql(u8, op, ">=");
 }
@@ -456,35 +384,6 @@ test "walk: strategy is loose but typed for known keys" {
     try testing.expectEqual(@as(?Problem, null), r.problem);
 }
 
-test "walk: overlay wins over the catalog" {
-    var env = TypeEnv{};
-    const overlay: t.Type = .{
-        .kind = .object,
-        .shape = .strict,
-        .props = &.{.{ .name = "setup", .ty = &t.type_string }},
-    };
-    try env.put("steps", &overlay);
-    try testing.expectEqual(t.TypeKind.string, walkPath("steps.setup", &env).ty.kind);
-    try testing.expect(walkPath("steps.other", &env).problem != null);
-}
-
-test "walk: github.event.inputs overlay" {
-    var env = TypeEnv{};
-    const inputs: t.Type = .{
-        .kind = .object,
-        .shape = .strict,
-        .props = &.{.{ .name = "name", .ty = &t.type_string }},
-    };
-    env.github_event_inputs = &inputs;
-    try testing.expectEqual(t.TypeKind.string, walkPath("github.event.inputs.name", &env).ty.kind);
-    try testing.expect(walkPath("github.event.inputs.other", &env).problem != null);
-}
-
-test "indexNumber: array element and object fallback" {
-    try testing.expectEqual(t.TypeKind.string, indexNumber(&t.type_array_string).kind);
-    try testing.expectEqual(t.TypeKind.any, indexNumber(&t.type_loose_object).kind);
-}
-
 test "checkCompare: equality table" {
     try testing.expect(checkCompare("==", &t.type_string, &t.type_number));
     try testing.expect(checkCompare("==", &t.type_any, &t.type_loose_object));
@@ -511,10 +410,4 @@ test "segments: dotted, star and bracket forms" {
     try testing.expectEqual(Segment.star, iter.next().?);
     try testing.expectEqualStrings("c", iter.next().?.index_string);
     try testing.expectEqual(@as(?Segment, null), iter.next());
-}
-
-test "contextNameOf: stops at dot or bracket" {
-    try testing.expectEqualStrings("github", contextNameOf("github.sha"));
-    try testing.expectEqualStrings("secrets", contextNameOf("secrets['A']"));
-    try testing.expectEqualStrings("env", contextNameOf("env"));
 }

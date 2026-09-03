@@ -589,7 +589,8 @@ ADR 「Follow-up」と同じ。実装順の目安だけここへ落とす。
 
 T0〜T3 を `src/rules/expr_type.zig` / `expr_catalog.zig` / `expr_check.zig` として実装済み。
 T4（steps / matrix / needs / inputs / secrets の overlay）は `expr_check.TypeEnv` を
-接続口として空のまま残してある。
+接続口として空のまま残してある。overlay 用の `TypeArena`、object の property 合成、
+関数の引数型テーブル（EXPR018 用）は利用者が現れるまで持たない。
 
 ### バイナリサイズ実測（ADR D7）
 
@@ -598,15 +599,10 @@ T4（steps / matrix / needs / inputs / secrets の overlay）は `expr_check.Typ
 | | text (bytes) |
 |---|---|
 | 導入前 | 5,579,402 |
-| T0〜T3 投入後 | 5,609,314 |
-| 増分 | +29,912（約 29.2 KiB） |
+| T0〜T3 投入後 | 5,600,226 |
+| 増分 | +20,824（約 20.3 KiB） |
 
-32 KiB の予算内。予算に収めるため次の 2 点をテーブル/実装側で調整した。
-
-- `mergeObject` のプロパティ整列は `std.mem.sort` ではなく挿入ソート
-  （block sort の実体化が約 37 KiB を占めるため）
-- `TypeEnv` の overlay は `StringHashMapUnmanaged` ではなく固定長配列 + 線形探索
-  （overlay は第 1 階層の context 名だけで高々数個）
+32 KiB の予算内。
 
 ## 参考
 

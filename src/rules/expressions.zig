@@ -607,54 +607,40 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
     const result = expr_check.walkPath(path, &base_env);
     const problem = result.problem orelse return;
 
-    switch (problem) {
-        .unknown_context => |name| {
-            const msg = std.fmt.allocPrint(allocator, "unknown context: '{s}'", .{name}) catch "unknown context";
-            list.append(.{
-                .rule_id = "EXPR002",
-                .severity = .@"error",
-                .message = msg,
-                .span = span,
-            }) catch return;
+    var buf: [96]u8 = undefined;
+    const rule_id: []const u8, const severity: Severity, const message: []const u8 = switch (problem) {
+        .unknown_context => |name| .{
+            "EXPR002",
+            .@"error",
+            std.fmt.allocPrint(allocator, "unknown context: '{s}'", .{name}) catch "unknown context",
         },
-        .unknown_property => |info| {
-            // Depth-1 accesses keep the historical wording
-            // ("unknown github context property: 'x'").
-            const msg = if (std.mem.indexOfAny(u8, info.receiver_path, ".[") == null)
-                std.fmt.allocPrint(
-                    allocator,
-                    "unknown {s} context property: '{s}'",
-                    .{ info.receiver_path, info.name },
-                ) catch "unknown context property"
+        // Depth-1 accesses keep the historical wording
+        // ("unknown github context property: 'x'").
+        .unknown_property => |info| .{
+            "EXPR003",
+            .warning,
+            if (std.mem.indexOfAny(u8, info.receiver_path, ".[") == null)
+                std.fmt.allocPrint(allocator, "unknown {s} context property: '{s}'", .{ info.receiver_path, info.name }) catch "unknown context property"
             else
-                std.fmt.allocPrint(
-                    allocator,
-                    "unknown property '{s}' on '{s}'",
-                    .{ info.name, info.receiver_path },
-                ) catch "unknown context property";
-            list.append(.{
-                .rule_id = "EXPR003",
-                .severity = .warning,
-                .message = msg,
-                .span = span,
-            }) catch return;
+                std.fmt.allocPrint(allocator, "unknown property '{s}' on '{s}'", .{ info.name, info.receiver_path }) catch "unknown context property",
         },
-        .not_an_object => |info| {
-            var buf: [96]u8 = undefined;
-            const ty = expr_type.display(info.receiver, &buf);
-            const msg = std.fmt.allocPrint(
+        .not_an_object => |info| .{
+            "EXPR003",
+            .warning,
+            std.fmt.allocPrint(
                 allocator,
                 "property '{s}' accessed on '{s}' which is {s}, not an object",
-                .{ info.name, info.receiver_path, ty },
-            ) catch "property access on a non-object value";
-            list.append(.{
-                .rule_id = "EXPR003",
-                .severity = .warning,
-                .message = msg,
-                .span = span,
-            }) catch return;
+                .{ info.name, info.receiver_path, expr_type.display(info.receiver, &buf) },
+            ) catch "property access on a non-object value",
         },
-    }
+    };
+
+    list.append(.{
+        .rule_id = rule_id,
+        .severity = severity,
+        .message = message,
+        .span = span,
+    }) catch return;
 }
 
 /// EXPR017: operands of a comparison whose types can never be compared.
@@ -698,13 +684,12 @@ fn validateFunctionCall(
     const name = node.value;
     const arg_count: u8 = @intCast(node.children.len);
 
-    if (catalog.lookupFunction(name)) |sigs| {
-        const arity = catalog.arityOf(sigs);
-        if (arg_count < arity.min or arg_count > arity.max) {
-            const msg = if (arity.min == arity.max)
-                std.fmt.allocPrint(allocator, "function '{s}' expects {d} argument(s), got {d}", .{ name, arity.min, arg_count }) catch "wrong number of arguments"
+    if (catalog.lookupFunction(name)) |sig| {
+        if (arg_count < sig.min_args or arg_count > sig.max_args) {
+            const msg = if (sig.min_args == sig.max_args)
+                std.fmt.allocPrint(allocator, "function '{s}' expects {d} argument(s), got {d}", .{ name, sig.min_args, arg_count }) catch "wrong number of arguments"
             else
-                std.fmt.allocPrint(allocator, "function '{s}' expects {d}-{d} arguments, got {d}", .{ name, arity.min, arity.max, arg_count }) catch "wrong number of arguments";
+                std.fmt.allocPrint(allocator, "function '{s}' expects {d}-{d} arguments, got {d}", .{ name, sig.min_args, sig.max_args, arg_count }) catch "wrong number of arguments";
             list.append(.{
                 .rule_id = "EXPR005",
                 .severity = .@"error",
