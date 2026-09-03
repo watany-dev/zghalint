@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **50 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **51 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -90,15 +90,22 @@ Validate the principle of least privilege in workflow permissions.
 
 Validate `${{ }}` expression syntax, context access, and function calls.
 
+式は静的型検査エンジン（`src/rules/expr_type.zig` / `expr_catalog.zig` /
+`expr_check.zig`）で評価される。設計は `docs/adr/0006-expr-static-typecheck.md`
+と `docs/design/expr-static-typecheck-design.md` を参照。
+`github.event` はイベントごとのスキーマを持たない緩いオブジェクトとして扱われ、
+未知のキーは報告しない（ADR D3）。
+
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | EXPR001 | invalid-syntax | error | Empty expression or syntax error in `${{ }}` |
 | EXPR002 | unknown-context | error | Unknown context reference (e.g. `${{ foo.bar }}`) |
-| EXPR003 | unknown-property | warning | Unknown context property (e.g. `${{ github.unknown }}`) |
+| EXPR003 | unknown-property | warning | Unknown context property at any depth (e.g. `${{ github.unknown }}`, `${{ job.container.i }}`) |
 | EXPR004 | unknown-function | error | Unknown function name |
 | EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments |
 | EXPR006 | unsound-contains | warning | `contains()` uses substring matching which may match unintended values |
 | EXPR007 | unsound-condition | warning | Bare literal as operand in logical operator is always truthy |
+| EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 
 ## Dependency Rules (DEP)
 
