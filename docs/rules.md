@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **49 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **50 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -122,6 +122,7 @@ Validate the structural correctness of the workflow definition itself.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
+| SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 
 ### SYN012 exclusive-event-filters
