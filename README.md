@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **48 rules** across 8 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **49 rules** across 8 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (20 rules)
 
@@ -125,9 +125,9 @@ Unpinned container images, compromised action SHAs, known CVEs, archived reposit
 
 Missing caching, redundant checkout, fail-fast disabled.
 
-### Best Practices (6 rules)
+### Best Practices (7 rules)
 
-Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection.
+Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection, deprecated workflow commands.
 
 ### Permissions (2 rules)
 

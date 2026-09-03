@@ -305,6 +305,89 @@ fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
     }
 }
 
+// ── BP008: Deprecated workflow command in `run:` ──
+
+/// A workflow command that GitHub has disabled, with the file-based
+/// mechanism that replaced it.
+const DeprecatedWorkflowCommand = struct {
+    /// Marker as it appears in the script, without the trailing `::`/name argument.
+    marker: []const u8,
+    message: []const u8,
+    fix_hint: []const u8,
+};
+
+const deprecated_workflow_commands = [_]DeprecatedWorkflowCommand{
+    .{
+        .marker = "::set-output",
+        .message = "Deprecated workflow command '::set-output' in 'run:'. GitHub disabled it, so the step output is never set.",
+        .fix_hint = "Replace '::set-output name=NAME::VALUE' with 'echo \"NAME=VALUE\" >> \"$GITHUB_OUTPUT\"'.",
+    },
+    .{
+        .marker = "::save-state",
+        .message = "Deprecated workflow command '::save-state' in 'run:'. GitHub disabled it, so the state is never saved.",
+        .fix_hint = "Replace '::save-state name=NAME::VALUE' with 'echo \"NAME=VALUE\" >> \"$GITHUB_STATE\"'.",
+    },
+    .{
+        .marker = "::set-env",
+        .message = "Deprecated workflow command '::set-env' in 'run:'. GitHub disabled it for security reasons (CVE-2020-15228), so the environment variable is never set.",
+        .fix_hint = "Replace '::set-env name=NAME::VALUE' with 'echo \"NAME=VALUE\" >> \"$GITHUB_ENV\"'.",
+    },
+    .{
+        .marker = "::add-path",
+        .message = "Deprecated workflow command '::add-path' in 'run:'. GitHub disabled it for security reasons (CVE-2020-15228), so the path is never added.",
+        .fix_hint = "Replace '::add-path::VALUE' with 'echo \"VALUE\" >> \"$GITHUB_PATH\"'.",
+    },
+};
+
+/// A workflow command starts a shell word: it is either at the very beginning
+/// of the script or preceded by whitespace or a quote. This keeps identifiers
+/// such as `Foo::set-env` (C++ scope resolution, Rust paths) from matching.
+fn isCommandStartBoundary(script: []const u8, idx: usize) bool {
+    if (idx == 0) return true;
+    return switch (script[idx - 1]) {
+        ' ', '\t', '\n', '\r', '"', '\'', '`' => true,
+        else => false,
+    };
+}
+
+/// After the command name GitHub expects either an argument list (`::set-output name=x::y`)
+/// or the value separator (`::add-path::/usr/bin`). Anything else — a longer
+/// command name, a word character — is not this command.
+fn isCommandNameEnd(script: []const u8, idx: usize) bool {
+    if (idx >= script.len) return true;
+    return switch (script[idx]) {
+        ' ', '\t', '\n', '\r', ':' => true,
+        else => false,
+    };
+}
+
+fn usesDeprecatedCommand(script: []const u8, marker: []const u8) bool {
+    var offset: usize = 0;
+    while (std.mem.indexOfPos(u8, script, offset, marker)) |idx| {
+        offset = idx + marker.len;
+        if (!isCommandStartBoundary(script, idx)) continue;
+        if (isCommandNameEnd(script, offset)) return true;
+    }
+    return false;
+}
+
+fn checkDeprecatedWorkflowCommand(step: *const Step, diag_list: *DiagnosticList) void {
+    const script = step.run orelse return;
+
+    // Report once per command kind: repeats within one script share a span.
+    for (deprecated_workflow_commands) |cmd| {
+        if (!usesDeprecatedCommand(script, cmd.marker)) continue;
+
+        diag_list.append(.{
+            .rule_id = "BP008",
+            .severity = .@"error",
+            .message = cmd.message,
+            .span = step.run_value_span orelse step.span,
+            .fix_hint = cmd.fix_hint,
+        }) catch return;
+    }
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "BP001",
@@ -345,6 +428,14 @@ pub const rules = [_]Rule{
         .severity = .info,
         .category = .best_practice,
         .check_workflow = checkPushConcurrency,
+    },
+    .{
+        .id = "BP008",
+        .name = "deprecated-workflow-command",
+        .description = "Deprecated workflow command (set-output, save-state, set-env, add-path) used in run:",
+        .severity = .@"error",
+        .category = .best_practice,
+        .check_step = checkDeprecatedWorkflowCommand,
     },
 };
 
@@ -1005,4 +1096,151 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
     ,
         result.content,
     );
+}
+
+// ── BP008 tests ──
+
+fn bp008Diags(script: []const u8, diags: *DiagnosticList) void {
+    const step = Step{ .run = script };
+    checkDeprecatedWorkflowCommand(&step, diags);
+}
+
+test "BP008: detect ::set-output" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("echo \"::set-output name=version::1.0.0\"", &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("BP008", diags.get(0).rule_id);
+    try std.testing.expect(diags.get(0).severity == .@"error");
+}
+
+test "BP008: detect ::set-env" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("echo \"::set-env name=FOO::bar\"", &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(std.mem.indexOf(u8, diags.get(0).message, "::set-env") != null);
+}
+
+test "BP008: detect ::add-path" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("echo \"::add-path::/usr/local/bin\"", &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
+    try std.testing.expect(std.mem.indexOf(u8, hint, "GITHUB_PATH") != null);
+}
+
+test "BP008: detect ::save-state" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("echo \"::save-state name=cache-hit::true\"", &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
+    try std.testing.expect(std.mem.indexOf(u8, hint, "GITHUB_STATE") != null);
+}
+
+test "BP008: single-quoted and bare line-start forms are detected" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("echo '::set-output name=a::b'\n::set-env name=C::d\n", &diags);
+
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+}
+
+test "BP008: no diagnostic for the GITHUB_* file replacements" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags(
+        \\echo "version=1.0.0" >> "$GITHUB_OUTPUT"
+        \\echo "FOO=bar" >> "$GITHUB_ENV"
+        \\echo "/usr/local/bin" >> "$GITHUB_PATH"
+        \\echo "cache-hit=true" >> "$GITHUB_STATE"
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP008: current workflow commands are not flagged" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags(
+        \\echo "::error::boom"
+        \\echo "::warning file=a.txt::careful"
+        \\echo "::notice::hello"
+        \\echo "::debug::details"
+        \\echo "::group::build"
+        \\echo "::endgroup::"
+        \\echo "::add-mask::$SECRET"
+        \\echo "::stop-commands::token"
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP008: scope-resolution identifiers are not flagged" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("./gen Foo::set-env Bar::add-path", &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP008: longer command names sharing a prefix are not flagged" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("echo \"::set-outputs name=a::b\"", &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP008: repeated occurrences of one command report once" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags(
+        \\echo "::set-output name=a::1"
+        \\echo "::set-output name=b::2"
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "BP008: distinct commands each report" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags(
+        \\echo "::set-output name=a::1"
+        \\echo "::save-state name=b::2"
+        \\echo "::set-env name=C::3"
+        \\echo "::add-path::/opt/bin"
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 4), diags.len());
+}
+
+test "BP008: uses-only step is skipped" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    const step = Step{ .uses = ActionRef{ .raw = "actions/checkout@v4", .owner = "actions", .repo = "checkout", .ref = "v4" } };
+    checkDeprecatedWorkflowCommand(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP008: diagnostic span follows run_value_span" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    const step = Step{
+        .run = "echo \"::set-output name=a::1\"",
+        .run_value_span = Span.point(7, 15, 120),
+    };
+    checkDeprecatedWorkflowCommand(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqual(@as(u32, 7), diags.get(0).span.start_line);
+    try std.testing.expectEqual(@as(usize, 120), diags.get(0).span.start_byte);
 }
