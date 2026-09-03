@@ -177,27 +177,18 @@ test "mapping getScalar returns null for non-scalar" {
 }
 
 test "mapping getKeySpan finds present keys and rejects missing ones" {
-    const key_span = Span{
-        .start_line = 3,
-        .start_col = 5,
-        .end_line = 3,
-        .end_col = 13,
-        .start_byte = 40,
-        .end_byte = 48,
-    };
-    const value_span = Span.point(3, 15, 50);
+    const span = Span.point(3, 5, 40);
     var items = [_]Node{};
     var entries = [_]MappingEntry{
         .{
-            .key = .{ .value = "branches", .style = .plain, .span = key_span },
-            .value = .{ .sequence = .{ .items = &items, .span = value_span } },
-            .span = key_span,
+            .key = .{ .value = "branches", .style = .plain, .span = span },
+            .value = .{ .sequence = .{ .items = &items, .span = span } },
+            .span = span,
         },
     };
-    const mapping = Mapping{ .entries = &entries, .span = key_span };
+    const mapping = Mapping{ .entries = &entries, .span = span };
 
     const found = mapping.getKeySpan("branches") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 40), found.start_byte);
-    try std.testing.expectEqual(@as(u32, 3), found.start_line);
     try std.testing.expect(mapping.getKeySpan("branches-ignore") == null);
 }

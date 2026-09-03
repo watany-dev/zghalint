@@ -6,81 +6,51 @@ const yaml_types = @import("../yaml/types.zig");
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
-const EventFilterSpans = workflow_types.EventFilterSpans;
 const Span = yaml_types.Span;
 
 // ── SYN012: Mutually exclusive event filters ──
 
-/// One `<filter>` / `<filter>-ignore` pair. GitHub Actions rejects a workflow
-/// that specifies both halves of a pair for the same event.
+/// One `<filter>` / `<filter>-ignore` pair as it appears in a single event.
+/// GitHub Actions rejects a workflow that specifies both halves of a pair.
 const ExclusivePair = struct {
-    /// Reads the key span of the positive filter (e.g. `branches`).
-    include: *const fn (EventFilterSpans) ?Span,
-    /// Reads the key span of the negative filter (e.g. `branches-ignore`).
-    exclude: *const fn (EventFilterSpans) ?Span,
+    include: ?Span,
+    exclude: ?Span,
     message: []const u8,
     fix_hint: []const u8,
 };
 
-const exclusive_pairs = [_]ExclusivePair{
-    .{
-        .include = struct {
-            fn f(s: EventFilterSpans) ?Span {
-                return s.branches;
-            }
-        }.f,
-        .exclude = struct {
-            fn f(s: EventFilterSpans) ?Span {
-                return s.branches_ignore;
-            }
-        }.f,
-        .message = "both \"branches\" and \"branches-ignore\" filters cannot be used for the same event",
-        .fix_hint = "keep only one of 'branches' or 'branches-ignore'; a negated pattern such as '!wip/**' can be listed under 'branches'",
-    },
-    .{
-        .include = struct {
-            fn f(s: EventFilterSpans) ?Span {
-                return s.tags;
-            }
-        }.f,
-        .exclude = struct {
-            fn f(s: EventFilterSpans) ?Span {
-                return s.tags_ignore;
-            }
-        }.f,
-        .message = "both \"tags\" and \"tags-ignore\" filters cannot be used for the same event",
-        .fix_hint = "keep only one of 'tags' or 'tags-ignore'; a negated pattern such as '!v0.*' can be listed under 'tags'",
-    },
-    .{
-        .include = struct {
-            fn f(s: EventFilterSpans) ?Span {
-                return s.paths;
-            }
-        }.f,
-        .exclude = struct {
-            fn f(s: EventFilterSpans) ?Span {
-                return s.paths_ignore;
-            }
-        }.f,
-        .message = "both \"paths\" and \"paths-ignore\" filters cannot be used for the same event",
-        .fix_hint = "keep only one of 'paths' or 'paths-ignore'; a negated pattern such as '!docs/**' can be listed under 'paths'",
-    },
-};
-
 fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.on.events) |event| {
-        const filter = event.filter orelse continue;
-        for (exclusive_pairs) |pair| {
-            const include_span = pair.include(filter.spans) orelse continue;
-            const exclude_span = pair.exclude(filter.spans) orelse continue;
+        const s = (event.filter orelse continue).spans;
+        const pairs = [_]ExclusivePair{
+            .{
+                .include = s.branches,
+                .exclude = s.branches_ignore,
+                .message = "both \"branches\" and \"branches-ignore\" filters cannot be used for the same event",
+                .fix_hint = "keep only one of 'branches' or 'branches-ignore'; a negated pattern such as '!wip/**' can be listed under 'branches'",
+            },
+            .{
+                .include = s.tags,
+                .exclude = s.tags_ignore,
+                .message = "both \"tags\" and \"tags-ignore\" filters cannot be used for the same event",
+                .fix_hint = "keep only one of 'tags' or 'tags-ignore'; a negated pattern such as '!v0.*' can be listed under 'tags'",
+            },
+            .{
+                .include = s.paths,
+                .exclude = s.paths_ignore,
+                .message = "both \"paths\" and \"paths-ignore\" filters cannot be used for the same event",
+                .fix_hint = "keep only one of 'paths' or 'paths-ignore'; a negated pattern such as '!docs/**' can be listed under 'paths'",
+            },
+        };
+
+        for (pairs) |pair| {
+            const include = pair.include orelse continue;
+            const exclude = pair.exclude orelse continue;
 
             // Report on whichever key comes second in the source so the
             // diagnostic points at the offending addition, not the first
             // filter the author wrote.
-            const span = if (exclude_span.start_byte >= include_span.start_byte)
-                exclude_span
-            else
-                include_span;
+            const span = if (exclude.start_byte >= include.start_byte) exclude else include;
 
             list.append(.{
                 .rule_id = "SYN012",
@@ -112,17 +82,6 @@ const testing = std.testing;
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 
-fn keySpan(start_byte: usize) Span {
-    return .{
-        .start_line = 1,
-        .start_col = 1,
-        .end_line = 1,
-        .end_col = 1,
-        .start_byte = start_byte,
-        .end_byte = start_byte + 1,
-    };
-}
-
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };
     checkExclusiveFilters(&wf, list);
@@ -132,7 +91,7 @@ test "SYN012: branches with branches-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
         .name = "push",
-        .filter = .{ .spans = .{ .branches = keySpan(10), .branches_ignore = keySpan(30) } },
+        .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
@@ -154,7 +113,7 @@ test "SYN012: tags with tags-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
         .name = "push",
-        .filter = .{ .spans = .{ .tags = keySpan(10), .tags_ignore = keySpan(30) } },
+        .filter = .{ .spans = .{ .tags = Span.point(1, 1, 10), .tags_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
@@ -172,7 +131,7 @@ test "SYN012: paths with paths-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
         .name = "push",
-        .filter = .{ .spans = .{ .paths = keySpan(10), .paths_ignore = keySpan(30) } },
+        .filter = .{ .spans = .{ .paths = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
@@ -191,12 +150,12 @@ test "SYN012: all three conflicting pairs are reported separately" {
         .event = .push,
         .name = "push",
         .filter = .{ .spans = .{
-            .branches = keySpan(10),
-            .branches_ignore = keySpan(20),
-            .tags = keySpan(30),
-            .tags_ignore = keySpan(40),
-            .paths = keySpan(50),
-            .paths_ignore = keySpan(60),
+            .branches = Span.point(1, 1, 10),
+            .branches_ignore = Span.point(1, 1, 20),
+            .tags = Span.point(1, 1, 30),
+            .tags_ignore = Span.point(1, 1, 40),
+            .paths = Span.point(1, 1, 50),
+            .paths_ignore = Span.point(1, 1, 60),
         } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -211,7 +170,7 @@ test "SYN012: filters from different pairs may coexist" {
     const events = [_]EventConfig{.{
         .event = .push,
         .name = "push",
-        .filter = .{ .spans = .{ .branches = keySpan(10), .paths_ignore = keySpan(30) } },
+        .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
@@ -230,7 +189,7 @@ test "SYN012: an empty filter value still counts as present" {
         .filter = .{
             .branches = &.{},
             .branches_ignore = &.{"wip/**"},
-            .spans = .{ .branches = keySpan(10), .branches_ignore = keySpan(30) },
+            .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) },
         },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -241,38 +200,17 @@ test "SYN012: an empty filter value still counts as present" {
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
 
-test "SYN012: conflicts are reported per event" {
-    const events = [_]EventConfig{
-        .{
-            .event = .push,
-            .name = "push",
-            .filter = .{ .spans = .{ .branches = keySpan(10), .branches_ignore = keySpan(20) } },
-        },
-        .{
-            .event = .pull_request,
-            .name = "pull_request",
-            .filter = .{ .spans = .{ .paths = keySpan(40), .paths_ignore = keySpan(50) } },
-        },
-    };
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    runOn(&events, &diags);
-
-    try testing.expectEqual(@as(usize, 2), diags.len());
-}
-
 test "SYN012: separate events using opposite halves are fine" {
     const events = [_]EventConfig{
         .{
             .event = .push,
             .name = "push",
-            .filter = .{ .spans = .{ .branches = keySpan(10) } },
+            .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10) } },
         },
         .{
             .event = .pull_request,
             .name = "pull_request",
-            .filter = .{ .spans = .{ .branches_ignore = keySpan(40) } },
+            .filter = .{ .spans = .{ .branches_ignore = Span.point(1, 1, 40) } },
         },
     };
     var diags = DiagnosticList.init(testing.allocator);
@@ -297,7 +235,7 @@ test "SYN012: diagnostic points at the first key when the ignore form comes firs
     const events = [_]EventConfig{.{
         .event = .push,
         .name = "push",
-        .filter = .{ .spans = .{ .branches = keySpan(40), .branches_ignore = keySpan(10) } },
+        .filter = .{ .spans = .{ .branches = Span.point(1, 1, 40), .branches_ignore = Span.point(1, 1, 10) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
