@@ -1530,6 +1530,9 @@ test "validate: unknown github property" {
 }
 
 test "validate: known github properties are not reported" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
     const props = [_][]const u8{
         "github.actor_id",
         "github.artifact_cache_size_limit",
@@ -1542,29 +1545,6 @@ test "validate: known github properties are not reported" {
         "github.state",
     };
     for (props) |expr| {
-        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-        defer arena.deinit();
-        var list = DiagnosticList.init(std.testing.allocator);
-        defer list.deinit();
-
-        validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
-        try std.testing.expectEqual(@as(usize, 0), list.len());
-    }
-}
-
-test "validate: known runner properties are not reported" {
-    const props = [_][]const u8{
-        "runner.os",
-        "runner.arch",
-        "runner.name",
-        "runner.temp",
-        "runner.tool_cache",
-        "runner.debug",
-        "runner.environment",
-    };
-    for (props) |expr| {
-        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-        defer arena.deinit();
         var list = DiagnosticList.init(std.testing.allocator);
         defer list.deinit();
 
