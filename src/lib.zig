@@ -58,6 +58,7 @@ pub const rules = struct {
     pub const impostor = @import("rules/impostor.zig");
     pub const impostor_compare = @import("rules/impostor_compare.zig");
     pub const runner = @import("rules/runner.zig");
+    pub const syntax = @import("rules/syntax.zig");
     pub const http_client = @import("rules/http_client.zig");
     pub const prefetch = @import("rules/prefetch.zig");
     pub const graphql = @import("rules/graphql.zig");
@@ -102,6 +103,7 @@ test {
     _ = @import("rules/impostor.zig");
     _ = @import("rules/impostor_compare.zig");
     _ = @import("rules/runner.zig");
+    _ = @import("rules/syntax.zig");
     _ = @import("rules/http_client.zig");
     _ = @import("rules/prefetch.zig");
     _ = @import("rules/graphql.zig");
