@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **48 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **49 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -115,6 +115,14 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
+
+## Syntax Rules (SYN)
+
+Detect structural mistakes in the workflow definition itself.
+
+| ID | Name | Severity | Description |
+|----|------|----------|-------------|
+| SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 
 ---
 
