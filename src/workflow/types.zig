@@ -66,6 +66,18 @@ pub const Concurrency = struct {
     cancel_in_progress: bool = false,
 };
 
+/// Key spans for the mutually exclusive `EventFilter` entries. A non-null
+/// field means the key appeared in the source, which the value arrays alone
+/// cannot express (`branches: []` yields an empty array but is still present).
+pub const EventFilterSpans = struct {
+    branches: ?yaml_types.Span = null,
+    branches_ignore: ?yaml_types.Span = null,
+    tags: ?yaml_types.Span = null,
+    tags_ignore: ?yaml_types.Span = null,
+    paths: ?yaml_types.Span = null,
+    paths_ignore: ?yaml_types.Span = null,
+};
+
 /// Event filter configuration for branches/tags/paths
 pub const EventFilter = struct {
     branches: []const []const u8 = &.{},
@@ -75,6 +87,7 @@ pub const EventFilter = struct {
     paths: []const []const u8 = &.{},
     paths_ignore: []const []const u8 = &.{},
     types: []const []const u8 = &.{},
+    spans: EventFilterSpans = .{},
 };
 
 /// Schedule entry (cron expression)

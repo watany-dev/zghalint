@@ -91,6 +91,18 @@ pub const Mapping = struct {
         return null;
     }
 
+    /// Span of the key token for `key`, or null when the key is absent.
+    /// Distinguishes "key present with an empty value" from "key missing",
+    /// which `get` alone cannot express.
+    pub fn getKeySpan(self: Mapping, key: []const u8) ?Span {
+        for (self.entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, key)) {
+                return entry.key.span;
+            }
+        }
+        return null;
+    }
+
     /// Get a scalar value by key name
     pub fn getScalar(self: Mapping, key: []const u8) ?[]const u8 {
         if (self.get(key)) |node| {
@@ -162,4 +174,21 @@ test "mapping getScalar returns null for non-scalar" {
     };
     const mapping = Mapping{ .entries = &entries, .span = span };
     try std.testing.expect(mapping.getScalar("list") == null);
+}
+
+test "mapping getKeySpan finds present keys and rejects missing ones" {
+    const span = Span.point(3, 5, 40);
+    var items = [_]Node{};
+    var entries = [_]MappingEntry{
+        .{
+            .key = .{ .value = "branches", .style = .plain, .span = span },
+            .value = .{ .sequence = .{ .items = &items, .span = span } },
+            .span = span,
+        },
+    };
+    const mapping = Mapping{ .entries = &entries, .span = span };
+
+    const found = mapping.getKeySpan("branches") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 40), found.start_byte);
+    try std.testing.expect(mapping.getKeySpan("branches-ignore") == null);
 }

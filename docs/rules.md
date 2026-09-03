@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **48 rules** across 8 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **49 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -116,6 +116,41 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
+
+## Syntax Rules (SYN)
+
+Validate the structural correctness of the workflow definition itself.
+
+| ID | Name | Severity | Description |
+|----|------|----------|-------------|
+| SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+
+### SYN012 exclusive-event-filters
+
+GitHub Actions rejects a workflow that specifies both halves of a filter pair
+for the same event. Only one of each pair may appear:
+
+```yaml
+on:
+  push:
+    branches: [main]
+    branches-ignore: [wip/**]   # error: cannot use both "branches" and "branches-ignore"
+    paths: ['src/**']
+    paths-ignore: ['docs/**']   # error: cannot use both "paths" and "paths-ignore"
+```
+
+Filters from different pairs may coexist, and each event is checked
+independently:
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**']   # ok: different pairs
+```
+
+To exclude patterns while keeping the positive filter, use a negated pattern
+under the positive key (`branches: [main, '!wip/**']`).
 
 ---
 

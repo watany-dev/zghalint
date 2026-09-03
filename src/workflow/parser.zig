@@ -178,6 +178,14 @@ fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.E
         .paths = if (m.get("paths")) |n| try parseStringArray(allocator, n) else &.{},
         .paths_ignore = if (m.get("paths-ignore")) |n| try parseStringArray(allocator, n) else &.{},
         .types = if (m.get("types")) |n| try parseStringArray(allocator, n) else &.{},
+        .spans = .{
+            .branches = m.getKeySpan("branches"),
+            .branches_ignore = m.getKeySpan("branches-ignore"),
+            .tags = m.getKeySpan("tags"),
+            .tags_ignore = m.getKeySpan("tags-ignore"),
+            .paths = m.getKeySpan("paths"),
+            .paths_ignore = m.getKeySpan("paths-ignore"),
+        },
     };
 }
 
@@ -903,6 +911,28 @@ test "parseTrigger mapping with filter" {
     try testing.expectEqual(types.EventType.push, trigger.events[0].event);
     try testing.expectEqual(@as(usize, 1), trigger.events[0].filter.?.branches.len);
     try testing.expectEqualStrings("main", trigger.events[0].filter.?.branches[0]);
+    try testing.expect(trigger.events[0].filter.?.spans.branches != null);
+    try testing.expect(trigger.events[0].filter.?.spans.branches_ignore == null);
+}
+
+test "parseTrigger records key spans for empty filter values" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // `paths-ignore:` with no items still counts as present.
+    var empty_items = [_]Node{};
+    var push_entries = [_]yaml.MappingEntry{
+        .{ .key = .{ .value = "paths-ignore", .style = .plain, .span = mkSpanBytes(20, 32) }, .value = mkSequence(&empty_items), .span = mkSpan() },
+    };
+    var trigger_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("push"), .value = mkMapping(&push_entries), .span = mkSpan() },
+    };
+
+    const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
+    const spans = trigger.events[0].filter.?.spans;
+    try testing.expectEqual(@as(usize, 0), trigger.events[0].filter.?.paths_ignore.len);
+    try testing.expectEqual(@as(usize, 20), (spans.paths_ignore orelse return error.TestUnexpectedResult).start_byte);
+    try testing.expect(spans.paths == null);
 }
 
 test "parseTrigger schedule" {
