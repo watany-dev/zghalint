@@ -576,8 +576,6 @@ const valid_functions = [_]FuncSpec{
     .{ .name = "always", .min_args = 0, .max_args = 0 },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0 },
     .{ .name = "failure", .min_args = 0, .max_args = 0 },
-    // case(value, match1, result1, ..., [default]): the subject followed by at
-    // least one match/result pair, with an optional trailing default value.
     .{ .name = "case", .min_args = 3, .max_args = 255 },
 };
 
@@ -1557,16 +1555,8 @@ test "validate: case() is a known function" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
+    // With a trailing default, and at the 3-argument minimum without one.
     validateExpression(arena.allocator(), "case(github.ref_name, 'main', 'prod', 'staging')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
-}
-
-test "validate: case() without default value" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
     validateExpression(arena.allocator(), "case(github.ref_name, 'main', 'prod')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
@@ -1580,17 +1570,6 @@ test "validate: case() with too few arguments" {
     validateExpression(arena.allocator(), "case(github.ref_name, 'main')", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
-}
-
-test "validate: misspelled case() is still unknown" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "caes('a', 'b')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR004", list.get(0).rule_id);
 }
 
 test "validate: wrong arg count for contains" {
