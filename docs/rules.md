@@ -75,6 +75,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP004 | cross-platform-shell | warning | Run step without `shell` in a Windows-targeting job |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
+| BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
 
 ## Permissions Rules (PERM)
 
