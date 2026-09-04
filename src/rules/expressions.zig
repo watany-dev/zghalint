@@ -2,6 +2,9 @@ const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
+const expr_type = @import("expr_type.zig");
+const catalog = @import("expr_catalog.zig");
+const expr_check = @import("expr_check.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -537,50 +540,10 @@ pub const ExprParser = struct {
 // Expression Validator
 // ============================================================
 
-const valid_contexts = [_][]const u8{
-    "github",   "env",    "vars",   "job",
-    "jobs",     "steps",  "runner", "secrets",
-    "strategy", "matrix", "needs",  "inputs",
-};
-
-const github_properties = [_][]const u8{
-    "sha",                       "ref",                 "ref_name",
-    "ref_type",                  "actor",               "repository",
-    "repository_owner",          "event_name",          "event",
-    "workspace",                 "action",              "action_path",
-    "action_ref",                "action_repository",   "action_status",
-    "workflow",                  "workflow_ref",        "workflow_sha",
-    "job",                       "run_id",              "run_number",
-    "run_attempt",               "server_url",          "api_url",
-    "graphql_url",               "head_ref",            "base_ref",
-    "token",                     "path",                "env",
-    "output",                    "step_summary",        "repositoryUrl",
-    "triggering_actor",          "retention_days",      "actor_id",
-    "artifact_cache_size_limit", "event_path",          "ref_protected",
-    "repository_id",             "repository_owner_id", "repository_visibility",
-    "secret_source",             "state",
-};
-
-const runner_properties = [_][]const u8{
-    "os", "arch", "name", "temp", "tool_cache", "debug", "environment",
-};
-
-const FuncSpec = struct { name: []const u8, min_args: u8, max_args: u8 };
-const valid_functions = [_]FuncSpec{
-    .{ .name = "contains", .min_args = 2, .max_args = 2 },
-    .{ .name = "startsWith", .min_args = 2, .max_args = 2 },
-    .{ .name = "endsWith", .min_args = 2, .max_args = 2 },
-    .{ .name = "format", .min_args = 1, .max_args = 255 },
-    .{ .name = "join", .min_args = 1, .max_args = 2 },
-    .{ .name = "toJSON", .min_args = 1, .max_args = 1 },
-    .{ .name = "fromJSON", .min_args = 1, .max_args = 1 },
-    .{ .name = "hashFiles", .min_args = 1, .max_args = 255 },
-    .{ .name = "success", .min_args = 0, .max_args = 0 },
-    .{ .name = "always", .min_args = 0, .max_args = 0 },
-    .{ .name = "cancelled", .min_args = 0, .max_args = 0 },
-    .{ .name = "failure", .min_args = 0, .max_args = 0 },
-    .{ .name = "case", .min_args = 3, .max_args = 255 },
-};
+/// Empty type environment. Contextual overlays (steps / matrix / needs /
+/// inputs / secrets) are wired in a later iteration; until then every context
+/// resolves through the builtin catalog.
+const base_env = expr_check.TypeEnv{};
 
 /// Validate an expression.
 ///
@@ -630,6 +593,7 @@ fn validateNode(
         .binary_op, .unary_op => {
             if (node.kind == .binary_op) {
                 checkUnsoundCondition(allocator, node, span, list, expr_base_byte);
+                checkComparison(allocator, node, span, list);
             }
             for (node.children) |*child| {
                 validateNode(allocator, child, span, list, expr_base_byte, node);
@@ -640,72 +604,73 @@ fn validateNode(
 }
 
 fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: Span, list: *DiagnosticList) void {
-    // Extract top-level context name (before first '.' or '[')
-    var end: usize = 0;
-    while (end < path.len and path[end] != '.' and path[end] != '[') : (end += 1) {}
-    const top_level = path[0..end];
+    const result = expr_check.walkPath(path, &base_env);
+    const problem = result.problem orelse return;
 
-    var valid = false;
-    for (valid_contexts) |ctx| {
-        if (std.mem.eql(u8, top_level, ctx)) {
-            valid = true;
-            break;
-        }
-    }
+    var buf: [96]u8 = undefined;
+    const rule_id: []const u8, const severity: Severity, const message: []const u8 = switch (problem) {
+        .unknown_context => |name| .{
+            "EXPR002",
+            .@"error",
+            std.fmt.allocPrint(allocator, "unknown context: '{s}'", .{name}) catch "unknown context",
+        },
+        // Depth-1 accesses keep the historical wording
+        // ("unknown github context property: 'x'").
+        .unknown_property => |info| .{
+            "EXPR003",
+            .warning,
+            if (std.mem.indexOfAny(u8, info.receiver_path, ".[") == null)
+                std.fmt.allocPrint(allocator, "unknown {s} context property: '{s}'", .{ info.receiver_path, info.name }) catch "unknown context property"
+            else
+                std.fmt.allocPrint(allocator, "unknown property '{s}' on '{s}'", .{ info.name, info.receiver_path }) catch "unknown context property",
+        },
+        .not_an_object => |info| .{
+            "EXPR003",
+            .warning,
+            std.fmt.allocPrint(
+                allocator,
+                "property '{s}' accessed on '{s}' which is {s}, not an object",
+                .{ info.name, info.receiver_path, expr_type.display(info.receiver, &buf) },
+            ) catch "property access on a non-object value",
+        },
+    };
 
-    if (!valid) {
-        const msg = std.fmt.allocPrint(allocator, "unknown context: '{s}'", .{top_level}) catch "unknown context";
-        list.append(.{
-            .rule_id = "EXPR002",
-            .severity = .@"error",
-            .message = msg,
-            .span = span,
-        }) catch return;
-        return;
-    }
+    list.append(.{
+        .rule_id = rule_id,
+        .severity = severity,
+        .message = message,
+        .span = span,
+    }) catch return;
+}
 
-    // Validate known properties for github and runner
-    if (end < path.len and path[end] == '.') {
-        var prop_end = end + 1;
-        while (prop_end < path.len and path[prop_end] != '.' and path[prop_end] != '[') : (prop_end += 1) {}
-        const property = path[end + 1 .. prop_end];
+/// EXPR017: operands of a comparison whose types can never be compared.
+fn checkComparison(allocator: std.mem.Allocator, node: *const ExprNode, span: Span, list: *DiagnosticList) void {
+    if (node.children.len != 2) return;
+    const op = node.value;
+    if (!expr_check.isCompareOp(op)) return;
 
-        if (std.mem.eql(u8, top_level, "github")) {
-            var known = false;
-            for (github_properties) |p| {
-                if (std.mem.eql(u8, property, p)) {
-                    known = true;
-                    break;
-                }
-            }
-            if (!known and property.len > 0) {
-                const msg = std.fmt.allocPrint(allocator, "unknown github context property: '{s}'", .{property}) catch "unknown github property";
-                list.append(.{
-                    .rule_id = "EXPR003",
-                    .severity = .warning,
-                    .message = msg,
-                    .span = span,
-                }) catch return;
-            }
-        } else if (std.mem.eql(u8, top_level, "runner")) {
-            var known = false;
-            for (runner_properties) |p| {
-                if (std.mem.eql(u8, property, p)) {
-                    known = true;
-                    break;
-                }
-            }
-            if (!known and property.len > 0) {
-                const msg = std.fmt.allocPrint(allocator, "unknown runner context property: '{s}'", .{property}) catch "unknown runner property";
-                list.append(.{
-                    .rule_id = "EXPR003",
-                    .severity = .warning,
-                    .message = msg,
-                    .span = span,
-                }) catch return;
-            }
-        }
-    }
+    const lhs = expr_check.typeOf(&node.children[0], &base_env);
+    const rhs = expr_check.typeOf(&node.children[1], &base_env);
+    if (expr_check.checkCompare(op, lhs, rhs)) return;
+
+    var lhs_buf: [96]u8 = undefined;
+    var rhs_buf: [96]u8 = undefined;
+    const msg = std.fmt.allocPrint(
+        allocator,
+        "\"{s}\" value cannot be compared to \"{s}\" value with \"{s}\" operator",
+        .{
+            expr_type.display(lhs, &lhs_buf),
+            expr_type.display(rhs, &rhs_buf),
+            op,
+        },
+    ) catch "operands of this comparison have incompatible types";
+    list.append(.{
+        .rule_id = "EXPR017",
+        .severity = .warning,
+        .message = msg,
+        .span = span,
+        .fix_hint = "compare values of comparable types, or drop the comparison",
+    }) catch return;
 }
 
 fn validateFunctionCall(
@@ -719,29 +684,12 @@ fn validateFunctionCall(
     const name = node.value;
     const arg_count: u8 = @intCast(node.children.len);
 
-    var found: ?FuncSpec = null;
-    for (valid_functions) |f| {
-        if (std.mem.eql(u8, f.name, name)) {
-            found = f;
-            break;
-        }
-    }
-
-    if (found == null) {
-        const msg = std.fmt.allocPrint(allocator, "unknown function: '{s}'", .{name}) catch "unknown function";
-        list.append(.{
-            .rule_id = "EXPR004",
-            .severity = .@"error",
-            .message = msg,
-            .span = span,
-        }) catch return;
-    } else {
-        const f = found.?;
-        if (arg_count < f.min_args or arg_count > f.max_args) {
-            const msg = if (f.min_args == f.max_args)
-                std.fmt.allocPrint(allocator, "function '{s}' expects {d} argument(s), got {d}", .{ name, f.min_args, arg_count }) catch "wrong number of arguments"
+    if (catalog.lookupFunction(name)) |sig| {
+        if (arg_count < sig.min_args or arg_count > sig.max_args) {
+            const msg = if (sig.min_args == sig.max_args)
+                std.fmt.allocPrint(allocator, "function '{s}' expects {d} argument(s), got {d}", .{ name, sig.min_args, arg_count }) catch "wrong number of arguments"
             else
-                std.fmt.allocPrint(allocator, "function '{s}' expects {d}-{d} arguments, got {d}", .{ name, f.min_args, f.max_args, arg_count }) catch "wrong number of arguments";
+                std.fmt.allocPrint(allocator, "function '{s}' expects {d}-{d} arguments, got {d}", .{ name, sig.min_args, sig.max_args, arg_count }) catch "wrong number of arguments";
             list.append(.{
                 .rule_id = "EXPR005",
                 .severity = .@"error",
@@ -749,6 +697,14 @@ fn validateFunctionCall(
                 .span = span,
             }) catch return;
         }
+    } else {
+        const msg = std.fmt.allocPrint(allocator, "unknown function: '{s}'", .{name}) catch "unknown function";
+        list.append(.{
+            .rule_id = "EXPR004",
+            .severity = .@"error",
+            .message = msg,
+            .span = span,
+        }) catch return;
     }
 
     // EXPR006: contains() with string literal may cause unsound substring matching
@@ -2813,4 +2769,160 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
         result.content,
         "if: github.event_name == 'push' || github.event_name == 'pull_request'",
     ) != null);
+}
+
+// --- Type engine integration (EXPR003 deep walk / EXPR017) ---
+
+fn expectNoDiagnostics(expr: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
+    if (list.len() != 0) {
+        std.debug.print("unexpected diagnostic for '{s}': {s}\n", .{ expr, list.get(0).message });
+        return error.UnexpectedDiagnostic;
+    }
+}
+
+fn expectSingleRule(expr: []const u8, rule_id: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings(rule_id, list.get(0).rule_id);
+}
+
+test "EXPR003: property access on a string context value" {
+    try expectSingleRule("github.repository.permissions.admin", "EXPR003");
+}
+
+test "EXPR003: job context is strict" {
+    try expectSingleRule("job.unknown", "EXPR003");
+    try expectNoDiagnostics("job.status");
+    try expectNoDiagnostics("job.container.id");
+    try expectNoDiagnostics("job.services.redis.ports['6379']");
+}
+
+test "EXPR003: nested unknown property message names the receiver" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "job.container.unknown", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR003", list.get(0).rule_id);
+    try std.testing.expectEqualStrings(
+        "unknown property 'unknown' on 'job.container'",
+        list.get(0).message,
+    );
+}
+
+test "EXPR003: github.event stays silent at any depth" {
+    try expectNoDiagnostics("github.event.pull_request.head.sha");
+    try expectNoDiagnostics("github.event.inputs.anything");
+}
+
+test "EXPR003: contexts awaiting overlay stay silent" {
+    try expectNoDiagnostics("steps.setup.outputs.version");
+    try expectNoDiagnostics("matrix.os");
+    try expectNoDiagnostics("needs.build.outputs.artifact");
+    try expectNoDiagnostics("inputs.name");
+    try expectNoDiagnostics("env.MY_VAR");
+    try expectNoDiagnostics("secrets.GITHUB_TOKEN");
+    try expectNoDiagnostics("strategy.anything");
+}
+
+test "EXPR017: object compared to number" {
+    try expectSingleRule("github.event > 3", "EXPR017");
+}
+
+test "EXPR017: string compared to number with a relational operator is allowed" {
+    try expectNoDiagnostics("github.run_number > 3");
+}
+
+test "EXPR017: bool is not orderable" {
+    try expectSingleRule("github.ref_protected > 1", "EXPR017");
+}
+
+// ADR D6 mirrors actionlint: mixing number/bool/string in an equality is a
+// documented implicit conversion, so it is not reported. Only object/array
+// operands (and non-orderable operands for < > <= >=) are.
+test "EXPR017: array compared to a scalar" {
+    try expectSingleRule("fromJSON('[1,2]') == 'x'", "EXPR017");
+}
+
+test "EXPR017: map value compared to number is allowed" {
+    try expectNoDiagnostics("secrets.FOO == 1");
+}
+
+test "EXPR017: message follows the actionlint wording" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event == 1", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings(
+        "\"object\" value cannot be compared to \"number\" value with \"==\" operator",
+        list.get(0).message,
+    );
+    try std.testing.expectEqual(Severity.warning, list.get(0).severity);
+}
+
+test "EXPR017: unknown types short-circuit to no diagnostic" {
+    try expectNoDiagnostics("github.event.issue.number == 'foo'");
+    try expectNoDiagnostics("steps.build.outputs.count > 3");
+    try expectNoDiagnostics("matrix.os == 'ubuntu-latest'");
+    try expectNoDiagnostics("github.event_name == 'push'");
+    try expectNoDiagnostics("github.event.head_commit == null");
+}
+
+test "EXPR017: scalar mixing in equality is not reported" {
+    try expectNoDiagnostics("github.event_name == 1");
+    try expectNoDiagnostics("github.ref_protected == 'true'");
+}
+
+test "EXPR017: comparison inside a logical expression" {
+    try expectSingleRule("success() && github.event > 3", "EXPR017");
+}
+
+test "typeOf: function return types" {
+    const env = expr_check.TypeEnv{};
+    const cases = [_]struct { expr: []const u8, kind: expr_type.TypeKind }{
+        .{ .expr = "startsWith(github.sha, 'a')", .kind = .bool },
+        .{ .expr = "startsWith(github.event, 'a')", .kind = .bool },
+        .{ .expr = "toJSON(github.event)", .kind = .string },
+        .{ .expr = "join(matrix.values, ',')", .kind = .string },
+        .{ .expr = "hashFiles('**/*.lock')", .kind = .string },
+        .{ .expr = "success()", .kind = .bool },
+        .{ .expr = "case(true, 1, 2)", .kind = .any },
+        .{ .expr = "fromJSON('[1,2]')", .kind = .array },
+        .{ .expr = "fromJSON('{\"a\":1}')", .kind = .object },
+        .{ .expr = "fromJSON('true')", .kind = .bool },
+        .{ .expr = "fromJSON(env.RAW)", .kind = .any },
+        .{ .expr = "unknownFunc()", .kind = .any },
+    };
+    for (cases) |c| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var parser = ExprParser.init(arena.allocator(), c.expr);
+        const node = try parser.parse();
+        try std.testing.expectEqual(c.kind, expr_check.typeOf(&node, &env).kind);
+    }
+}
+
+test "typeOf: logical operators merge operand types" {
+    const env = expr_check.TypeEnv{};
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = ExprParser.init(arena.allocator(), "github.sha || github.ref");
+    const node = try parser.parse();
+    try std.testing.expectEqual(expr_type.TypeKind.string, expr_check.typeOf(&node, &env).kind);
 }
