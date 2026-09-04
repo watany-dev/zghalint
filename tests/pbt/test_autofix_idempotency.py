@@ -6,7 +6,6 @@ import os
 import tempfile
 from pathlib import Path
 
-import pytest
 from hypothesis import given, settings, HealthCheck
 from hypothesis import strategies as st
 
@@ -89,10 +88,6 @@ def test_double_fix_is_idempotent(zghalint_bin, content):
         os.unlink(path)
 
 
-@pytest.mark.xfail(
-    reason="Known bug: fix/engine.zig segfaults on some generated workflows",
-    strict=False,
-)
 @given(content=workflow_yaml())
 @PBT_SETTINGS
 def test_fix_does_not_crash(zghalint_bin, content):
