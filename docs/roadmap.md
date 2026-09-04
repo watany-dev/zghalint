@@ -25,7 +25,7 @@
 | PBT（`tests/pbt/`） | xfail 0 件（#125 で解消） |
 | オープン PR | 4 件（#123 #126 #127 #128）+ 本 PR #130 |
 
-## 2. 最優先: プレーンスカラーの切り詰め（未起票・要 issue）
+## 2. 最優先: プレーンスカラーの切り詰め（#131 / #132）
 
 Phase 1 の SEC002 拡充より前に潰すべき欠陥が YAML トークナイザにある。
 
@@ -54,9 +54,10 @@ out: npm run build -- --flag
 - 対応 2（本命）: flow depth を持ち、flow context の中でのみ `,` `[` `{` を指示子として扱う。`run:` 本文のカンマや角括弧全般に効く
 - 併せて: 実ワークフローファイルを入力とする E2E テスト（`tests/` に fixture を置き `zghalint` を通す）を追加する。ユニットテストだけではこの層を検証できない
 
-対応 2 と E2E テストは issue を起票して Phase 1 の先頭に置く。
+対応 2 を #131、E2E テストを #132 として起票済み。Phase 1 の先頭に置く。
 
-なお、この確認中に診断の行 / 列がすべて `0:0` になる事象も観測している（`run:` 由来の SEC002 など）。別件として切り出す。
+なお、この確認中に診断の行 / 列がすべて `0:0` になる事象も観測している（`run:` 由来の SEC002 など）。
+`src/rules/` に `Span.point(0, 0, 0)` が 51 箇所あり、`Step.run_value_span` などの既存 span が使われていない。#133 として起票済み。
 
 ## 3. オープン PR の裁き方
 
@@ -89,7 +90,9 @@ out: npm run build -- --flag
 
 | 順 | issue | ルール | 状態 / 触る主なファイル |
 |---|---|---|---|
-| 0 | 未起票 | プレーンスカラーの flow context 対応 + E2E テスト | §2。他の全ルールの検出率に効くので最優先 |
+| 0 | #131 | プレーンスカラーの flow context 対応 | §2。他の全ルールの検出率に効くので最優先 |
+| 0 | #132 | 実ワークフローを入力とする E2E テスト | §2。#131 の回帰を止める土台 |
+| 0 | #133 | 診断 span の伝搬（`0:0` 解消） | §2。`src/rules/` の `Span.point(0, 0, 0)` 51 箇所 |
 | 1 | #102 | SEC002 object filter `.*` | **PR #127 レビュー中** |
 | 2 | #101 | SEC002 untrusted inputs 拡充 | **PR #126 要 rebase** |
 | 3 | #103 | SEC002 github-script の `script:` | **PR #128 要 rebase** |
@@ -167,7 +170,8 @@ out: npm run build -- --flag
 | #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。§2 の flow context 対応と同じ層なので、続けて着手すると手戻りが少ない。`docs/codebase-improvements.md` §7 の yaml/parser 整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
 | `docs/codebase-improvements.md` 優先度 1〜8 | 各 Phase で該当ファイルを触る前に Tidy First で消化する（例: SEC002 拡充の前に「`${{ }}` 式スキャンのイテレータヘルパー」を入れる） |
 | `docs/design/pbt-strategy.md` #3〜#5 | xfail は解消済み。新ルールが増えるたびに detection PBT を横展開する |
-| SEC021 / SC007（ADR-0004 で設計済み・未実装） | #55 の対象外。issue が無いので、着手するなら起票してから Phase 1 の末尾に入れる |
+| #134 SEC021 untrusted checkout ref | #55 の対象外。ADR-0004 と `docs/design/sec021-untrusted-checkout-ref-design.md` で設計済み・未実装。起票済みなので Phase 1 の末尾に入れられる |
+| #135 SC007 typosquat 検出 | 同上（`docs/design/sc007-typosquat-design.md`）。オフラインで完結するので #134 と並列可 |
 
 ## 5. 進め方の注意
 
