@@ -37,6 +37,10 @@ pub const Tokenizer = struct {
     line: u32,
     column: u32,
     started: bool,
+    /// Nesting depth of `[` / `{` flow collections. `,` `]` `}` are YAML
+    /// indicators only inside a flow context; in block context they are
+    /// ordinary plain-scalar characters (e.g. a `run:` command line).
+    flow_depth: u32,
 
     pub fn init(source: []const u8) Tokenizer {
         return .{
@@ -45,6 +49,7 @@ pub const Tokenizer = struct {
             .line = 1,
             .column = 1,
             .started = false,
+            .flow_depth = 0,
         };
     }
 
@@ -100,9 +105,11 @@ pub const Tokenizer = struct {
         // Document markers
         if (self.column == 1) {
             if (self.matchStr("---")) {
+                self.flow_depth = 0;
                 return self.emitSimple(.document_start, 3);
             }
             if (self.matchStr("...")) {
+                self.flow_depth = 0;
                 return self.emitSimple(.document_end, 3);
             }
         }
@@ -112,12 +119,28 @@ pub const Tokenizer = struct {
             return self.emitSimple(.sequence_entry, 1);
         }
 
-        // Flow indicators
-        if (c == '{') return self.emitSimple(.flow_mapping_start, 1);
-        if (c == '}') return self.emitSimple(.flow_mapping_end, 1);
-        if (c == '[') return self.emitSimple(.flow_sequence_start, 1);
-        if (c == ']') return self.emitSimple(.flow_sequence_end, 1);
-        if (c == ',') return self.emitSimple(.flow_entry, 1);
+        // Flow indicators. A plain scalar can never start with `{` or `[`,
+        // so those always open a flow collection; the closing and separating
+        // indicators only count while one is open.
+        if (c == '{') {
+            self.flow_depth += 1;
+            return self.emitSimple(.flow_mapping_start, 1);
+        }
+        if (c == '[') {
+            self.flow_depth += 1;
+            return self.emitSimple(.flow_sequence_start, 1);
+        }
+        if (self.flow_depth > 0) {
+            if (c == '}') {
+                self.flow_depth -= 1;
+                return self.emitSimple(.flow_mapping_end, 1);
+            }
+            if (c == ']') {
+                self.flow_depth -= 1;
+                return self.emitSimple(.flow_sequence_end, 1);
+            }
+            if (c == ',') return self.emitSimple(.flow_entry, 1);
+        }
 
         // Colon followed by space or end -> mapping value indicator
         if (c == ':' and (self.peekNext() == ' ' or self.peekNext() == '\n' or self.pos + 1 >= self.source.len)) {
@@ -291,6 +314,10 @@ pub const Tokenizer = struct {
     /// Consume a `${{ ... }}` interpolation starting at the current position.
     /// Returns false (leaving the position untouched) when one does not start
     /// here, or when it is not closed before the end of the line.
+    ///
+    /// Only needed inside a flow context, where the expression's `}` and `,`
+    /// would otherwise be read as YAML indicators. In block context the flow
+    /// indicators already belong to the scalar.
     fn skipExpressionInterpolation(self: *Tokenizer) bool {
         if (self.pos + 2 >= self.source.len) return false;
         if (self.source[self.pos] != '$') return false;
@@ -312,11 +339,14 @@ pub const Tokenizer = struct {
         const col = self.column;
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
-            // `${{ ... }}` is a GitHub Actions expression, not a YAML flow
-            // mapping: its braces and commas belong to the scalar.
-            if (self.skipExpressionInterpolation()) continue;
-            if (ch == '\n' or ch == '#' or ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']') {
-                break;
+            if (ch == '\n' or ch == '#') break;
+            if (self.flow_depth > 0) {
+                // `${{ ... }}` is a GitHub Actions expression, not a YAML flow
+                // mapping: its braces and commas belong to the scalar.
+                if (self.skipExpressionInterpolation()) continue;
+                if (ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']') {
+                    break;
+                }
             }
             // Colon followed by space is a mapping value indicator
             if (ch == ':' and (self.pos + 1 >= self.source.len or self.source[self.pos + 1] == ' ' or self.source[self.pos + 1] == '\n')) {
@@ -432,11 +462,106 @@ test "tokenizer plain scalar keeps commas inside an interpolation" {
     try std.testing.expectEqualStrings("echo \"${{ join(github.event.commits.*.message, ' ') }}\"", token.slice(tokenizer.source));
 }
 
-test "tokenizer plain scalar stops at an unterminated interpolation" {
+test "tokenizer plain scalar keeps an unterminated interpolation in block context" {
     var tokenizer = Tokenizer.init("echo ${{ oops");
     _ = tokenizer.next(); // stream_start
     const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo ${{ oops", token.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar stops at an unterminated interpolation in flow context" {
+    var tokenizer = Tokenizer.init("[echo ${{ oops]");
+    _ = tokenizer.next(); // stream_start
+    try std.testing.expectEqual(TokenKind.flow_sequence_start, tokenizer.next().kind);
+    const token = tokenizer.next();
     try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
+}
+
+// ============================================================
+// Flow depth: `,` `[` `]` `{` `}` are indicators only in flow context
+// ============================================================
+
+fn expectFirstScalar(source: []const u8, expected: []const u8) !void {
+    var tokenizer = Tokenizer.init(source);
+    while (true) {
+        const token = tokenizer.next();
+        switch (token.kind) {
+            .scalar => return std.testing.expectEqualStrings(expected, token.slice(source)),
+            .eof => return error.NoScalarFound,
+            else => {},
+        }
+    }
+}
+
+test "tokenizer plain scalar keeps commas in block context" {
+    try expectFirstScalar(
+        "contains(github.event.issue.title, 'x')",
+        "contains(github.event.issue.title, 'x')",
+    );
+}
+
+test "tokenizer plain scalar keeps brackets in block context" {
+    try expectFirstScalar(
+        "npm run build -- --flag [x]",
+        "npm run build -- --flag [x]",
+    );
+}
+
+test "tokenizer plain scalar keeps braces in block context" {
+    try expectFirstScalar(
+        "awk '{print $1}' file, other",
+        "awk '{print $1}' file, other",
+    );
+}
+
+test "tokenizer run: value is read to end of line" {
+    var tokenizer = Tokenizer.init("run: echo a, b [c] {d}\nnext: 1\n");
+    _ = tokenizer.next(); // stream_start
+    try std.testing.expectEqualStrings("run", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const value = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, value.kind);
+    try std.testing.expectEqualStrings("echo a, b [c] {d}", value.slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+}
+
+test "tokenizer plain scalar still stops at a comment in block context" {
+    try expectFirstScalar("echo a, b # trailing", "echo a, b");
+}
+
+test "tokenizer flow depth tracks nesting" {
+    var tokenizer = Tokenizer.init("{a: [1, 2]}");
+    _ = tokenizer.next(); // stream_start
+    try std.testing.expectEqual(TokenKind.flow_mapping_start, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("a", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    try std.testing.expectEqual(TokenKind.flow_sequence_start, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("1", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.flow_entry, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("2", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.flow_sequence_end, tokenizer.next().kind);
+    try std.testing.expectEqual(TokenKind.flow_mapping_end, tokenizer.next().kind);
+    try std.testing.expectEqual(@as(u32, 0), tokenizer.flow_depth);
+    try std.testing.expectEqual(TokenKind.eof, tokenizer.next().kind);
+}
+
+test "tokenizer stray closing bracket in block context is scalar text" {
+    try expectFirstScalar("echo ]done}", "echo ]done}");
+}
+
+test "tokenizer document start resets flow depth" {
+    var tokenizer = Tokenizer.init("on: [push\n---\nrun: echo a, b\n");
+    _ = tokenizer.next(); // stream_start
+    while (true) {
+        const token = tokenizer.next();
+        if (token.kind == .document_start) break;
+        if (token.kind == .eof) return error.NoDocumentStart;
+    }
+    try std.testing.expectEqual(@as(u32, 0), tokenizer.flow_depth);
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("run", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("echo a, b", tokenizer.next().slice(tokenizer.source));
 }
 
 test "tokenizer plain scalar keeps expression with index access" {
