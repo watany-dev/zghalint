@@ -18,18 +18,19 @@ pub const ValidationResult = struct {
 pub fn validate(allocator: std.mem.Allocator, workflow: types.Workflow) !ValidationResult {
     var errors = std.ArrayList(ValidationError){};
 
-    // on field is required (enforced by parser, but check events non-empty)
     if (workflow.on.events.len == 0) {
-        try errors.append(allocator, .{ .message = "'on' must specify at least one event" });
+        try errors.append(allocator, .{ .message = "\"on\" section should not be empty" });
     }
 
-    // jobs must be non-empty
     if (workflow.jobs.len == 0) {
-        try errors.append(allocator, .{ .message = "'jobs' must contain at least one job" });
+        try errors.append(allocator, .{ .message = "\"jobs\" section should not be empty" });
     }
+
+    try appendEmptySectionErrors(allocator, &errors, workflow.empty_sections);
 
     // Validate each job
     for (workflow.jobs) |job| {
+        try appendEmptySectionErrors(allocator, &errors, job.empty_sections);
         try validateJob(allocator, &errors, job);
     }
 
@@ -37,6 +38,17 @@ pub fn validate(allocator: std.mem.Allocator, workflow: types.Workflow) !Validat
     try checkCyclicNeeds(allocator, &errors, workflow.jobs);
 
     return .{ .errors = try errors.toOwnedSlice(allocator) };
+}
+
+fn appendEmptySectionErrors(
+    allocator: std.mem.Allocator,
+    errors: *std.ArrayList(ValidationError),
+    sections: []const types.EmptySection,
+) !void {
+    for (sections) |section| {
+        const msg = try std.fmt.allocPrint(allocator, "\"{s}\" section should not be empty", .{section.name});
+        try errors.append(allocator, .{ .message = msg });
+    }
 }
 
 fn validateJob(allocator: std.mem.Allocator, errors: *std.ArrayList(ValidationError), job: types.Job) !void {
@@ -60,6 +72,7 @@ fn validateJob(allocator: std.mem.Allocator, errors: *std.ArrayList(ValidationEr
 
     // Validate each step
     for (job.steps, 0..) |step, i| {
+        try appendEmptySectionErrors(allocator, errors, step.empty_sections);
         try validateStep(allocator, errors, job.id, step, i);
     }
 }
@@ -195,7 +208,7 @@ test "validate empty events" {
 
     const result = try validate(alloc, wf);
     try testing.expect(!result.ok());
-    try testing.expect(std.mem.indexOf(u8, result.errors[0].message, "'on'") != null);
+    try testing.expect(std.mem.indexOf(u8, result.errors[0].message, "\"on\" section should not be empty") != null);
 }
 
 test "validate empty jobs" {
@@ -214,7 +227,7 @@ test "validate empty jobs" {
 
     const result = try validate(alloc, wf);
     try testing.expect(!result.ok());
-    try testing.expect(std.mem.indexOf(u8, result.errors[0].message, "'jobs'") != null);
+    try testing.expect(std.mem.indexOf(u8, result.errors[0].message, "\"jobs\" section should not be empty") != null);
 }
 
 test "validate job must have steps or uses" {

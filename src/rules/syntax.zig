@@ -6,8 +6,56 @@ const yaml_types = @import("../yaml/types.zig");
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const Job = engine.Job;
+const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
+
+// ── SYN003: Empty mapping / sequence sections ──
+
+fn emptySectionMessage(section: []const u8) []const u8 {
+    if (std.mem.eql(u8, section, "on")) return "\"on\" section should not be empty";
+    if (std.mem.eql(u8, section, "jobs")) return "\"jobs\" section should not be empty";
+    if (std.mem.eql(u8, section, "steps")) return "\"steps\" section should not be empty";
+    if (std.mem.eql(u8, section, "with")) return "\"with\" section should not be empty";
+    if (std.mem.eql(u8, section, "env")) return "\"env\" section should not be empty";
+    if (std.mem.eql(u8, section, "strategy")) return "\"strategy\" section should not be empty";
+    if (std.mem.eql(u8, section, "matrix")) return "\"matrix\" section should not be empty";
+    if (std.mem.eql(u8, section, "defaults")) return "\"defaults\" section should not be empty";
+    if (std.mem.eql(u8, section, "container")) return "\"container\" section should not be empty";
+    if (std.mem.eql(u8, section, "services")) return "\"services\" section should not be empty";
+    if (std.mem.eql(u8, section, "outputs")) return "\"outputs\" section should not be empty";
+    if (std.mem.eql(u8, section, "inputs")) return "\"inputs\" section should not be empty";
+    if (std.mem.eql(u8, section, "secrets")) return "\"secrets\" section should not be empty";
+    return "\"section\" section should not be empty";
+}
+
+fn reportEmptySection(section: []const u8, span: Span, list: *DiagnosticList) void {
+    list.append(.{
+        .rule_id = "SYN003",
+        .severity = .@"error",
+        .message = emptySectionMessage(section),
+        .span = span,
+        .fix_hint = "remove this section if it is unnecessary",
+    }) catch return;
+}
+
+fn checkEmptySections(sections: []const workflow_types.EmptySection, list: *DiagnosticList) void {
+    for (sections) |section| {
+        reportEmptySection(section.name, section.span, list);
+    }
+}
+
+fn checkWorkflowEmptySections(wf: *const Workflow, list: *DiagnosticList) void {
+    checkEmptySections(wf.empty_sections, list);
+}
+
+fn checkJobEmptySections(job: *const Job, list: *DiagnosticList) void {
+    checkEmptySections(job.empty_sections, list);
+}
+
+fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
+    checkEmptySections(step.empty_sections, list);
+}
 
 // ── SYN008: Duplicated job ID in `needs` ──
 
@@ -89,6 +137,16 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
 
 pub const rules = [_]Rule{
     .{
+        .id = "SYN003",
+        .name = "empty-section",
+        .description = "Required workflow sections must not be empty mappings or sequences",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkWorkflowEmptySections,
+        .check_job = &checkJobEmptySections,
+        .check_step = &checkStepEmptySections,
+    },
+    .{
         .id = "SYN008",
         .name = "duplicate-needs",
         .description = "the same job ID is listed more than once in 'needs'",
@@ -122,6 +180,138 @@ fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
 fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
     checkDuplicateNeeds(&job, diags);
+}
+
+const workflow_parser = @import("../workflow/parser.zig");
+const yaml_parser_mod = @import("../yaml/parser.zig");
+
+fn runEngineOnWorkflow(wf: Workflow, diags: *DiagnosticList) void {
+    const rule_engine = engine.Engine.init(&rules);
+    var list = rule_engine.run(testing.allocator, &wf);
+    defer list.deinit();
+    for (list.items.items) |diag| {
+        diags.append(diag) catch return;
+    }
+}
+
+fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(alloc, source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, node);
+    runEngineOnWorkflow(wf, diags);
+}
+
+test "SYN003: empty strategy and with are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy: {}
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expectEqualStrings("SYN003", diags.get(0).rule_id);
+    try testing.expectEqualStrings("\"strategy\" section should not be empty", diags.get(0).message);
+    try testing.expectEqualStrings("SYN003", diags.get(1).rule_id);
+    try testing.expectEqualStrings("\"with\" section should not be empty", diags.get(1).message);
+}
+
+test "SYN003: valid workflow without empty sections is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN003: permissions mapping is allowed to be empty" {
+    const source =
+        \\on: push
+        \\permissions: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions: {}
+        \\    steps:
+        \\      - run: echo ok
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    for (0..diags.len()) |i| {
+        try testing.expect(!std.mem.eql(u8, diags.get(i).rule_id, "SYN003"));
+    }
+}
+
+test "SYN003: empty jobs mapping is reported" {
+    const source =
+        \\on: push
+        \\jobs: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    var found_jobs = false;
+    for (0..diags.len()) |i| {
+        const diag = diags.get(i);
+        if (std.mem.eql(u8, diag.rule_id, "SYN003") and
+            std.mem.eql(u8, diag.message, "\"jobs\" section should not be empty"))
+        {
+            found_jobs = true;
+        }
+    }
+    try testing.expect(found_jobs);
+}
+
+test "SYN003: empty steps sequence is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps: []
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    var found_steps = false;
+    for (0..diags.len()) |i| {
+        const diag = diags.get(i);
+        if (std.mem.eql(u8, diag.rule_id, "SYN003") and
+            std.mem.eql(u8, diag.message, "\"steps\" section should not be empty"))
+        {
+            found_steps = true;
+        }
+    }
+    try testing.expect(found_steps);
 }
 
 test "SYN008: duplicated job ID is reported" {

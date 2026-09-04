@@ -1,6 +1,12 @@
 const std = @import("std");
 const yaml_types = @import("../yaml/types.zig");
 
+/// A workflow section that was present in the source but empty.
+pub const EmptySection = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 /// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
 pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
@@ -266,6 +272,7 @@ pub const Step = struct {
     with: ?StringMap = null,
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
+    empty_sections: []const EmptySection = &.{},
     if_condition: ?[]const u8 = null,
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
@@ -338,6 +345,7 @@ pub const Job = struct {
     continue_on_error: bool = false,
     container: ?Container = null,
     services: []const Service = &.{},
+    empty_sections: []const EmptySection = &.{},
     /// Reusable workflow reference (mutually exclusive with steps)
     uses: ?[]const u8 = null,
     with: ?StringMap = null,
@@ -363,6 +371,7 @@ pub const Workflow = struct {
     env_meta: ?ScalarValueMetaMap = null,
     concurrency: ?Concurrency = null,
     jobs: []const Job,
+    empty_sections: []const EmptySection = &.{},
     /// Top-level keys are always at column 1.
     top_level_indent: u32 = 0,
     /// Byte position to insert a new top-level `permissions:` entry (after `on:` line).
