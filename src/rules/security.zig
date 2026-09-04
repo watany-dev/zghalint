@@ -126,9 +126,59 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
 // SEC002 - Script injection via untrusted context in run:
 // ============================================================
 
+const script_injection_fix_hint = "assign the context to an environment variable and use the env var instead";
+
+/// An action input whose value is executed as code, making it equivalent to `run:`
+/// for script injection purposes.
+const ScriptInput = struct {
+    owner: []const u8,
+    repo: []const u8,
+    /// Input names under `with:` that are executed as code.
+    inputs: []const []const u8,
+    /// Diagnostic message for this action (static, so no allocation is needed).
+    message: []const u8,
+};
+
+/// Actions that execute one of their `with:` inputs as code.
+/// Extend this table when other such actions are identified.
+const script_input_actions = [_]ScriptInput{
+    .{
+        .owner = "actions",
+        .repo = "github-script",
+        .inputs = &.{"script"},
+        .message = "script injection: untrusted context used in actions/github-script script: input",
+    },
+};
+
 fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
-    const run_body = step.run orelse return;
-    checkDangerousContextInString(run_body, "SEC002", "script injection: untrusted context used in run: block", "assign the context to an environment variable and use the env var instead", list);
+    if (step.run) |run_body| {
+        checkDangerousContextInString(run_body, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+    }
+    checkScriptInputInjection(step, list);
+}
+
+/// SEC002 for code-executing action inputs (e.g. `actions/github-script` `with.script`).
+fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
+    const ref = step.uses orelse return;
+    const with_map = step.with orelse return;
+    const entry = findScriptInputAction(ref) orelse return;
+    for (entry.inputs) |input_name| {
+        const body = with_map.get(input_name) orelse continue;
+        checkDangerousContextInString(body, "SEC002", entry.message, script_injection_fix_hint, list);
+    }
+}
+
+fn findScriptInputAction(ref: ActionRef) ?*const ScriptInput {
+    const owner = ref.owner orelse return null;
+    const repo = ref.repo orelse return null;
+    // Only the top-level action counts; a nested path is a different action.
+    if (ref.path != null) return null;
+    for (&script_input_actions) |*entry| {
+        if (std.mem.eql(u8, owner, entry.owner) and std.mem.eql(u8, repo, entry.repo)) {
+            return entry;
+        }
+    }
+    return null;
 }
 
 // ============================================================
@@ -1587,7 +1637,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC002",
         .name = "script-injection",
-        .description = "Untrusted GitHub context used in run: block risks script injection",
+        .description = "Untrusted GitHub context used in run: block or a code-executing action input risks script injection",
         .severity = .@"error",
         .category = .security,
         .check_step = &checkScriptInjection,
@@ -1982,6 +2032,77 @@ test "SEC002: head_ref in run block" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: dangerous context in github-script script input" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("script", "const title = \"${{ github.event.issue.title }}\";") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/github-script@v7"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: github-script script input via env (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("script", "const title = process.env.TITLE;") catch unreachable;
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("TITLE", "${{ github.event.issue.title }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/github-script@v7"), .with = with, .env = env },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: script input of an unrelated action is not checked" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("script", "echo ${{ github.event.issue.title }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("some-org/other-action@v1"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: github-script with a non-script input is not flagged" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("result-encoding", "${{ github.event.issue.title }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/github-script@v7"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
 test "SEC002: safe context in run (no false positive)" {
