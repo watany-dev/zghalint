@@ -126,6 +126,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
             const parsed = try parseStringMapWithMeta(allocator, n);
             workflow.env = parsed.values;
             workflow.env_meta = parsed.meta;
+            workflow.env_keys = try parseEnvKeys(allocator, n);
         }
     }
 
@@ -452,6 +453,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
             const parsed = try parseStringMapWithMeta(ctx.allocator, n);
             job.env = parsed.values;
             job.env_meta = parsed.meta;
+            job.env_keys = try parseEnvKeys(ctx.allocator, n);
         }
     }
     if (m.get("concurrency")) |n| {
@@ -486,7 +488,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     if (m.get("container")) |n| {
         try recordEmpty(&empty, ctx.allocator, "container", n);
         if (!isEmptyContainer(n)) {
-            job.container = try parseContainer(n);
+            job.container = try parseContainer(ctx.allocator, n);
         }
     }
     if (m.get("services")) |n| {
@@ -644,6 +646,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             const parsed = try parseStringMapWithMeta(ctx.allocator, n);
             step.env = parsed.values;
             step.env_meta = parsed.meta;
+            step.env_keys = try parseEnvKeys(ctx.allocator, n);
         }
     }
     step.empty_sections = try empty.toOwnedSlice(ctx.allocator);
@@ -833,7 +836,7 @@ fn parseCredentials(node: Node) ParseError!types.Credentials {
     };
 }
 
-fn parseContainer(node: Node) ParseError!types.Container {
+fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
             return .{ .image = s.value };
@@ -842,6 +845,7 @@ fn parseContainer(node: Node) ParseError!types.Container {
             return .{
                 .image = m.getScalar("image"),
                 .credentials = if (m.get("credentials")) |n| try parseCredentials(n) else null,
+                .env_keys = if (m.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
             };
         },
         else => return error.InvalidValue,
@@ -862,6 +866,7 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                     .name = entry.key.value,
                     .image = vm.getScalar("image"),
                     .credentials = if (vm.get("credentials")) |n| try parseCredentials(n) else null,
+                    .env_keys = if (vm.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
                 };
             },
             .scalar => |s| {
@@ -913,6 +918,22 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
         }
     }
     return .{ .values = values, .meta = meta };
+}
+
+/// Collect every key of an `env:` mapping with the span of its key token.
+/// Unlike `parseStringMapWithMeta`, no entry is dropped: SYN007 must see keys
+/// whose value is not a scalar, and duplicated keys, to validate their names.
+fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.EnvKey {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const keys = try allocator.alloc(types.EnvKey, m.entries.len);
+    for (m.entries, keys) |entry, *key| {
+        key.* = .{ .name = entry.key.value, .span = entry.key.span };
+    }
+    return keys;
 }
 
 const ParsedStringArray = struct {

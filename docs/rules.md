@@ -136,6 +136,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN004 | mapping-value-type | error | Mapping value does not match the expected type for its key (e.g. string where a number or bool is required) |
 | SYN005 | duplicate-id | error | Job IDs and step IDs must be unique within a workflow or job (case-insensitive) |
 | SYN006 | invalid-id-naming | error | Job ID and step ID must start with a letter or `_` and contain only alphanumeric characters, `-`, or `_` |
+| SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 
@@ -180,6 +181,28 @@ is the documented way to strip all `GITHUB_TOKEN` scopes.
 
 `secrets: inherit` and a scalar `container:` image are not empty mappings
 and are not reported.
+
+### SYN007 invalid-env-var-name
+
+Environment variable names are validated wherever `env:` may appear —
+workflow, job, step, `container:`, and `services.<id>:`. A name that is empty
+or contains `&`, `=`, or a space cannot be written to the runner's
+environment file:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      FOO=BAR: 1          # error: '=' is not allowed
+      "A B": 2            # error: spaces are not allowed
+      FOO&BAR: 3          # error: '&' is not allowed
+      MY_VAR: 4           # ok
+```
+
+A key whose name contains a `${{ }}` expression is skipped: the literal text
+is substituted before the runner sees it, so it says nothing about the name
+that finally reaches the environment file.
 
 ### SYN012 exclusive-event-filters
 
