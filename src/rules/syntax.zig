@@ -2,12 +2,79 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
+const util = @import("../util.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
+const UnknownKey = workflow_types.UnknownKey;
+
+// ── SYN001: Unknown mapping keys ──
+
+fn findDidYouMean(key: []const u8, expected: []const []const u8) ?[]const u8 {
+    const max_dist: usize = 2;
+    var best: ?[]const u8 = null;
+    var best_dist: usize = std.math.maxInt(usize);
+    var ties: usize = 0;
+
+    for (expected) |candidate| {
+        const dist = util.levenshteinDistance(key, candidate);
+        if (dist == 0 or dist > max_dist) continue;
+        if (dist < best_dist) {
+            best = candidate;
+            best_dist = dist;
+            ties = 1;
+        } else if (dist == best_dist) {
+            ties += 1;
+        }
+    }
+
+    if (ties != 1) return null;
+    return best;
+}
+
+fn formatUnexpectedKeyMessage(alloc: std.mem.Allocator, uk: UnknownKey) ![]const u8 {
+    var expected_buf = std.ArrayList(u8){};
+    defer expected_buf.deinit(alloc);
+    for (uk.expected, 0..) |key, i| {
+        if (i > 0) try expected_buf.appendSlice(alloc, ", ");
+        try expected_buf.writer(alloc).print("\"{s}\"", .{key});
+    }
+
+    var message = std.ArrayList(u8){};
+    defer message.deinit(alloc);
+    const writer = message.writer(alloc);
+    try writer.print(
+        "unexpected key \"{s}\" for \"{s}\" section. expected one of {s}",
+        .{ uk.key, uk.section, expected_buf.items },
+    );
+
+    if (findDidYouMean(uk.key, uk.expected)) |suggestion| {
+        try writer.print("; did you mean \"{s}\"?", .{suggestion});
+    }
+
+    return try message.toOwnedSlice(alloc);
+}
+
+fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.unknown_keys) |uk| {
+        const message = formatUnexpectedKeyMessage(alloc, uk) catch return;
+        const fix_hint = if (findDidYouMean(uk.key, uk.expected)) |suggestion| blk: {
+            break :blk std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{suggestion}) catch null;
+        } else null;
+
+        list.append(.{
+            .rule_id = "SYN001",
+            .severity = .@"error",
+            .message = message,
+            .span = uk.span,
+            .fix_hint = fix_hint,
+        }) catch return;
+    }
+}
 
 // ── SYN008: Duplicated job ID in `needs` ──
 
@@ -89,6 +156,14 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
 
 pub const rules = [_]Rule{
     .{
+        .id = "SYN001",
+        .name = "unknown-key",
+        .description = "mapping contains a key that is not defined in the GitHub Actions workflow schema",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkUnknownKeys,
+    },
+    .{
         .id = "SYN008",
         .name = "duplicate-needs",
         .description = "the same job ID is listed more than once in 'needs'",
@@ -113,6 +188,146 @@ pub const rules = [_]Rule{
 const testing = std.testing;
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
+const workflow_parser = @import("../workflow/parser.zig");
+const yaml_parser_mod = @import("../yaml/parser.zig");
+
+fn parseWorkflowYaml(arena: *std.heap.ArenaAllocator, source: []const u8) !Workflow {
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_node = try parser.parse();
+    return try workflow_parser.parseWorkflow(alloc, yaml_node);
+}
+
+fn lintUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
+    checkUnknownKeys(wf, list);
+}
+
+test "SYN001: unknown job key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minute: 10
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN001", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expect(std.mem.indexOf(u8, diag.message, "timeout-minute") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"job\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"timeout-minutes\"") != null);
+}
+
+test "SYN001: unknown step key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - runs: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "runs") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"step\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"run\"") != null);
+}
+
+test "SYN001: valid workflow produces no diagnostic" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minutes: 10
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN001: matrix keys are not validated" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        custom-key: [value]
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN001: with and env keys are not validated" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\          fetch-depth: 1
+        \\        env:
+        \\          CUSTOM: value
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
 
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };

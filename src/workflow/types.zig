@@ -1,5 +1,8 @@
 const std = @import("std");
 const yaml_types = @import("../yaml/types.zig");
+const schema = @import("schema.zig");
+
+pub const UnknownKey = schema.UnknownKey;
 
 /// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
@@ -363,6 +366,8 @@ pub const Workflow = struct {
     env_meta: ?ScalarValueMetaMap = null,
     concurrency: ?Concurrency = null,
     jobs: []const Job,
+    /// Keys present in workflow mappings but not defined by the GitHub Actions schema.
+    unknown_keys: []const schema.UnknownKey = &.{},
     /// Top-level keys are always at column 1.
     top_level_indent: u32 = 0,
     /// Byte position to insert a new top-level `permissions:` entry (after `on:` line).

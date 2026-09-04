@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const schema = @import("schema.zig");
 const yaml = @import("../yaml/types.zig");
 
 const Node = yaml.Node;
@@ -28,6 +29,8 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         else => return error.InvalidValue,
     };
 
+    var unknown_collector = schema.UnknownKeyCollector.init(allocator);
+
     const trigger = if (root.get("on")) |on_node|
         try parseTrigger(allocator, on_node)
     else if (root.get("true")) |on_node|
@@ -37,7 +40,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         return error.MissingField;
 
     const jobs = if (root.get("jobs")) |jobs_node|
-        try parseJobs(allocator, jobs_node)
+        try parseJobs(allocator, jobs_node, &unknown_collector)
     else
         return error.MissingField;
 
@@ -59,6 +62,11 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         workflow.env = parsed.values;
         workflow.env_meta = parsed.meta;
     }
+
+    try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys);
+    if (root.get("defaults")) |n| try unknown_collector.checkDefaults(n);
+
+    workflow.unknown_keys = try unknown_collector.toOwnedSlice();
 
     // Compute insertion anchors for top-level `permissions:` / `concurrency:`
     // directly after the `on:` entry line.
@@ -273,7 +281,7 @@ fn parseSecretDefs(allocator: std.mem.Allocator, node: Node) ParseError!std.Stri
     return map;
 }
 
-fn parseJobs(allocator: std.mem.Allocator, node: Node) ParseError![]const types.Job {
+fn parseJobs(allocator: std.mem.Allocator, node: Node, collector: ?*schema.UnknownKeyCollector) ParseError![]const types.Job {
     const m = switch (node) {
         .mapping => |m| m,
         else => return error.InvalidValue,
@@ -281,12 +289,12 @@ fn parseJobs(allocator: std.mem.Allocator, node: Node) ParseError![]const types.
 
     const jobs = try allocator.alloc(types.Job, m.entries.len);
     for (m.entries, 0..) |entry, i| {
-        jobs[i] = try parseJob(allocator, entry.key.value, entry.value);
+        jobs[i] = try parseJob(allocator, entry.key.value, entry.value, collector);
     }
     return jobs;
 }
 
-fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError!types.Job {
+fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node, collector: ?*schema.UnknownKeyCollector) ParseError!types.Job {
     const m = switch (node) {
         .mapping => |m| m,
         else => return error.InvalidValue,
@@ -340,7 +348,7 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
     }
 
     if (m.get("steps")) |steps_node| {
-        job.steps = try parseSteps(allocator, steps_node);
+        job.steps = try parseSteps(allocator, steps_node, collector);
     }
 
     if (m.get("permissions")) |n| {
@@ -372,10 +380,26 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
         job.services = try parseServices(allocator, n);
     }
 
+    if (collector) |c| {
+        try c.checkMapping(m, "job", &schema.job_keys);
+        if (m.get("defaults")) |n| try c.checkDefaults(n);
+        if (m.get("strategy")) |n| {
+            if (n == .mapping) try c.checkMapping(n.mapping, "strategy", &schema.strategy_keys);
+        }
+        if (m.get("container")) |n| try c.checkContainer(n, "container");
+        if (m.get("services")) |n| {
+            if (n == .mapping) {
+                for (n.mapping.entries) |entry| {
+                    try c.checkContainer(entry.value, "services");
+                }
+            }
+        }
+    }
+
     return job;
 }
 
-fn parseSteps(allocator: std.mem.Allocator, node: Node) ParseError![]const types.Step {
+fn parseSteps(allocator: std.mem.Allocator, node: Node, collector: ?*schema.UnknownKeyCollector) ParseError![]const types.Step {
     const seq = switch (node) {
         .sequence => |s| s,
         else => return error.InvalidValue,
@@ -383,12 +407,12 @@ fn parseSteps(allocator: std.mem.Allocator, node: Node) ParseError![]const types
 
     const steps = try allocator.alloc(types.Step, seq.items.len);
     for (seq.items, 0..) |item, i| {
-        steps[i] = try parseStep(allocator, item);
+        steps[i] = try parseStep(allocator, item, collector);
     }
     return steps;
 }
 
-fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
+fn parseStep(allocator: std.mem.Allocator, node: Node, collector: ?*schema.UnknownKeyCollector) ParseError!types.Step {
     const m = switch (node) {
         .mapping => |mp| mp,
         else => return error.InvalidValue,
@@ -477,6 +501,8 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
         step.env = parsed.values;
         step.env_meta = parsed.meta;
     }
+
+    if (collector) |c| try c.checkMapping(m, "step", schema.stepExpectedKeys(m));
 
     return step;
 }
@@ -1012,7 +1038,7 @@ test "parseStep with uses" {
         .{ .key = mkScalarS("uses"), .value = mkScalar("actions/checkout@v4"), .span = mkSpan() },
     };
 
-    const step = try parseStep(arena.allocator(), mkMapping(&entries));
+    const step = try parseStep(arena.allocator(), mkMapping(&entries), null);
     try testing.expectEqualStrings("Checkout", step.name.?);
     try testing.expectEqualStrings("actions", step.uses.?.owner.?);
     try testing.expectEqualStrings("checkout", step.uses.?.repo.?);
@@ -1028,7 +1054,7 @@ test "parseStep with run" {
         .{ .key = mkScalarS("shell"), .value = mkScalar("bash"), .span = mkSpan() },
     };
 
-    const step = try parseStep(arena.allocator(), mkMapping(&entries));
+    const step = try parseStep(arena.allocator(), mkMapping(&entries), null);
     try testing.expectEqualStrings("make build", step.run.?);
     try testing.expectEqualStrings("bash", step.shell.?);
 }
@@ -1050,7 +1076,7 @@ test "parseJob with needs" {
         .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "deploy", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "deploy", mkMapping(&entries), null);
     try testing.expectEqualStrings("deploy", job.id);
     try testing.expectEqual(@as(usize, 2), job.needs.len);
     try testing.expectEqualStrings("build", job.needs[0]);
@@ -1066,7 +1092,7 @@ test "parseJob reusable workflow" {
         .{ .key = mkScalarS("secrets"), .value = mkScalar("inherit"), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "call-workflow", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "call-workflow", mkMapping(&entries), null);
     try testing.expectEqualStrings("octo-org/this-repo/.github/workflows/workflow-1.yml@v1", job.uses.?);
     switch (job.secrets.?) {
         .inherit => {},
@@ -1230,7 +1256,7 @@ test "parseStep with timeout and continue-on-error" {
         .{ .key = mkScalarS("env"), .value = mkMapping(&env_entries), .span = mkSpan() },
     };
 
-    const step = try parseStep(arena.allocator(), mkMapping(&entries));
+    const step = try parseStep(arena.allocator(), mkMapping(&entries), null);
     try testing.expectEqual(@as(?u32, 10), step.timeout_minutes);
     try testing.expect(step.continue_on_error);
     try testing.expectEqualStrings("always()", step.if_condition.?);
@@ -1264,7 +1290,7 @@ test "parseJob with timeout and strategy" {
         .{ .key = mkScalarS("strategy"), .value = mkMapping(&strategy_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries), null);
     try testing.expectEqual(@as(?u32, 30), job.timeout_minutes);
     try testing.expect(job.continue_on_error);
     try testing.expectEqualStrings("success()", job.if_condition.?);
@@ -1286,7 +1312,7 @@ test "parseStep captures if_condition_meta" {
         },
     };
 
-    const step = try parseStep(arena.allocator(), mkMapping(&entries));
+    const step = try parseStep(arena.allocator(), mkMapping(&entries), null);
     try testing.expect(step.if_condition_meta != null);
     try testing.expectEqual(@as(usize, 4), step.if_condition_meta.?.value_span.start_byte);
     try testing.expectEqual(@as(usize, 32), step.if_condition_meta.?.value_span.end_byte);
@@ -1313,7 +1339,7 @@ test "parseJob captures if_condition_meta with double-quoted style" {
         },
     };
 
-    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries), null);
     try testing.expect(job.if_condition_meta != null);
     try testing.expectEqual(@as(usize, 10), job.if_condition_meta.?.value_span.start_byte);
     try testing.expectEqual(yaml.ScalarStyle.double_quoted, job.if_condition_meta.?.style);
@@ -1369,7 +1395,7 @@ test "parseJob with container as scalar" {
         .{ .key = mkScalarS("container"), .value = mkScalar("node:14"), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries), null);
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expect(job.container.?.credentials == null);
 }
@@ -1398,7 +1424,7 @@ test "parseJob with container credentials" {
         .{ .key = mkScalarS("container"), .value = mkMapping(&container_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries), null);
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expectEqualStrings("myuser", job.container.?.credentials.?.username.?);
     try testing.expectEqualStrings("mypassword", job.container.?.credentials.?.password.?);
@@ -1431,7 +1457,7 @@ test "parseJob with service credentials" {
         .{ .key = mkScalarS("services"), .value = mkMapping(&services_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries), null);
     try testing.expectEqual(@as(usize, 1), job.services.len);
     try testing.expectEqualStrings("redis", job.services[0].name);
     try testing.expectEqualStrings("redis", job.services[0].image.?);
@@ -1601,7 +1627,7 @@ test "parseJob with env and concurrency and with" {
         .{ .key = mkScalarS("permissions"), .value = mkMapping(&perm_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries), null);
     try testing.expectEqualStrings("true", job.env.?.get("CI").?);
     try testing.expect(job.env_meta != null);
     try testing.expectEqual(yaml.ScalarStyle.plain, job.env_meta.?.get("CI").?.style);
