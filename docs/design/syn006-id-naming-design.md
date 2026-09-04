@@ -64,8 +64,8 @@ rename the ID to start with a letter or _ and use only letters, digits, hyphens,
 
 | フィールド | 型 | ソース |
 |-----------|-----|--------|
-| `Job.id_span` | `Span` | `jobs` マッピングのキー token span |
-| `Step.id_span` | `?Span` | `id:` scalar の value span |
+| `Job.id_span` | `?Span` | `jobs` マッピングのキー token span |
+| `Step.id_value_span` | `?Span` | `id:` scalar の value span |
 | `Job.needs_spans` | `[]const Span` | `needs` の各エントリの value span（`needs` と並列） |
 
 `needs_spans` が空（手組みの Job など）のときは `job.span` にフォールバックする。

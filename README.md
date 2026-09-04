@@ -145,9 +145,9 @@ Dependabot cooldown configuration, insecure external code execution settings.
 
 Deprecated or retired `runs-on:` label detection.
 
-### Syntax (3 rules)
+### Syntax (4 rules)
 
-Job/step ID naming, duplicated job IDs in `needs`, mutually exclusive event filters specified together.
+Duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, mutually exclusive event filters specified together.
 
 ## Configuration
 

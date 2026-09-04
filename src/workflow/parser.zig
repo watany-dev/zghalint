@@ -292,8 +292,7 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, id_span: yaml.Span, no
         else => return error.InvalidValue,
     };
 
-    var job = types.Job{ .id = id };
-    job.id_span = id_span;
+    var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
     job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
@@ -403,7 +402,7 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
         switch (id_node) {
             .scalar => |s| {
                 step.id = s.value;
-                step.id_span = s.span;
+                step.id_value_span = s.span;
             },
             else => {},
         }
@@ -856,8 +855,8 @@ test "parseWorkflow minimal" {
     try testing.expectEqual(types.EventType.push, wf.on.events[0].event);
     try testing.expectEqual(@as(usize, 1), wf.jobs.len);
     try testing.expectEqualStrings("build", wf.jobs[0].id);
-    try testing.expectEqual(@as(usize, 20), wf.jobs[0].id_span.start_byte);
-    try testing.expectEqual(@as(usize, 25), wf.jobs[0].id_span.end_byte);
+    try testing.expectEqual(@as(usize, 20), wf.jobs[0].id_span.?.start_byte);
+    try testing.expectEqual(@as(usize, 25), wf.jobs[0].id_span.?.end_byte);
     try testing.expectEqualStrings("ubuntu-latest", wf.jobs[0].runs_on.?);
     try testing.expectEqual(@as(usize, 1), wf.jobs[0].steps.len);
     try testing.expectEqualStrings("echo hi", wf.jobs[0].steps[0].run.?);
@@ -1267,8 +1266,8 @@ test "parseStep with timeout and continue-on-error" {
     try testing.expect(step.continue_on_error);
     try testing.expectEqualStrings("always()", step.if_condition.?);
     try testing.expectEqualStrings("step1", step.id.?);
-    try testing.expectEqual(@as(usize, 50), step.id_span.?.start_byte);
-    try testing.expectEqual(@as(usize, 55), step.id_span.?.end_byte);
+    try testing.expectEqual(@as(usize, 50), step.id_value_span.?.start_byte);
+    try testing.expectEqual(@as(usize, 55), step.id_value_span.?.end_byte);
     try testing.expectEqualStrings("./src", step.working_directory.?);
     try testing.expectEqualStrings("value", step.with.?.get("key").?);
     try testing.expectEqualStrings("bar", step.env.?.get("FOO").?);
