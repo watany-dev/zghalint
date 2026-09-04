@@ -1,66 +1,99 @@
-# 実施ロードマップ（2026-09-04 時点）
+# 実施ロードマップ（2026-09-04 更新）
 
-オープンな PR 7 件・issue 46 件（親 #55 + sub-issue 45 件）を、main の実装状況と突き合わせて
-棚卸しした結果と、以後の実施順序を示す。
+オープンな PR / issue を main の実装状況と突き合わせて棚卸しし、以後の実施順序を示す。
+
+## 0. 前版からの差分（Phase 0「整理」は完了）
+
+前版で挙げた棚卸しは全て反映済み。
+
+| 項目 | 結果 |
+|---|---|
+| #8 / #6 / #11 / #115 | close 済み |
+| #25 | close の上、内容は #125 で reland 済み（`Config.strings_arena` による use-after-free 解消、`isValidEdit`、PBT の xfail 3 件解除）→ main `e2cb1f3` |
+| #121（SYN003） | マージ済み → `9509e66`。#58 も close |
+| #93 / #94 | close 済み。follow-up として #124（curated scalar overlay）と #129（T4 overlay 接続）を起票済み |
+
+したがって残作業は Phase 1 以降と、下記 §2 の新規案件。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数（`docs/rules.md`） | 56（SYN001/002/004/005/006/008/012、EXPR017 を含む） |
-| #55 actionlint parity | 53 sub-issue 中 10 完了（#56 #57 #59 #60 #61 #63 #68 #80 #81 #82） |
-| 型検査エンジン | T0〜T3 実装済み（#116）。T4（overlay 接続）が未着手 |
-| PBT（`tests/pbt/`） | xfail 3 件が残存（config override 2 件、`--fix` クラッシュ 1 件） |
+| ルール数（`docs/rules.md`） | 58（SYN001〜006 / 008 / 012、EXPR017 を含む） |
+| #55 actionlint parity | 53 sub-issue 中 13 完了（#56 #57 #58 #59 #60 #61 #63 #68 #80 #81 #82 #93 #94） |
+| 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129 |
+| PBT（`tests/pbt/`） | xfail 0 件（#125 で解消） |
+| オープン PR | 4 件（#123 #126 #127 #128）+ 本 PR #130 |
 
-## 2. 閉じてよい PR / issue
+## 2. 最優先: プレーンスカラーの切り詰め（未起票・要 issue）
 
-### PR
+Phase 1 の SEC002 拡充より前に潰すべき欠陥が YAML トークナイザにある。
 
-| PR | 判定 | 理由 |
-|---|---|---|
-| #8 `fix: resolve memory leak in lintFile()` | **close** | base が削除済みの `dev` ブランチ。3 月時点の 18 コミット混在で `dirty`。lintFile は以後大きく書き換わっており再利用不可 |
-| #115 `docs: 式の静的型検査エンジンの設計` | **close（superseded）** | 同内容の `docs/adr/0006-expr-static-typecheck.md` と `docs/design/expr-static-typecheck-design.md` は #116 で main に入っている |
-| #11 `add property-based fuzz tests` | **close** | main と競合。PBT は Python/Hypothesis（`tests/pbt/`、CI の Property-Based Tests ジョブ）で採用済みで、`docs/design/pbt-strategy.md` が基準文書。`std.testing.fuzz` を入れるなら別途小さな PR で再提案 |
-| #6 `perf: add benchmarks, optimize checkCyclicNeeds` | **close** | main と競合。`engine.run` の sort 削除は挙動変更で、ベンチ対象のワークフロー規模（50 job）は実運用で稀。必要になったら bench のみ再作成 |
-| #25 `fix(fix/engine): drop edits with invalid byte ranges` | **close → 再移植** | 内容は今も有効（`main.loadConfig` が `source` を解放した後も `Config` がその slice を保持する use-after-free と、`Edit` 値域検証の欠如は main に残っている）。ただしブランチが競合するため、main から新規ブランチで作り直す。ロードマップ Phase 0 の P0 |
-| #121 `feat(SYN003)` | **残す（rebase 必須）** | CI は緑だが SYN001/004/005 マージ後の main と競合。rebase して取り込めば #58 が閉じる |
+`src/yaml/tokenizer.zig` の `scanPlainScalar` は `,` `[` `]` `{` `}` に当たると常にスカラーを打ち切る。
+これらが指示子になるのは YAML の flow context の中だけで、ブロックスタイルの値では本文の一部である。
+結果、引用符で囲っていない `run:` / `if:` の値が途中で失われる。
 
-### issue
+```
+in : contains(github.event.issue.title, 'x')
+out: contains(github.event.issue.title
+in : npm run build -- --flag [x]
+out: npm run build -- --flag
+```
 
-| issue | 判定 | 理由 |
-|---|---|---|
-| #94 基盤: 式の静的型検査エンジンの設計（ADR） | **close（completed）** | ADR-0006 と設計書、エンジン本体（T0〜T3）が main にある。残る T4 は #86〜#90 側で扱う |
-| #93 EXPR017 比較演算子の型不整合 | **close（completed）** | EXPR017 は #116 で実装済み（`docs/rules.md` 掲載）。ADR D3 で「`github.event` 配下は any」と決めたため、`github.event.issue.number == 'foo'` は仕様上検出しない。到達範囲拡大は ADR の follow-up（curated scalar overlay）として別 issue を切る |
+影響は誤検出ではなく **検出漏れ**。実ファイルで確認した例:
 
-上記以外の sub-issue は全て未実装で、閉じる対象はない。
+```yaml
+- run: echo "${{ github.event.issue.title }}"   # main では SEC002 が出ない
+```
 
-## 3. ロードマップ
+`run:` の値が `echo "$` に切り詰められ、式がルールに届いていない。
+`run: "..."`（引用）と `run: |`（ブロックスカラー）では正しく検出されるため、
+既存のインラインテストはすべて Step 構造体を直接組み立てており、この経路を通っていない。
+
+- 対応 1（暫定）: `${{ ... }}` を丸ごと読み飛ばす。PR #126 / #127 に同等の修正が含まれており、どちらかのマージで解消する
+- 対応 2（本命）: flow depth を持ち、flow context の中でのみ `,` `[` `{` を指示子として扱う。`run:` 本文のカンマや角括弧全般に効く
+- 併せて: 実ワークフローファイルを入力とする E2E テスト（`tests/` に fixture を置き `zghalint` を通す）を追加する。ユニットテストだけではこの層を検証できない
+
+対応 2 と E2E テストは issue を起票して Phase 1 の先頭に置く。
+
+なお、この確認中に診断の行 / 列がすべて `0:0` になる事象も観測している（`run:` 由来の SEC002 など）。別件として切り出す。
+
+## 3. オープン PR の裁き方
+
+3 本（#126 #127 #128）が同じ `security.zig` の SEC002 周辺を触るため、マージ順を固定しないと三つ巴で競合する。
+
+| PR | issue | CI | main との併合 | 判定 |
+|---|---|---|---|---|
+| #123 SYN007 env 変数名 | #62 | 緑 | clean | **そのままマージ可**。他 PR と重複なし（`syntax.zig` / `parser.zig` / `types.zig`） |
+| #127 SEC002 object filter | #102 | — | clean（main の 2 コミット遅れ） | **最初にマージ**。文字列一致だった `stringContainsContext` をセグメント単位の経路照合に置き換える基盤変更を含む |
+| #126 SEC002 untrusted inputs 拡充 | #101 | — | clean（同上） | **#127 の後に rebase**。#127 と同じトークナイザ修正と前方一致ロジックを重複して持つので、rebase 時に `dangerous_contexts` への追加エントリだけを残す |
+| #128 SEC002 github-script `script:` | #103 | — | clean（同上） | **#126 の後に rebase**。`checkScriptInjection` の書き換えが #127 と衝突する |
+
+補足:
+
+- #126 と #127 は独立に作られたため、`src/yaml/tokenizer.zig` に**ほぼ同一の** `${{ }}` 読み飛ばし修正が両方入っている（§2 の対応 1）。先にマージした側が採用され、もう一方は rebase で落とす
+- #127 の経路照合は `github.event.commits[0].message` と `github.event.commits.*.message` を同一視し、文字列リテラルや `steps.meta.outputs.github.head_ref` のような別コンテキスト配下の同名パスを除外する。#126 の前方一致より厳密なので、こちらを土台にする
+- いずれも main より 2 コミット遅れているため、マージ前に rebase する
+
+## 4. ロードマップ
 
 原則:
 
 - 1 issue = 1 PR = 1 ルール。TDD（Red → Green → Refactor）、完了時に `docs/rules.md` へ行追加
-- 同一ファイル（`types.zig` / `parser.zig`）を触る issue は直列にし、rebase 地獄を避ける
+- 同一ファイル（`types.zig` / `parser.zig` / `security.zig`）を触る issue は直列にし、rebase 地獄を避ける
 - 誤検出ゼロを優先。不確かなものは検出しない（ADR-0006 の方針を全ルールに適用）
 
-### Phase 0: 整理（〜1 週間）
+### Phase 1: 依存なし・小粒ルール
 
-| 順 | 作業 | 備考 |
-|---|---|---|
-| 1 | §2 の PR / issue を閉じる | |
-| 2 | #121 を rebase してマージ → #58 close | SYN 系で残る最後の「基盤なし」issue |
-| 3 | #25 を main から再移植 | `Config.strings_arena` + `isValidEdit` + xfail 3 件解除。`docs/design/pbt-strategy.md` §4 と `docs/codebase-improvements.md` を同時更新 |
-| 4 | #55 本文の進捗表を更新、Phase ごとの milestone を作る | |
+`types.zig` を触らず、既存の走査ループにチェックを足すだけで済むもの。
 
-### Phase 1: 依存なし・小粒ルール（A / C / D / E / F の単独項目）
-
-`types.zig` を触らず、既存の走査ループにチェックを足すだけで済むもの。セキュリティ価値の高い SEC002 拡張を先頭に置く。
-
-| 順 | issue | ルール | 触る主なファイル |
+| 順 | issue | ルール | 状態 / 触る主なファイル |
 |---|---|---|---|
-| 1 | #101 | SEC002 untrusted inputs 拡充 | `security.zig` の `dangerous_contexts`（現在 13 件 → actionlint の 18 件） |
-| 2 | #103 | SEC002 github-script の `script:` | `security.zig` |
-| 3 | #102 | SEC002 object filter `.*` | `security.zig`（式エンジンの walk が `foo.*` を扱えるので流用） |
-| 4 | #62 | SYN007 env 変数名 | `syntax.zig` |
+| 0 | 未起票 | プレーンスカラーの flow context 対応 + E2E テスト | §2。他の全ルールの検出率に効くので最優先 |
+| 1 | #102 | SEC002 object filter `.*` | **PR #127 レビュー中** |
+| 2 | #101 | SEC002 untrusted inputs 拡充 | **PR #126 要 rebase** |
+| 3 | #103 | SEC002 github-script の `script:` | **PR #128 要 rebase** |
+| 4 | #62 | SYN007 env 変数名 | **PR #123 マージ可** |
 | 5 | #79 | PERM003 permissions スコープ / レベル | `permissions.zig` / `parser.zig` の `parsePermissions` |
 | 6 | #95 | DEP003 `uses` フォーマット | `types.zig` の `ActionRef.parse` 近傍 |
 | 7 | #78 | BP004 拡張 shell 名 | `best_practices.zig` |
@@ -69,7 +102,7 @@
 | 10 | #83 | EXPR007 拡張 定数条件 / `${{ }}` 外の文字 | `expressions.zig` |
 | 11 | #104 | RW001 workflow_call inputs type | `parser.zig` の `parseInputDefs`（単一ファイルで完結する RW 唯一の項目） |
 
-### Phase 2: トリガー `on:` 群（B）
+### Phase 2: トリガー `on:` 群
 
 `ScheduleEntry` / `EventConfig` の拡張を伴うため直列。イベント名テーブルと cron パーサを先に作り、後続で再利用する。
 
@@ -82,9 +115,9 @@
 | 5 | #70 | SYN014 CRON 構文 | cron パーサを `util.zig` か `workflow/cron.zig` に新設 |
 | 6 | #71 | SYN015 5 分未満 | #70 のパーサ |
 | 7 | #72 | SYN016 timezone | `ScheduleEntry.timezone` 追加 + IANA 名テーブル（`scripts/` で生成、`src/rules/data/` に置く） |
-| 8 | #73 | SYN017 workflow_dispatch inputs | ADR-0006 の `github.event.inputs` overlay と同時に実装 |
+| 8 | #73 | SYN017 workflow_dispatch inputs | #129 の `github.event.inputs` overlay と同時に実装 |
 
-### Phase 3: job / step / matrix（C）
+### Phase 3: job / step / matrix
 
 `Strategy` 型の拡張（matrix 軸・include / exclude の保持）が起点。
 
@@ -95,7 +128,7 @@
 | 3 | #76 | RUNNER002 未知ラベル | RUNNER001 のラベルデータを既知ラベル一覧に拡張。`.zghalint.yml` に self-hosted ラベル許可設定が要る |
 | 4 | #77 | RUNNER003 ラベル衝突 | #76 |
 
-### Phase 4: contextual typing（D、エンジン T4）
+### Phase 4: contextual typing（エンジン T4 = #129）
 
 各 issue で「存在検証」を実装し、最後に `TypeEnv` overlay へ接続する（ADR-0006 の二重メンテ期間を短くするため Phase 4 内で一気に片付ける）。
 
@@ -106,12 +139,12 @@
 | 3 | #89 | EXPR013 `inputs.<name>` | #73（SYN017 の inputs 構造） |
 | 4 | #87 | EXPR011 `matrix.<key>` | #74（matrix 構造） |
 | 5 | #90 | EXPR014 `secrets.<name>` | #104（workflow_call secrets の定義） |
-| 6 | — | T4: 上記を `expr_check.zig` の overlay に接続し、存在検証をエンジン側に寄せる | #86〜#90 |
+| 6 | #129 | T4: 上記を `expr_check.zig` の overlay に接続し、存在検証をエンジン側に寄せる | #86〜#90 |
 | 7 | #91 | EXPR015 キーごとの context 利用可否 | 式を検証する箇所に「どのキーか」を渡す配線が必要 |
 | 8 | #92 | EXPR016 特殊関数の利用可否 | #91 の配線 |
-| 9 | — | ADR-0006 follow-up: curated scalar overlay（`github.event.issue.number: number` 等） | EXPR017 の到達範囲拡大。#93 close 時に新 issue を切る |
+| 9 | #124 | curated scalar overlay（`github.event.issue.number: number` 等） | EXPR017 の到達範囲拡大 |
 
-### Phase 5: action.yml / reusable workflow（E / G、複数ファイル横断）
+### Phase 5: action.yml / reusable workflow（複数ファイル横断）
 
 「他ファイルを読む」仕組みが共通基盤。`action.yml` ローダーと `workflow_call` ローダーを 1 つのモジュールにまとめる。
 
@@ -131,13 +164,14 @@
 
 | 項目 | 位置づけ |
 |---|---|
-| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。全ルールに影響するので Phase 1 完了後、Phase 2 と並行して着手。`docs/codebase-improvements.md` §7 の yaml/parser 整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
-| `docs/codebase-improvements.md` 優先度 1〜8 | 各 Phase で該当ファイルを触る前に Tidy First で消化する（例: Phase 1 の SEC002 拡張前に「`${{ }}` 式スキャンのイテレータヘルパー」を入れる） |
-| `docs/design/pbt-strategy.md` #3〜#5 | Phase 0 の xfail 解除後、新ルールが増えるたびに detection PBT を横展開する |
-| SEC021 / SC007（ADR-0004 で設計済み・未実装） | #55 の対象外。issue が無いので、着手するなら issue を起票してから Phase 1 の末尾に入れる |
+| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。§2 の flow context 対応と同じ層なので、続けて着手すると手戻りが少ない。`docs/codebase-improvements.md` §7 の yaml/parser 整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
+| `docs/codebase-improvements.md` 優先度 1〜8 | 各 Phase で該当ファイルを触る前に Tidy First で消化する（例: SEC002 拡充の前に「`${{ }}` 式スキャンのイテレータヘルパー」を入れる） |
+| `docs/design/pbt-strategy.md` #3〜#5 | xfail は解消済み。新ルールが増えるたびに detection PBT を横展開する |
+| SEC021 / SC007（ADR-0004 で設計済み・未実装） | #55 の対象外。issue が無いので、着手するなら起票してから Phase 1 の末尾に入れる |
 
-## 4. 進め方の注意
+## 5. 進め方の注意
 
-- Phase 1 は互いに独立なので並列に走らせられる。Phase 2 以降は `types.zig` の拡張を伴うため、同 Phase 内は直列にする
-- Cursor / Claude のエージェント PR は CI 緑でもマージ前に main へ rebase する（#121 と同じ競合を繰り返さない）
+- Phase 1 のうち SEC002 系 3 本は同一ファイルなので §3 の順序を守る。それ以外は並列に走らせられる
+- Phase 2 以降は `types.zig` の拡張を伴うため、同 Phase 内は直列にする
+- エージェント PR は CI 緑でもマージ前に main へ rebase する
 - 各 Phase 完了時に `docs/rules.md` のルール数と #55 の進捗表を更新する
