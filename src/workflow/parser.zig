@@ -295,18 +295,18 @@ fn parseJobs(ctx: *ParseContext, node: Node) ParseError![]const types.Job {
 
     const jobs = try ctx.allocator.alloc(types.Job, m.entries.len);
     for (m.entries, 0..) |entry, i| {
-        jobs[i] = try parseJob(ctx, entry.key.value, entry.value);
+        jobs[i] = try parseJob(ctx, entry.key.value, entry.key.span, entry.value);
     }
     return jobs;
 }
 
-fn parseJob(ctx: *ParseContext, id: []const u8, node: Node) ParseError!types.Job {
+fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) ParseError!types.Job {
     const m = switch (node) {
         .mapping => |m| m,
         else => return error.InvalidValue,
     };
 
-    var job = types.Job{ .id = id };
+    var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
     job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
@@ -421,7 +421,15 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
 
     var step = types.Step{};
     step.span = m.span;
-    step.id = m.getScalar("id");
+    if (m.get("id")) |n| {
+        switch (n) {
+            .scalar => |s| {
+                step.id = s.value;
+                step.id_value_span = s.span;
+            },
+            else => {},
+        }
+    }
     step.name = m.getScalar("name");
     step.run = m.getScalar("run");
     step.shell = m.getScalar("shell");
@@ -1103,7 +1111,7 @@ test "parseJob with needs" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "deploy", mkMapping(&entries));
+    const job = try parseJob(&ctx, "deploy", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("deploy", job.id);
     try testing.expectEqual(@as(usize, 2), job.needs.len);
     try testing.expectEqualStrings("build", job.needs[0]);
@@ -1120,7 +1128,7 @@ test "parseJob reusable workflow" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "call-workflow", mkMapping(&entries));
+    const job = try parseJob(&ctx, "call-workflow", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("octo-org/this-repo/.github/workflows/workflow-1.yml@v1", job.uses.?);
     switch (job.secrets.?) {
         .inherit => {},
@@ -1321,7 +1329,7 @@ test "parseJob with timeout and strategy" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "test", mkMapping(&entries));
+    const job = try parseJob(&ctx, "test", mkSpan(), mkMapping(&entries));
     try testing.expectEqual(@as(?u32, 30), job.timeout_minutes);
     try testing.expect(job.continue_on_error);
     try testing.expectEqualStrings("success()", job.if_condition.?);
@@ -1372,7 +1380,7 @@ test "parseJob captures if_condition_meta with double-quoted style" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "test", mkMapping(&entries));
+    const job = try parseJob(&ctx, "test", mkSpan(), mkMapping(&entries));
     try testing.expect(job.if_condition_meta != null);
     try testing.expectEqual(@as(usize, 10), job.if_condition_meta.?.value_span.start_byte);
     try testing.expectEqual(yaml.ScalarStyle.double_quoted, job.if_condition_meta.?.style);
@@ -1429,7 +1437,7 @@ test "parseJob with container as scalar" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "build", mkMapping(&entries));
+    const job = try parseJob(&ctx, "build", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expect(job.container.?.credentials == null);
 }
@@ -1459,7 +1467,7 @@ test "parseJob with container credentials" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "build", mkMapping(&entries));
+    const job = try parseJob(&ctx, "build", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expectEqualStrings("myuser", job.container.?.credentials.?.username.?);
     try testing.expectEqualStrings("mypassword", job.container.?.credentials.?.password.?);
@@ -1493,7 +1501,7 @@ test "parseJob with service credentials" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "build", mkMapping(&entries));
+    const job = try parseJob(&ctx, "build", mkSpan(), mkMapping(&entries));
     try testing.expectEqual(@as(usize, 1), job.services.len);
     try testing.expectEqualStrings("redis", job.services[0].name);
     try testing.expectEqualStrings("redis", job.services[0].image.?);
@@ -1664,7 +1672,7 @@ test "parseJob with env and concurrency and with" {
     };
 
     var ctx = testCtx(arena.allocator());
-    const job = try parseJob(&ctx, "test", mkMapping(&entries));
+    const job = try parseJob(&ctx, "test", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("true", job.env.?.get("CI").?);
     try testing.expect(job.env_meta != null);
     try testing.expectEqual(yaml.ScalarStyle.plain, job.env_meta.?.get("CI").?.style);
