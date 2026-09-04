@@ -12,10 +12,6 @@ const Span = yaml_types.Span;
 
 // ── SYN006: Invalid job ID / step ID naming ──
 
-fn containsExpression(s: []const u8) bool {
-    return std.mem.indexOf(u8, s, "${{") != null;
-}
-
 fn isValidId(id: []const u8) bool {
     if (id.len == 0) return true;
     const first = id[0];
@@ -27,7 +23,7 @@ fn isValidId(id: []const u8) bool {
 }
 
 fn reportInvalidId(list: *DiagnosticList, what: []const u8, id: []const u8, span: Span) void {
-    if (containsExpression(id)) return;
+    if (std.mem.indexOf(u8, id, "${{") != null) return;
     if (isValidId(id)) return;
 
     const alloc = list.fixAllocator();

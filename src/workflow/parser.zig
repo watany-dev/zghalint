@@ -405,7 +405,7 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
                 step.id = s.value;
                 step.id_span = s.span;
             },
-            else => step.id = m.getScalar("id"),
+            else => {},
         }
     }
     step.name = m.getScalar("name");
@@ -745,27 +745,6 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
     return .{ .values = values, .meta = meta };
 }
 
-fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
-    switch (node) {
-        .sequence => |seq| {
-            const result = try allocator.alloc([]const u8, seq.items.len);
-            for (seq.items, 0..) |item, i| {
-                switch (item) {
-                    .scalar => |s| result[i] = s.value,
-                    else => return error.InvalidValue,
-                }
-            }
-            return result;
-        },
-        .scalar => |s| {
-            const result = try allocator.alloc([]const u8, 1);
-            result[0] = s.value;
-            return result;
-        },
-        else => return error.InvalidValue,
-    }
-}
-
 const ParsedStringArray = struct {
     values: []const []const u8,
     spans: []const yaml.Span,
@@ -796,6 +775,10 @@ fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseErro
         },
         else => return error.InvalidValue,
     }
+}
+
+fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
+    return (try parseStringArrayWithSpans(allocator, node)).values;
 }
 
 // ============================================================
@@ -831,10 +814,6 @@ fn mkScalarS(value: []const u8) yaml.Scalar {
     return .{ .value = value, .style = .plain, .span = mkSpan() };
 }
 
-fn mkScalarSSpan(value: []const u8, span: yaml.Span) yaml.Scalar {
-    return .{ .value = value, .style = .plain, .span = span };
-}
-
 fn mkMapping(entries: []yaml.MappingEntry) Node {
     return .{ .mapping = .{ .entries = entries, .span = mkSpan() } };
 }
@@ -860,7 +839,7 @@ test "parseWorkflow minimal" {
     };
 
     var jobs_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarSSpan("build", mkSpanBytes(20, 25)), .value = mkMapping(&job_entries), .span = mkSpan() },
+        .{ .key = .{ .value = "build", .style = .plain, .span = mkSpanBytes(20, 25) }, .value = mkMapping(&job_entries), .span = mkSpan() },
     };
 
     var root_entries = [_]yaml.MappingEntry{
