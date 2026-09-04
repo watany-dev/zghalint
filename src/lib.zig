@@ -90,6 +90,7 @@ test {
     _ = @import("yaml/parser.zig");
     _ = @import("workflow/types.zig");
     _ = @import("workflow/parser.zig");
+    _ = @import("workflow/type_validation.zig");
     _ = @import("workflow/validator.zig");
     _ = @import("diagnostics.zig");
     _ = @import("rules/engine.zig");
