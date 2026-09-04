@@ -6,8 +6,58 @@ const yaml_types = @import("../yaml/types.zig");
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const Job = engine.Job;
+const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
+
+// ── SYN006: Invalid job ID / step ID naming ──
+
+fn containsExpression(s: []const u8) bool {
+    return std.mem.indexOf(u8, s, "${{") != null;
+}
+
+fn isValidId(id: []const u8) bool {
+    if (id.len == 0) return true;
+    const first = id[0];
+    if (first != '_' and !std.ascii.isAlphabetic(first)) return false;
+    for (id[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return false;
+    }
+    return true;
+}
+
+fn reportInvalidId(list: *DiagnosticList, what: []const u8, id: []const u8, span: Span) void {
+    if (containsExpression(id)) return;
+    if (isValidId(id)) return;
+
+    const alloc = list.fixAllocator();
+    const message = std.fmt.allocPrint(
+        alloc,
+        "invalid {s} ID \"{s}\". {s} ID must start with a letter or _ and contain only alphanumeric characters, -, or _",
+        .{ what, id, what },
+    ) catch return;
+
+    list.append(.{
+        .rule_id = "SYN006",
+        .severity = .@"error",
+        .message = message,
+        .span = span,
+        .fix_hint = "rename the ID to start with a letter or _ and use only letters, digits, hyphens, and underscores",
+    }) catch return;
+}
+
+fn checkInvalidJobId(job: *const Job, diag_list: *DiagnosticList) void {
+    reportInvalidId(diag_list, "job", job.id, job.id_span);
+    for (job.needs) |need| {
+        reportInvalidId(diag_list, "job", need, job.span);
+    }
+}
+
+fn checkInvalidStepId(step: *const Step, diag_list: *DiagnosticList) void {
+    const id = step.id orelse return;
+    const span = step.id_span orelse step.span;
+    reportInvalidId(diag_list, "step", id, span);
+}
 
 // ── SYN008: Duplicated job ID in `needs` ──
 
@@ -89,6 +139,15 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
 
 pub const rules = [_]Rule{
     .{
+        .id = "SYN006",
+        .name = "invalid-id-naming",
+        .description = "job ID and step ID must start with a letter or _ and contain only alphanumeric characters, -, or _",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_job = &checkInvalidJobId,
+        .check_step = &checkInvalidStepId,
+    },
+    .{
         .id = "SYN008",
         .name = "duplicate-needs",
         .description = "the same job ID is listed more than once in 'needs'",
@@ -113,6 +172,115 @@ pub const rules = [_]Rule{
 const testing = std.testing;
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
+
+fn dummySpan(start_byte: usize, end_byte: usize) Span {
+    return .{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 1,
+        .start_byte = start_byte,
+        .end_byte = end_byte,
+    };
+}
+
+test "SYN006: job ID starting with a digit is reported" {
+    const job = Job{
+        .id = "1-build",
+        .id_span = dummySpan(10, 17),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkInvalidJobId(&job, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN006", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expect(std.mem.startsWith(u8, diag.message, "invalid job ID \"1-build\""));
+    try testing.expectEqual(@as(usize, 10), diag.span.start_byte);
+}
+
+test "SYN006: job ID with a space is reported" {
+    const job = Job{
+        .id = "build job",
+        .id_span = dummySpan(20, 29),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkInvalidJobId(&job, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.startsWith(u8, diags.get(0).message, "invalid job ID \"build job\""));
+}
+
+test "SYN006: invalid needs entry is reported" {
+    const job = Job{
+        .id = "deploy",
+        .needs = &.{"1-build"},
+        .span = dummySpan(40, 80),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkInvalidJobId(&job, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.startsWith(u8, diags.get(0).message, "invalid job ID \"1-build\""));
+    try testing.expectEqual(@as(usize, 40), diags.get(0).span.start_byte);
+}
+
+test "SYN006: step ID with a dot is reported" {
+    const step = Step{
+        .id = "my.step",
+        .id_span = dummySpan(50, 57),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkInvalidStepId(&step, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN006", diag.rule_id);
+    try testing.expect(std.mem.startsWith(u8, diag.message, "invalid step ID \"my.step\""));
+    try testing.expectEqual(@as(usize, 50), diag.span.start_byte);
+}
+
+test "SYN006: valid job and step IDs produce no diagnostic" {
+    const job = Job{
+        .id = "build-and-test",
+        .id_span = dummySpan(1, 14),
+    };
+    var job_diags = DiagnosticList.init(testing.allocator);
+    defer job_diags.deinit();
+    checkInvalidJobId(&job, &job_diags);
+    try testing.expectEqual(@as(usize, 0), job_diags.len());
+
+    const step = Step{
+        .id = "_setup_node",
+        .id_span = dummySpan(30, 41),
+    };
+    var step_diags = DiagnosticList.init(testing.allocator);
+    defer step_diags.deinit();
+    checkInvalidStepId(&step, &step_diags);
+    try testing.expectEqual(@as(usize, 0), step_diags.len());
+}
+
+test "SYN006: step ID with expression is skipped" {
+    const step = Step{
+        .id = "${{ github.run_id }}",
+        .id_span = dummySpan(60, 80),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkInvalidStepId(&step, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
 
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };

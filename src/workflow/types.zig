@@ -259,6 +259,8 @@ pub const Strategy = struct {
 /// A single workflow step
 pub const Step = struct {
     id: ?[]const u8 = null,
+    /// Span of the `id:` scalar value in source YAML.
+    id_span: ?yaml_types.Span = null,
     name: ?[]const u8 = null,
     uses: ?ActionRef = null,
     run: ?[]const u8 = null,
@@ -320,6 +322,8 @@ pub const Service = struct {
 /// A workflow job
 pub const Job = struct {
     id: []const u8,
+    /// Span of the job ID key under `jobs:` in source YAML.
+    id_span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     name: ?[]const u8 = null,
     runs_on: ?[]const u8 = null,

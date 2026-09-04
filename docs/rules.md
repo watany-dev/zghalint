@@ -123,6 +123,7 @@ Validate the structural correctness of the workflow definition itself.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
+| SYN006 | invalid-id-naming | error | Job ID and step ID must start with a letter or `_` and contain only alphanumeric characters, `-`, or `_` |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 
