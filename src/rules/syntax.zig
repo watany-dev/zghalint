@@ -212,43 +212,37 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
 
 // ── SYN007: Invalid environment variable name ──
 
-/// Characters the runner cannot accept in an environment variable name: `=`
-/// and `&` break the `NAME=value` form written to the environment file, and a
-/// space cannot appear in a shell variable name.
-const invalid_env_name_chars = "&= ";
+fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
+    for (env_keys) |key| {
+        if (key.name.len == 0) {
+            list.append(.{
+                .rule_id = "SYN007",
+                .severity = .@"error",
+                .message = "environment variable name must not be empty",
+                .span = key.span,
+                .fix_hint = "give the environment variable a name, or remove the entry",
+            }) catch return;
+            continue;
+        }
 
-fn reportEnvName(list: *DiagnosticList, key: workflow_types.EnvKey) void {
-    if (key.name.len == 0) {
+        // `=` and `&` break the `NAME=value` form written to the environment
+        // file, and a space cannot appear in a shell variable name.
+        if (std.mem.indexOfAny(u8, key.name, "&= ") == null) continue;
+
+        const message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "environment variable name \"{s}\" is invalid. '&', '=' and spaces must not be contained",
+            .{key.name},
+        ) catch return;
+
         list.append(.{
             .rule_id = "SYN007",
             .severity = .@"error",
-            .message = "environment variable name must not be empty",
+            .message = message,
             .span = key.span,
-            .fix_hint = "give the environment variable a name, or remove the entry",
+            .fix_hint = "rename the environment variable so it contains no '&', '=', or space",
         }) catch return;
-        return;
     }
-
-    if (std.mem.indexOfAny(u8, key.name, invalid_env_name_chars) == null) return;
-
-    const alloc = list.fixAllocator();
-    const message = std.fmt.allocPrint(
-        alloc,
-        "environment variable name \"{s}\" is invalid. '&', '=' and spaces must not be contained",
-        .{key.name},
-    ) catch return;
-
-    list.append(.{
-        .rule_id = "SYN007",
-        .severity = .@"error",
-        .message = message,
-        .span = key.span,
-        .fix_hint = "rename the environment variable so it contains no '&', '=', or space",
-    }) catch return;
-}
-
-fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
-    for (env_keys) |key| reportEnvName(list, key);
 }
 
 fn checkWorkflowEnvNames(wf: *const Workflow, list: *DiagnosticList) void {

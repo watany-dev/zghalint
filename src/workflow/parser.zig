@@ -831,8 +831,8 @@ fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const typ
     };
 
     const keys = try allocator.alloc(types.EnvKey, m.entries.len);
-    for (m.entries, 0..) |entry, i| {
-        keys[i] = .{ .name = entry.key.value, .span = entry.key.span };
+    for (m.entries, keys) |entry, *key| {
+        key.* = .{ .name = entry.key.value, .span = entry.key.span };
     }
     return keys;
 }
