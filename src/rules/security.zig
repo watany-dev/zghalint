@@ -42,19 +42,38 @@ pub const Rule = engine.Rule;
 // Dangerous GitHub contexts that can be controlled by users
 // ============================================================
 
+/// Untrusted inputs that an attacker can control freely.
+///
+/// Entries are matched as prefixes at identifier boundaries (see
+/// `stringContainsContext`), so a container path such as `github.event.commits`
+/// also covers element accesses like `github.event.commits[0].message` and
+/// `github.event.commits.*.author.email`.
 const dangerous_contexts = [_][]const u8{
+    // Issues / discussions
     "github.event.issue.title",
     "github.event.issue.body",
-    "github.event.pull_request.title",
-    "github.event.pull_request.body",
+    "github.event.discussion.title",
+    "github.event.discussion.body",
+    // Comments and reviews
     "github.event.comment.body",
     "github.event.review.body",
+    "github.event.review_comment.body",
+    "github.event.discussion_comment.body",
+    // Pull requests
+    "github.event.pull_request.title",
+    "github.event.pull_request.body",
+    "github.event.pull_request.head.ref",
+    "github.event.pull_request.head.label",
+    "github.event.pull_request.head.repo.default_branch",
     "github.head_ref",
+    // Commits (container prefixes cover `[*].message`, `[*].author.name`, ...)
     "github.event.commits",
     "github.event.head_commit.message",
     "github.event.head_commit.author.email",
     "github.event.head_commit.author.name",
+    // Pages (container prefix covers `[*].page_name`)
     "github.event.pages",
+    // workflow_run
     "github.event.workflow_run.head_branch",
 };
 
@@ -2024,6 +2043,81 @@ test "SEC002: commit message in run block" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+/// Build a single-step workflow whose `run:` body is `body`, and report whether
+/// SEC002 fires for it.
+fn runBodyTriggersSec002(body: []const u8) bool {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = body },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC002");
+}
+
+test "SEC002: untrusted inputs from the extended context table" {
+    const bodies = [_][]const u8{
+        "echo \"${{ github.event.review_comment.body }}\"",
+        "echo \"${{ github.event.discussion.title }}\"",
+        "echo \"${{ github.event.discussion.body }}\"",
+        "echo \"${{ github.event.discussion_comment.body }}\"",
+        "git checkout \"${{ github.event.pull_request.head.ref }}\"",
+        "echo \"${{ github.event.pull_request.head.label }}\"",
+        "echo \"${{ github.event.pull_request.head.repo.default_branch }}\"",
+    };
+    for (bodies) |body| {
+        try testing.expect(runBodyTriggersSec002(body));
+    }
+}
+
+test "SEC002: element access under a container context" {
+    // `github.event.commits` / `github.event.pages` are stored as container
+    // prefixes, so their element accesses must be caught without dedicated
+    // entries.
+    const bodies = [_][]const u8{
+        "echo \"${{ github.event.commits[0].message }}\"",
+        "echo \"${{ github.event.commits[0].author.email }}\"",
+        "echo \"${{ github.event.commits[0].author.name }}\"",
+        "echo \"${{ join(github.event.commits.*.message, ' ') }}\"",
+        "echo \"${{ join(github.event.pages.*.page_name, ' ') }}\"",
+    };
+    for (bodies) |body| {
+        try testing.expect(runBodyTriggersSec002(body));
+    }
+}
+
+test "SEC002: trusted pull_request fields (no false positive)" {
+    const bodies = [_][]const u8{
+        "echo \"${{ github.event.pull_request.head.sha }}\"",
+        "echo \"${{ github.event.pull_request.number }}\"",
+        "echo \"${{ github.event.discussion.number }}\"",
+    };
+    for (bodies) |body| {
+        try testing.expect(!runBodyTriggersSec002(body));
+    }
+}
+
+test "SEC002: untrusted input passed through env is not reported" {
+    const eng = engine.Engine.init(&security_rules);
+    var env = std.StringArrayHashMap([]const u8).init(testing.allocator);
+    defer env.deinit();
+    try env.put("BRANCH", "${{ github.event.pull_request.head.ref }}");
+    const steps = [_]Step{
+        .{ .run = "echo \"Branch $BRANCH\"", .env = env },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
 // --- SEC003: Hardcoded secrets ---
