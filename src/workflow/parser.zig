@@ -64,7 +64,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         workflow.env_meta = parsed.meta;
     }
 
-    try unknown_collector.checkWorkflow(root);
+    try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys, &.{schema.workflow_on_key_alias});
     if (root.get("defaults")) |n| try unknown_collector.checkDefaults(n);
 
     workflow.unknown_keys = try unknown_collector.toOwnedSlice();
@@ -382,10 +382,10 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node, collector:
     }
 
     if (collector) |c| {
-        try c.checkMapping(m, "job", &schema.job_keys);
+        try c.checkMapping(m, "job", &schema.job_keys, &.{});
         if (m.get("defaults")) |n| try c.checkDefaults(n);
         if (m.get("strategy")) |n| {
-            if (n == .mapping) try c.checkMapping(n.mapping, "strategy", &schema.strategy_keys);
+            if (n == .mapping) try c.checkMapping(n.mapping, "strategy", &schema.strategy_keys, &.{});
         }
         if (m.get("container")) |n| try c.checkContainer(n, "container");
         if (m.get("services")) |n| {
@@ -503,7 +503,7 @@ fn parseStep(allocator: std.mem.Allocator, node: Node, collector: ?*schema.Unkno
         step.env_meta = parsed.meta;
     }
 
-    if (collector) |c| try c.checkMapping(m, "step", schema.stepExpectedKeys(m));
+    if (collector) |c| try c.checkMapping(m, "step", schema.stepExpectedKeys(m), &.{});
 
     return step;
 }

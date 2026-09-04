@@ -10,14 +10,14 @@ pub const UnknownKey = struct {
 };
 
 pub const workflow_keys = [_][]const u8{
+    "concurrency",
+    "defaults",
+    "env",
+    "jobs",
     "name",
-    "run-name",
     "on",
     "permissions",
-    "env",
-    "defaults",
-    "concurrency",
-    "jobs",
+    "run-name",
 };
 
 /// YAML 1.1 may parse a bare `on:` key as boolean `true`. Accept it during
@@ -26,68 +26,68 @@ pub const workflow_keys = [_][]const u8{
 pub const workflow_on_key_alias = "true";
 
 pub const job_keys = [_][]const u8{
+    "concurrency",
+    "container",
+    "continue-on-error",
+    "defaults",
+    "env",
+    "environment",
+    "if",
     "name",
     "needs",
-    "runs-on",
-    "permissions",
-    "environment",
-    "concurrency",
     "outputs",
-    "env",
-    "defaults",
-    "if",
-    "steps",
-    "timeout-minutes",
-    "strategy",
-    "continue-on-error",
-    "container",
+    "permissions",
+    "runs-on",
+    "secrets",
     "services",
+    "snapshot",
+    "steps",
+    "strategy",
+    "timeout-minutes",
     "uses",
     "with",
-    "secrets",
-    "snapshot",
 };
 
 pub const step_action_keys = [_][]const u8{
+    "continue-on-error",
+    "env",
     "id",
     "if",
     "name",
-    "env",
-    "continue-on-error",
     "timeout-minutes",
     "uses",
     "with",
 };
 
 pub const step_run_keys = [_][]const u8{
+    "continue-on-error",
+    "env",
     "id",
     "if",
     "name",
-    "env",
-    "continue-on-error",
-    "timeout-minutes",
     "run",
     "shell",
+    "timeout-minutes",
     "working-directory",
 };
 
 pub const step_all_keys = [_][]const u8{
+    "continue-on-error",
+    "env",
     "id",
     "if",
     "name",
-    "env",
-    "continue-on-error",
+    "run",
+    "shell",
     "timeout-minutes",
     "uses",
     "with",
-    "run",
-    "shell",
     "working-directory",
 };
 
 pub const strategy_keys = [_][]const u8{
-    "matrix",
     "fail-fast",
+    "matrix",
     "max-parallel",
 };
 
@@ -101,21 +101,23 @@ pub const defaults_run_keys = [_][]const u8{
 };
 
 pub const container_keys = [_][]const u8{
-    "image",
     "credentials",
     "env",
+    "image",
+    "options",
     "ports",
     "volumes",
-    "options",
 };
 
-pub const service_container_keys = blk: {
-    @setEvalBranchQuota(10_000);
-    var keys: [container_keys.len + 2][]const u8 = undefined;
-    @memcpy(keys[0..container_keys.len], &container_keys);
-    keys[container_keys.len] = "command";
-    keys[container_keys.len + 1] = "entrypoint";
-    break :blk keys;
+pub const service_container_keys = [_][]const u8{
+    "command",
+    "credentials",
+    "entrypoint",
+    "env",
+    "image",
+    "options",
+    "ports",
+    "volumes",
 };
 
 pub fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
@@ -157,19 +159,6 @@ pub const UnknownKeyCollector = struct {
         m: yaml.Mapping,
         section: []const u8,
         allowed: []const []const u8,
-    ) !void {
-        try self.checkMappingExcluding(m, section, allowed, &.{});
-    }
-
-    pub fn checkWorkflow(self: *UnknownKeyCollector, m: yaml.Mapping) !void {
-        try self.checkMappingExcluding(m, "workflow", &workflow_keys, &.{workflow_on_key_alias});
-    }
-
-    fn checkMappingExcluding(
-        self: *UnknownKeyCollector,
-        m: yaml.Mapping,
-        section: []const u8,
-        allowed: []const []const u8,
         excluded: []const []const u8,
     ) !void {
         for (m.entries) |entry| {
@@ -189,13 +178,13 @@ pub const UnknownKeyCollector = struct {
             .mapping => |mp| mp,
             else => return,
         };
-        try self.checkMapping(m, "defaults", &defaults_keys);
+        try self.checkMapping(m, "defaults", &defaults_keys, &.{});
         if (m.get("run")) |run_node| {
             const run_mapping = switch (run_node) {
                 .mapping => |mp| mp,
                 else => return,
             };
-            try self.checkMapping(run_mapping, "run", &defaults_run_keys);
+            try self.checkMapping(run_mapping, "run", &defaults_run_keys, &.{});
         }
     }
 
@@ -207,11 +196,32 @@ pub const UnknownKeyCollector = struct {
 
         switch (node) {
             .scalar => {},
-            .mapping => |m| try self.checkMapping(m, section, allowed),
+            .mapping => |mp| try self.checkMapping(mp, section, allowed, &.{}),
             else => {},
         }
     }
 };
+
+test "schema key tables are sorted" {
+    const tables = [_][]const []const u8{
+        &workflow_keys,
+        &job_keys,
+        &step_action_keys,
+        &step_run_keys,
+        &step_all_keys,
+        &strategy_keys,
+        &defaults_keys,
+        &defaults_run_keys,
+        &container_keys,
+        &service_container_keys,
+    };
+    for (tables) |keys| {
+        var i: usize = 1;
+        while (i < keys.len) : (i += 1) {
+            try std.testing.expectEqual(std.math.Order.lt, std.mem.order(u8, keys[i - 1], keys[i]));
+        }
+    }
+}
 
 test "isAllowedKey exact match" {
     try std.testing.expect(isAllowedKey("runs-on", &job_keys));

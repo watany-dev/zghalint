@@ -35,39 +35,25 @@ fn findDidYouMean(key: []const u8, expected: []const []const u8) ?[]const u8 {
     return best;
 }
 
-fn lessThanKey(_: void, a: []const u8, b: []const u8) bool {
-    return std.mem.order(u8, a, b) == .lt;
-}
-
 fn formatUnexpectedKeyMessage(
     alloc: std.mem.Allocator,
     uk: UnknownKey,
     suggestion: ?[]const u8,
 ) ![]const u8 {
-    const sorted = try alloc.alloc([]const u8, uk.expected.len);
-    defer alloc.free(sorted);
-    @memcpy(sorted, uk.expected);
-    std.mem.sort([]const u8, sorted, {}, lessThanKey);
-
-    var expected_buf = std.ArrayList(u8){};
-    defer expected_buf.deinit(alloc);
-    for (sorted, 0..) |key, i| {
-        if (i > 0) try expected_buf.appendSlice(alloc, ", ");
-        try expected_buf.writer(alloc).print("\"{s}\"", .{key});
-    }
-
     var message = std.ArrayList(u8){};
     defer message.deinit(alloc);
     const writer = message.writer(alloc);
     try writer.print(
-        "unexpected key \"{s}\" for \"{s}\" section. expected one of {s}",
-        .{ uk.key, uk.section, expected_buf.items },
+        "unexpected key \"{s}\" for \"{s}\" section. expected one of ",
+        .{ uk.key, uk.section },
     );
-
+    for (uk.expected, 0..) |key, i| {
+        if (i > 0) try writer.writeAll(", ");
+        try writer.print("\"{s}\"", .{key});
+    }
     if (suggestion) |s| {
         try writer.print("; did you mean \"{s}\"?", .{s});
     }
-
     return try message.toOwnedSlice(alloc);
 }
 
@@ -76,17 +62,11 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.unknown_keys) |uk| {
         const suggestion = findDidYouMean(uk.key, uk.expected);
         const message = formatUnexpectedKeyMessage(alloc, uk, suggestion) catch continue;
-        const fix_hint = if (suggestion) |s|
-            std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{s}) catch null
-        else
-            null;
-
         list.append(.{
             .rule_id = "SYN001",
             .severity = .@"error",
             .message = message,
             .span = uk.span,
-            .fix_hint = fix_hint,
         }) catch continue;
     }
 }
@@ -206,17 +186,15 @@ const Trigger = workflow_types.Trigger;
 const workflow_parser = @import("../workflow/parser.zig");
 const yaml_parser_mod = @import("../yaml/parser.zig");
 
-fn parseWorkflowYaml(arena: *std.heap.ArenaAllocator, source: []const u8) !Workflow {
+fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
     const alloc = arena.allocator();
-
     var parser = yaml_parser_mod.Parser.init(alloc, source);
     defer parser.deinit();
     const yaml_node = try parser.parse();
-    return try workflow_parser.parseWorkflow(alloc, yaml_node);
-}
-
-fn lintUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
-    checkUnknownKeys(wf, list);
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    checkUnknownKeys(&wf, list);
 }
 
 test "SYN001: unknown job key is reported" {
@@ -230,13 +208,9 @@ test "SYN001: unknown job key is reported" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -257,13 +231,9 @@ test "SYN001: unknown step key is reported" {
         \\      - runs: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -283,13 +253,9 @@ test "SYN001: valid workflow produces no diagnostic" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -308,13 +274,9 @@ test "SYN001: matrix keys are not validated" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -333,13 +295,9 @@ test "SYN001: with and env keys are not validated" {
         \\          CUSTOM: value
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -357,13 +315,9 @@ test "SYN001: unknown workflow key is reported" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -384,13 +338,9 @@ test "SYN001: expected keys are sorted" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"concurrency\", \"defaults\", \"env\", \"jobs\"") != null);
@@ -410,13 +360,9 @@ test "SYN001: unknown strategy key is reported" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -438,13 +384,9 @@ test "SYN001: unknown container key is reported" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -467,13 +409,9 @@ test "SYN001: unknown services key is reported" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -494,13 +432,9 @@ test "SYN001: unknown defaults.run key is reported" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -520,13 +454,9 @@ test "SYN001: step keys are case-sensitive" {
         \\        Shell: bash
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -545,13 +475,9 @@ test "SYN001: action step rejects shell" {
         \\        shell: bash
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -570,13 +496,9 @@ test "SYN001: distant key has no did-you-mean" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
-
-    lintUnknownKeys(&wf, &diags);
+    try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "totally-unrelated") != null);
@@ -594,25 +516,19 @@ test "SYN001: message survives appendOwning after source list deinit" {
         \\      - run: echo hi
     ;
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try parseWorkflowYaml(&arena, source);
-
     var dst = DiagnosticList.init(testing.allocator);
     defer dst.deinit();
 
     {
         var src = DiagnosticList.init(testing.allocator);
         defer src.deinit();
-        lintUnknownKeys(&wf, &src);
+        try runSyn001(source, &src);
         try testing.expectEqual(@as(usize, 1), src.len());
         try dst.appendOwning(src.get(0));
     }
 
     try testing.expectEqualStrings("SYN001", dst.get(0).rule_id);
     try testing.expect(std.mem.indexOf(u8, dst.get(0).message, "timeout-minute") != null);
-    const hint = dst.get(0).fix_hint orelse return error.TestExpectedNonNull;
-    try testing.expect(std.mem.indexOf(u8, hint, "timeout-minutes") != null);
 }
 
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
