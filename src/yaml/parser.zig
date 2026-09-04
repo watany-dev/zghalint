@@ -647,13 +647,6 @@ test "parse mapping with get helper" {
     }
 }
 
-test "parser deinit cleans up" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var parser = Parser.init(arena.allocator(), "a: b");
-    parser.deinit();
-}
-
 test "parse rejects input nested past max_parse_depth" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -670,4 +663,11 @@ test "parse rejects input nested past max_parse_depth" {
     var parser = Parser.init(arena.allocator(), buf.items);
     defer parser.deinit();
     try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
+}
+
+test "parser deinit cleans up" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "a: b");
+    parser.deinit();
 }
