@@ -363,6 +363,8 @@ pub const Workflow = struct {
     env_meta: ?ScalarValueMetaMap = null,
     concurrency: ?Concurrency = null,
     jobs: []const Job,
+    /// Mapping value type mismatches collected during parsing (SYN004).
+    type_mismatches: []const type_validation.TypeMismatch = &.{},
     /// Top-level keys are always at column 1.
     top_level_indent: u32 = 0,
     /// Byte position to insert a new top-level `permissions:` entry (after `on:` line).
@@ -370,6 +372,8 @@ pub const Workflow = struct {
     /// Byte position to insert a new top-level `concurrency:` entry (after `on:` line).
     concurrency_insertion_byte: ?usize = null,
 };
+
+const type_validation = @import("type_validation.zig");
 
 // ============================================================
 // Tests

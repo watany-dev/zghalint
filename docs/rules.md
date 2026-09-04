@@ -123,6 +123,7 @@ Validate the structural correctness of the workflow definition itself.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
+| SYN004 | mapping-value-type | error | Mapping value does not match the expected type for its key (e.g. string where a number or bool is required) |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 

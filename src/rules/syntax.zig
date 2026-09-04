@@ -1,6 +1,8 @@
 const std = @import("std");
 const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
+const workflow_parser = @import("../workflow/parser.zig");
+const type_validation = @import("../workflow/type_validation.zig");
 const yaml_types = @import("../yaml/types.zig");
 
 const Rule = engine.Rule;
@@ -8,6 +10,22 @@ const Workflow = engine.Workflow;
 const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
+
+// ── SYN004: Mapping value type validation ──
+
+fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.type_mismatches) |mismatch| {
+        const msg = type_validation.formatMessage(alloc, mismatch) catch continue;
+        list.append(.{
+            .rule_id = "SYN004",
+            .severity = .@"error",
+            .message = msg,
+            .span = mismatch.span,
+            .fix_hint = "use a value of the expected type for this field",
+        }) catch return;
+    }
+}
 
 // ── SYN008: Duplicated job ID in `needs` ──
 
@@ -89,6 +107,14 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
 
 pub const rules = [_]Rule{
     .{
+        .id = "SYN004",
+        .name = "mapping-value-type",
+        .description = "mapping value does not match the expected type for its key",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkMappingValueTypes,
+    },
+    .{
         .id = "SYN008",
         .name = "duplicate-needs",
         .description = "the same job ID is listed more than once in 'needs'",
@@ -114,6 +140,15 @@ const testing = std.testing;
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 
+fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
+    const alloc = arena.allocator();
+    var yaml_parser = @import("../yaml/parser.zig").Parser.init(alloc, source);
+    defer yaml_parser.deinit();
+    const yaml_node = try yaml_parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    checkMappingValueTypes(&wf, list);
+}
+
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };
     checkExclusiveFilters(&wf, list);
@@ -122,6 +157,97 @@ fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
 fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
     checkDuplicateNeeds(&job, diags);
+}
+
+test "SYN004: invalid timeout-minutes, continue-on-error, and max-parallel" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minutes: "ten"
+        \\    continue-on-error: maybe
+        \\    strategy:
+        \\      max-parallel: high
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runSyn004(source, &arena, &diags);
+
+    try testing.expectEqual(@as(usize, 3), diags.len());
+    for (diags.items.items) |diag| {
+        try testing.expectEqualStrings("SYN004", diag.rule_id);
+        try testing.expect(diag.severity == .@"error");
+    }
+}
+
+test "SYN004: valid typed values produce no diagnostic" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minutes: 10
+        \\    continue-on-error: true
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runSyn004(source, &arena, &diags);
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN004: expression values are skipped" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    continue-on-error: ${{ github.event_name == 'push' }}
+        \\    timeout-minutes: ${{ matrix.timeout }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runSyn004(source, &arena, &diags);
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN004: step-level invalid bool and number are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\        timeout-minutes: bad
+        \\        continue-on-error: yes
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runSyn004(source, &arena, &diags);
+    try testing.expectEqual(@as(usize, 2), diags.len());
 }
 
 test "SYN008: duplicated job ID is reported" {
