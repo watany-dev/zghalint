@@ -66,8 +66,9 @@ rename the ID to start with a letter or _ and use only letters, digits, hyphens,
 |-----------|-----|--------|
 | `Job.id_span` | `Span` | `jobs` マッピングのキー token span |
 | `Step.id_span` | `?Span` | `id:` scalar の value span |
+| `Job.needs_spans` | `[]const Span` | `needs` の各エントリの value span（`needs` と並列） |
 
-`needs` エントリは現状 span を保持しないため、違反時は `job.span` をフォールバックとする。
+`needs_spans` が空（手組みの Job など）のときは `job.span` にフォールバックする。
 
 ## 実装配置
 
@@ -88,5 +89,5 @@ rename the ID to start with a letter or _ and use only letters, digits, hyphens,
 
 | 観点 | actionlint | zghalint SYN006 |
 |------|------------|-----------------|
-| needs span | 個別 Pos | `job.span` フォールバック |
+| needs span | 個別 Pos | `Job.needs_spans`（欠ける場合は `job.span`） |
 | 重複 ID | 同一 RuleID で検出 | SYN005（未実装）に分離 |

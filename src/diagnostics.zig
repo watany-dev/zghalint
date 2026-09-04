@@ -100,14 +100,15 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, diag);
     }
 
-    /// Append a Diagnostic, deep-cloning any embedded Fix and any
+    /// Append a Diagnostic, deep-cloning `message`, any embedded Fix, and any
     /// heap-allocated `fix_hint` into this list's fix_arena. Use this when
     /// bringing diagnostics across DiagnosticList boundaries; plain `append`
-    /// keeps Fix slices and hint strings borrowed from the source list's
-    /// arena, which dangles once that list is deinitialized.
+    /// keeps Fix slices and hint/message strings borrowed from the source
+    /// list's arena, which dangles once that list is deinitialized.
     pub fn appendOwning(self: *DiagnosticList, diag: Diagnostic) !void {
         const alloc = self.fix_arena.allocator();
         var d = diag;
+        d.message = try alloc.dupe(u8, diag.message);
         if (diag.fix) |f| d.fix = try cloneFix(alloc, f);
         if (diag.fix_hint) |hint| d.fix_hint = try alloc.dupe(u8, hint);
         try self.items.append(self.allocator, d);
@@ -408,4 +409,27 @@ test "appendOwning deep-clones heap-allocated fix_hint" {
     const got = dst.get(0);
     const hint = got.fix_hint orelse return error.TestExpectedNonNull;
     try std.testing.expectEqualStrings("heap-hint-text", hint);
+}
+
+test "appendOwning deep-clones heap-allocated message" {
+    var dst = DiagnosticList.init(std.testing.allocator);
+    defer dst.deinit();
+
+    {
+        var src = DiagnosticList.init(std.testing.allocator);
+        defer src.deinit();
+
+        const message = try src.fixAllocator().dupe(u8, "heap-message-text");
+        try src.append(.{
+            .rule_id = "T4",
+            .severity = .@"error",
+            .message = message,
+            .span = Span.point(1, 1, 0),
+        });
+
+        try dst.appendOwning(src.get(0));
+    }
+    // src.deinit() ran — the original message backing is gone.
+
+    try std.testing.expectEqualStrings("heap-message-text", dst.get(0).message);
 }

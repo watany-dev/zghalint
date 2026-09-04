@@ -48,9 +48,14 @@ fn reportInvalidId(list: *DiagnosticList, what: []const u8, id: []const u8, span
 
 fn checkInvalidJobId(job: *const Job, diag_list: *DiagnosticList) void {
     reportInvalidId(diag_list, "job", job.id, job.id_span);
-    for (job.needs) |need| {
-        reportInvalidId(diag_list, "job", need, job.span);
+    for (job.needs, 0..) |need, i| {
+        reportInvalidId(diag_list, "job", need, needsSpan(job, i));
     }
+}
+
+fn needsSpan(job: *const Job, index: usize) Span {
+    if (index < job.needs_spans.len) return job.needs_spans[index];
+    return job.span;
 }
 
 fn checkInvalidStepId(step: *const Step, diag_list: *DiagnosticList) void {
@@ -76,7 +81,7 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
             .rule_id = "SYN008",
             .severity = .warning,
             .message = "job ID is duplicated in 'needs'",
-            .span = job.span,
+            .span = needsSpan(job, i),
             .fix_hint = "remove the repeated job ID from 'needs'",
         }) catch return;
     }
@@ -216,10 +221,11 @@ test "SYN006: job ID with a space is reported" {
     try testing.expect(std.mem.startsWith(u8, diags.get(0).message, "invalid job ID \"build job\""));
 }
 
-test "SYN006: invalid needs entry is reported" {
+test "SYN006: invalid needs entry is reported at the needs value span" {
     const job = Job{
         .id = "deploy",
         .needs = &.{"1-build"},
+        .needs_spans = &.{dummySpan(90, 97)},
         .span = dummySpan(40, 80),
     };
     var diags = DiagnosticList.init(testing.allocator);
@@ -229,7 +235,7 @@ test "SYN006: invalid needs entry is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.startsWith(u8, diags.get(0).message, "invalid job ID \"1-build\""));
-    try testing.expectEqual(@as(usize, 40), diags.get(0).span.start_byte);
+    try testing.expectEqual(@as(usize, 90), diags.get(0).span.start_byte);
 }
 
 test "SYN006: step ID with a dot is reported" {
@@ -280,6 +286,111 @@ test "SYN006: step ID with expression is skipped" {
     checkInvalidStepId(&step, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN006: job ID with expression is skipped" {
+    const job = Job{
+        .id = "${{ matrix.name }}",
+        .id_span = dummySpan(1, 18),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkInvalidJobId(&job, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN006: empty ID is skipped" {
+    var job_diags = DiagnosticList.init(testing.allocator);
+    defer job_diags.deinit();
+    checkInvalidJobId(&Job{ .id = "" }, &job_diags);
+    try testing.expectEqual(@as(usize, 0), job_diags.len());
+
+    var step_diags = DiagnosticList.init(testing.allocator);
+    defer step_diags.deinit();
+    checkInvalidStepId(&Step{ .id = "" }, &step_diags);
+    try testing.expectEqual(@as(usize, 0), step_diags.len());
+}
+
+test "SYN006: invalid ID character classes are reported" {
+    const cases = [_][]const u8{ "-foo", "v1.2.3", "hello!", "じょぶ", "12345" };
+    for (cases) |id| {
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+        const job = Job{ .id = id, .id_span = dummySpan(0, id.len) };
+        checkInvalidJobId(&job, &diags);
+        try testing.expectEqual(@as(usize, 1), diags.len());
+        try testing.expectEqualStrings("SYN006", diags.get(0).rule_id);
+    }
+}
+
+test "SYN006: valid ID character classes produce no diagnostic" {
+    const cases = [_][]const u8{
+        "foo-bar",
+        "foo_bar",
+        "foo--bar",
+        "foo__bar",
+        "_FOO123-",
+        "_____",
+        "_-_-",
+        "a",
+        "_",
+    };
+    for (cases) |id| {
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+        const job = Job{ .id = id, .id_span = dummySpan(0, id.len) };
+        checkInvalidJobId(&job, &diags);
+        try testing.expectEqual(@as(usize, 0), diags.len());
+    }
+}
+
+test "SYN006: parse-then-check points at the job key, step id, and needs value" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  1-build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: my.step
+        \\        run: echo hi
+        \\  deploy:
+        \\    needs: 1-build
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    for (wf.jobs) |*job| {
+        checkInvalidJobId(job, &diags);
+        for (job.steps) |*step| {
+            checkInvalidStepId(step, &diags);
+        }
+    }
+
+    try testing.expectEqual(@as(usize, 3), diags.len());
+    try testing.expectEqual(@as(u32, 3), diags.get(0).span.start_line);
+    try testing.expect(std.mem.startsWith(u8, diags.get(0).message, "invalid job ID \"1-build\""));
+    try testing.expectEqual(@as(u32, 6), diags.get(1).span.start_line);
+    try testing.expect(std.mem.startsWith(u8, diags.get(1).message, "invalid step ID \"my.step\""));
+    try testing.expectEqual(@as(u32, 9), diags.get(2).span.start_line);
+    try testing.expect(std.mem.startsWith(u8, diags.get(2).message, "invalid job ID \"1-build\""));
 }
 
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {

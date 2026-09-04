@@ -328,6 +328,8 @@ pub const Job = struct {
     name: ?[]const u8 = null,
     runs_on: ?[]const u8 = null,
     needs: []const []const u8 = &.{},
+    /// Value spans of `needs` entries, parallel to `needs`. Empty when absent.
+    needs_spans: []const yaml_types.Span = &.{},
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
     steps: []const Step = &.{},
