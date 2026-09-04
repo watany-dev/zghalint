@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **52 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **54 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (20 rules)
 
@@ -133,7 +133,7 @@ Missing timeouts, step naming, deprecated actions, cross-platform shell, concurr
 
 Overly broad scopes, missing job-level permissions.
 
-### Expression Validation (7 rules)
+### Expression Validation (8 rules)
 
 `${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions.
 
@@ -145,9 +145,9 @@ Dependabot cooldown configuration, insecure external code execution settings.
 
 Deprecated or retired `runs-on:` label detection.
 
-### Syntax (3 rules)
+### Syntax (4 rules)
 
-Empty workflow sections, duplicated job IDs in `needs`, mutually exclusive event filters specified together.
+Empty workflow sections, duplicate job/step IDs, duplicated job IDs in `needs`, mutually exclusive event filters specified together.
 
 ## Configuration
 
