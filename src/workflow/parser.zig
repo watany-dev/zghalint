@@ -281,18 +281,18 @@ fn parseJobs(allocator: std.mem.Allocator, node: Node) ParseError![]const types.
 
     const jobs = try allocator.alloc(types.Job, m.entries.len);
     for (m.entries, 0..) |entry, i| {
-        jobs[i] = try parseJob(allocator, entry.key.value, entry.value);
+        jobs[i] = try parseJob(allocator, entry.key.value, entry.key.span, entry.value);
     }
     return jobs;
 }
 
-fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError!types.Job {
+fn parseJob(allocator: std.mem.Allocator, id: []const u8, id_span: yaml.Span, node: Node) ParseError!types.Job {
     const m = switch (node) {
         .mapping => |m| m,
         else => return error.InvalidValue,
     };
 
-    var job = types.Job{ .id = id };
+    var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
     job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
@@ -396,7 +396,15 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
 
     var step = types.Step{};
     step.span = m.span;
-    step.id = m.getScalar("id");
+    if (m.get("id")) |n| {
+        switch (n) {
+            .scalar => |s| {
+                step.id = s.value;
+                step.id_value_span = s.span;
+            },
+            else => {},
+        }
+    }
     step.name = m.getScalar("name");
     step.run = m.getScalar("run");
     step.shell = m.getScalar("shell");
@@ -1050,7 +1058,7 @@ test "parseJob with needs" {
         .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "deploy", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "deploy", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("deploy", job.id);
     try testing.expectEqual(@as(usize, 2), job.needs.len);
     try testing.expectEqualStrings("build", job.needs[0]);
@@ -1066,7 +1074,7 @@ test "parseJob reusable workflow" {
         .{ .key = mkScalarS("secrets"), .value = mkScalar("inherit"), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "call-workflow", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "call-workflow", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("octo-org/this-repo/.github/workflows/workflow-1.yml@v1", job.uses.?);
     switch (job.secrets.?) {
         .inherit => {},
@@ -1264,7 +1272,7 @@ test "parseJob with timeout and strategy" {
         .{ .key = mkScalarS("strategy"), .value = mkMapping(&strategy_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "test", mkSpan(), mkMapping(&entries));
     try testing.expectEqual(@as(?u32, 30), job.timeout_minutes);
     try testing.expect(job.continue_on_error);
     try testing.expectEqualStrings("success()", job.if_condition.?);
@@ -1313,7 +1321,7 @@ test "parseJob captures if_condition_meta with double-quoted style" {
         },
     };
 
-    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "test", mkSpan(), mkMapping(&entries));
     try testing.expect(job.if_condition_meta != null);
     try testing.expectEqual(@as(usize, 10), job.if_condition_meta.?.value_span.start_byte);
     try testing.expectEqual(yaml.ScalarStyle.double_quoted, job.if_condition_meta.?.style);
@@ -1369,7 +1377,7 @@ test "parseJob with container as scalar" {
         .{ .key = mkScalarS("container"), .value = mkScalar("node:14"), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "build", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expect(job.container.?.credentials == null);
 }
@@ -1398,7 +1406,7 @@ test "parseJob with container credentials" {
         .{ .key = mkScalarS("container"), .value = mkMapping(&container_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "build", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expectEqualStrings("myuser", job.container.?.credentials.?.username.?);
     try testing.expectEqualStrings("mypassword", job.container.?.credentials.?.password.?);
@@ -1431,7 +1439,7 @@ test "parseJob with service credentials" {
         .{ .key = mkScalarS("services"), .value = mkMapping(&services_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "build", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "build", mkSpan(), mkMapping(&entries));
     try testing.expectEqual(@as(usize, 1), job.services.len);
     try testing.expectEqualStrings("redis", job.services[0].name);
     try testing.expectEqualStrings("redis", job.services[0].image.?);
@@ -1601,7 +1609,7 @@ test "parseJob with env and concurrency and with" {
         .{ .key = mkScalarS("permissions"), .value = mkMapping(&perm_entries), .span = mkSpan() },
     };
 
-    const job = try parseJob(arena.allocator(), "test", mkMapping(&entries));
+    const job = try parseJob(arena.allocator(), "test", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("true", job.env.?.get("CI").?);
     try testing.expect(job.env_meta != null);
     try testing.expectEqual(yaml.ScalarStyle.plain, job.env_meta.?.get("CI").?.style);
