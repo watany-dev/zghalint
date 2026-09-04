@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const yaml = @import("../yaml/types.zig");
 
 pub const ValidationError = struct {
     message: []const u8,
@@ -46,6 +47,12 @@ fn appendEmptySectionErrors(
     sections: []const types.EmptySection,
 ) !void {
     for (sections) |section| {
+        // `on` / `jobs` emptiness is already reported from the parsed
+        // event/job slices so that programmatically built Workflows still
+        // fail closed. Skip those names here to avoid a second copy when
+        // the parser also recorded them on `empty_sections`.
+        if (std.mem.eql(u8, section.name, "on")) continue;
+        if (std.mem.eql(u8, section.name, "jobs")) continue;
         const msg = try std.fmt.allocPrint(allocator, "\"{s}\" section should not be empty", .{section.name});
         try errors.append(allocator, .{ .message = msg });
     }
@@ -444,4 +451,27 @@ test "ValidationResult.ok" {
     var errs = [_]ValidationError{.{ .message = "error" }};
     const bad_result = ValidationResult{ .errors = &errs };
     try testing.expect(!bad_result.ok());
+}
+
+test "validate does not duplicate empty on/jobs from empty_sections" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const empty_on_jobs = [_]types.EmptySection{
+        .{ .name = "on", .span = yaml.Span.point(1, 1, 0) },
+        .{ .name = "jobs", .span = yaml.Span.point(2, 1, 4) },
+        .{ .name = "env", .span = yaml.Span.point(3, 1, 10) },
+    };
+    const wf = types.Workflow{
+        .on = .{ .events = &.{} },
+        .jobs = &.{},
+        .empty_sections = &empty_on_jobs,
+    };
+
+    const result = try validate(alloc, wf);
+    try testing.expectEqual(@as(usize, 3), result.errors.len);
+    try testing.expect(std.mem.indexOf(u8, result.errors[0].message, "\"on\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.errors[1].message, "\"jobs\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.errors[2].message, "\"env\"") != null);
 }

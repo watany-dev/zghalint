@@ -13,20 +13,22 @@ const Span = yaml_types.Span;
 // ── SYN003: Empty mapping / sequence sections ──
 
 fn emptySectionMessage(section: []const u8) []const u8 {
-    if (std.mem.eql(u8, section, "on")) return "\"on\" section should not be empty";
-    if (std.mem.eql(u8, section, "jobs")) return "\"jobs\" section should not be empty";
-    if (std.mem.eql(u8, section, "steps")) return "\"steps\" section should not be empty";
-    if (std.mem.eql(u8, section, "with")) return "\"with\" section should not be empty";
-    if (std.mem.eql(u8, section, "env")) return "\"env\" section should not be empty";
-    if (std.mem.eql(u8, section, "strategy")) return "\"strategy\" section should not be empty";
-    if (std.mem.eql(u8, section, "matrix")) return "\"matrix\" section should not be empty";
-    if (std.mem.eql(u8, section, "defaults")) return "\"defaults\" section should not be empty";
-    if (std.mem.eql(u8, section, "container")) return "\"container\" section should not be empty";
-    if (std.mem.eql(u8, section, "services")) return "\"services\" section should not be empty";
-    if (std.mem.eql(u8, section, "outputs")) return "\"outputs\" section should not be empty";
-    if (std.mem.eql(u8, section, "inputs")) return "\"inputs\" section should not be empty";
-    if (std.mem.eql(u8, section, "secrets")) return "\"secrets\" section should not be empty";
-    return "\"section\" section should not be empty";
+    const messages = std.StaticStringMap([]const u8).initComptime(.{
+        .{ "on", "\"on\" section should not be empty" },
+        .{ "jobs", "\"jobs\" section should not be empty" },
+        .{ "steps", "\"steps\" section should not be empty" },
+        .{ "with", "\"with\" section should not be empty" },
+        .{ "env", "\"env\" section should not be empty" },
+        .{ "strategy", "\"strategy\" section should not be empty" },
+        .{ "matrix", "\"matrix\" section should not be empty" },
+        .{ "defaults", "\"defaults\" section should not be empty" },
+        .{ "container", "\"container\" section should not be empty" },
+        .{ "services", "\"services\" section should not be empty" },
+        .{ "outputs", "\"outputs\" section should not be empty" },
+        .{ "inputs", "\"inputs\" section should not be empty" },
+        .{ "secrets", "\"secrets\" section should not be empty" },
+    });
+    return messages.get(section) orelse "section should not be empty";
 }
 
 fn reportEmptySection(section: []const u8, span: Span, list: *DiagnosticList) void {
@@ -206,6 +208,29 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     runEngineOnWorkflow(wf, diags);
 }
 
+fn expectSyn003(diags: DiagnosticList, expected: []const []const u8) !void {
+    var found: usize = 0;
+    for (0..diags.len()) |i| {
+        const d = diags.get(i);
+        if (!std.mem.eql(u8, d.rule_id, "SYN003")) continue;
+        found += 1;
+        var matched = false;
+        for (expected) |msg| {
+            if (std.mem.eql(u8, d.message, msg)) {
+                matched = true;
+                break;
+            }
+        }
+        try testing.expect(matched);
+        try testing.expect(d.severity == .@"error");
+    }
+    try testing.expectEqual(expected.len, found);
+}
+
+fn sectionMsg(comptime name: []const u8) []const u8 {
+    return "\"" ++ name ++ "\" section should not be empty";
+}
+
 test "SYN003: empty strategy and with are reported" {
     const source =
         \\on: push
@@ -222,11 +247,10 @@ test "SYN003: empty strategy and with are reported" {
     defer diags.deinit();
     try lintYaml(source, &diags);
 
-    try testing.expectEqual(@as(usize, 2), diags.len());
-    try testing.expectEqualStrings("SYN003", diags.get(0).rule_id);
-    try testing.expectEqualStrings("\"strategy\" section should not be empty", diags.get(0).message);
-    try testing.expectEqualStrings("SYN003", diags.get(1).rule_id);
-    try testing.expectEqualStrings("\"with\" section should not be empty", diags.get(1).message);
+    try expectSyn003(diags, &.{
+        sectionMsg("strategy"),
+        sectionMsg("with"),
+    });
 }
 
 test "SYN003: valid workflow without empty sections is clean" {
@@ -277,16 +301,7 @@ test "SYN003: empty jobs mapping is reported" {
     defer diags.deinit();
     try lintYaml(source, &diags);
 
-    var found_jobs = false;
-    for (0..diags.len()) |i| {
-        const diag = diags.get(i);
-        if (std.mem.eql(u8, diag.rule_id, "SYN003") and
-            std.mem.eql(u8, diag.message, "\"jobs\" section should not be empty"))
-        {
-            found_jobs = true;
-        }
-    }
-    try testing.expect(found_jobs);
+    try expectSyn003(diags, &.{sectionMsg("jobs")});
 }
 
 test "SYN003: empty steps sequence is reported" {
@@ -302,16 +317,158 @@ test "SYN003: empty steps sequence is reported" {
     defer diags.deinit();
     try lintYaml(source, &diags);
 
-    var found_steps = false;
-    for (0..diags.len()) |i| {
-        const diag = diags.get(i);
-        if (std.mem.eql(u8, diag.rule_id, "SYN003") and
-            std.mem.eql(u8, diag.message, "\"steps\" section should not be empty"))
-        {
-            found_steps = true;
-        }
-    }
-    try testing.expect(found_steps);
+    try expectSyn003(diags, &.{sectionMsg("steps")});
+}
+
+test "SYN003: implicit-null jobs is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("jobs")});
+}
+
+test "SYN003: implicit-null strategy and with are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("strategy"),
+        sectionMsg("with"),
+    });
+}
+
+test "SYN003: empty on mapping is reported" {
+    const source =
+        \\on: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("on")});
+}
+
+test "SYN003: empty env at workflow job and step is reported" {
+    const source =
+        \\on: push
+        \\env: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env: {}
+        \\    steps:
+        \\      - run: echo
+        \\        env: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("env"),
+        sectionMsg("env"),
+        sectionMsg("env"),
+    });
+}
+
+test "SYN003: empty matrix defaults container services outputs secrets" {
+    const source =
+        \\on: push
+        \\defaults: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix: {}
+        \\    container: {}
+        \\    services: {}
+        \\    outputs: {}
+        \\    defaults: {}
+        \\    steps:
+        \\      - run: echo
+        \\  call:
+        \\    uses: org/repo/.github/workflows/x.yml@v1
+        \\    secrets: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("defaults"),
+        sectionMsg("matrix"),
+        sectionMsg("container"),
+        sectionMsg("services"),
+        sectionMsg("outputs"),
+        sectionMsg("defaults"),
+        sectionMsg("secrets"),
+    });
+}
+
+test "SYN003: empty workflow_dispatch inputs is reported" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("inputs")});
+}
+
+test "SYN003: secrets inherit and scalar container are not empty sections" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: org/repo/.github/workflows/x.yml@v1
+        \\    secrets: inherit
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container: ubuntu
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{});
 }
 
 test "SYN008: duplicated job ID is reported" {
