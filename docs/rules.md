@@ -139,9 +139,10 @@ Validate the structural correctness of the workflow definition itself.
 
 ### SYN007 invalid-env-var-name
 
-Environment variable names are validated at all three levels that accept
-`env:` — workflow, job, and step. A name that is empty or contains `&`, `=`,
-or a space cannot be written to the runner's environment file:
+Environment variable names are validated wherever `env:` may appear —
+workflow, job, step, `container:`, and `services.<id>:`. A name that is empty
+or contains `&`, `=`, or a space cannot be written to the runner's
+environment file:
 
 ```yaml
 jobs:
@@ -153,6 +154,10 @@ jobs:
       FOO&BAR: 3          # error: '&' is not allowed
       MY_VAR: 4           # ok
 ```
+
+A key whose name contains a `${{ }}` expression is skipped: the literal text
+is substituted before the runner sees it, so it says nothing about the name
+that finally reaches the environment file.
 
 ### SYN012 exclusive-event-filters
 

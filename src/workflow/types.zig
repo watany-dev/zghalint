@@ -324,6 +324,8 @@ pub const Credentials = struct {
 pub const Container = struct {
     image: ?[]const u8 = null,
     credentials: ?Credentials = null,
+    /// Keys of the `env:` mapping in source order (for SYN007).
+    env_keys: []const EnvKey = &.{},
 };
 
 /// Service container configuration
@@ -331,6 +333,8 @@ pub const Service = struct {
     name: []const u8,
     image: ?[]const u8 = null,
     credentials: ?Credentials = null,
+    /// Keys of the `env:` mapping in source order (for SYN007).
+    env_keys: []const EnvKey = &.{},
 };
 
 /// A workflow job

@@ -407,7 +407,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         job.secrets = try parseSecretsConfig(ctx.allocator, n);
     }
     if (m.get("container")) |n| {
-        job.container = try parseContainer(n);
+        job.container = try parseContainer(ctx.allocator, n);
     }
     if (m.get("services")) |n| {
         job.services = try parseServices(ctx.allocator, n);
@@ -739,7 +739,7 @@ fn parseCredentials(node: Node) ParseError!types.Credentials {
     };
 }
 
-fn parseContainer(node: Node) ParseError!types.Container {
+fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
             return .{ .image = s.value };
@@ -748,6 +748,7 @@ fn parseContainer(node: Node) ParseError!types.Container {
             return .{
                 .image = m.getScalar("image"),
                 .credentials = if (m.get("credentials")) |n| try parseCredentials(n) else null,
+                .env_keys = if (m.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
             };
         },
         else => return error.InvalidValue,
@@ -768,6 +769,7 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                     .name = entry.key.value,
                     .image = vm.getScalar("image"),
                     .credentials = if (vm.get("credentials")) |n| try parseCredentials(n) else null,
+                    .env_keys = if (vm.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
                 };
             },
             .scalar => |s| {
