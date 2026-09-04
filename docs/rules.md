@@ -123,6 +123,7 @@ Validate the structural correctness of the workflow definition itself.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
+| SYN005 | duplicate-id | error | Job IDs and step IDs must be unique within a workflow or job (case-insensitive) |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 

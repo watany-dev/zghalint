@@ -6,8 +6,74 @@ const yaml_types = @import("../yaml/types.zig");
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const Job = engine.Job;
+const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
+
+// ── SYN005: Duplicated job ID / step ID (case-insensitive) ──
+
+fn jobIdSpan(job: Job) Span {
+    if (job.id_span.start_line > 0) return job.id_span;
+    return job.span;
+}
+
+fn stepIdSpan(step: Step) Span {
+    if (step.id_value_span) |span| return span;
+    return step.span;
+}
+
+fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+
+    for (wf.jobs, 0..) |job, i| {
+        for (wf.jobs[0..i]) |prior| {
+            if (!std.ascii.eqlIgnoreCase(prior.id, job.id)) continue;
+
+            const message = std.fmt.allocPrint(
+                alloc,
+                "job ID \"{s}\" duplicates. previously defined at line {d}. note that job ID is case insensitive",
+                .{ job.id, jobIdSpan(prior).start_line },
+            ) catch return;
+
+            list.append(.{
+                .rule_id = "SYN005",
+                .severity = .@"error",
+                .message = message,
+                .span = jobIdSpan(job),
+                .fix_hint = "use a unique job ID within the workflow",
+            }) catch return;
+            break;
+        }
+    }
+}
+
+fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+
+    for (job.steps, 0..) |step, i| {
+        const step_id = step.id orelse continue;
+
+        for (job.steps[0..i]) |prior_step| {
+            const prior_id = prior_step.id orelse continue;
+            if (!std.ascii.eqlIgnoreCase(prior_id, step_id)) continue;
+
+            const message = std.fmt.allocPrint(
+                alloc,
+                "step ID \"{s}\" duplicates. previously defined at line {d}. step ID must be unique within a job. note that step ID is case insensitive",
+                .{ step_id, stepIdSpan(prior_step).start_line },
+            ) catch return;
+
+            list.append(.{
+                .rule_id = "SYN005",
+                .severity = .@"error",
+                .message = message,
+                .span = stepIdSpan(step),
+                .fix_hint = "use a unique step ID within the job",
+            }) catch return;
+            break;
+        }
+    }
+}
 
 // ── SYN008: Duplicated job ID in `needs` ──
 
@@ -89,6 +155,15 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
 
 pub const rules = [_]Rule{
     .{
+        .id = "SYN005",
+        .name = "duplicate-id",
+        .description = "job IDs and step IDs must be unique within a workflow or job (case-insensitive)",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkDuplicateJobIds,
+        .check_job = &checkDuplicateStepIds,
+    },
+    .{
         .id = "SYN008",
         .name = "duplicate-needs",
         .description = "the same job ID is listed more than once in 'needs'",
@@ -122,6 +197,167 @@ fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
 fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
     checkDuplicateNeeds(&job, diags);
+}
+
+fn runOnDuplicateJobIds(jobs: []const Job, diags: *DiagnosticList) void {
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = jobs };
+    checkDuplicateJobIds(&wf, diags);
+}
+
+fn runOnDuplicateStepIds(steps: []const Step, diags: *DiagnosticList) void {
+    const job = Job{ .id = "build", .runs_on = "ubuntu-latest", .steps = steps };
+    checkDuplicateStepIds(&job, diags);
+}
+
+test "SYN005: duplicated job ID is reported" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const jobs = [_]Job{
+        .{ .id = "build", .id_span = Span.point(5, 3, 40), .runs_on = "ubuntu-latest" },
+        .{ .id = "Build", .id_span = Span.point(8, 3, 80), .runs_on = "ubuntu-latest" },
+    };
+    runOnDuplicateJobIds(&jobs, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN005", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expectEqualStrings(
+        "job ID \"Build\" duplicates. previously defined at line 5. note that job ID is case insensitive",
+        diag.message,
+    );
+    try testing.expectEqual(@as(u32, 8), diag.span.start_line);
+}
+
+test "SYN005: duplicate job ID detection is case-insensitive" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const jobs = [_]Job{
+        .{ .id = "build", .id_span = Span.point(3, 3, 20) },
+        .{ .id = "BUILD", .id_span = Span.point(6, 3, 50) },
+    };
+    runOnDuplicateJobIds(&jobs, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "SYN005: distinct job IDs produce no diagnostic" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const jobs = [_]Job{
+        .{ .id = "build", .id_span = Span.point(3, 3, 20) },
+        .{ .id = "test", .id_span = Span.point(6, 3, 50) },
+    };
+    runOnDuplicateJobIds(&jobs, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN005: duplicated step ID is reported within a job" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const steps = [_]Step{
+        .{ .id = "setup", .id_value_span = Span.point(7, 11, 100), .run = "echo hi" },
+        .{ .id = "SETUP", .id_value_span = Span.point(9, 11, 140), .run = "echo hi" },
+    };
+    runOnDuplicateStepIds(&steps, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN005", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expectEqualStrings(
+        "step ID \"SETUP\" duplicates. previously defined at line 7. step ID must be unique within a job. note that step ID is case insensitive",
+        diag.message,
+    );
+    try testing.expectEqual(@as(u32, 9), diag.span.start_line);
+}
+
+test "SYN005: same step ID in different jobs is allowed" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const steps_a = [_]Step{
+        .{ .id = "setup", .id_value_span = Span.point(7, 11, 100), .run = "echo hi" },
+    };
+    const steps_b = [_]Step{
+        .{ .id = "setup", .id_value_span = Span.point(12, 11, 200), .run = "echo hi" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .runs_on = "ubuntu-latest", .steps = &steps_a },
+        .{ .id = "test", .runs_on = "ubuntu-latest", .steps = &steps_b },
+    };
+
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    const eng = engine.Engine.init(&rules);
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SYN005: steps without id are ignored" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const steps = [_]Step{
+        .{ .run = "echo hi" },
+        .{ .run = "echo bye" },
+    };
+    runOnDuplicateStepIds(&steps, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: setup
+        \\        run: echo hi
+        \\      - id: SETUP
+        \\        run: echo hi
+        \\  Build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    const eng = engine.Engine.init(&rules);
+    var diags = eng.run(alloc, &wf);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+
+    var found_step = false;
+    var found_job = false;
+    for (diags.items.items) |d| {
+        try testing.expectEqualStrings("SYN005", d.rule_id);
+        if (std.mem.startsWith(u8, d.message, "step ID")) found_step = true;
+        if (std.mem.startsWith(u8, d.message, "job ID")) found_job = true;
+    }
+    try testing.expect(found_step);
+    try testing.expect(found_job);
 }
 
 test "SYN008: duplicated job ID is reported" {
