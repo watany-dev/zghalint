@@ -24,20 +24,12 @@ pub const ParseError = error{
 /// a stack overflow (SIGSEGV) during CI runs.
 pub const max_parse_depth: u16 = 256;
 
-/// A case-insensitive duplicate key detected while building a mapping.
-pub const DuplicateKey = struct {
-    key: Scalar,
-    first_key: Scalar,
-    section: []const u8,
-};
-
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokenizer: Tokenizer,
     current: Token,
     source: []const u8,
     depth: u16,
-    duplicate_keys: std.ArrayList(DuplicateKey),
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         var tokenizer = Tokenizer.init(source);
@@ -50,12 +42,11 @@ pub const Parser = struct {
             .current = current,
             .source = source,
             .depth = 0,
-            .duplicate_keys = .{},
         };
     }
 
     pub fn deinit(self: *Parser) void {
-        self.duplicate_keys.deinit(self.allocator);
+        _ = self;
     }
 
     pub fn parse(self: *Parser) ParseError!Node {
@@ -65,10 +56,10 @@ pub const Parser = struct {
             self.skipNewlines();
         }
 
-        return self.parseNode(0, "workflow", null);
+        return self.parseNode(0);
     }
 
-    fn parseNode(self: *Parser, min_indent: u32, section: []const u8, parent_key: ?[]const u8) ParseError!Node {
+    fn parseNode(self: *Parser, min_indent: u32) ParseError!Node {
         if (self.depth >= max_parse_depth) return error.MaxDepthExceeded;
         self.depth += 1;
         defer self.depth -= 1;
@@ -81,17 +72,17 @@ pub const Parser = struct {
 
         // Sequence entry (- item)
         if (self.current.kind == .sequence_entry) {
-            return self.parseBlockSequence(min_indent, section, parent_key);
+            return self.parseBlockSequence(min_indent);
         }
 
         // Flow mapping {
         if (self.current.kind == .flow_mapping_start) {
-            return self.parseFlowMapping(section);
+            return self.parseFlowMapping();
         }
 
         // Flow sequence [
         if (self.current.kind == .flow_sequence_start) {
-            return self.parseFlowSequence(section, parent_key);
+            return self.parseFlowSequence();
         }
 
         // Scalar - could be start of mapping or standalone value
@@ -101,7 +92,7 @@ pub const Parser = struct {
 
             // Check if this is a mapping key (followed by :)
             if (self.current.kind == .mapping_value) {
-                return self.parseBlockMapping(scalar_token, min_indent, section);
+                return self.parseBlockMapping(scalar_token, min_indent);
             }
 
             // Standalone scalar
@@ -111,74 +102,19 @@ pub const Parser = struct {
         // Mapping value directly (shouldn't normally happen)
         if (self.current.kind == .mapping_value) {
             self.advance();
-            return self.parseNode(min_indent, section, parent_key);
+            return self.parseNode(min_indent);
         }
 
         // Comment - skip and continue
         if (self.current.kind == .comment) {
             self.advance();
-            return self.parseNode(min_indent, section, parent_key);
+            return self.parseNode(min_indent);
         }
 
         return Node{ .null_value = self.spanFromToken(self.current) };
     }
 
-    fn sectionForMappingChild(parent_section: []const u8, key: []const u8) []const u8 {
-        if (std.ascii.eqlIgnoreCase(key, "jobs")) return "jobs";
-        if (std.ascii.eqlIgnoreCase(key, "env")) return "env";
-        if (std.ascii.eqlIgnoreCase(key, "with")) return "with";
-        if (std.ascii.eqlIgnoreCase(key, "matrix")) return "matrix";
-        if (std.ascii.eqlIgnoreCase(key, "secrets")) return "secrets";
-        if (std.ascii.eqlIgnoreCase(key, "permissions")) return "permissions";
-        if (std.ascii.eqlIgnoreCase(key, "outputs")) return "outputs";
-        if (std.ascii.eqlIgnoreCase(key, "strategy")) return "strategy";
-        if (std.ascii.eqlIgnoreCase(key, "inputs")) return "inputs";
-        if (std.ascii.eqlIgnoreCase(key, "services")) return "services";
-        if (std.ascii.eqlIgnoreCase(key, "container")) return "container";
-        if (std.ascii.eqlIgnoreCase(key, "defaults")) return "defaults";
-        if (std.ascii.eqlIgnoreCase(key, "concurrency")) return "concurrency";
-        if (std.ascii.eqlIgnoreCase(key, "on")) return "on";
-
-        if (std.mem.eql(u8, parent_section, "jobs")) return "job";
-        if (std.mem.eql(u8, parent_section, "job")) return "job";
-        if (std.mem.eql(u8, parent_section, "strategy")) return "strategy";
-        if (std.mem.eql(u8, parent_section, "step")) return "step";
-        if (std.mem.eql(u8, parent_section, "services")) return "services";
-        if (std.mem.eql(u8, parent_section, "container")) return "container";
-
-        return parent_section;
-    }
-
-    fn sectionForSequenceItem(section: []const u8, parent_key: ?[]const u8) []const u8 {
-        if (parent_key) |pk| {
-            if (std.ascii.eqlIgnoreCase(pk, "steps")) return "step";
-        }
-        return section;
-    }
-
-    fn recordDuplicateIfNeeded(
-        self: *Parser,
-        entries: []const MappingEntry,
-        key: Scalar,
-        section: []const u8,
-    ) ParseError!void {
-        var prior: usize = 0;
-        var first: ?Scalar = null;
-        for (entries) |entry| {
-            if (!std.ascii.eqlIgnoreCase(entry.key.value, key.value)) continue;
-            prior += 1;
-            if (first == null) first = entry.key;
-        }
-        if (prior != 1) return;
-
-        try self.duplicate_keys.append(self.allocator, .{
-            .key = key,
-            .first_key = first.?,
-            .section = section,
-        });
-    }
-
-    fn parseBlockMapping(self: *Parser, first_key_token: Token, min_indent: u32, section: []const u8) ParseError!Node {
+    fn parseBlockMapping(self: *Parser, first_key_token: Token, min_indent: u32) ParseError!Node {
         var entries = std.ArrayList(MappingEntry){};
 
         const key_indent = first_key_token.column;
@@ -191,19 +127,16 @@ pub const Parser = struct {
 
             // Parse value
             self.skipNonNewlineWhitespace();
-            const key_scalar = self.scalarFromToken(current_key);
-            const child_section = sectionForMappingChild(section, key_scalar.value);
-
             const value = if (self.current.kind == .newline or self.current.kind == .eof) blk: {
                 self.skipNewlines();
                 if (self.current.kind != .eof and self.current.column > key_indent) {
-                    break :blk try self.parseNode(key_indent + 1, child_section, key_scalar.value);
+                    break :blk try self.parseNode(key_indent + 1);
                 } else {
                     break :blk Node{ .null_value = self.spanFromToken(self.current) };
                 }
-            } else try self.parseNode(key_indent + 1, child_section, key_scalar.value);
+            } else try self.parseNode(key_indent + 1);
 
-            try self.recordDuplicateIfNeeded(entries.items, key_scalar, section);
+            const key_scalar = self.scalarFromToken(current_key);
             try entries.append(self.allocator, .{
                 .key = key_scalar,
                 .value = value,
@@ -248,11 +181,10 @@ pub const Parser = struct {
         return Node{ .mapping = .{ .entries = owned_entries, .span = span } };
     }
 
-    fn parseBlockSequence(self: *Parser, min_indent: u32, section: []const u8, parent_key: ?[]const u8) ParseError!Node {
+    fn parseBlockSequence(self: *Parser, min_indent: u32) ParseError!Node {
         var items = std.ArrayList(Node){};
         const seq_indent = self.current.column;
         _ = min_indent;
-        const item_section = sectionForSequenceItem(section, parent_key);
 
         while (self.current.kind == .sequence_entry and self.current.column == seq_indent) {
             self.advance(); // consume '-'
@@ -262,12 +194,12 @@ pub const Parser = struct {
             if (self.current.kind == .newline or self.current.kind == .eof) {
                 self.skipNewlines();
                 if (self.current.kind != .eof and self.current.column > seq_indent) {
-                    try items.append(self.allocator, try self.parseNode(seq_indent + 1, item_section, parent_key));
+                    try items.append(self.allocator, try self.parseNode(seq_indent + 1));
                 } else {
                     try items.append(self.allocator, Node{ .null_value = self.spanFromToken(self.current) });
                 }
             } else {
-                try items.append(self.allocator, try self.parseNode(seq_indent + 1, item_section, parent_key));
+                try items.append(self.allocator, try self.parseNode(seq_indent + 1));
             }
 
             self.skipNewlines();
@@ -287,7 +219,7 @@ pub const Parser = struct {
         return Node{ .sequence = .{ .items = owned_items, .span = span } };
     }
 
-    fn parseFlowMapping(self: *Parser, section: []const u8) ParseError!Node {
+    fn parseFlowMapping(self: *Parser) ParseError!Node {
         var entries = std.ArrayList(MappingEntry){};
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '{'
@@ -305,14 +237,11 @@ pub const Parser = struct {
             if (self.current.kind != .mapping_value) break;
             self.advance();
 
-            const key_scalar = self.scalarFromToken(key_token);
-            const child_section = sectionForMappingChild(section, key_scalar.value);
-
             // Value
             self.skipNonNewlineWhitespace();
-            const value = try self.parseFlowValue(child_section, key_scalar.value);
+            const value = try self.parseFlowValue();
 
-            try self.recordDuplicateIfNeeded(entries.items, key_scalar, section);
+            const key_scalar = self.scalarFromToken(key_token);
             try entries.append(self.allocator, .{
                 .key = key_scalar,
                 .value = value,
@@ -333,17 +262,16 @@ pub const Parser = struct {
         return Node{ .mapping = .{ .entries = owned_entries, .span = start_span } };
     }
 
-    fn parseFlowSequence(self: *Parser, section: []const u8, parent_key: ?[]const u8) ParseError!Node {
+    fn parseFlowSequence(self: *Parser) ParseError!Node {
         var items = std.ArrayList(Node){};
         const start_span = self.spanFromToken(self.current);
         self.advance(); // consume '['
-        const item_section = sectionForSequenceItem(section, parent_key);
 
         while (self.current.kind != .flow_sequence_end and self.current.kind != .eof) {
             self.skipNewlinesAndComments();
             if (self.current.kind == .flow_sequence_end) break;
 
-            try items.append(self.allocator, try self.parseFlowValue(item_section, parent_key));
+            try items.append(self.allocator, try self.parseFlowValue());
 
             if (self.current.kind == .flow_entry) {
                 self.advance();
@@ -358,14 +286,14 @@ pub const Parser = struct {
         return Node{ .sequence = .{ .items = owned_items, .span = start_span } };
     }
 
-    fn parseFlowValue(self: *Parser, section: []const u8, parent_key: ?[]const u8) ParseError!Node {
+    fn parseFlowValue(self: *Parser) ParseError!Node {
         self.skipNewlinesAndComments();
 
         if (self.current.kind == .flow_mapping_start) {
-            return self.parseFlowMapping(section);
+            return self.parseFlowMapping();
         }
         if (self.current.kind == .flow_sequence_start) {
-            return self.parseFlowSequence(section, parent_key);
+            return self.parseFlowSequence();
         }
         if (self.current.kind == .scalar) {
             const token = self.current;
@@ -737,22 +665,9 @@ test "parse rejects input nested past max_parse_depth" {
     try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
 }
 
-test "parse records case-insensitive duplicate keys" {
+test "parser deinit cleans up" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var parser = Parser.init(arena.allocator(),
-        \\jobs:
-        \\  build:
-        \\    env:
-        \\      FOO: 1
-        \\      foo: 2
-    );
-    defer parser.deinit();
-    _ = try parser.parse();
-
-    try std.testing.expectEqual(@as(usize, 1), parser.duplicate_keys.items.len);
-    const dup = parser.duplicate_keys.items[0];
-    try std.testing.expectEqualStrings("foo", dup.key.value);
-    try std.testing.expectEqualStrings("FOO", dup.first_key.value);
-    try std.testing.expectEqualStrings("env", dup.section);
+    var parser = Parser.init(arena.allocator(), "a: b");
+    parser.deinit();
 }

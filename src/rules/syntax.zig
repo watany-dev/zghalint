@@ -8,24 +8,92 @@ const Workflow = engine.Workflow;
 const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
+const Node = yaml_types.Node;
+const Mapping = yaml_types.Mapping;
+const Scalar = yaml_types.Scalar;
 
 // ── SYN002: Case-insensitive duplicate YAML keys ──
 
-pub fn emitDuplicateKeyDiagnostics(parser: *const yaml_parser.Parser, list: *DiagnosticList) void {
-    for (parser.duplicate_keys.items) |dup| {
-        const message = std.fmt.allocPrint(
-            list.fixAllocator(),
-            "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
-            .{ dup.key.value, dup.section, dup.first_key.span.start_line, dup.first_key.span.start_col },
-        ) catch return;
+pub fn emitDuplicateKeyDiagnostics(node: Node, list: *DiagnosticList) void {
+    walkDuplicateKeys(node, "workflow", null, list);
+}
 
-        list.append(.{
-            .rule_id = "SYN002",
-            .severity = .@"error",
-            .message = message,
-            .span = dup.key.span,
-            .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
-        }) catch return;
+fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
+    const root = wf.yaml_root orelse return;
+    emitDuplicateKeyDiagnostics(root, list);
+}
+
+fn sectionForMappingChild(parent_section: []const u8, key: []const u8) []const u8 {
+    // Job IDs are arbitrary. A job named `env` is still a job, not an env map.
+    if (std.mem.eql(u8, parent_section, "jobs")) return "job";
+
+    if (std.ascii.eqlIgnoreCase(key, "jobs")) return "jobs";
+    if (std.ascii.eqlIgnoreCase(key, "env")) return "env";
+    if (std.ascii.eqlIgnoreCase(key, "with")) return "with";
+    if (std.ascii.eqlIgnoreCase(key, "matrix")) return "matrix";
+    if (std.ascii.eqlIgnoreCase(key, "secrets")) return "secrets";
+    if (std.ascii.eqlIgnoreCase(key, "permissions")) return "permissions";
+    if (std.ascii.eqlIgnoreCase(key, "outputs")) return "outputs";
+    if (std.ascii.eqlIgnoreCase(key, "strategy")) return "strategy";
+    if (std.ascii.eqlIgnoreCase(key, "inputs")) return "inputs";
+    if (std.ascii.eqlIgnoreCase(key, "services")) return "services";
+    if (std.ascii.eqlIgnoreCase(key, "container")) return "container";
+    if (std.ascii.eqlIgnoreCase(key, "defaults")) return "defaults";
+    if (std.ascii.eqlIgnoreCase(key, "concurrency")) return "concurrency";
+    if (std.ascii.eqlIgnoreCase(key, "on")) return "on";
+
+    if (std.mem.eql(u8, parent_section, "job")) return "job";
+    if (std.mem.eql(u8, parent_section, "strategy")) return "strategy";
+    if (std.mem.eql(u8, parent_section, "step")) return "step";
+    if (std.mem.eql(u8, parent_section, "services")) return "services";
+    if (std.mem.eql(u8, parent_section, "container")) return "container";
+
+    return parent_section;
+}
+
+fn walkDuplicateKeys(node: Node, section: []const u8, parent_key: ?[]const u8, list: *DiagnosticList) void {
+    switch (node) {
+        .mapping => |m| checkMapping(m, section, list),
+        .sequence => |s| {
+            const item_section = blk: {
+                if (parent_key) |pk| {
+                    if (std.ascii.eqlIgnoreCase(pk, "steps")) break :blk "step";
+                }
+                break :blk section;
+            };
+            for (s.items) |item| {
+                walkDuplicateKeys(item, item_section, parent_key, list);
+            }
+        },
+        else => {},
+    }
+}
+
+fn checkMapping(mapping: Mapping, section: []const u8, list: *DiagnosticList) void {
+    for (mapping.entries, 0..) |entry, i| {
+        var first: ?Scalar = null;
+        for (mapping.entries[0..i]) |earlier| {
+            if (!std.ascii.eqlIgnoreCase(earlier.key.value, entry.key.value)) continue;
+            if (first == null) first = earlier.key;
+        }
+        if (first) |prior| {
+            const message = std.fmt.allocPrint(
+                list.fixAllocator(),
+                "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
+                .{ entry.key.value, section, prior.span.start_line, prior.span.start_col },
+            ) catch return;
+
+            list.append(.{
+                .rule_id = "SYN002",
+                .severity = .@"error",
+                .message = message,
+                .span = entry.key.span,
+                .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
+            }) catch return;
+        }
+
+        const child_section = sectionForMappingChild(section, entry.key.value);
+        walkDuplicateKeys(entry.value, child_section, entry.key.value, list);
     }
 }
 
@@ -114,6 +182,7 @@ pub const rules = [_]Rule{
         .description = "the same mapping key appears more than once (case-insensitive)",
         .severity = .@"error",
         .category = .syntax,
+        .check_workflow = &checkDuplicateKeys,
     },
     .{
         .id = "SYN008",
@@ -139,6 +208,7 @@ pub const rules = [_]Rule{
 
 const testing = std.testing;
 const yaml_parser = @import("../yaml/parser.zig");
+const workflow_parser = @import("../workflow/parser.zig");
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 
@@ -156,8 +226,9 @@ fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !v
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    _ = try parser.parse();
-    emitDuplicateKeyDiagnostics(&parser, diags);
+    defer parser.deinit();
+    const node = try parser.parse();
+    emitDuplicateKeyDiagnostics(node, diags);
 }
 
 test "SYN002: duplicated steps key is reported" {
@@ -183,7 +254,9 @@ test "SYN002: duplicated steps key is reported" {
     try testing.expect(diag.severity == .@"error");
     try testing.expect(std.mem.indexOf(u8, diag.message, "STEPS") != null);
     try testing.expect(std.mem.indexOf(u8, diag.message, "job") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "previously defined at line:") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "previously defined at line:5,col:5") != null);
+    try testing.expectEqual(@as(u32, 7), diag.span.start_line);
+    try testing.expectEqual(@as(u32, 5), diag.span.start_col);
 }
 
 test "SYN002: duplicate detection is case-insensitive in matrix" {
@@ -230,7 +303,7 @@ test "SYN002: distinct env keys are not reported" {
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "SYN002: a key repeated three times reports once" {
+test "SYN002: a key repeated three times reports each extra occurrence" {
     const source =
         \\on: push
         \\jobs:
@@ -249,7 +322,127 @@ test "SYN002: a key repeated three times reports once" {
 
     try collectDuplicateKeyDiagnostics(source, &diags);
 
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "foo") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "Foo") != null);
+}
+
+test "SYN002: with mapping duplicates are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\          fetch-depth: 1
+        \\          FETCH-DEPTH: 0
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
     try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "with") != null);
+}
+
+test "SYN002: flow mapping duplicates are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env: {FOO: 1, foo: 2}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "env") != null);
+}
+
+test "SYN002: duplicate job IDs are reported in jobs section" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo a
+        \\  BUILD:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo b
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "jobs") != null);
+}
+
+test "SYN002: a job named env is still a job section" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  env:
+        \\    runs-on: ubuntu-latest
+        \\    RUNS-ON: windows-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "job") != null);
+}
+
+test "SYN002: engine.run emits via yaml_root" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo first
+        \\    STEPS:
+        \\      - run: echo second
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parser = yaml_parser.Parser.init(arena.allocator(), source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(arena.allocator(), node);
+
+    const engine_inst = engine.Engine.init(&rules);
+    var diags = engine_inst.run(testing.allocator, &wf);
+    defer diags.deinit();
+
+    var found = false;
+    for (0..diags.len()) |i| {
+        if (std.mem.eql(u8, diags.get(i).rule_id, "SYN002")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
 }
 
 test "SYN008: duplicated job ID is reported" {

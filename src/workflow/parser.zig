@@ -46,6 +46,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         .on = trigger,
         .concurrency = if (root.get("concurrency")) |n| try parseConcurrency(n) else null,
         .jobs = jobs,
+        .yaml_root = node,
     };
 
     if (root.get("permissions")) |n| {
