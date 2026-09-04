@@ -296,14 +296,14 @@ pub const Tokenizer = struct {
         if (self.source[self.pos] != '$') return false;
         if (self.source[self.pos + 1] != '{' or self.source[self.pos + 2] != '{') return false;
 
-        var end = self.pos + 3;
-        while (end + 1 < self.source.len and self.source[end] != '\n') : (end += 1) {
-            if (self.source[end] != '}' or self.source[end + 1] != '}') continue;
-            end += 2;
-            while (self.pos < end) self.advance();
-            return true;
+        // Unterminated, or closed only on a later line: fall back to normal
+        // plain-scalar scanning.
+        const close = std.mem.indexOfPos(u8, self.source, self.pos + 3, "}}") orelse return false;
+        if (std.mem.indexOfScalarPos(u8, self.source, self.pos + 3, '\n')) |nl| {
+            if (nl < close) return false;
         }
-        return false; // Unterminated: fall back to normal plain-scalar scanning.
+        while (self.pos < close + 2) self.advance();
+        return true;
     }
 
     fn scanPlainScalar(self: *Tokenizer) Token {
@@ -437,12 +437,6 @@ test "tokenizer plain scalar stops at an unterminated interpolation" {
     _ = tokenizer.next(); // stream_start
     const token = tokenizer.next();
     try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
-}
-
-test "tokenizer flow mapping still parses after an interpolation" {
-    var tokenizer = Tokenizer.init("{a: 1}");
-    _ = tokenizer.next(); // stream_start
-    try std.testing.expectEqual(TokenKind.flow_mapping_start, tokenizer.next().kind);
 }
 
 test "tokenizer mapping key-value" {

@@ -64,8 +64,10 @@ const dangerous_contexts = [_][]const u8{
 /// vector but still land verbatim in the shell. Reporting them in `if:` too
 /// would fire on the very common
 /// `contains(github.event.pull_request.labels.*.name, 'deploy')` idiom.
+/// Written as a prefix, so `labels.*.name`, `labels[0].name` and a bare
+/// `toJSON(labels)` are all covered.
 const run_only_dangerous_contexts = [_][]const u8{
-    "github.event.pull_request.labels.*.name",
+    "github.event.pull_request.labels",
 };
 
 const run_dangerous_contexts = dangerous_contexts ++ run_only_dangerous_contexts;
@@ -323,7 +325,7 @@ fn checkConditionForDangerousContext(cond: []const u8, list: *DiagnosticList) vo
         }
     }
     if (has_expr) {
-        checkDangerousContextInString(cond, "SEC006", "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
+        checkContextsInString(cond, &dangerous_contexts, "SEC006", "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
     } else {
         // Bare expression (no ${{ }}), check directly
         if (containsDangerousContext(cond)) {
@@ -426,6 +428,7 @@ fn containsGithubEnvWrite(s: []const u8) bool {
 }
 
 /// Return true if `s` contains any `${{ dangerous_context }}` expression.
+/// `s` is always a `run:` body here, so it uses the same list as SEC002.
 fn hasDangerousContextExpression(s: []const u8) bool {
     var pos: usize = 0;
     while (pos + 4 < s.len) : (pos += 1) {
@@ -441,7 +444,7 @@ fn hasDangerousContextExpression(s: []const u8) bool {
             }
             if (depth == 0) {
                 const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (containsDangerousContext(expr)) {
+                if (containsAnyContext(expr, &run_dangerous_contexts)) {
                     return true;
                 }
                 pos = j + 1;
@@ -1198,10 +1201,6 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 /// Scan a string for ${{ dangerous_context }} patterns
-fn checkDangerousContextInString(s: []const u8, rule_id: []const u8, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
-    checkContextsInString(s, &dangerous_contexts, rule_id, message, fix_hint, list);
-}
-
 fn checkContextsInString(s: []const u8, contexts: []const []const u8, rule_id: []const u8, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
     // Find all ${{ ... }} expressions
     var pos: usize = 0;
@@ -1258,18 +1257,14 @@ const wildcard_segment = "*";
 const ContextPath = struct {
     segments: [max_path_segments][]const u8 = undefined,
     len: usize = 0,
+    /// Index just past the last character the reference consumed.
+    end: usize = 0,
 
     fn append(self: *ContextPath, segment: []const u8) void {
         if (self.len >= max_path_segments) return;
         self.segments[self.len] = segment;
         self.len += 1;
     }
-};
-
-const ParsedPath = struct {
-    path: ContextPath,
-    /// Index just past the last character consumed by the path.
-    end: usize,
 };
 
 /// Scan `expr` for context references and report whether any of them is covered
@@ -1282,16 +1277,18 @@ fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
             i = skipStringLiteral(expr, i);
             continue;
         }
-        const starts_path = isIdentStart(expr[i]) and (i == 0 or !isPathChar(expr[i - 1]));
+        const starts_path = isIdentStart(expr[i]) and (i == 0 or !isIdentChar(expr[i - 1]));
         if (!starts_path) {
             i += 1;
             continue;
         }
-        const parsed = parseContextPath(expr, i);
+        // A whole reference is consumed at once, so segments in the middle of
+        // `steps.meta.outputs.github.head_ref` are never mistaken for a root.
+        const path = parseContextPath(expr, i);
         for (contexts) |ctx| {
-            if (pathMatchesPattern(parsed.path, ctx)) return true;
+            if (pathMatchesPattern(path, ctx)) return true;
         }
-        i = if (parsed.end > i) parsed.end else i + 1;
+        i = if (path.end > i) path.end else i + 1;
     }
     return false;
 }
@@ -1311,7 +1308,7 @@ fn skipStringLiteral(expr: []const u8, start: usize) usize {
 }
 
 /// Parse the context reference that begins at `start`.
-fn parseContextPath(expr: []const u8, start: usize) ParsedPath {
+fn parseContextPath(expr: []const u8, start: usize) ContextPath {
     var path = ContextPath{};
     var i = start;
     while (i < expr.len and isIdentChar(expr[i])) i += 1;
@@ -1336,46 +1333,25 @@ fn parseContextPath(expr: []const u8, start: usize) ParsedPath {
         if (expr[i] == '[') {
             // Any index access is treated as a wildcard: the index may itself be
             // an expression, and every element is equally untrusted.
-            const close = matchBracket(expr, i) orelse break;
+            const close = std.mem.indexOfScalarPos(u8, expr, i + 1, ']') orelse break;
             path.append(wildcard_segment);
             i = close + 1;
             continue;
         }
         break;
     }
-    return .{ .path = path, .end = i };
-}
-
-/// Index of the `]` closing the `[` at `open`, or null when unbalanced.
-fn matchBracket(expr: []const u8, open: usize) ?usize {
-    var depth: u32 = 1;
-    var i = open + 1;
-    while (i < expr.len) : (i += 1) {
-        switch (expr[i]) {
-            '\'' => i = skipStringLiteral(expr, i) - 1,
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if (depth == 0) return i;
-            },
-            else => {},
-        }
-    }
-    return null;
+    path.end = i;
+    return path;
 }
 
 /// True when `pattern` covers `path`. The pattern only needs to be a prefix of
 /// the reference, because everything below an untrusted node is untrusted too.
 fn pathMatchesPattern(path: ContextPath, pattern: []const u8) bool {
-    var rest = pattern;
+    var it = std.mem.splitScalar(u8, pattern, '.');
     var idx: usize = 0;
-    while (rest.len > 0) {
-        const dot = std.mem.indexOfScalar(u8, rest, '.');
-        const pat_seg = if (dot) |d| rest[0..d] else rest;
-        rest = if (dot) |d| rest[d + 1 ..] else "";
+    while (it.next()) |pat_seg| : (idx += 1) {
         if (idx >= path.len) return false; // Reference is shorter than the pattern.
         if (!segmentMatches(path.segments[idx], pat_seg)) return false;
-        idx += 1;
     }
     return true;
 }
@@ -1393,12 +1369,6 @@ fn isIdentChar(c: u8) bool {
 
 fn isIdentStart(c: u8) bool {
     return std.ascii.isAlphabetic(c) or c == '_';
-}
-
-/// Characters that, when preceding an identifier, mean it continues an existing
-/// path rather than starting a new one.
-fn isPathChar(c: u8) bool {
-    return isIdentChar(c) or c == '.';
 }
 
 // ============================================================
@@ -2213,8 +2183,30 @@ test "SEC002: dangerous name nested under another context (no false positive)" {
     try expectSec002("echo \"${{ steps.meta.outputs.github.head_ref }}\"", false);
 }
 
+test "SEC002: bare labels reference without a filter" {
+    try expectSec002("echo \"${{ toJSON(github.event.pull_request.labels) }}\"", true);
+}
+
+test "SEC002: reference rooted after a function call" {
+    try expectSec002("echo \"${{ fromJSON(steps.x.outputs.d).github.head_ref }}\"", true);
+}
+
 test "SEC002: context names are case-insensitive" {
     try expectSec002("echo \"${{ GitHub.Event.Issue.Body }}\"", true);
+}
+
+test "SEC008: run-only context is reported for GITHUB_ENV writes too" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo \"LABEL=${{ github.event.pull_request.labels.*.name }}\" >> $GITHUB_ENV" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC002: labels filter in if: is not reported (SEC006 scope)" {
