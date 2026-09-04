@@ -305,8 +305,20 @@ fn lintFile(
         return;
     };
 
+    var diag_list = zghalint.DiagnosticList.init(allocator);
+    defer diag_list.deinit();
+
+    zghalint.rules.syntax.emitDuplicateKeyDiagnostics(&yaml_parser, &diag_list);
+
     // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
+        for (diag_list.items.items) |diag| {
+            if (!config.isRuleEnabled(diag.rule_id)) continue;
+            var d = diag;
+            d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
+            d.file = file_path;
+            all_diags.appendOwning(d) catch {};
+        }
         stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
         return;
     };
@@ -316,8 +328,12 @@ fn lintFile(
 
     // Run engine
     const engine = zghalint.rules.Engine.init(&all_rules);
-    var diag_list = engine.run(allocator, &workflow);
-    defer diag_list.deinit();
+    var engine_diags = engine.run(allocator, &workflow);
+    defer engine_diags.deinit();
+
+    for (engine_diags.items.items) |diag| {
+        diag_list.append(diag) catch {};
+    }
 
     // Strip SC005 entries that overlap with SC008 verdicts so the user
     // doesn't see two diagnostics for the same impostor SHA. Guard on

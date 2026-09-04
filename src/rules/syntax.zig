@@ -9,6 +9,26 @@ const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
 
+// ── SYN002: Case-insensitive duplicate YAML keys ──
+
+pub fn emitDuplicateKeyDiagnostics(parser: *const yaml_parser.Parser, list: *DiagnosticList) void {
+    for (parser.duplicate_keys.items) |dup| {
+        const message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
+            .{ dup.key.value, dup.section, dup.first_key.span.start_line, dup.first_key.span.start_col },
+        ) catch return;
+
+        list.append(.{
+            .rule_id = "SYN002",
+            .severity = .@"error",
+            .message = message,
+            .span = dup.key.span,
+            .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
+        }) catch return;
+    }
+}
+
 // ── SYN008: Duplicated job ID in `needs` ──
 
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
@@ -89,6 +109,13 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
 
 pub const rules = [_]Rule{
     .{
+        .id = "SYN002",
+        .name = "duplicate-key",
+        .description = "the same mapping key appears more than once (case-insensitive)",
+        .severity = .@"error",
+        .category = .syntax,
+    },
+    .{
         .id = "SYN008",
         .name = "duplicate-needs",
         .description = "the same job ID is listed more than once in 'needs'",
@@ -111,6 +138,7 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 
@@ -122,6 +150,106 @@ fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
 fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
     checkDuplicateNeeds(&job, diags);
+}
+
+fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parser = yaml_parser.Parser.init(arena.allocator(), source);
+    _ = try parser.parse();
+    emitDuplicateKeyDiagnostics(&parser, diags);
+}
+
+test "SYN002: duplicated steps key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo first
+        \\    STEPS:
+        \\      - run: echo second
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN002", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expect(std.mem.indexOf(u8, diag.message, "STEPS") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "job") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "previously defined at line:") != null);
+}
+
+test "SYN002: duplicate detection is case-insensitive in matrix" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        version_name: [v1, v2]
+        \\        VERSION_NAME: [V1, V2]
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "matrix") != null);
+}
+
+test "SYN002: distinct env keys are not reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      FOO: 1
+        \\      foo_bar: 2
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN002: a key repeated three times reports once" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      FOO: 1
+        \\      foo: 2
+        \\      Foo: 3
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "SYN008: duplicated job ID is reported" {

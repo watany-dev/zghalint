@@ -123,8 +123,27 @@ Validate the structural correctness of the workflow definition itself.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
+| SYN002 | duplicate-key | error | The same mapping key appears more than once (case-insensitive) |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+
+### SYN002 duplicate-key
+
+GitHub Actions resolves mapping keys case-insensitively. A second key that
+differs only in letter case silently overrides the first definition.
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo first
+    STEPS:                  # error: key "STEPS" duplicates "steps"
+      - run: echo second
+```
+
+Keys that are distinct even when lowercased (for example `FOO` and
+`foo_bar` under `env:`) are not reported.
 
 ### SYN012 exclusive-event-filters
 
