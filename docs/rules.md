@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **54 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **58 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -130,10 +130,32 @@ Validate the structural correctness of the workflow definition itself.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
+| SYN001 | unknown-key | error | Mapping contains a key that is not defined in the GitHub Actions workflow schema |
+| SYN002 | duplicate-key | error | The same mapping key appears more than once (case-insensitive) |
 | SYN003 | empty-section | error | Required workflow sections must not be empty mappings or sequences |
+| SYN004 | mapping-value-type | error | Mapping value does not match the expected type for its key (e.g. string where a number or bool is required) |
 | SYN005 | duplicate-id | error | Job IDs and step IDs must be unique within a workflow or job (case-insensitive) |
+| SYN006 | invalid-id-naming | error | Job ID and step ID must start with a letter or `_` and contain only alphanumeric characters, `-`, or `_` |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+
+### SYN002 duplicate-key
+
+GitHub Actions resolves mapping keys case-insensitively. A second key that
+differs only in letter case silently overrides the first definition.
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo first
+    STEPS:                  # error: key "STEPS" duplicates "steps"
+      - run: echo second
+```
+
+Keys that are distinct even when lowercased (for example `FOO` and
+`foo_bar` under `env:`) are not reported.
 
 ### SYN003 empty-section
 

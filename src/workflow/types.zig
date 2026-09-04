@@ -1,5 +1,8 @@
 const std = @import("std");
 const yaml_types = @import("../yaml/types.zig");
+const schema = @import("schema.zig");
+
+pub const UnknownKey = schema.UnknownKey;
 
 /// A workflow section that was present in the source but empty.
 pub const EmptySection = struct {
@@ -265,7 +268,7 @@ pub const Strategy = struct {
 /// A single workflow step
 pub const Step = struct {
     id: ?[]const u8 = null,
-    /// Span of the `id:` scalar value (for SYN005 diagnostics).
+    /// Span of the `id:` scalar value (for SYN005/SYN006 diagnostics).
     id_value_span: ?yaml_types.Span = null,
     name: ?[]const u8 = null,
     uses: ?ActionRef = null,
@@ -329,12 +332,14 @@ pub const Service = struct {
 /// A workflow job
 pub const Job = struct {
     id: []const u8,
-    /// Span of the job key in the top-level `jobs:` mapping (for SYN005 diagnostics).
+    /// Span of the job key in the top-level `jobs:` mapping (for SYN005/SYN006 diagnostics).
     id_span: ?yaml_types.Span = null,
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     name: ?[]const u8 = null,
     runs_on: ?[]const u8 = null,
     needs: []const []const u8 = &.{},
+    /// Value spans of `needs` entries, parallel to `needs`. Empty when absent.
+    needs_spans: []const yaml_types.Span = &.{},
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
     steps: []const Step = &.{},
@@ -344,6 +349,8 @@ pub const Job = struct {
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
     timeout_minutes: ?u32 = null,
+    /// True when `timeout-minutes` is present in YAML, even if the value is invalid.
+    timeout_minutes_specified: bool = false,
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
     continue_on_error: bool = false,
@@ -376,13 +383,21 @@ pub const Workflow = struct {
     concurrency: ?Concurrency = null,
     jobs: []const Job,
     empty_sections: []const EmptySection = &.{},
+    /// Keys present in workflow mappings but not defined by the GitHub Actions schema.
+    unknown_keys: []const schema.UnknownKey = &.{},
+    /// Mapping value type mismatches collected during parsing (SYN004).
+    type_mismatches: []const type_validation.TypeMismatch = &.{},
     /// Top-level keys are always at column 1.
     top_level_indent: u32 = 0,
     /// Byte position to insert a new top-level `permissions:` entry (after `on:` line).
     permissions_insertion_byte: ?usize = null,
     /// Byte position to insert a new top-level `concurrency:` entry (after `on:` line).
     concurrency_insertion_byte: ?usize = null,
+    /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
+    yaml_root: ?yaml_types.Node = null,
 };
+
+const type_validation = @import("type_validation.zig");
 
 // ============================================================
 // Tests

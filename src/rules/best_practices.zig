@@ -21,7 +21,7 @@ const FixSafety = diagnostics_mod.FixSafety;
 // ── BP001: Missing timeout-minutes ──
 
 fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
-    if (job.timeout_minutes != null) return;
+    if (job.timeout_minutes != null or job.timeout_minutes_specified) return;
 
     var fix: ?Fix = null;
     if (job.span.start_col >= 1) {
@@ -447,6 +447,14 @@ test "BP001: no fix when span has no position info" {
 
 test "BP001: no warning when timeout is set" {
     const job = Job{ .id = "build", .timeout_minutes = 30 };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkMissingTimeout(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP001: no warning when timeout-minutes key is present but invalid" {
+    const job = Job{ .id = "build", .timeout_minutes_specified = true };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     checkMissingTimeout(&job, &diags);
