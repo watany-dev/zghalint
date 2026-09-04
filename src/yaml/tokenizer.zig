@@ -37,6 +37,9 @@ pub const Tokenizer = struct {
     line: u32,
     column: u32,
     started: bool,
+    /// Nesting depth of flow collections. Outside flow context, `,{}[]` are
+    /// ordinary characters inside a plain scalar (e.g. `run: echo ${{ x }}`).
+    flow_depth: u32,
 
     pub fn init(source: []const u8) Tokenizer {
         return .{
@@ -45,6 +48,7 @@ pub const Tokenizer = struct {
             .line = 1,
             .column = 1,
             .started = false,
+            .flow_depth = 0,
         };
     }
 
@@ -113,11 +117,15 @@ pub const Tokenizer = struct {
         }
 
         // Flow indicators
-        if (c == '{') return self.emitSimple(.flow_mapping_start, 1);
-        if (c == '}') return self.emitSimple(.flow_mapping_end, 1);
-        if (c == '[') return self.emitSimple(.flow_sequence_start, 1);
-        if (c == ']') return self.emitSimple(.flow_sequence_end, 1);
-        if (c == ',') return self.emitSimple(.flow_entry, 1);
+        if (c == '{' or c == '[') {
+            self.flow_depth += 1;
+            return self.emitSimple(if (c == '{') .flow_mapping_start else .flow_sequence_start, 1);
+        }
+        if (c == '}' or c == ']') {
+            if (self.flow_depth > 0) self.flow_depth -= 1;
+            return self.emitSimple(if (c == '}') .flow_mapping_end else .flow_sequence_end, 1);
+        }
+        if (c == ',' and self.flow_depth > 0) return self.emitSimple(.flow_entry, 1);
 
         // Colon followed by space or end -> mapping value indicator
         if (c == ':' and (self.peekNext() == ' ' or self.peekNext() == '\n' or self.pos + 1 >= self.source.len)) {
@@ -294,7 +302,9 @@ pub const Tokenizer = struct {
         const col = self.column;
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
-            if (ch == '\n' or ch == '#' or ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']') {
+            if (ch == '\n' or ch == '#') break;
+            // Flow indicators only terminate a plain scalar inside a flow collection.
+            if (self.flow_depth > 0 and (ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']')) {
                 break;
             }
             // Colon followed by space is a mapping value indicator
@@ -465,6 +475,39 @@ test "tokenizer flow sequence" {
     try std.testing.expectEqual(TokenKind.scalar, tokenizer.next().kind); // 2
     try std.testing.expectEqual(TokenKind.flow_entry, tokenizer.next().kind);
     try std.testing.expectEqual(TokenKind.scalar, tokenizer.next().kind); // 3
+    try std.testing.expectEqual(TokenKind.flow_sequence_end, tokenizer.next().kind);
+}
+
+test "tokenizer plain scalar keeps GitHub expression braces" {
+    var tokenizer = Tokenizer.init("run: echo ${{ github.head_ref }}\n");
+    _ = tokenizer.next(); // stream_start
+    _ = tokenizer.next(); // run
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const value = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, value.kind);
+    try std.testing.expectEqualStrings("echo ${{ github.head_ref }}", value.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar keeps commas outside flow context" {
+    var tokenizer = Tokenizer.init("name: build, test\n");
+    _ = tokenizer.next(); // stream_start
+    _ = tokenizer.next(); // name
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const value = tokenizer.next();
+    try std.testing.expectEqualStrings("build, test", value.slice(tokenizer.source));
+}
+
+test "tokenizer flow indicators still split inside a flow collection" {
+    var tokenizer = Tokenizer.init("on: [push, pull_request]\n");
+    _ = tokenizer.next(); // stream_start
+    _ = tokenizer.next(); // on
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    try std.testing.expectEqual(TokenKind.flow_sequence_start, tokenizer.next().kind);
+    const push = tokenizer.next();
+    try std.testing.expectEqualStrings("push", push.slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.flow_entry, tokenizer.next().kind);
+    const pr = tokenizer.next();
+    try std.testing.expectEqualStrings("pull_request", pr.slice(tokenizer.source));
     try std.testing.expectEqual(TokenKind.flow_sequence_end, tokenizer.next().kind);
 }
 
