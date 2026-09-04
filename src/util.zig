@@ -64,6 +64,46 @@ pub fn writeJsonString(writer: anytype, s: []const u8) !void {
     try writer.writeByte('"');
 }
 
+/// ASCII-only Levenshtein distance. Returns `std.math.maxInt(usize)` for inputs
+/// longer than MAX_LEN to avoid pathological allocations.
+pub fn levenshteinDistance(a: []const u8, b: []const u8) usize {
+    const MAX_LEN: usize = 64;
+    if (a.len > MAX_LEN or b.len > MAX_LEN) return std.math.maxInt(usize);
+    if (a.len == 0) return b.len;
+    if (b.len == 0) return a.len;
+
+    var prev: [MAX_LEN + 1]usize = undefined;
+    var curr: [MAX_LEN + 1]usize = undefined;
+    var i: usize = 0;
+    while (i <= b.len) : (i += 1) prev[i] = i;
+
+    i = 1;
+    while (i <= a.len) : (i += 1) {
+        curr[0] = i;
+        var j: usize = 1;
+        while (j <= b.len) : (j += 1) {
+            const cost: usize = if (a[i - 1] == b[j - 1]) 0 else 1;
+            const del = prev[j] + 1;
+            const ins = curr[j - 1] + 1;
+            const sub = prev[j - 1] + cost;
+            curr[j] = @min(@min(del, ins), sub);
+        }
+        @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+    }
+    return prev[b.len];
+}
+
+test "levenshteinDistance basic cases" {
+    try std.testing.expectEqual(@as(usize, 0), levenshteinDistance("abc", "abc"));
+    try std.testing.expectEqual(@as(usize, 1), levenshteinDistance("chekout", "checkout"));
+    try std.testing.expectEqual(@as(usize, 1), levenshteinDistance("runs", "run"));
+    try std.testing.expectEqual(@as(usize, 1), levenshteinDistance("cache", "cach"));
+    try std.testing.expectEqual(
+        std.math.maxInt(usize),
+        levenshteinDistance("a" ** 65, "b"),
+    );
+}
+
 test "actionBaseName strips version suffix" {
     try std.testing.expectEqualStrings("actions/checkout", actionBaseName("actions/checkout@v4"));
     try std.testing.expectEqualStrings("actions/checkout", actionBaseName("actions/checkout@abc123"));
