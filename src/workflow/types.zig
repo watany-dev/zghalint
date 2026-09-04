@@ -8,6 +8,15 @@ pub const UnknownKey = schema.UnknownKey;
 pub const StringMap = std.StringArrayHashMap([]const u8);
 pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
 
+/// A single key of an `env:` mapping, kept alongside `env` so that name
+/// validation (SYN007) sees every key — including duplicates and keys whose
+/// value is not a scalar, both of which `StringMap` drops — and can point the
+/// diagnostic at the key token instead of its value.
+pub const EnvKey = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 /// Source metadata for a scalar value preserved for autofix generation.
 pub const ScalarValueMeta = struct {
     value_span: yaml_types.Span,
@@ -271,6 +280,8 @@ pub const Step = struct {
     with: ?StringMap = null,
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
+    /// Keys of the `env:` mapping in source order (for SYN007).
+    env_keys: []const EnvKey = &.{},
     if_condition: ?[]const u8 = null,
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
@@ -338,6 +349,8 @@ pub const Job = struct {
     steps: []const Step = &.{},
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
+    /// Keys of the `env:` mapping in source order (for SYN007).
+    env_keys: []const EnvKey = &.{},
     if_condition: ?[]const u8 = null,
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
@@ -372,6 +385,8 @@ pub const Workflow = struct {
     permissions_meta: ?PermissionsMeta = null,
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
+    /// Keys of the `env:` mapping in source order (for SYN007).
+    env_keys: []const EnvKey = &.{},
     concurrency: ?Concurrency = null,
     jobs: []const Job,
     /// Keys present in workflow mappings but not defined by the GitHub Actions schema.
