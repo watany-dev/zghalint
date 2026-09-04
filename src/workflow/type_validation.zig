@@ -40,9 +40,16 @@ pub const Collector = struct {
 /// Unquoted `${{ ... }}` scalars are often truncated to `$` by the YAML parser
 /// because `{` starts a flow mapping.
 pub fn containsExpression(value: []const u8) bool {
-    if (value.len == 0) return false;
-    if (value[0] == '$') return true;
-    return std.mem.indexOf(u8, value, "${{") != null;
+    if (std.mem.indexOf(u8, value, "${{") != null) return true;
+    return value.len == 1 and value[0] == '$';
+}
+
+fn invalidNumberKind(value: []const u8) []const u8 {
+    if (value.len > 0 and value[0] == '-') return "negative number";
+    for (value) |c| {
+        if (c < '0' or c > '9') return "string";
+    }
+    return "number out of range";
 }
 
 fn nodeKindLabel(node: Node) []const u8 {
@@ -94,7 +101,7 @@ pub fn checkNumber(node: Node, field: []const u8, collector: *Collector) ?u32 {
             collector.report(.{
                 .field = field,
                 .expected = .number,
-                .actual = "string",
+                .actual = invalidNumberKind(s.value),
                 .span = s.span,
             });
             return null;
@@ -169,6 +176,43 @@ test "checkBool skips truncated expression scalars" {
     var collector = Collector{ .allocator = testing.allocator, .list = &list };
     try testing.expect(checkBool(mkScalar("$"), "continue-on-error", &collector) == null);
     try testing.expectEqual(@as(usize, 0), list.items.len);
+}
+
+test "checkBool does not skip dollar-prefixed non-expressions" {
+    var list = std.ArrayList(TypeMismatch){};
+    defer list.deinit(testing.allocator);
+    var collector = Collector{ .allocator = testing.allocator, .list = &list };
+    _ = checkBool(mkScalar("$maybe"), "continue-on-error", &collector);
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+}
+
+test "checkNumber rejects negative numbers" {
+    var list = std.ArrayList(TypeMismatch){};
+    defer list.deinit(testing.allocator);
+    var collector = Collector{ .allocator = testing.allocator, .list = &list };
+    _ = checkNumber(mkScalar("-1"), "timeout-minutes", &collector);
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqualStrings("negative number", list.items[0].actual);
+}
+
+test "checkNumber rejects overflow" {
+    var list = std.ArrayList(TypeMismatch){};
+    defer list.deinit(testing.allocator);
+    var collector = Collector{ .allocator = testing.allocator, .list = &list };
+    _ = checkNumber(mkScalar("99999999999"), "timeout-minutes", &collector);
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqualStrings("number out of range", list.items[0].actual);
+}
+
+test "checkNumber rejects non-scalar nodes" {
+    var list = std.ArrayList(TypeMismatch){};
+    defer list.deinit(testing.allocator);
+    var collector = Collector{ .allocator = testing.allocator, .list = &list };
+    var items = [_]Node{mkScalar("1")};
+    const seq = Node{ .sequence = .{ .items = &items, .span = mkSpan(0) } };
+    _ = checkNumber(seq, "timeout-minutes", &collector);
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqualStrings("sequence", list.items[0].actual);
 }
 
 test "checkNumber accepts integer scalars" {

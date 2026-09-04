@@ -185,6 +185,118 @@ test "SYN004: invalid timeout-minutes, continue-on-error, and max-parallel" {
         try testing.expectEqualStrings("SYN004", diag.rule_id);
         try testing.expect(diag.severity == .@"error");
     }
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "timeout-minutes") != null);
+}
+
+test "SYN004: fail-fast and cancel-in-progress invalid bools are reported" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  cancel-in-progress: yes
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      fail-fast: maybe
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runSyn004(source, &arena, &diags);
+    try testing.expectEqual(@as(usize, 2), diags.len());
+}
+
+test "SYN004: wrong node kinds are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minutes: [10]
+        \\    continue-on-error: {}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var yaml_parser = @import("../yaml/parser.zig").Parser.init(alloc, source);
+    defer yaml_parser.deinit();
+    const yaml_node = try yaml_parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    try testing.expectEqual(@as(usize, 2), wf.type_mismatches.len);
+
+    var saw_timeout = false;
+    var saw_continue = false;
+    for (wf.type_mismatches) |mismatch| {
+        if (std.mem.eql(u8, mismatch.field, "timeout-minutes")) {
+            try testing.expectEqualStrings("sequence", mismatch.actual);
+            saw_timeout = true;
+        }
+        if (std.mem.eql(u8, mismatch.field, "continue-on-error")) {
+            try testing.expectEqualStrings("mapping", mismatch.actual);
+            saw_continue = true;
+        }
+    }
+    try testing.expect(saw_timeout);
+    try testing.expect(saw_continue);
+}
+
+test "SYN004: dollar-prefixed non-expressions are not skipped" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    continue-on-error: $maybe
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runSyn004(source, &arena, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "SYN004: message survives appendOwning across diagnostic lists" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minutes: "ten"
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var src_diags = DiagnosticList.init(testing.allocator);
+    defer src_diags.deinit();
+    try runSyn004(source, &arena, &src_diags);
+    try testing.expectEqual(@as(usize, 1), src_diags.len());
+
+    var dst_diags = DiagnosticList.init(testing.allocator);
+    defer dst_diags.deinit();
+    try dst_diags.appendOwning(src_diags.get(0));
+
+    try testing.expectEqualStrings(
+        "expected number for \"timeout-minutes\", but found string",
+        dst_diags.get(0).message,
+    );
 }
 
 test "SYN004: valid typed values produce no diagnostic" {

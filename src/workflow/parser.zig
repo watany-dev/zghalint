@@ -30,6 +30,7 @@ const ParsedPermissions = struct {
 /// Parse a YAML AST Node into a Workflow struct
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
     var type_mismatches = std.ArrayList(type_validation.TypeMismatch){};
+    errdefer type_mismatches.deinit(allocator);
     var ctx = ParseContext{
         .allocator = allocator,
         .type_collector = .{ .allocator = allocator, .list = &type_mismatches },
@@ -342,6 +343,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, node: Node) ParseError!types.Job
     }
 
     if (m.get("timeout-minutes")) |n| {
+        job.timeout_minutes_specified = true;
         job.timeout_minutes = type_validation.checkNumber(n, "timeout-minutes", &ctx.type_collector);
     }
     if (m.get("continue-on-error")) |n| {

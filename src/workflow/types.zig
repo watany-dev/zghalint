@@ -333,6 +333,8 @@ pub const Job = struct {
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
     timeout_minutes: ?u32 = null,
+    /// True when `timeout-minutes` is present in YAML, even if the value is invalid.
+    timeout_minutes_specified: bool = false,
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
     continue_on_error: bool = false,
