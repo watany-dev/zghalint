@@ -21,28 +21,6 @@ const ParsedPermissions = struct {
     meta: ?types.PermissionsMeta,
 };
 
-const EmptySectionList = struct {
-    list: std.ArrayList(types.EmptySection),
-    allocator: std.mem.Allocator,
-
-    fn init(allocator: std.mem.Allocator) EmptySectionList {
-        return .{ .list = .{}, .allocator = allocator };
-    }
-
-    fn deinit(self: *EmptySectionList) void {
-        self.list.deinit(self.allocator);
-    }
-
-    fn record(self: *EmptySectionList, name: []const u8, node: Node) !void {
-        if (!isEmptyContainer(node)) return;
-        try self.list.append(self.allocator, .{ .name = name, .span = node.getSpan() });
-    }
-
-    fn toOwnedSlice(self: *EmptySectionList) ![]const types.EmptySection {
-        return try self.list.toOwnedSlice(self.allocator);
-    }
-};
-
 fn isEmptyContainer(node: Node) bool {
     return switch (node) {
         .mapping => |m| m.entries.len == 0,
@@ -52,8 +30,13 @@ fn isEmptyContainer(node: Node) bool {
     };
 }
 
+fn recordEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, name: []const u8, node: Node) !void {
+    if (!isEmptyContainer(node)) return;
+    try list.append(allocator, .{ .name = name, .span = node.getSpan() });
+}
+
 /// `workflow_dispatch` / `workflow_call` nested maps (`inputs`, `outputs`, `secrets`).
-fn recordTriggerNestedEmpty(list: *EmptySectionList, node: Node) !void {
+fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, node: Node) !void {
     const mapping = switch (node) {
         .mapping => |m| m,
         else => return,
@@ -65,12 +48,12 @@ fn recordTriggerNestedEmpty(list: *EmptySectionList, node: Node) !void {
         };
         switch (types.EventType.fromString(entry.key.value)) {
             .workflow_dispatch => {
-                if (inner.get("inputs")) |n| try list.record("inputs", n);
+                if (inner.get("inputs")) |n| try recordEmpty(list, allocator, "inputs", n);
             },
             .workflow_call => {
-                if (inner.get("inputs")) |n| try list.record("inputs", n);
-                if (inner.get("outputs")) |n| try list.record("outputs", n);
-                if (inner.get("secrets")) |n| try list.record("secrets", n);
+                if (inner.get("inputs")) |n| try recordEmpty(list, allocator, "inputs", n);
+                if (inner.get("outputs")) |n| try recordEmpty(list, allocator, "outputs", n);
+                if (inner.get("secrets")) |n| try recordEmpty(list, allocator, "secrets", n);
             },
             else => {},
         }
@@ -84,20 +67,20 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         else => return error.InvalidValue,
     };
 
-    var empty = EmptySectionList.init(allocator);
-    defer empty.deinit();
+    var empty = std.ArrayList(types.EmptySection){};
+    defer empty.deinit(allocator);
 
     // YAML 1.1 may parse the `on` key as boolean `true`.
     const on_node = root.get("on") orelse root.get("true") orelse return error.MissingField;
-    try empty.record("on", on_node);
-    try recordTriggerNestedEmpty(&empty, on_node);
+    try recordEmpty(&empty, allocator, "on", on_node);
+    try recordTriggerNestedEmpty(&empty, allocator, on_node);
     const trigger = if (isEmptyContainer(on_node))
         types.Trigger{ .events = &.{} }
     else
         try parseTrigger(allocator, on_node);
 
     const jobs_node = root.get("jobs") orelse return error.MissingField;
-    try empty.record("jobs", jobs_node);
+    try recordEmpty(&empty, allocator, "jobs", jobs_node);
     const jobs = if (isEmptyContainer(jobs_node))
         try allocator.alloc(types.Job, 0)
     else
@@ -117,7 +100,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     }
 
     if (root.get("env")) |n| {
-        try empty.record("env", n);
+        try recordEmpty(&empty, allocator, "env", n);
         if (!isEmptyContainer(n)) {
             const parsed = try parseStringMapWithMeta(allocator, n);
             workflow.env = parsed.values;
@@ -126,7 +109,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     }
 
     if (root.get("defaults")) |n| {
-        try empty.record("defaults", n);
+        try recordEmpty(&empty, allocator, "defaults", n);
     }
 
     // Compute insertion anchors for top-level `permissions:` / `concurrency:`
@@ -142,7 +125,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         }
     }
 
-    workflow.empty_sections = try empty.toOwnedSlice();
+    workflow.empty_sections = try empty.toOwnedSlice(allocator);
     return workflow;
 }
 
@@ -368,8 +351,8 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
     job.name = m.getScalar("name");
     job.runs_on = m.getScalar("runs-on");
 
-    var empty = EmptySectionList.init(allocator);
-    defer empty.deinit();
+    var empty = std.ArrayList(types.EmptySection){};
+    defer empty.deinit(allocator);
     if (m.get("runs-on")) |n| {
         switch (n) {
             .scalar => |s| job.runs_on_value_span = s.span,
@@ -413,7 +396,7 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
     }
 
     if (m.get("steps")) |n| {
-        try empty.record("steps", n);
+        try recordEmpty(&empty, allocator, "steps", n);
         if (!isEmptyContainer(n)) {
             job.steps = try parseSteps(allocator, n);
         }
@@ -425,7 +408,7 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
         job.permissions_meta = parsed.meta;
     }
     if (m.get("env")) |n| {
-        try empty.record("env", n);
+        try recordEmpty(&empty, allocator, "env", n);
         if (!isEmptyContainer(n)) {
             const parsed = try parseStringMapWithMeta(allocator, n);
             job.env = parsed.values;
@@ -436,13 +419,13 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
         job.concurrency = try parseConcurrency(n);
     }
     if (m.get("strategy")) |n| {
-        try empty.record("strategy", n);
+        try recordEmpty(&empty, allocator, "strategy", n);
         if (!isEmptyContainer(n)) {
             job.strategy = try parseStrategy(n);
             switch (n) {
                 .mapping => |sm| {
                     if (sm.get("matrix")) |matrix_node| {
-                        try empty.record("matrix", matrix_node);
+                        try recordEmpty(&empty, allocator, "matrix", matrix_node);
                     }
                 },
                 else => {},
@@ -450,33 +433,33 @@ fn parseJob(allocator: std.mem.Allocator, id: []const u8, node: Node) ParseError
         }
     }
     if (m.get("with")) |n| {
-        try empty.record("with", n);
+        try recordEmpty(&empty, allocator, "with", n);
         if (!isEmptyContainer(n)) {
             job.with = try parseStringMap(allocator, n);
         }
     }
     if (m.get("secrets")) |n| {
-        try empty.record("secrets", n);
+        try recordEmpty(&empty, allocator, "secrets", n);
         if (!isEmptyContainer(n)) {
             job.secrets = try parseSecretsConfig(allocator, n);
         }
     }
     if (m.get("container")) |n| {
-        try empty.record("container", n);
+        try recordEmpty(&empty, allocator, "container", n);
         if (!isEmptyContainer(n)) {
             job.container = try parseContainer(n);
         }
     }
     if (m.get("services")) |n| {
-        try empty.record("services", n);
+        try recordEmpty(&empty, allocator, "services", n);
         if (!isEmptyContainer(n)) {
             job.services = try parseServices(allocator, n);
         }
     }
-    if (m.get("outputs")) |n| try empty.record("outputs", n);
-    if (m.get("defaults")) |n| try empty.record("defaults", n);
+    if (m.get("outputs")) |n| try recordEmpty(&empty, allocator, "outputs", n);
+    if (m.get("defaults")) |n| try recordEmpty(&empty, allocator, "defaults", n);
 
-    job.empty_sections = try empty.toOwnedSlice();
+    job.empty_sections = try empty.toOwnedSlice(allocator);
     return job;
 }
 
@@ -565,10 +548,10 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
         step.continue_on_error = std.mem.eql(u8, v, "true");
     }
     // Parse with: and capture last entry's value end byte for autofix
-    var empty = EmptySectionList.init(allocator);
-    defer empty.deinit();
+    var empty = std.ArrayList(types.EmptySection){};
+    defer empty.deinit(allocator);
     if (m.get("with")) |with_node| {
-        try empty.record("with", with_node);
+        try recordEmpty(&empty, allocator, "with", with_node);
         if (!isEmptyContainer(with_node)) {
             step.with = try parseStringMap(allocator, with_node);
             switch (with_node) {
@@ -583,14 +566,14 @@ fn parseStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
         }
     }
     if (m.get("env")) |n| {
-        try empty.record("env", n);
+        try recordEmpty(&empty, allocator, "env", n);
         if (!isEmptyContainer(n)) {
             const parsed = try parseStringMapWithMeta(allocator, n);
             step.env = parsed.values;
             step.env_meta = parsed.meta;
         }
     }
-    step.empty_sections = try empty.toOwnedSlice();
+    step.empty_sections = try empty.toOwnedSlice(allocator);
 
     return step;
 }

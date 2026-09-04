@@ -31,19 +31,15 @@ fn emptySectionMessage(section: []const u8) []const u8 {
     return messages.get(section) orelse "section should not be empty";
 }
 
-fn reportEmptySection(section: []const u8, span: Span, list: *DiagnosticList) void {
-    list.append(.{
-        .rule_id = "SYN003",
-        .severity = .@"error",
-        .message = emptySectionMessage(section),
-        .span = span,
-        .fix_hint = "remove this section if it is unnecessary",
-    }) catch return;
-}
-
 fn checkEmptySections(sections: []const workflow_types.EmptySection, list: *DiagnosticList) void {
     for (sections) |section| {
-        reportEmptySection(section.name, section.span, list);
+        list.append(.{
+            .rule_id = "SYN003",
+            .severity = .@"error",
+            .message = emptySectionMessage(section.name),
+            .span = section.span,
+            .fix_hint = "remove this section if it is unnecessary",
+        }) catch return;
     }
 }
 
@@ -187,15 +183,6 @@ fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
 const workflow_parser = @import("../workflow/parser.zig");
 const yaml_parser_mod = @import("../yaml/parser.zig");
 
-fn runEngineOnWorkflow(wf: Workflow, diags: *DiagnosticList) void {
-    const rule_engine = engine.Engine.init(&rules);
-    var list = rule_engine.run(testing.allocator, &wf);
-    defer list.deinit();
-    for (list.items.items) |diag| {
-        diags.append(diag) catch return;
-    }
-}
-
 fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -205,7 +192,13 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     defer parser.deinit();
     const node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, node);
-    runEngineOnWorkflow(wf, diags);
+
+    const rule_engine = engine.Engine.init(&rules);
+    var list = rule_engine.run(testing.allocator, &wf);
+    defer list.deinit();
+    for (list.items.items) |diag| {
+        diags.append(diag) catch return;
+    }
 }
 
 fn expectSyn003(diags: DiagnosticList, expected: []const []const u8) !void {
