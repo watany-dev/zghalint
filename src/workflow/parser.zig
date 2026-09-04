@@ -29,6 +29,45 @@ const ParsedPermissions = struct {
     meta: ?types.PermissionsMeta,
 };
 
+fn isEmptyContainer(node: Node) bool {
+    return switch (node) {
+        .mapping => |m| m.entries.len == 0,
+        .sequence => |s| s.items.len == 0,
+        .null_value => true,
+        else => false,
+    };
+}
+
+fn recordEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, name: []const u8, node: Node) !void {
+    if (!isEmptyContainer(node)) return;
+    try list.append(allocator, .{ .name = name, .span = node.getSpan() });
+}
+
+/// `workflow_dispatch` / `workflow_call` nested maps (`inputs`, `outputs`, `secrets`).
+fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, node: Node) !void {
+    const mapping = switch (node) {
+        .mapping => |m| m,
+        else => return,
+    };
+    for (mapping.entries) |entry| {
+        const inner = switch (entry.value) {
+            .mapping => |im| im,
+            else => continue,
+        };
+        switch (types.EventType.fromString(entry.key.value)) {
+            .workflow_dispatch => {
+                if (inner.get("inputs")) |n| try recordEmpty(list, allocator, "inputs", n);
+            },
+            .workflow_call => {
+                if (inner.get("inputs")) |n| try recordEmpty(list, allocator, "inputs", n);
+                if (inner.get("outputs")) |n| try recordEmpty(list, allocator, "outputs", n);
+                if (inner.get("secrets")) |n| try recordEmpty(list, allocator, "secrets", n);
+            },
+            else => {},
+        }
+    }
+}
+
 /// Parse a YAML AST Node into a Workflow struct
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
     var type_mismatches = std.ArrayList(type_validation.TypeMismatch){};
@@ -48,18 +87,23 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         else => return error.InvalidValue,
     };
 
-    const trigger = if (root.get("on")) |on_node|
-        try parseTrigger(allocator, on_node)
-    else if (root.get("true")) |on_node|
-        // YAML parses bare `on:` as boolean `true` key in some cases
-        try parseTrigger(allocator, on_node)
-    else
-        return error.MissingField;
+    var empty = std.ArrayList(types.EmptySection){};
+    defer empty.deinit(allocator);
 
-    const jobs = if (root.get("jobs")) |jobs_node|
-        try parseJobs(&ctx, jobs_node)
+    const on_node = root.get("on") orelse root.get("true") orelse return error.MissingField;
+    try recordEmpty(&empty, allocator, "on", on_node);
+    try recordTriggerNestedEmpty(&empty, allocator, on_node);
+    const trigger = if (isEmptyContainer(on_node))
+        types.Trigger{ .events = &.{} }
     else
-        return error.MissingField;
+        try parseTrigger(allocator, on_node);
+
+    const jobs_node = root.get("jobs") orelse return error.MissingField;
+    try recordEmpty(&empty, allocator, "jobs", jobs_node);
+    const jobs = if (isEmptyContainer(jobs_node))
+        try allocator.alloc(types.Job, 0)
+    else
+        try parseJobs(&ctx, jobs_node);
 
     var workflow = types.Workflow{
         .name = root.getScalar("name"),
@@ -77,15 +121,24 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     }
 
     if (root.get("env")) |n| {
-        const parsed = try parseStringMapWithMeta(allocator, n);
-        workflow.env = parsed.values;
-        workflow.env_meta = parsed.meta;
+        try recordEmpty(&empty, allocator, "env", n);
+        if (!isEmptyContainer(n)) {
+            const parsed = try parseStringMapWithMeta(allocator, n);
+            workflow.env = parsed.values;
+            workflow.env_meta = parsed.meta;
+            workflow.env_keys = try parseEnvKeys(allocator, n);
+        }
+    }
+
+    if (root.get("defaults")) |n| {
+        try recordEmpty(&empty, allocator, "defaults", n);
     }
 
     try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys, &.{schema.workflow_on_key_alias});
     if (root.get("defaults")) |n| try unknown_collector.checkDefaults(n);
 
     workflow.unknown_keys = try unknown_collector.toOwnedSlice();
+    workflow.empty_sections = try empty.toOwnedSlice(allocator);
 
     // Compute insertion anchors for top-level `permissions:` / `concurrency:`
     // directly after the `on:` entry line.
@@ -339,6 +392,9 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     }
     job.uses = m.getScalar("uses");
 
+    var empty = std.ArrayList(types.EmptySection){};
+    defer empty.deinit(ctx.allocator);
+
     // Insertion anchor for job-level `permissions:` / `concurrency:` lands after
     // the `runs-on:` line; `uses:` (reusable workflow) works as a fallback.
     for (m.entries) |entry| {
@@ -379,8 +435,11 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         job.needs_spans = parsed.spans;
     }
 
-    if (m.get("steps")) |steps_node| {
-        job.steps = try parseSteps(ctx, steps_node);
+    if (m.get("steps")) |n| {
+        try recordEmpty(&empty, ctx.allocator, "steps", n);
+        if (!isEmptyContainer(n)) {
+            job.steps = try parseSteps(ctx, n);
+        }
     }
 
     if (m.get("permissions")) |n| {
@@ -389,28 +448,57 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         job.permissions_meta = parsed.meta;
     }
     if (m.get("env")) |n| {
-        const parsed = try parseStringMapWithMeta(ctx.allocator, n);
-        job.env = parsed.values;
-        job.env_meta = parsed.meta;
+        try recordEmpty(&empty, ctx.allocator, "env", n);
+        if (!isEmptyContainer(n)) {
+            const parsed = try parseStringMapWithMeta(ctx.allocator, n);
+            job.env = parsed.values;
+            job.env_meta = parsed.meta;
+            job.env_keys = try parseEnvKeys(ctx.allocator, n);
+        }
     }
     if (m.get("concurrency")) |n| {
         job.concurrency = try parseConcurrency(ctx, n);
     }
     if (m.get("strategy")) |n| {
-        job.strategy = try parseStrategy(ctx, n);
+        try recordEmpty(&empty, ctx.allocator, "strategy", n);
+        if (!isEmptyContainer(n)) {
+            job.strategy = try parseStrategy(ctx, n);
+            switch (n) {
+                .mapping => |sm| {
+                    if (sm.get("matrix")) |matrix_node| {
+                        try recordEmpty(&empty, ctx.allocator, "matrix", matrix_node);
+                    }
+                },
+                else => {},
+            }
+        }
     }
     if (m.get("with")) |n| {
-        job.with = try parseStringMap(ctx.allocator, n);
+        try recordEmpty(&empty, ctx.allocator, "with", n);
+        if (!isEmptyContainer(n)) {
+            job.with = try parseStringMap(ctx.allocator, n);
+        }
     }
     if (m.get("secrets")) |n| {
-        job.secrets = try parseSecretsConfig(ctx.allocator, n);
+        try recordEmpty(&empty, ctx.allocator, "secrets", n);
+        if (!isEmptyContainer(n)) {
+            job.secrets = try parseSecretsConfig(ctx.allocator, n);
+        }
     }
     if (m.get("container")) |n| {
-        job.container = try parseContainer(n);
+        try recordEmpty(&empty, ctx.allocator, "container", n);
+        if (!isEmptyContainer(n)) {
+            job.container = try parseContainer(ctx.allocator, n);
+        }
     }
     if (m.get("services")) |n| {
-        job.services = try parseServices(ctx.allocator, n);
+        try recordEmpty(&empty, ctx.allocator, "services", n);
+        if (!isEmptyContainer(n)) {
+            job.services = try parseServices(ctx.allocator, n);
+        }
     }
+    if (m.get("outputs")) |n| try recordEmpty(&empty, ctx.allocator, "outputs", n);
+    if (m.get("defaults")) |n| try recordEmpty(&empty, ctx.allocator, "defaults", n);
 
     if (ctx.unknown_collector) |c| {
         try c.checkMapping(m, "job", &schema.job_keys, &.{});
@@ -428,6 +516,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
 
+    job.empty_sections = try empty.toOwnedSlice(ctx.allocator);
     return job;
 }
 
@@ -534,23 +623,33 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         ) orelse false;
     }
     // Parse with: and capture last entry's value end byte for autofix
+    var empty = std.ArrayList(types.EmptySection){};
+    defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
-        step.with = try parseStringMap(ctx.allocator, with_node);
-        switch (with_node) {
-            .mapping => |with_mapping| {
-                if (with_mapping.entries.len > 0) {
-                    const last = with_mapping.entries[with_mapping.entries.len - 1];
-                    step.with_last_entry_end_byte = last.value.getSpan().end_byte;
-                }
-            },
-            else => {},
+        try recordEmpty(&empty, ctx.allocator, "with", with_node);
+        if (!isEmptyContainer(with_node)) {
+            step.with = try parseStringMap(ctx.allocator, with_node);
+            switch (with_node) {
+                .mapping => |with_mapping| {
+                    if (with_mapping.entries.len > 0) {
+                        const last = with_mapping.entries[with_mapping.entries.len - 1];
+                        step.with_last_entry_end_byte = last.value.getSpan().end_byte;
+                    }
+                },
+                else => {},
+            }
         }
     }
     if (m.get("env")) |n| {
-        const parsed = try parseStringMapWithMeta(ctx.allocator, n);
-        step.env = parsed.values;
-        step.env_meta = parsed.meta;
+        try recordEmpty(&empty, ctx.allocator, "env", n);
+        if (!isEmptyContainer(n)) {
+            const parsed = try parseStringMapWithMeta(ctx.allocator, n);
+            step.env = parsed.values;
+            step.env_meta = parsed.meta;
+            step.env_keys = try parseEnvKeys(ctx.allocator, n);
+        }
     }
+    step.empty_sections = try empty.toOwnedSlice(ctx.allocator);
 
     if (ctx.unknown_collector) |c| try c.checkMapping(m, "step", schema.stepExpectedKeys(m), &.{});
 
@@ -737,7 +836,7 @@ fn parseCredentials(node: Node) ParseError!types.Credentials {
     };
 }
 
-fn parseContainer(node: Node) ParseError!types.Container {
+fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
             return .{ .image = s.value };
@@ -746,6 +845,7 @@ fn parseContainer(node: Node) ParseError!types.Container {
             return .{
                 .image = m.getScalar("image"),
                 .credentials = if (m.get("credentials")) |n| try parseCredentials(n) else null,
+                .env_keys = if (m.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
             };
         },
         else => return error.InvalidValue,
@@ -766,6 +866,7 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                     .name = entry.key.value,
                     .image = vm.getScalar("image"),
                     .credentials = if (vm.get("credentials")) |n| try parseCredentials(n) else null,
+                    .env_keys = if (vm.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
                 };
             },
             .scalar => |s| {
@@ -817,6 +918,22 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
         }
     }
     return .{ .values = values, .meta = meta };
+}
+
+/// Collect every key of an `env:` mapping with the span of its key token.
+/// Unlike `parseStringMapWithMeta`, no entry is dropped: SYN007 must see keys
+/// whose value is not a scalar, and duplicated keys, to validate their names.
+fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.EnvKey {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const keys = try allocator.alloc(types.EnvKey, m.entries.len);
+    for (m.entries, keys) |entry, *key| {
+        key.* = .{ .name = entry.key.value, .span = entry.key.span };
+    }
+    return keys;
 }
 
 const ParsedStringArray = struct {
@@ -1759,6 +1876,128 @@ test "parsePermissions with empty mapping" {
     try testing.expect(!parsed.permissions.read_all);
     try testing.expect(!parsed.permissions.write_all);
     try testing.expect(parsed.permissions.contents == null);
+}
+
+test "parseWorkflow records empty sections for SYN003" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy: {}
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with: {}
+    ;
+
+    var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try parseWorkflow(arena.allocator(), node);
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].empty_sections.len);
+    try testing.expectEqualStrings("strategy", wf.jobs[0].empty_sections[0].name);
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].steps[0].empty_sections.len);
+    try testing.expectEqualStrings("with", wf.jobs[0].steps[0].empty_sections[0].name);
+}
+
+test "parseWorkflow does not record empty permissions" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\permissions: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions: {}
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try parseWorkflow(arena.allocator(), node);
+
+    try testing.expectEqual(@as(usize, 0), wf.empty_sections.len);
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].empty_sections.len);
+}
+
+test "parseWorkflow records implicit-null empty sections" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\jobs:
+    ;
+
+    var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try parseWorkflow(arena.allocator(), node);
+
+    try testing.expectEqual(@as(usize, 0), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 1), wf.empty_sections.len);
+    try testing.expectEqualStrings("jobs", wf.empty_sections[0].name);
+}
+
+test "parseWorkflow records implicit-null strategy and with" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+    ;
+
+    var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try parseWorkflow(arena.allocator(), node);
+
+    try testing.expectEqualStrings("strategy", wf.jobs[0].empty_sections[0].name);
+    try testing.expectEqualStrings("with", wf.jobs[0].steps[0].empty_sections[0].name);
+}
+
+test "parseWorkflow records empty workflow_dispatch inputs" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try parseWorkflow(arena.allocator(), node);
+
+    try testing.expectEqual(@as(usize, 1), wf.empty_sections.len);
+    try testing.expectEqualStrings("inputs", wf.empty_sections[0].name);
 }
 
 test "parseTrigger null value" {

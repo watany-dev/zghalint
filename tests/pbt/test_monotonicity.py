@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
 from hypothesis import given, settings, HealthCheck, assume
 
 from tests.pbt.conftest import (
@@ -44,10 +43,6 @@ def test_adding_issues_does_not_decrease_diagnostics(zghalint_bin, pair):
     )
 
 
-@pytest.mark.xfail(
-    reason="Known bug: --config rule overrides are not applied (config parsing issue)",
-    strict=False,
-)
 @given(content=workflow_yaml())
 @PBT_SETTINGS
 def test_disabling_rule_does_not_increase_diagnostics(zghalint_bin, content):
@@ -90,10 +85,6 @@ def test_disabling_rule_does_not_increase_diagnostics(zghalint_bin, content):
         os.unlink(wf_path)
 
 
-@pytest.mark.xfail(
-    reason="Known bug: --config rule overrides are not applied (config parsing issue)",
-    strict=False,
-)
 @given(content=workflow_yaml())
 @PBT_SETTINGS
 def test_disabling_all_rules_yields_zero_diagnostics(zghalint_bin, content):

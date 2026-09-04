@@ -15,6 +15,51 @@ const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
 const UnknownKey = workflow_types.UnknownKey;
 
+// ── SYN003: Empty mapping / sequence sections ──
+
+fn emptySectionMessage(section: []const u8) []const u8 {
+    const messages = std.StaticStringMap([]const u8).initComptime(.{
+        .{ "on", "\"on\" section should not be empty" },
+        .{ "jobs", "\"jobs\" section should not be empty" },
+        .{ "steps", "\"steps\" section should not be empty" },
+        .{ "with", "\"with\" section should not be empty" },
+        .{ "env", "\"env\" section should not be empty" },
+        .{ "strategy", "\"strategy\" section should not be empty" },
+        .{ "matrix", "\"matrix\" section should not be empty" },
+        .{ "defaults", "\"defaults\" section should not be empty" },
+        .{ "container", "\"container\" section should not be empty" },
+        .{ "services", "\"services\" section should not be empty" },
+        .{ "outputs", "\"outputs\" section should not be empty" },
+        .{ "inputs", "\"inputs\" section should not be empty" },
+        .{ "secrets", "\"secrets\" section should not be empty" },
+    });
+    return messages.get(section) orelse "section should not be empty";
+}
+
+fn checkEmptySections(sections: []const workflow_types.EmptySection, list: *DiagnosticList) void {
+    for (sections) |section| {
+        list.append(.{
+            .rule_id = "SYN003",
+            .severity = .@"error",
+            .message = emptySectionMessage(section.name),
+            .span = section.span,
+            .fix_hint = "remove this section if it is unnecessary",
+        }) catch return;
+    }
+}
+
+fn checkWorkflowEmptySections(wf: *const Workflow, list: *DiagnosticList) void {
+    checkEmptySections(wf.empty_sections, list);
+}
+
+fn checkJobEmptySections(job: *const Job, list: *DiagnosticList) void {
+    checkEmptySections(job.empty_sections, list);
+}
+
+fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
+    checkEmptySections(step.empty_sections, list);
+}
+
 // ── SYN002: Case-insensitive duplicate YAML keys ──
 
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
@@ -269,6 +314,59 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
     }
 }
 
+// ── SYN007: Invalid environment variable name ──
+
+fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
+    for (env_keys) |key| {
+        if (key.name.len == 0) {
+            list.append(.{
+                .rule_id = "SYN007",
+                .severity = .@"error",
+                .message = "environment variable name must not be empty",
+                .span = key.span,
+                .fix_hint = "give the environment variable a name, or remove the entry",
+            }) catch return;
+            continue;
+        }
+
+        // An expression is substituted before the runner ever sees the name,
+        // so the literal text here says nothing about the final name.
+        if (std.mem.indexOf(u8, key.name, "${{") != null) continue;
+
+        // `=` and `&` break the `NAME=value` form written to the environment
+        // file, and a space cannot appear in a shell variable name.
+        if (std.mem.indexOfAny(u8, key.name, "&= ") == null) continue;
+
+        const message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "environment variable name \"{s}\" is invalid. '&', '=' and spaces must not be contained",
+            .{key.name},
+        ) catch return;
+
+        list.append(.{
+            .rule_id = "SYN007",
+            .severity = .@"error",
+            .message = message,
+            .span = key.span,
+            .fix_hint = "rename the environment variable so it contains no '&', '=', or space",
+        }) catch return;
+    }
+}
+
+fn checkWorkflowEnvNames(wf: *const Workflow, list: *DiagnosticList) void {
+    checkEnvNames(wf.env_keys, list);
+}
+
+fn checkJobEnvNames(job: *const Job, list: *DiagnosticList) void {
+    checkEnvNames(job.env_keys, list);
+    if (job.container) |container| checkEnvNames(container.env_keys, list);
+    for (job.services) |service| checkEnvNames(service.env_keys, list);
+}
+
+fn checkStepEnvNames(step: *const Step, list: *DiagnosticList) void {
+    checkEnvNames(step.env_keys, list);
+}
+
 // ── SYN008: Duplicated job ID in `needs` ──
 
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
@@ -365,6 +463,16 @@ pub const rules = [_]Rule{
         .check_workflow = &checkDuplicateKeys,
     },
     .{
+        .id = "SYN003",
+        .name = "empty-section",
+        .description = "Required workflow sections must not be empty mappings or sequences",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkWorkflowEmptySections,
+        .check_job = &checkJobEmptySections,
+        .check_step = &checkStepEmptySections,
+    },
+    .{
         .id = "SYN004",
         .name = "mapping-value-type",
         .description = "mapping value does not match the expected type for its key",
@@ -389,6 +497,16 @@ pub const rules = [_]Rule{
         .category = .syntax,
         .check_job = &checkInvalidJobId,
         .check_step = &checkInvalidStepId,
+    },
+    .{
+        .id = "SYN007",
+        .name = "invalid-env-var-name",
+        .description = "environment variable name must not be empty or contain '&', '=', or spaces",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkWorkflowEnvNames,
+        .check_job = &checkJobEnvNames,
+        .check_step = &checkStepEnvNames,
     },
     .{
         .id = "SYN008",
@@ -761,6 +879,287 @@ test "SYN001: message survives appendOwning after source list deinit" {
 
     try testing.expectEqualStrings("SYN001", dst.get(0).rule_id);
     try testing.expect(std.mem.indexOf(u8, dst.get(0).message, "timeout-minute") != null);
+}
+
+fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(alloc, source);
+    defer parser.deinit();
+    const node = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, node);
+
+    const rule_engine = engine.Engine.init(&rules);
+    var list = rule_engine.run(testing.allocator, &wf);
+    defer list.deinit();
+    for (list.items.items) |diag| {
+        diags.append(diag) catch return;
+    }
+}
+
+fn expectSyn003(diags: DiagnosticList, expected: []const []const u8) !void {
+    var found: usize = 0;
+    for (0..diags.len()) |i| {
+        const d = diags.get(i);
+        if (!std.mem.eql(u8, d.rule_id, "SYN003")) continue;
+        found += 1;
+        var matched = false;
+        for (expected) |msg| {
+            if (std.mem.eql(u8, d.message, msg)) {
+                matched = true;
+                break;
+            }
+        }
+        try testing.expect(matched);
+        try testing.expect(d.severity == .@"error");
+    }
+    try testing.expectEqual(expected.len, found);
+}
+
+fn sectionMsg(comptime name: []const u8) []const u8 {
+    return "\"" ++ name ++ "\" section should not be empty";
+}
+
+test "SYN003: empty strategy and with are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy: {}
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("strategy"),
+        sectionMsg("with"),
+    });
+}
+
+test "SYN003: valid workflow without empty sections is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN003: permissions mapping is allowed to be empty" {
+    const source =
+        \\on: push
+        \\permissions: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions: {}
+        \\    steps:
+        \\      - run: echo ok
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    for (0..diags.len()) |i| {
+        try testing.expect(!std.mem.eql(u8, diags.get(i).rule_id, "SYN003"));
+    }
+}
+
+test "SYN003: empty jobs mapping is reported" {
+    const source =
+        \\on: push
+        \\jobs: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("jobs")});
+}
+
+test "SYN003: empty steps sequence is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps: []
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("steps")});
+}
+
+test "SYN003: implicit-null jobs is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("jobs")});
+}
+
+test "SYN003: implicit-null strategy and with are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("strategy"),
+        sectionMsg("with"),
+    });
+}
+
+test "SYN003: empty on mapping is reported" {
+    const source =
+        \\on: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("on")});
+}
+
+test "SYN003: empty env at workflow job and step is reported" {
+    const source =
+        \\on: push
+        \\env: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env: {}
+        \\    steps:
+        \\      - run: echo
+        \\        env: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("env"),
+        sectionMsg("env"),
+        sectionMsg("env"),
+    });
+}
+
+test "SYN003: empty matrix defaults container services outputs secrets" {
+    const source =
+        \\on: push
+        \\defaults: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix: {}
+        \\    container: {}
+        \\    services: {}
+        \\    outputs: {}
+        \\    defaults: {}
+        \\    steps:
+        \\      - run: echo
+        \\  call:
+        \\    uses: org/repo/.github/workflows/x.yml@v1
+        \\    secrets: {}
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("defaults"),
+        sectionMsg("matrix"),
+        sectionMsg("container"),
+        sectionMsg("services"),
+        sectionMsg("outputs"),
+        sectionMsg("defaults"),
+        sectionMsg("secrets"),
+    });
+}
+
+test "SYN003: empty workflow_dispatch inputs is reported" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs: {}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{sectionMsg("inputs")});
+}
+
+test "SYN003: secrets inherit and scalar container are not empty sections" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: org/repo/.github/workflows/x.yml@v1
+        \\    secrets: inherit
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container: ubuntu
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{});
 }
 
 fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
@@ -1599,6 +1998,188 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
     try testing.expect(step_case);
     try testing.expect(job_exact);
     try testing.expect(job_case);
+}
+
+fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    checkWorkflowEnvNames(&wf, list);
+    for (wf.jobs) |*job| {
+        checkJobEnvNames(job, list);
+        for (job.steps) |*step| checkStepEnvNames(step, list);
+    }
+}
+
+test "SYN007: invalid env var names are reported at every level" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\env:
+        \\  "TOP LEVEL": 1
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      FOO=BAR: 1
+        \\      FOO&BAR: 3
+        \\    steps:
+        \\      - run: echo hi
+        \\        env:
+        \\          "A B": 2
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 4), diags.len());
+    for (diags.items.items) |d| {
+        try testing.expectEqualStrings("SYN007", d.rule_id);
+        try testing.expect(d.severity == .@"error");
+    }
+    try testing.expectEqualStrings(
+        "environment variable name \"TOP LEVEL\" is invalid. '&', '=' and spaces must not be contained",
+        diags.get(0).message,
+    );
+    try testing.expectEqual(@as(u32, 3), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"FOO=BAR\"") != null);
+    try testing.expectEqual(@as(u32, 8), diags.get(1).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(2).message, "\"FOO&BAR\"") != null);
+    try testing.expectEqual(@as(u32, 9), diags.get(2).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(3).message, "\"A B\"") != null);
+    try testing.expectEqual(@as(u32, 13), diags.get(3).span.start_line);
+}
+
+test "SYN007: valid env var names produce no diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\env:
+        \\  MY_VAR: 1
+        \\  PATH_2: 2
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      lower-case.dotted: ok
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN007: empty env var name is reported" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const keys = [_]workflow_types.EnvKey{
+        .{ .name = "", .span = dummySpan(0, 0) },
+    };
+    checkEnvNames(&keys, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("SYN007", diags.get(0).rule_id);
+    try testing.expectEqualStrings(
+        "environment variable name must not be empty",
+        diags.get(0).message,
+    );
+}
+
+test "SYN007: container and service env keys are validated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: node:20
+        \\      env:
+        \\        "BAD KEY": 1
+        \\        GOOD_KEY: 2
+        \\    services:
+        \\      redis:
+        \\        image: redis
+        \\        env:
+        \\          X=Y: 1
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"BAD KEY\"") != null);
+    try testing.expectEqual(@as(u32, 8), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"X=Y\"") != null);
+    try testing.expectEqual(@as(u32, 14), diags.get(1).span.start_line);
+}
+
+test "SYN007: an env key containing an expression is skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      "${{ matrix.env_name }}": 1
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN007: a non-scalar env value still has its key validated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\env:
+        \\  "A B":
+        \\    - 1
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"A B\"") != null);
 }
 
 test "SYN008: duplicated job ID is reported" {
