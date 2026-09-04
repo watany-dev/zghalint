@@ -294,6 +294,11 @@ pub const Tokenizer = struct {
         const col = self.column;
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
+            // A GitHub Actions expression embeds flow indicators inside the
+            // scalar, so consume `${{ ... }}` whole. Otherwise a step body like
+            // `run: echo ${{ github.event.issue.title }}` would be truncated to
+            // `echo $` and the rules would never see the context reference.
+            if (ch == '$' and self.consumeActionsExpression()) continue;
             if (ch == '\n' or ch == '#' or ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']') {
                 break;
             }
@@ -315,6 +320,25 @@ pub const Tokenizer = struct {
             .line = line,
             .column = col,
         };
+    }
+
+    /// If the cursor sits on a complete `${{ ... }}` expression on this line,
+    /// consume it and return true. Leaves the cursor untouched otherwise, so an
+    /// unterminated `${{` still falls back to the normal scalar rules.
+    fn consumeActionsExpression(self: *Tokenizer) bool {
+        const s = self.source;
+        if (self.pos + 3 > s.len) return false;
+        if (!std.mem.eql(u8, s[self.pos .. self.pos + 3], "${{")) return false;
+
+        var i = self.pos + 3;
+        while (i + 1 < s.len and s[i] != '\n') : (i += 1) {
+            if (s[i] == '}' and s[i + 1] == '}') {
+                const end = i + 2;
+                while (self.pos < end) self.advance();
+                return true;
+            }
+        }
+        return false;
     }
 
     fn advance(self: *Tokenizer) void {
@@ -440,6 +464,34 @@ test "tokenizer sequence entry" {
     const item = tokenizer.next();
     try std.testing.expectEqual(TokenKind.scalar, item.kind);
     try std.testing.expectEqualStrings("item", item.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar keeps GitHub Actions expression" {
+    var tokenizer = Tokenizer.init("echo \"${{ github.event.issue.title }}\" done");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, token.kind);
+    try std.testing.expectEqualStrings(
+        "echo \"${{ github.event.issue.title }}\" done",
+        token.slice(tokenizer.source),
+    );
+}
+
+test "tokenizer plain scalar keeps expression with index access" {
+    var tokenizer = Tokenizer.init("echo ${{ github.event.commits[0].message }}");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings(
+        "echo ${{ github.event.commits[0].message }}",
+        token.slice(tokenizer.source),
+    );
+}
+
+test "tokenizer unterminated expression still breaks at brace" {
+    var tokenizer = Tokenizer.init("echo ${{ github.sha");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
 }
 
 test "tokenizer flow mapping" {
