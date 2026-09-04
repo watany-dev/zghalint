@@ -49,17 +49,14 @@ pub const Rule = engine.Rule;
 /// also covers element accesses like `github.event.commits[0].message` and
 /// `github.event.commits.*.author.email`.
 const dangerous_contexts = [_][]const u8{
-    // Issues / discussions
     "github.event.issue.title",
     "github.event.issue.body",
     "github.event.discussion.title",
     "github.event.discussion.body",
-    // Comments and reviews
     "github.event.comment.body",
     "github.event.review.body",
     "github.event.review_comment.body",
     "github.event.discussion_comment.body",
-    // Pull requests
     "github.event.pull_request.title",
     "github.event.pull_request.body",
     "github.event.pull_request.head.ref",
@@ -73,7 +70,6 @@ const dangerous_contexts = [_][]const u8{
     "github.event.head_commit.author.name",
     // Pages (container prefix covers `[*].page_name`)
     "github.event.pages",
-    // workflow_run
     "github.event.workflow_run.head_branch",
 };
 
@@ -1961,96 +1957,12 @@ test "SEC001: docker action (no false positive)" {
 
 // --- SEC002: Script injection ---
 
-test "SEC002: dangerous context in run block" {
+/// Build a single-step workflow with `run: body` (plus optional step `env`) and
+/// report whether SEC002 fires for it.
+fn sec002Fires(body: []const u8, env: ?workflow_types.StringMap) bool {
     const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
-        .{ .run = "echo ${{ github.event.issue.title }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC002"));
-}
-
-test "SEC002: pull_request body in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"${{ github.event.pull_request.body }}\"" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC002"));
-}
-
-test "SEC002: head_ref in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "git checkout ${{ github.head_ref }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC002"));
-}
-
-test "SEC002: safe context in run (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ github.sha }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC002"));
-}
-
-test "SEC002: no expression in run (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo hello world" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC002"));
-}
-
-test "SEC002: commit message in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ github.event.head_commit.message }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC002"));
-}
-
-/// Build a single-step workflow whose `run:` body is `body`, and report whether
-/// SEC002 fires for it.
-fn runBodyTriggersSec002(body: []const u8) bool {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = body },
+        .{ .run = body, .env = env },
     };
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
@@ -2061,8 +1973,12 @@ fn runBodyTriggersSec002(body: []const u8) bool {
     return hasDiagnostic(&list, "SEC002");
 }
 
-test "SEC002: untrusted inputs from the extended context table" {
+test "SEC002: untrusted contexts in run block" {
     const bodies = [_][]const u8{
+        "echo ${{ github.event.issue.title }}",
+        "echo \"${{ github.event.pull_request.body }}\"",
+        "git checkout ${{ github.head_ref }}",
+        "echo ${{ github.event.head_commit.message }}",
         "echo \"${{ github.event.review_comment.body }}\"",
         "echo \"${{ github.event.discussion.title }}\"",
         "echo \"${{ github.event.discussion.body }}\"",
@@ -2072,52 +1988,42 @@ test "SEC002: untrusted inputs from the extended context table" {
         "echo \"${{ github.event.pull_request.head.repo.default_branch }}\"",
     };
     for (bodies) |body| {
-        try testing.expect(runBodyTriggersSec002(body));
+        try testing.expect(sec002Fires(body, null));
     }
 }
 
 test "SEC002: element access under a container context" {
     // `github.event.commits` / `github.event.pages` are stored as container
-    // prefixes, so their element accesses must be caught without dedicated
-    // entries.
+    // prefixes, so their element accesses must be caught in both the index and
+    // the object-filter form without dedicated entries.
     const bodies = [_][]const u8{
         "echo \"${{ github.event.commits[0].message }}\"",
-        "echo \"${{ github.event.commits[0].author.email }}\"",
-        "echo \"${{ github.event.commits[0].author.name }}\"",
-        "echo \"${{ join(github.event.commits.*.message, ' ') }}\"",
+        "echo \"${{ join(github.event.commits.*.author.email, ' ') }}\"",
         "echo \"${{ join(github.event.pages.*.page_name, ' ') }}\"",
     };
     for (bodies) |body| {
-        try testing.expect(runBodyTriggersSec002(body));
+        try testing.expect(sec002Fires(body, null));
     }
 }
 
-test "SEC002: trusted pull_request fields (no false positive)" {
+test "SEC002: trusted contexts in run block (no false positive)" {
     const bodies = [_][]const u8{
+        "echo ${{ github.sha }}",
+        "echo hello world",
         "echo \"${{ github.event.pull_request.head.sha }}\"",
         "echo \"${{ github.event.pull_request.number }}\"",
         "echo \"${{ github.event.discussion.number }}\"",
     };
     for (bodies) |body| {
-        try testing.expect(!runBodyTriggersSec002(body));
+        try testing.expect(!sec002Fires(body, null));
     }
 }
 
 test "SEC002: untrusted input passed through env is not reported" {
-    const eng = engine.Engine.init(&security_rules);
-    var env = std.StringArrayHashMap([]const u8).init(testing.allocator);
+    var env = workflow_types.StringMap.init(testing.allocator);
     defer env.deinit();
     try env.put("BRANCH", "${{ github.event.pull_request.head.ref }}");
-    const steps = [_]Step{
-        .{ .run = "echo \"Branch $BRANCH\"", .env = env },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+    try testing.expect(!sec002Fires("echo \"Branch $BRANCH\"", env));
 }
 
 // --- SEC003: Hardcoded secrets ---
@@ -2526,6 +2432,33 @@ test "SEC006: dangerous context in job if condition" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC006"));
+}
+
+/// Report whether SEC006 fires for a step-level `if:` condition.
+fn sec006Fires(cond: []const u8) bool {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test", .if_condition = cond },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC006");
+}
+
+test "SEC006: attacker-controlled branch names in conditions" {
+    // A branch name is chosen freely by whoever opens the pull request, so a
+    // condition that gates on one can be spoofed. `github.head_ref` has always
+    // been reported here; `pull_request.head.ref` is the same value reached by
+    // a different path and is reported for the same reason.
+    try testing.expect(sec006Fires("github.head_ref == 'release'"));
+    try testing.expect(sec006Fires("startsWith(github.event.pull_request.head.ref, 'release/')"));
+    try testing.expect(sec006Fires("github.event.pull_request.head.label == 'octo:release'"));
+    // The immutable identity of the same commit stays trusted.
+    try testing.expect(!sec006Fires("github.event.pull_request.head.sha == env.EXPECTED"));
 }
 
 test "SEC006: safe context in condition (no false positive)" {

@@ -326,19 +326,14 @@ pub const Tokenizer = struct {
     /// consume it and return true. Leaves the cursor untouched otherwise, so an
     /// unterminated `${{` still falls back to the normal scalar rules.
     fn consumeActionsExpression(self: *Tokenizer) bool {
-        const s = self.source;
-        if (self.pos + 3 > s.len) return false;
-        if (!std.mem.eql(u8, s[self.pos .. self.pos + 3], "${{")) return false;
+        const rest = self.source[self.pos..];
+        if (!std.mem.startsWith(u8, rest, "${{")) return false;
+        const close = std.mem.indexOfPos(u8, rest, 3, "}}") orelse return false;
+        if (std.mem.indexOfScalar(u8, rest[0..close], '\n') != null) return false;
 
-        var i = self.pos + 3;
-        while (i + 1 < s.len and s[i] != '\n') : (i += 1) {
-            if (s[i] == '}' and s[i + 1] == '}') {
-                const end = i + 2;
-                while (self.pos < end) self.advance();
-                return true;
-            }
-        }
-        return false;
+        const end = self.pos + close + 2;
+        while (self.pos < end) self.advance();
+        return true;
     }
 
     fn advance(self: *Tokenizer) void {
