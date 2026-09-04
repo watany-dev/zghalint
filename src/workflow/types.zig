@@ -4,6 +4,12 @@ const schema = @import("schema.zig");
 
 pub const UnknownKey = schema.UnknownKey;
 
+/// A workflow section that was present in the source but empty.
+pub const EmptySection = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 /// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
 pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
@@ -282,6 +288,7 @@ pub const Step = struct {
     env_meta: ?ScalarValueMetaMap = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},
+    empty_sections: []const EmptySection = &.{},
     if_condition: ?[]const u8 = null,
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
@@ -366,6 +373,7 @@ pub const Job = struct {
     continue_on_error: bool = false,
     container: ?Container = null,
     services: []const Service = &.{},
+    empty_sections: []const EmptySection = &.{},
     /// Reusable workflow reference (mutually exclusive with steps)
     uses: ?[]const u8 = null,
     with: ?StringMap = null,
@@ -393,6 +401,7 @@ pub const Workflow = struct {
     env_keys: []const EnvKey = &.{},
     concurrency: ?Concurrency = null,
     jobs: []const Job,
+    empty_sections: []const EmptySection = &.{},
     /// Keys present in workflow mappings but not defined by the GitHub Actions schema.
     unknown_keys: []const schema.UnknownKey = &.{},
     /// Mapping value type mismatches collected during parsing (SYN004).
