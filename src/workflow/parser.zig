@@ -30,6 +30,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     };
 
     var unknown_collector = schema.UnknownKeyCollector.init(allocator);
+    errdefer unknown_collector.deinit();
 
     const trigger = if (root.get("on")) |on_node|
         try parseTrigger(allocator, on_node)
@@ -63,7 +64,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         workflow.env_meta = parsed.meta;
     }
 
-    try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys);
+    try unknown_collector.checkWorkflow(root);
     if (root.get("defaults")) |n| try unknown_collector.checkDefaults(n);
 
     workflow.unknown_keys = try unknown_collector.toOwnedSlice();

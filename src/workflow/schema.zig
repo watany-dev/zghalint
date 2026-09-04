@@ -13,13 +13,17 @@ pub const workflow_keys = [_][]const u8{
     "name",
     "run-name",
     "on",
-    "true", // YAML may parse bare `on:` as boolean `true`
     "permissions",
     "env",
     "defaults",
     "concurrency",
     "jobs",
 };
+
+/// YAML 1.1 may parse a bare `on:` key as boolean `true`. Accept it during
+/// collection so the trigger is not reported as unknown, but never include it
+/// in user-facing "expected one of" lists.
+pub const workflow_on_key_alias = "true";
 
 pub const job_keys = [_][]const u8{
     "name",
@@ -154,8 +158,23 @@ pub const UnknownKeyCollector = struct {
         section: []const u8,
         allowed: []const []const u8,
     ) !void {
+        try self.checkMappingExcluding(m, section, allowed, &.{});
+    }
+
+    pub fn checkWorkflow(self: *UnknownKeyCollector, m: yaml.Mapping) !void {
+        try self.checkMappingExcluding(m, "workflow", &workflow_keys, &.{workflow_on_key_alias});
+    }
+
+    fn checkMappingExcluding(
+        self: *UnknownKeyCollector,
+        m: yaml.Mapping,
+        section: []const u8,
+        allowed: []const []const u8,
+        excluded: []const []const u8,
+    ) !void {
         for (m.entries) |entry| {
             if (isAllowedKey(entry.key.value, allowed)) continue;
+            if (isAllowedKey(entry.key.value, excluded)) continue;
             try self.list.append(self.allocator, .{
                 .key = entry.key.value,
                 .section = section,
@@ -198,6 +217,7 @@ test "isAllowedKey exact match" {
     try std.testing.expect(isAllowedKey("runs-on", &job_keys));
     try std.testing.expect(!isAllowedKey("runs-on", &step_run_keys));
     try std.testing.expect(!isAllowedKey("Shell", &step_run_keys));
+    try std.testing.expect(!isAllowedKey(workflow_on_key_alias, &workflow_keys));
 }
 
 test "stepExpectedKeys prefers run over uses" {

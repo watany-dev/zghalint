@@ -35,10 +35,23 @@ fn findDidYouMean(key: []const u8, expected: []const []const u8) ?[]const u8 {
     return best;
 }
 
-fn formatUnexpectedKeyMessage(alloc: std.mem.Allocator, uk: UnknownKey) ![]const u8 {
+fn lessThanKey(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+fn formatUnexpectedKeyMessage(
+    alloc: std.mem.Allocator,
+    uk: UnknownKey,
+    suggestion: ?[]const u8,
+) ![]const u8 {
+    const sorted = try alloc.alloc([]const u8, uk.expected.len);
+    defer alloc.free(sorted);
+    @memcpy(sorted, uk.expected);
+    std.mem.sort([]const u8, sorted, {}, lessThanKey);
+
     var expected_buf = std.ArrayList(u8){};
     defer expected_buf.deinit(alloc);
-    for (uk.expected, 0..) |key, i| {
+    for (sorted, 0..) |key, i| {
         if (i > 0) try expected_buf.appendSlice(alloc, ", ");
         try expected_buf.writer(alloc).print("\"{s}\"", .{key});
     }
@@ -51,8 +64,8 @@ fn formatUnexpectedKeyMessage(alloc: std.mem.Allocator, uk: UnknownKey) ![]const
         .{ uk.key, uk.section, expected_buf.items },
     );
 
-    if (findDidYouMean(uk.key, uk.expected)) |suggestion| {
-        try writer.print("; did you mean \"{s}\"?", .{suggestion});
+    if (suggestion) |s| {
+        try writer.print("; did you mean \"{s}\"?", .{s});
     }
 
     return try message.toOwnedSlice(alloc);
@@ -61,10 +74,12 @@ fn formatUnexpectedKeyMessage(alloc: std.mem.Allocator, uk: UnknownKey) ![]const
 fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.unknown_keys) |uk| {
-        const message = formatUnexpectedKeyMessage(alloc, uk) catch return;
-        const fix_hint = if (findDidYouMean(uk.key, uk.expected)) |suggestion| blk: {
-            break :blk std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{suggestion}) catch null;
-        } else null;
+        const suggestion = findDidYouMean(uk.key, uk.expected);
+        const message = formatUnexpectedKeyMessage(alloc, uk, suggestion) catch continue;
+        const fix_hint = if (suggestion) |s|
+            std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{s}) catch null
+        else
+            null;
 
         list.append(.{
             .rule_id = "SYN001",
@@ -72,7 +87,7 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
             .message = message,
             .span = uk.span,
             .fix_hint = fix_hint,
-        }) catch return;
+        }) catch continue;
     }
 }
 
@@ -327,6 +342,277 @@ test "SYN001: with and env keys are not validated" {
     lintUnknownKeys(&wf, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN001: unknown workflow key is reported" {
+    const source =
+        \\on: push
+        \\default:
+        \\  run:
+        \\    shell: bash
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "default") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"workflow\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"defaults\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"true\"") == null);
+}
+
+test "SYN001: expected keys are sorted" {
+    const source =
+        \\on: push
+        \\foo: bar
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"concurrency\", \"defaults\", \"env\", \"jobs\"") != null);
+}
+
+test "SYN001: unknown strategy key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      fail_fast: false
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "fail_fast") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"strategy\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"fail-fast\"") != null);
+}
+
+test "SYN001: unknown container key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: node:20
+        \\      imagen: node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "imagen") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"container\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"image\"") != null);
+}
+
+test "SYN001: unknown services key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    services:
+        \\      redis:
+        \\        image: redis
+        \\        imagen: redis
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "imagen") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"services\"") != null);
+}
+
+test "SYN001: unknown defaults.run key is reported" {
+    const source =
+        \\on: push
+        \\defaults:
+        \\  run:
+        \\    shel: bash
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "shel") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"run\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"shell\"") != null);
+}
+
+test "SYN001: step keys are case-sensitive" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\        Shell: bash
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "Shell") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"shell\"") != null);
+}
+
+test "SYN001: action step rejects shell" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        shell: bash
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "shell") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"step\"") != null);
+}
+
+test "SYN001: distant key has no did-you-mean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    totally-unrelated: 1
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    lintUnknownKeys(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "totally-unrelated") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean") == null);
+}
+
+test "SYN001: message survives appendOwning after source list deinit" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minute: 10
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try parseWorkflowYaml(&arena, source);
+
+    var dst = DiagnosticList.init(testing.allocator);
+    defer dst.deinit();
+
+    {
+        var src = DiagnosticList.init(testing.allocator);
+        defer src.deinit();
+        lintUnknownKeys(&wf, &src);
+        try testing.expectEqual(@as(usize, 1), src.len());
+        try dst.appendOwning(src.get(0));
+    }
+
+    try testing.expectEqualStrings("SYN001", dst.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, dst.get(0).message, "timeout-minute") != null);
+    const hint = dst.get(0).fix_hint orelse return error.TestExpectedNonNull;
+    try testing.expect(std.mem.indexOf(u8, hint, "timeout-minutes") != null);
 }
 
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
