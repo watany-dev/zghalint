@@ -288,12 +288,33 @@ pub const Tokenizer = struct {
         };
     }
 
+    /// Consume a `${{ ... }}` interpolation starting at the current position.
+    /// Returns false (leaving the position untouched) when one does not start
+    /// here, or when it is not closed before the end of the line.
+    fn skipExpressionInterpolation(self: *Tokenizer) bool {
+        if (self.pos + 2 >= self.source.len) return false;
+        if (self.source[self.pos] != '$') return false;
+        if (self.source[self.pos + 1] != '{' or self.source[self.pos + 2] != '{') return false;
+
+        var end = self.pos + 3;
+        while (end + 1 < self.source.len and self.source[end] != '\n') : (end += 1) {
+            if (self.source[end] != '}' or self.source[end + 1] != '}') continue;
+            end += 2;
+            while (self.pos < end) self.advance();
+            return true;
+        }
+        return false; // Unterminated: fall back to normal plain-scalar scanning.
+    }
+
     fn scanPlainScalar(self: *Tokenizer) Token {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
+            // `${{ ... }}` is a GitHub Actions expression, not a YAML flow
+            // mapping: its braces and commas belong to the scalar.
+            if (self.skipExpressionInterpolation()) continue;
             if (ch == '\n' or ch == '#' or ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']') {
                 break;
             }
@@ -395,6 +416,33 @@ test "tokenizer plain scalar" {
     const token = tokenizer.next();
     try std.testing.expectEqual(TokenKind.scalar, token.kind);
     try std.testing.expectEqualStrings("hello", token.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar keeps a ${{ }} interpolation" {
+    var tokenizer = Tokenizer.init("echo \"${{ github.event.issue.body }}\"");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo \"${{ github.event.issue.body }}\"", token.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar keeps commas inside an interpolation" {
+    var tokenizer = Tokenizer.init("echo \"${{ join(github.event.commits.*.message, ' ') }}\"");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo \"${{ join(github.event.commits.*.message, ' ') }}\"", token.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar stops at an unterminated interpolation" {
+    var tokenizer = Tokenizer.init("echo ${{ oops");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
+}
+
+test "tokenizer flow mapping still parses after an interpolation" {
+    var tokenizer = Tokenizer.init("{a: 1}");
+    _ = tokenizer.next(); // stream_start
+    try std.testing.expectEqual(TokenKind.flow_mapping_start, tokenizer.next().kind);
 }
 
 test "tokenizer mapping key-value" {
