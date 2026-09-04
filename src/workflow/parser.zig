@@ -373,7 +373,9 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     }
 
     if (m.get("needs")) |needs_node| {
-        job.needs = try parseStringArrayOrSingle(ctx.allocator, needs_node);
+        const parsed = try parseStringArrayWithSpans(ctx.allocator, needs_node);
+        job.needs = parsed.values;
+        job.needs_spans = parsed.spans;
     }
 
     if (m.get("steps")) |steps_node| {
@@ -449,8 +451,8 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
 
     var step = types.Step{};
     step.span = m.span;
-    if (m.get("id")) |n| {
-        switch (n) {
+    if (m.get("id")) |id_node| {
+        switch (id_node) {
             .scalar => |s| {
                 step.id = s.value;
                 step.id_value_span = s.span;
@@ -816,29 +818,40 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
     return .{ .values = values, .meta = meta };
 }
 
-fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
+const ParsedStringArray = struct {
+    values: []const []const u8,
+    spans: []const yaml.Span,
+};
+
+fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseError!ParsedStringArray {
     switch (node) {
         .sequence => |seq| {
-            const result = try allocator.alloc([]const u8, seq.items.len);
+            const values = try allocator.alloc([]const u8, seq.items.len);
+            const spans = try allocator.alloc(yaml.Span, seq.items.len);
             for (seq.items, 0..) |item, i| {
                 switch (item) {
-                    .scalar => |s| result[i] = s.value,
+                    .scalar => |s| {
+                        values[i] = s.value;
+                        spans[i] = s.span;
+                    },
                     else => return error.InvalidValue,
                 }
             }
-            return result;
+            return .{ .values = values, .spans = spans };
         },
         .scalar => |s| {
-            const result = try allocator.alloc([]const u8, 1);
-            result[0] = s.value;
-            return result;
+            const values = try allocator.alloc([]const u8, 1);
+            values[0] = s.value;
+            const spans = try allocator.alloc(yaml.Span, 1);
+            spans[0] = s.span;
+            return .{ .values = values, .spans = spans };
         },
         else => return error.InvalidValue,
     }
 }
 
-fn parseStringArrayOrSingle(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
-    return parseStringArray(allocator, node);
+fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
+    return (try parseStringArrayWithSpans(allocator, node)).values;
 }
 
 // ============================================================
@@ -903,7 +916,7 @@ test "parseWorkflow minimal" {
     };
 
     var jobs_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("build"), .value = mkMapping(&job_entries), .span = mkSpan() },
+        .{ .key = .{ .value = "build", .style = .plain, .span = mkSpanBytes(20, 25) }, .value = mkMapping(&job_entries), .span = mkSpan() },
     };
 
     var root_entries = [_]yaml.MappingEntry{
@@ -920,6 +933,8 @@ test "parseWorkflow minimal" {
     try testing.expectEqual(types.EventType.push, wf.on.events[0].event);
     try testing.expectEqual(@as(usize, 1), wf.jobs.len);
     try testing.expectEqualStrings("build", wf.jobs[0].id);
+    try testing.expectEqual(@as(usize, 20), wf.jobs[0].id_span.?.start_byte);
+    try testing.expectEqual(@as(usize, 25), wf.jobs[0].id_span.?.end_byte);
     try testing.expectEqualStrings("ubuntu-latest", wf.jobs[0].runs_on.?);
     try testing.expectEqual(@as(usize, 1), wf.jobs[0].steps.len);
     try testing.expectEqualStrings("echo hi", wf.jobs[0].steps[0].run.?);
@@ -1132,7 +1147,10 @@ test "parseJob with needs" {
     };
     var step_items = [_]Node{mkMapping(&step_entries)};
 
-    var needs_items = [_]Node{ mkScalar("build"), mkScalar("lint") };
+    var needs_items = [_]Node{
+        mkScalarStyled("build", .plain, mkSpanBytes(100, 105)),
+        mkScalarStyled("lint", .plain, mkSpanBytes(110, 114)),
+    };
 
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("runs-on"), .value = mkScalar("ubuntu-latest"), .span = mkSpan() },
@@ -1146,6 +1164,11 @@ test "parseJob with needs" {
     try testing.expectEqual(@as(usize, 2), job.needs.len);
     try testing.expectEqualStrings("build", job.needs[0]);
     try testing.expectEqualStrings("lint", job.needs[1]);
+    try testing.expectEqual(@as(usize, 2), job.needs_spans.len);
+    try testing.expectEqual(@as(usize, 100), job.needs_spans[0].start_byte);
+    try testing.expectEqual(@as(usize, 105), job.needs_spans[0].end_byte);
+    try testing.expectEqual(@as(usize, 110), job.needs_spans[1].start_byte);
+    try testing.expectEqual(@as(usize, 114), job.needs_spans[1].end_byte);
 }
 
 test "parseJob reusable workflow" {
@@ -1317,7 +1340,7 @@ test "parseStep with timeout and continue-on-error" {
         .{ .key = mkScalarS("timeout-minutes"), .value = mkScalar("10"), .span = mkSpan() },
         .{ .key = mkScalarS("continue-on-error"), .value = mkScalar("true"), .span = mkSpan() },
         .{ .key = mkScalarS("if"), .value = mkScalar("always()"), .span = mkSpan() },
-        .{ .key = mkScalarS("id"), .value = mkScalar("step1"), .span = mkSpan() },
+        .{ .key = mkScalarS("id"), .value = mkScalarStyled("step1", .plain, mkSpanBytes(50, 55)), .span = mkSpan() },
         .{ .key = mkScalarS("working-directory"), .value = mkScalar("./src"), .span = mkSpan() },
         .{ .key = mkScalarS("with"), .value = mkMapping(&with_entries), .span = mkSpan() },
         .{ .key = mkScalarS("env"), .value = mkMapping(&env_entries), .span = mkSpan() },
@@ -1329,6 +1352,8 @@ test "parseStep with timeout and continue-on-error" {
     try testing.expect(step.continue_on_error);
     try testing.expectEqualStrings("always()", step.if_condition.?);
     try testing.expectEqualStrings("step1", step.id.?);
+    try testing.expectEqual(@as(usize, 50), step.id_value_span.?.start_byte);
+    try testing.expectEqual(@as(usize, 55), step.id_value_span.?.end_byte);
     try testing.expectEqualStrings("./src", step.working_directory.?);
     try testing.expectEqualStrings("value", step.with.?.get("key").?);
     try testing.expectEqualStrings("bar", step.env.?.get("FOO").?);
