@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const schema = @import("schema.zig");
 const yaml = @import("../yaml/types.zig");
 const type_validation = @import("type_validation.zig");
 
@@ -15,6 +16,7 @@ pub const ParseError = error{
 const ParseContext = struct {
     allocator: std.mem.Allocator,
     type_mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
+    unknown_collector: ?*schema.UnknownKeyCollector,
 };
 
 const ParsedStringMap = struct {
@@ -31,9 +33,14 @@ const ParsedPermissions = struct {
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
     var type_mismatches = std.ArrayList(type_validation.TypeMismatch){};
     errdefer type_mismatches.deinit(allocator);
+
+    var unknown_collector = schema.UnknownKeyCollector.init(allocator);
+    errdefer unknown_collector.deinit();
+
     var ctx = ParseContext{
         .allocator = allocator,
         .type_mismatches = &type_mismatches,
+        .unknown_collector = &unknown_collector,
     };
 
     const root = switch (node) {
@@ -73,6 +80,11 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         workflow.env = parsed.values;
         workflow.env_meta = parsed.meta;
     }
+
+    try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys, &.{schema.workflow_on_key_alias});
+    if (root.get("defaults")) |n| try unknown_collector.checkDefaults(n);
+
+    workflow.unknown_keys = try unknown_collector.toOwnedSlice();
 
     // Compute insertion anchors for top-level `permissions:` / `concurrency:`
     // directly after the `on:` entry line.
@@ -397,6 +409,22 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         job.services = try parseServices(ctx.allocator, n);
     }
 
+    if (ctx.unknown_collector) |c| {
+        try c.checkMapping(m, "job", &schema.job_keys, &.{});
+        if (m.get("defaults")) |n| try c.checkDefaults(n);
+        if (m.get("strategy")) |n| {
+            if (n == .mapping) try c.checkMapping(n.mapping, "strategy", &schema.strategy_keys, &.{});
+        }
+        if (m.get("container")) |n| try c.checkContainer(n, "container");
+        if (m.get("services")) |n| {
+            if (n == .mapping) {
+                for (n.mapping.entries) |entry| {
+                    try c.checkContainer(entry.value, "services");
+                }
+            }
+        }
+    }
+
     return job;
 }
 
@@ -520,6 +548,8 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         step.env = parsed.values;
         step.env_meta = parsed.meta;
     }
+
+    if (ctx.unknown_collector) |c| try c.checkMapping(m, "step", schema.stepExpectedKeys(m), &.{});
 
     return step;
 }
@@ -853,7 +883,7 @@ fn mkSequence(items: []Node) Node {
 }
 
 fn testCtx(allocator: std.mem.Allocator) ParseContext {
-    return .{ .allocator = allocator, .type_mismatches = null };
+    return .{ .allocator = allocator, .type_mismatches = null, .unknown_collector = null };
 }
 
 test "parseWorkflow minimal" {

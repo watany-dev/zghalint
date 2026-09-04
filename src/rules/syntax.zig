@@ -3,6 +3,7 @@ const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const workflow_parser = @import("../workflow/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
+const util = @import("../util.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
@@ -10,6 +11,67 @@ const Job = engine.Job;
 const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
+const UnknownKey = workflow_types.UnknownKey;
+
+// ── SYN001: Unknown mapping keys ──
+
+fn findDidYouMean(key: []const u8, expected: []const []const u8) ?[]const u8 {
+    const max_dist: usize = 2;
+    var best: ?[]const u8 = null;
+    var best_dist: usize = std.math.maxInt(usize);
+    var ties: usize = 0;
+
+    for (expected) |candidate| {
+        const dist = util.levenshteinDistance(key, candidate);
+        if (dist == 0 or dist > max_dist) continue;
+        if (dist < best_dist) {
+            best = candidate;
+            best_dist = dist;
+            ties = 1;
+        } else if (dist == best_dist) {
+            ties += 1;
+        }
+    }
+
+    if (ties != 1) return null;
+    return best;
+}
+
+fn formatUnexpectedKeyMessage(
+    alloc: std.mem.Allocator,
+    uk: UnknownKey,
+    suggestion: ?[]const u8,
+) ![]const u8 {
+    var message = std.ArrayList(u8){};
+    defer message.deinit(alloc);
+    const writer = message.writer(alloc);
+    try writer.print(
+        "unexpected key \"{s}\" for \"{s}\" section. expected one of ",
+        .{ uk.key, uk.section },
+    );
+    for (uk.expected, 0..) |key, i| {
+        if (i > 0) try writer.writeAll(", ");
+        try writer.print("\"{s}\"", .{key});
+    }
+    if (suggestion) |s| {
+        try writer.print("; did you mean \"{s}\"?", .{s});
+    }
+    return try message.toOwnedSlice(alloc);
+}
+
+fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.unknown_keys) |uk| {
+        const suggestion = findDidYouMean(uk.key, uk.expected);
+        const message = formatUnexpectedKeyMessage(alloc, uk, suggestion) catch continue;
+        list.append(.{
+            .rule_id = "SYN001",
+            .severity = .@"error",
+            .message = message,
+            .span = uk.span,
+        }) catch continue;
+    }
+}
 
 // ── SYN004: Mapping value type validation ──
 
@@ -177,6 +239,14 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
 
 pub const rules = [_]Rule{
     .{
+        .id = "SYN001",
+        .name = "unknown-key",
+        .description = "mapping contains a key that is not defined in the GitHub Actions workflow schema",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkUnknownKeys,
+    },
+    .{
         .id = "SYN004",
         .name = "mapping-value-type",
         .description = "mapping value does not match the expected type for its key",
@@ -218,6 +288,352 @@ pub const rules = [_]Rule{
 const testing = std.testing;
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
+const yaml_parser_mod = @import("../yaml/parser.zig");
+
+fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var parser = yaml_parser_mod.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_node = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    checkUnknownKeys(&wf, list);
+}
+
+test "SYN001: unknown job key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minute: 10
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN001", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expect(std.mem.indexOf(u8, diag.message, "timeout-minute") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"job\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"timeout-minutes\"") != null);
+}
+
+test "SYN001: unknown step key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - runs: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "runs") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"step\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"run\"") != null);
+}
+
+test "SYN001: valid workflow produces no diagnostic" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minutes: 10
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN001: matrix keys are not validated" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        custom-key: [value]
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN001: with and env keys are not validated" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\          fetch-depth: 1
+        \\        env:
+        \\          CUSTOM: value
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN001: unknown workflow key is reported" {
+    const source =
+        \\on: push
+        \\default:
+        \\  run:
+        \\    shell: bash
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "default") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"workflow\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"defaults\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"true\"") == null);
+}
+
+test "SYN001: expected keys are sorted" {
+    const source =
+        \\on: push
+        \\foo: bar
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"concurrency\", \"defaults\", \"env\", \"jobs\"") != null);
+}
+
+test "SYN001: unknown strategy key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      fail_fast: false
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "fail_fast") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"strategy\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"fail-fast\"") != null);
+}
+
+test "SYN001: unknown container key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: node:20
+        \\      imagen: node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "imagen") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"container\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"image\"") != null);
+}
+
+test "SYN001: unknown services key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    services:
+        \\      redis:
+        \\        image: redis
+        \\        imagen: redis
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "imagen") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"services\"") != null);
+}
+
+test "SYN001: unknown defaults.run key is reported" {
+    const source =
+        \\on: push
+        \\defaults:
+        \\  run:
+        \\    shel: bash
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "shel") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"run\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"shell\"") != null);
+}
+
+test "SYN001: step keys are case-sensitive" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\        Shell: bash
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "Shell") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"shell\"") != null);
+}
+
+test "SYN001: action step rejects shell" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        shell: bash
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "shell") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "\"step\"") != null);
+}
+
+test "SYN001: distant key has no did-you-mean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    totally-unrelated: 1
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "totally-unrelated") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean") == null);
+}
+
+test "SYN001: message survives appendOwning after source list deinit" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minute: 10
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var dst = DiagnosticList.init(testing.allocator);
+    defer dst.deinit();
+
+    {
+        var src = DiagnosticList.init(testing.allocator);
+        defer src.deinit();
+        try runSyn001(source, &src);
+        try testing.expectEqual(@as(usize, 1), src.len());
+        try dst.appendOwning(src.get(0));
+    }
+
+    try testing.expectEqualStrings("SYN001", dst.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, dst.get(0).message, "timeout-minute") != null);
+}
 
 fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
     const alloc = arena.allocator();
@@ -554,8 +970,6 @@ test "SYN005: steps without id are ignored" {
 }
 
 test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

@@ -429,7 +429,6 @@ test "appendOwning deep-clones heap-allocated message" {
 
         try dst.appendOwning(src.get(0));
     }
-
     const got = dst.get(0);
     try std.testing.expectEqualStrings("heap-message-text", got.message);
 }
