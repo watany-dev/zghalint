@@ -403,6 +403,8 @@ pub const Workflow = struct {
     permissions_insertion_byte: ?usize = null,
     /// Byte position to insert a new top-level `concurrency:` entry (after `on:` line).
     concurrency_insertion_byte: ?usize = null,
+    /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
+    yaml_root: ?yaml_types.Node = null,
 };
 
 const type_validation = @import("type_validation.zig");
