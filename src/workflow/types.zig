@@ -4,6 +4,12 @@ const schema = @import("schema.zig");
 
 pub const UnknownKey = schema.UnknownKey;
 
+/// A workflow section that was present in the source but empty.
+pub const EmptySection = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 /// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
 pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
@@ -271,6 +277,7 @@ pub const Step = struct {
     with: ?StringMap = null,
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
+    empty_sections: []const EmptySection = &.{},
     if_condition: ?[]const u8 = null,
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
@@ -349,6 +356,7 @@ pub const Job = struct {
     continue_on_error: bool = false,
     container: ?Container = null,
     services: []const Service = &.{},
+    empty_sections: []const EmptySection = &.{},
     /// Reusable workflow reference (mutually exclusive with steps)
     uses: ?[]const u8 = null,
     with: ?StringMap = null,
@@ -374,6 +382,7 @@ pub const Workflow = struct {
     env_meta: ?ScalarValueMetaMap = null,
     concurrency: ?Concurrency = null,
     jobs: []const Job,
+    empty_sections: []const EmptySection = &.{},
     /// Keys present in workflow mappings but not defined by the GitHub Actions schema.
     unknown_keys: []const schema.UnknownKey = &.{},
     /// Mapping value type mismatches collected during parsing (SYN004).
@@ -384,6 +393,8 @@ pub const Workflow = struct {
     permissions_insertion_byte: ?usize = null,
     /// Byte position to insert a new top-level `concurrency:` entry (after `on:` line).
     concurrency_insertion_byte: ?usize = null,
+    /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
+    yaml_root: ?yaml_types.Node = null,
 };
 
 const type_validation = @import("type_validation.zig");
