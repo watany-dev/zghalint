@@ -19,7 +19,7 @@ Detect security vulnerabilities in workflow definitions.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA |
-| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script` の `with.script`) risks script injection |
+| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script`'s `with.script`) risks script injection |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
 | SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout of PR head is dangerous |

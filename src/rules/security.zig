@@ -128,28 +128,6 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
 
 const script_injection_fix_hint = "assign the context to an environment variable and use the env var instead";
 
-/// An action input whose value is executed as code, making it equivalent to `run:`
-/// for script injection purposes.
-const ScriptInput = struct {
-    owner: []const u8,
-    repo: []const u8,
-    /// Input names under `with:` that are executed as code.
-    inputs: []const []const u8,
-    /// Diagnostic message for this action (static, so no allocation is needed).
-    message: []const u8,
-};
-
-/// Actions that execute one of their `with:` inputs as code.
-/// Extend this table when other such actions are identified.
-const script_input_actions = [_]ScriptInput{
-    .{
-        .owner = "actions",
-        .repo = "github-script",
-        .inputs = &.{"script"},
-        .message = "script injection: untrusted context used in actions/github-script script: input",
-    },
-};
-
 fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
     if (step.run) |run_body| {
         checkDangerousContextInString(run_body, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
@@ -157,26 +135,31 @@ fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
     checkScriptInputInjection(step, list);
 }
 
-/// SEC002 for code-executing action inputs (e.g. `actions/github-script` `with.script`).
+/// SEC002 for action inputs executed as code: `actions/github-script` runs `with.script`
+/// as JavaScript, so it carries the same injection risk as `run:`.
 fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
+    if (!isGithubScriptAction(ref)) return;
     const with_map = step.with orelse return;
-    const entry = findScriptInputAction(ref) orelse return;
-    for (entry.inputs) |input_name| {
-        const body = with_map.get(input_name) orelse continue;
-        checkDangerousContextInString(body, "SEC002", entry.message, script_injection_fix_hint, list);
-    }
+    const body = getWithInput(with_map, "script") orelse return;
+    checkDangerousContextInString(body, "SEC002", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
 }
 
-fn findScriptInputAction(ref: ActionRef) ?*const ScriptInput {
-    const owner = ref.owner orelse return null;
-    const repo = ref.repo orelse return null;
-    // Only the top-level action counts; a nested path is a different action.
-    if (ref.path != null) return null;
-    for (&script_input_actions) |*entry| {
-        if (std.mem.eql(u8, owner, entry.owner) and std.mem.eql(u8, repo, entry.repo)) {
-            return entry;
-        }
+fn isGithubScriptAction(ref: ActionRef) bool {
+    const owner = ref.owner orelse return false;
+    const repo = ref.repo orelse return false;
+    // A nested path is a different action; owner/repo are case-insensitive on GitHub.
+    return ref.path == null and
+        std.ascii.eqlIgnoreCase(owner, "actions") and
+        std.ascii.eqlIgnoreCase(repo, "github-script");
+}
+
+/// Look up a `with:` input by name. The runner exposes inputs as `INPUT_<UPPERCASE>`,
+/// so input names resolve case-insensitively.
+fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?[]const u8 {
+    var it = with_map.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) return entry.value_ptr.*;
     }
     return null;
 }
@@ -2049,6 +2032,57 @@ test "SEC002: dangerous context in github-script script input" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: github-script action name is matched case-insensitively" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("script", "const title = \"${{ github.event.issue.title }}\";") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("Actions/GitHub-Script@v7"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: script input name is matched case-insensitively" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("Script", "const title = \"${{ github.event.issue.title }}\";") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/github-script@v7"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: nested path under github-script is a different action" {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("script", "const title = \"${{ github.event.issue.title }}\";") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/github-script/sub@v7"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
 test "SEC002: github-script script input via env (no false positive)" {
