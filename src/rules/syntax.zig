@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
+const workflow_parser = @import("../workflow/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 
@@ -69,6 +70,26 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
             .message = message,
             .span = uk.span,
         }) catch continue;
+    }
+}
+
+// ── SYN004: Mapping value type validation ──
+
+fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.type_mismatches) |mismatch| {
+        const msg = std.fmt.allocPrint(
+            alloc,
+            "expected {s} for \"{s}\", but found {s}",
+            .{ mismatch.expected, mismatch.field, mismatch.actual },
+        ) catch continue;
+        list.append(.{
+            .rule_id = "SYN004",
+            .severity = .@"error",
+            .message = msg,
+            .span = mismatch.span,
+            .fix_hint = "use a value of the expected type for this field",
+        }) catch return;
     }
 }
 
@@ -226,6 +247,14 @@ pub const rules = [_]Rule{
         .check_workflow = &checkUnknownKeys,
     },
     .{
+        .id = "SYN004",
+        .name = "mapping-value-type",
+        .description = "mapping value does not match the expected type for its key",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkMappingValueTypes,
+    },
+    .{
         .id = "SYN005",
         .name = "duplicate-id",
         .description = "job IDs and step IDs must be unique within a workflow or job (case-insensitive)",
@@ -259,7 +288,6 @@ pub const rules = [_]Rule{
 const testing = std.testing;
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
-const workflow_parser = @import("../workflow/parser.zig");
 const yaml_parser_mod = @import("../yaml/parser.zig");
 
 fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
@@ -607,6 +635,15 @@ test "SYN001: message survives appendOwning after source list deinit" {
     try testing.expect(std.mem.indexOf(u8, dst.get(0).message, "timeout-minute") != null);
 }
 
+fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
+    const alloc = arena.allocator();
+    var yaml_parser = @import("../yaml/parser.zig").Parser.init(alloc, source);
+    defer yaml_parser.deinit();
+    const yaml_node = try yaml_parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    checkMappingValueTypes(&wf, list);
+}
+
 fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };
     checkExclusiveFilters(&wf, list);
@@ -615,6 +652,140 @@ fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
 fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
     checkDuplicateNeeds(&job, diags);
+}
+
+const Syn004Case = struct {
+    name: []const u8,
+    source: []const u8,
+    want: usize,
+    message_contains: ?[]const u8 = null,
+};
+
+test "SYN004: mapping value type validation" {
+    const cases = [_]Syn004Case{
+        .{
+            .name = "invalid job fields",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    timeout-minutes: "ten"
+            \\    continue-on-error: maybe
+            \\    strategy:
+            \\      max-parallel: high
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 3,
+            .message_contains = "timeout-minutes",
+        },
+        .{
+            .name = "invalid fail-fast and cancel-in-progress",
+            .source =
+            \\on: push
+            \\concurrency:
+            \\  group: ci
+            \\  cancel-in-progress: yes
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    strategy:
+            \\      fail-fast: maybe
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 2,
+        },
+        .{
+            .name = "wrong node kinds",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    timeout-minutes: [10]
+            \\    continue-on-error: {}
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 2,
+        },
+        .{
+            .name = "dollar-prefixed non-expression",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    continue-on-error: $maybe
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 1,
+        },
+        .{
+            .name = "valid values",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    timeout-minutes: 10
+            \\    continue-on-error: true
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 0,
+        },
+        .{
+            .name = "expression values",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    continue-on-error: ${{ github.event_name == 'push' }}
+            \\    timeout-minutes: ${{ matrix.timeout }}
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 0,
+        },
+        .{
+            .name = "step-level invalid fields",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    steps:
+            \\      - run: echo hi
+            \\        timeout-minutes: bad
+            \\        continue-on-error: yes
+            ,
+            .want = 2,
+        },
+    };
+
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+
+        try runSyn004(case.source, &arena, &diags);
+        try testing.expectEqual(case.want, diags.len());
+
+        if (case.message_contains) |needle| {
+            try testing.expect(std.mem.indexOf(u8, diags.get(0).message, needle) != null);
+        }
+
+        for (diags.items.items) |diag| {
+            try testing.expectEqualStrings("SYN004", diag.rule_id);
+            try testing.expect(diag.severity == .@"error");
+        }
+    }
 }
 
 fn runOnDuplicateJobIds(jobs: []const Job, diags: *DiagnosticList) void {

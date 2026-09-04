@@ -100,11 +100,11 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, diag);
     }
 
-    /// Append a Diagnostic, deep-cloning `message`, any embedded Fix, and any
-    /// heap-allocated `fix_hint` into this list's fix_arena. Use this when
-    /// bringing diagnostics across DiagnosticList boundaries; plain `append`
-    /// keeps those slices borrowed from the source list's arena, which dangles
-    /// once that list is deinitialized.
+    /// Append a Diagnostic, deep-cloning any embedded Fix and any
+    /// heap-allocated `message` / `fix_hint` into this list's fix_arena. Use
+    /// this when bringing diagnostics across DiagnosticList boundaries; plain
+    /// `append` keeps those strings borrowed from the source list's arena,
+    /// which dangles once that list is deinitialized.
     pub fn appendOwning(self: *DiagnosticList, diag: Diagnostic) !void {
         const alloc = self.fix_arena.allocator();
         var d = diag;
@@ -429,7 +429,6 @@ test "appendOwning deep-clones heap-allocated message" {
 
         try dst.appendOwning(src.get(0));
     }
-    // src.deinit() ran — the original message backing is gone.
-
-    try std.testing.expectEqualStrings("heap-message-text", dst.get(0).message);
+    const got = dst.get(0);
+    try std.testing.expectEqualStrings("heap-message-text", got.message);
 }
