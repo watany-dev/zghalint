@@ -20,7 +20,6 @@ pub const workflow = struct {
     pub const Permissions = types.Permissions;
     pub const parser = @import("workflow/parser.zig");
     pub const parseWorkflow = parser.parseWorkflow;
-    pub const type_validation = @import("workflow/type_validation.zig");
     pub const validator = @import("workflow/validator.zig");
     pub const validate = validator.validate;
 };

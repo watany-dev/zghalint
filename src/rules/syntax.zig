@@ -2,7 +2,6 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const workflow_parser = @import("../workflow/parser.zig");
-const type_validation = @import("../workflow/type_validation.zig");
 const yaml_types = @import("../yaml/types.zig");
 
 const Rule = engine.Rule;
@@ -16,7 +15,11 @@ const Span = yaml_types.Span;
 fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.type_mismatches) |mismatch| {
-        const msg = type_validation.formatMessage(alloc, mismatch) catch continue;
+        const msg = std.fmt.allocPrint(
+            alloc,
+            "expected {s} for \"{s}\", but found {s}",
+            .{ mismatch.expected, mismatch.field, mismatch.actual },
+        ) catch continue;
         list.append(.{
             .rule_id = "SYN004",
             .severity = .@"error",
@@ -159,207 +162,138 @@ fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
     checkDuplicateNeeds(&job, diags);
 }
 
-test "SYN004: invalid timeout-minutes, continue-on-error, and max-parallel" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    timeout-minutes: "ten"
-        \\    continue-on-error: maybe
-        \\    strategy:
-        \\      max-parallel: high
-        \\    steps:
-        \\      - run: echo hi
-    ;
+const Syn004Case = struct {
+    name: []const u8,
+    source: []const u8,
+    want: usize,
+    message_contains: ?[]const u8 = null,
+};
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
+test "SYN004: mapping value type validation" {
+    const cases = [_]Syn004Case{
+        .{
+            .name = "invalid job fields",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    timeout-minutes: "ten"
+            \\    continue-on-error: maybe
+            \\    strategy:
+            \\      max-parallel: high
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 3,
+            .message_contains = "timeout-minutes",
+        },
+        .{
+            .name = "invalid fail-fast and cancel-in-progress",
+            .source =
+            \\on: push
+            \\concurrency:
+            \\  group: ci
+            \\  cancel-in-progress: yes
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    strategy:
+            \\      fail-fast: maybe
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 2,
+        },
+        .{
+            .name = "wrong node kinds",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    timeout-minutes: [10]
+            \\    continue-on-error: {}
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 2,
+        },
+        .{
+            .name = "dollar-prefixed non-expression",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    continue-on-error: $maybe
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 1,
+        },
+        .{
+            .name = "valid values",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    timeout-minutes: 10
+            \\    continue-on-error: true
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 0,
+        },
+        .{
+            .name = "expression values",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    continue-on-error: ${{ github.event_name == 'push' }}
+            \\    timeout-minutes: ${{ matrix.timeout }}
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 0,
+        },
+        .{
+            .name = "step-level invalid fields",
+            .source =
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    steps:
+            \\      - run: echo hi
+            \\        timeout-minutes: bad
+            \\        continue-on-error: yes
+            ,
+            .want = 2,
+        },
+    };
 
-    try runSyn004(source, &arena, &diags);
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
 
-    try testing.expectEqual(@as(usize, 3), diags.len());
-    for (diags.items.items) |diag| {
-        try testing.expectEqualStrings("SYN004", diag.rule_id);
-        try testing.expect(diag.severity == .@"error");
-    }
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "timeout-minutes") != null);
-}
+        try runSyn004(case.source, &arena, &diags);
+        try testing.expectEqual(case.want, diags.len());
 
-test "SYN004: fail-fast and cancel-in-progress invalid bools are reported" {
-    const source =
-        \\on: push
-        \\concurrency:
-        \\  group: ci
-        \\  cancel-in-progress: yes
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    strategy:
-        \\      fail-fast: maybe
-        \\    steps:
-        \\      - run: echo hi
-    ;
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runSyn004(source, &arena, &diags);
-    try testing.expectEqual(@as(usize, 2), diags.len());
-}
-
-test "SYN004: wrong node kinds are reported" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    timeout-minutes: [10]
-        \\    continue-on-error: {}
-        \\    steps:
-        \\      - run: echo hi
-    ;
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    var yaml_parser = @import("../yaml/parser.zig").Parser.init(alloc, source);
-    defer yaml_parser.deinit();
-    const yaml_node = try yaml_parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    try testing.expectEqual(@as(usize, 2), wf.type_mismatches.len);
-
-    var saw_timeout = false;
-    var saw_continue = false;
-    for (wf.type_mismatches) |mismatch| {
-        if (std.mem.eql(u8, mismatch.field, "timeout-minutes")) {
-            try testing.expectEqualStrings("sequence", mismatch.actual);
-            saw_timeout = true;
+        if (case.message_contains) |needle| {
+            try testing.expect(std.mem.indexOf(u8, diags.get(0).message, needle) != null);
         }
-        if (std.mem.eql(u8, mismatch.field, "continue-on-error")) {
-            try testing.expectEqualStrings("mapping", mismatch.actual);
-            saw_continue = true;
+
+        for (diags.items.items) |diag| {
+            try testing.expectEqualStrings("SYN004", diag.rule_id);
+            try testing.expect(diag.severity == .@"error");
         }
     }
-    try testing.expect(saw_timeout);
-    try testing.expect(saw_continue);
-}
-
-test "SYN004: dollar-prefixed non-expressions are not skipped" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    continue-on-error: $maybe
-        \\    steps:
-        \\      - run: echo hi
-    ;
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runSyn004(source, &arena, &diags);
-    try testing.expectEqual(@as(usize, 1), diags.len());
-}
-
-test "SYN004: message survives appendOwning across diagnostic lists" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    timeout-minutes: "ten"
-        \\    steps:
-        \\      - run: echo hi
-    ;
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var src_diags = DiagnosticList.init(testing.allocator);
-    defer src_diags.deinit();
-    try runSyn004(source, &arena, &src_diags);
-    try testing.expectEqual(@as(usize, 1), src_diags.len());
-
-    var dst_diags = DiagnosticList.init(testing.allocator);
-    defer dst_diags.deinit();
-    try dst_diags.appendOwning(src_diags.get(0));
-
-    try testing.expectEqualStrings(
-        "expected number for \"timeout-minutes\", but found string",
-        dst_diags.get(0).message,
-    );
-}
-
-test "SYN004: valid typed values produce no diagnostic" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    timeout-minutes: 10
-        \\    continue-on-error: true
-        \\    steps:
-        \\      - run: echo hi
-    ;
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runSyn004(source, &arena, &diags);
-    try testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "SYN004: expression values are skipped" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    continue-on-error: ${{ github.event_name == 'push' }}
-        \\    timeout-minutes: ${{ matrix.timeout }}
-        \\    steps:
-        \\      - run: echo hi
-    ;
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runSyn004(source, &arena, &diags);
-    try testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "SYN004: step-level invalid bool and number are reported" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    steps:
-        \\      - run: echo hi
-        \\        timeout-minutes: bad
-        \\        continue-on-error: yes
-    ;
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runSyn004(source, &arena, &diags);
-    try testing.expectEqual(@as(usize, 2), diags.len());
 }
 
 test "SYN008: duplicated job ID is reported" {

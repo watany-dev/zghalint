@@ -14,7 +14,7 @@ pub const ParseError = error{
 
 const ParseContext = struct {
     allocator: std.mem.Allocator,
-    type_collector: type_validation.Collector,
+    type_mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
 };
 
 const ParsedStringMap = struct {
@@ -33,7 +33,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     errdefer type_mismatches.deinit(allocator);
     var ctx = ParseContext{
         .allocator = allocator,
-        .type_collector = .{ .allocator = allocator, .list = &type_mismatches },
+        .type_mismatches = &type_mismatches,
     };
 
     const root = switch (node) {
@@ -344,10 +344,20 @@ fn parseJob(ctx: *ParseContext, id: []const u8, node: Node) ParseError!types.Job
 
     if (m.get("timeout-minutes")) |n| {
         job.timeout_minutes_specified = true;
-        job.timeout_minutes = type_validation.checkNumber(n, "timeout-minutes", &ctx.type_collector);
+        job.timeout_minutes = type_validation.checkNumber(
+            n,
+            "timeout-minutes",
+            ctx.type_mismatches,
+            ctx.allocator,
+        );
     }
     if (m.get("continue-on-error")) |n| {
-        job.continue_on_error = type_validation.checkBool(n, "continue-on-error", &ctx.type_collector) orelse false;
+        job.continue_on_error = type_validation.checkBool(
+            n,
+            "continue-on-error",
+            ctx.type_mismatches,
+            ctx.allocator,
+        ) orelse false;
     }
 
     if (m.get("needs")) |needs_node| {
@@ -469,10 +479,20 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         }
     }
     if (m.get("timeout-minutes")) |n| {
-        step.timeout_minutes = type_validation.checkNumber(n, "timeout-minutes", &ctx.type_collector);
+        step.timeout_minutes = type_validation.checkNumber(
+            n,
+            "timeout-minutes",
+            ctx.type_mismatches,
+            ctx.allocator,
+        );
     }
     if (m.get("continue-on-error")) |n| {
-        step.continue_on_error = type_validation.checkBool(n, "continue-on-error", &ctx.type_collector) orelse false;
+        step.continue_on_error = type_validation.checkBool(
+            n,
+            "continue-on-error",
+            ctx.type_mismatches,
+            ctx.allocator,
+        ) orelse false;
     }
     // Parse with: and capture last entry's value end byte for autofix
     if (m.get("with")) |with_node| {
@@ -600,7 +620,8 @@ fn parseConcurrency(ctx: *ParseContext, node: Node) ParseError!types.Concurrency
                 concurrency.cancel_in_progress = type_validation.checkBool(
                     n,
                     "cancel-in-progress",
-                    &ctx.type_collector,
+                    ctx.type_mismatches,
+                    ctx.allocator,
                 ) orelse false;
             }
             return concurrency;
@@ -618,7 +639,12 @@ fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
     var strategy = types.Strategy{};
     for (m.entries) |entry| {
         if (std.mem.eql(u8, entry.key.value, "fail-fast")) {
-            if (type_validation.checkBool(entry.value, "fail-fast", &ctx.type_collector)) |value| {
+            if (type_validation.checkBool(
+                entry.value,
+                "fail-fast",
+                ctx.type_mismatches,
+                ctx.allocator,
+            )) |value| {
                 strategy.fail_fast = value;
                 if (entry.value == .scalar) {
                     strategy.fail_fast_value_span = entry.value.scalar.span;
@@ -629,7 +655,8 @@ fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
             strategy.max_parallel = type_validation.checkNumber(
                 entry.value,
                 "max-parallel",
-                &ctx.type_collector,
+                ctx.type_mismatches,
+                ctx.allocator,
             );
         }
     }
@@ -817,18 +844,8 @@ fn mkSequence(items: []Node) Node {
     return .{ .sequence = .{ .items = items, .span = mkSpan() } };
 }
 
-const TestParseBundle = struct {
-    mismatches: std.ArrayList(type_validation.TypeMismatch),
-    ctx: ParseContext,
-};
-
-fn mkParseCtx(allocator: std.mem.Allocator) TestParseBundle {
-    var bundle = TestParseBundle{ .mismatches = .{}, .ctx = undefined };
-    bundle.ctx = .{
-        .allocator = allocator,
-        .type_collector = .{ .allocator = allocator, .list = &bundle.mismatches },
-    };
-    return bundle;
+fn testCtx(allocator: std.mem.Allocator) ParseContext {
+    return .{ .allocator = allocator, .type_mismatches = null };
 }
 
 test "parseWorkflow minimal" {
@@ -1018,8 +1035,8 @@ test "parsePermissions individual scopes" {
 }
 
 test "parseConcurrency scalar" {
-    var parse = mkParseCtx(testing.allocator);
-    const c = try parseConcurrency(&parse.ctx, mkScalar("ci-group"));
+    var ctx = testCtx(testing.allocator);
+    const c = try parseConcurrency(&ctx, mkScalar("ci-group"));
     try testing.expectEqualStrings("ci-group", c.group);
     try testing.expect(!c.cancel_in_progress);
 }
@@ -1030,8 +1047,8 @@ test "parseConcurrency mapping" {
         .{ .key = mkScalarS("cancel-in-progress"), .value = mkScalar("true"), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(testing.allocator);
-    const c = try parseConcurrency(&parse.ctx, mkMapping(&entries));
+    var ctx = testCtx(testing.allocator);
+    const c = try parseConcurrency(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("ci", c.group);
     try testing.expect(c.cancel_in_progress);
 }
@@ -1045,8 +1062,8 @@ test "parseStep with uses" {
         .{ .key = mkScalarS("uses"), .value = mkScalar("actions/checkout@v4"), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const step = try parseStep(&parse.ctx, mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const step = try parseStep(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("Checkout", step.name.?);
     try testing.expectEqualStrings("actions", step.uses.?.owner.?);
     try testing.expectEqualStrings("checkout", step.uses.?.repo.?);
@@ -1062,8 +1079,8 @@ test "parseStep with run" {
         .{ .key = mkScalarS("shell"), .value = mkScalar("bash"), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const step = try parseStep(&parse.ctx, mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const step = try parseStep(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("make build", step.run.?);
     try testing.expectEqualStrings("bash", step.shell.?);
 }
@@ -1085,8 +1102,8 @@ test "parseJob with needs" {
         .{ .key = mkScalarS("steps"), .value = mkSequence(&step_items), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "deploy", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "deploy", mkMapping(&entries));
     try testing.expectEqualStrings("deploy", job.id);
     try testing.expectEqual(@as(usize, 2), job.needs.len);
     try testing.expectEqualStrings("build", job.needs[0]);
@@ -1102,8 +1119,8 @@ test "parseJob reusable workflow" {
         .{ .key = mkScalarS("secrets"), .value = mkScalar("inherit"), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "call-workflow", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "call-workflow", mkMapping(&entries));
     try testing.expectEqualStrings("octo-org/this-repo/.github/workflows/workflow-1.yml@v1", job.uses.?);
     switch (job.secrets.?) {
         .inherit => {},
@@ -1157,8 +1174,8 @@ test "parseStrategy with fail-fast and max-parallel" {
         .{ .key = mkScalarS("max-parallel"), .value = mkScalar("2"), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(testing.allocator);
-    const strategy = try parseStrategy(&parse.ctx, mkMapping(&entries));
+    var ctx = testCtx(testing.allocator);
+    const strategy = try parseStrategy(&ctx, mkMapping(&entries));
     try testing.expect(!strategy.fail_fast);
     try testing.expectEqual(@as(?u32, 2), strategy.max_parallel);
 }
@@ -1268,8 +1285,8 @@ test "parseStep with timeout and continue-on-error" {
         .{ .key = mkScalarS("env"), .value = mkMapping(&env_entries), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const step = try parseStep(&parse.ctx, mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const step = try parseStep(&ctx, mkMapping(&entries));
     try testing.expectEqual(@as(?u32, 10), step.timeout_minutes);
     try testing.expect(step.continue_on_error);
     try testing.expectEqualStrings("always()", step.if_condition.?);
@@ -1303,8 +1320,8 @@ test "parseJob with timeout and strategy" {
         .{ .key = mkScalarS("strategy"), .value = mkMapping(&strategy_entries), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "test", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "test", mkMapping(&entries));
     try testing.expectEqual(@as(?u32, 30), job.timeout_minutes);
     try testing.expect(job.continue_on_error);
     try testing.expectEqualStrings("success()", job.if_condition.?);
@@ -1326,8 +1343,8 @@ test "parseStep captures if_condition_meta" {
         },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const step = try parseStep(&parse.ctx, mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const step = try parseStep(&ctx, mkMapping(&entries));
     try testing.expect(step.if_condition_meta != null);
     try testing.expectEqual(@as(usize, 4), step.if_condition_meta.?.value_span.start_byte);
     try testing.expectEqual(@as(usize, 32), step.if_condition_meta.?.value_span.end_byte);
@@ -1354,8 +1371,8 @@ test "parseJob captures if_condition_meta with double-quoted style" {
         },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "test", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "test", mkMapping(&entries));
     try testing.expect(job.if_condition_meta != null);
     try testing.expectEqual(@as(usize, 10), job.if_condition_meta.?.value_span.start_byte);
     try testing.expectEqual(yaml.ScalarStyle.double_quoted, job.if_condition_meta.?.style);
@@ -1411,8 +1428,8 @@ test "parseJob with container as scalar" {
         .{ .key = mkScalarS("container"), .value = mkScalar("node:14"), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "build", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "build", mkMapping(&entries));
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expect(job.container.?.credentials == null);
 }
@@ -1441,8 +1458,8 @@ test "parseJob with container credentials" {
         .{ .key = mkScalarS("container"), .value = mkMapping(&container_entries), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "build", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "build", mkMapping(&entries));
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expectEqualStrings("myuser", job.container.?.credentials.?.username.?);
     try testing.expectEqualStrings("mypassword", job.container.?.credentials.?.password.?);
@@ -1475,8 +1492,8 @@ test "parseJob with service credentials" {
         .{ .key = mkScalarS("services"), .value = mkMapping(&services_entries), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "build", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "build", mkMapping(&entries));
     try testing.expectEqual(@as(usize, 1), job.services.len);
     try testing.expectEqualStrings("redis", job.services[0].name);
     try testing.expectEqualStrings("redis", job.services[0].image.?);
@@ -1646,8 +1663,8 @@ test "parseJob with env and concurrency and with" {
         .{ .key = mkScalarS("permissions"), .value = mkMapping(&perm_entries), .span = mkSpan() },
     };
 
-    var parse = mkParseCtx(arena.allocator());
-    const job = try parseJob(&parse.ctx, "test", mkMapping(&entries));
+    var ctx = testCtx(arena.allocator());
+    const job = try parseJob(&ctx, "test", mkMapping(&entries));
     try testing.expectEqualStrings("true", job.env.?.get("CI").?);
     try testing.expect(job.env_meta != null);
     try testing.expectEqual(yaml.ScalarStyle.plain, job.env_meta.?.get("CI").?.style);
