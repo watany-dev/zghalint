@@ -43,6 +43,7 @@ pub const output = struct {
 
 pub const rules = struct {
     pub const engine = @import("rules/engine.zig");
+    pub const spans = @import("rules/spans.zig");
     pub const Engine = engine.Engine;
     pub const Rule = engine.Rule;
     pub const expressions = @import("rules/expressions.zig");
@@ -95,6 +96,7 @@ test {
     _ = @import("workflow/validator.zig");
     _ = @import("diagnostics.zig");
     _ = @import("rules/engine.zig");
+    _ = @import("rules/spans.zig");
     _ = @import("rules/expressions.zig");
     _ = @import("rules/expr_type.zig");
     _ = @import("rules/expr_catalog.zig");
