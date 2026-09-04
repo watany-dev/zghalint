@@ -307,16 +307,6 @@ fn lintFile(
 
     // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
-        var yaml_diags = zghalint.DiagnosticList.init(allocator);
-        defer yaml_diags.deinit();
-        zghalint.rules.syntax.emitDuplicateKeyDiagnostics(yaml_node, &yaml_diags);
-        for (yaml_diags.items.items) |diag| {
-            if (!config.isRuleEnabled(diag.rule_id)) continue;
-            var d = diag;
-            d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
-            d.file = file_path;
-            all_diags.appendOwning(d) catch {};
-        }
         stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
         return;
     };

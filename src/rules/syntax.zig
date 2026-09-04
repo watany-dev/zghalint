@@ -10,57 +10,31 @@ const DiagnosticList = engine.DiagnosticList;
 const Span = yaml_types.Span;
 const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
-const Scalar = yaml_types.Scalar;
 
 // ── SYN002: Case-insensitive duplicate YAML keys ──
 
-pub fn emitDuplicateKeyDiagnostics(node: Node, list: *DiagnosticList) void {
-    walkDuplicateKeys(node, "workflow", null, list);
-}
-
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const root = wf.yaml_root orelse return;
-    emitDuplicateKeyDiagnostics(root, list);
+    walkDuplicateKeys(root, "workflow", null, list);
 }
 
-fn sectionForMappingChild(parent_section: []const u8, key: []const u8) []const u8 {
+fn sectionForMappingChild(parent_section: []const u8, key: []const u8, value: Node) []const u8 {
     // Job IDs are arbitrary. A job named `env` is still a job, not an env map.
     if (std.mem.eql(u8, parent_section, "jobs")) return "job";
-
-    if (std.ascii.eqlIgnoreCase(key, "jobs")) return "jobs";
-    if (std.ascii.eqlIgnoreCase(key, "env")) return "env";
-    if (std.ascii.eqlIgnoreCase(key, "with")) return "with";
-    if (std.ascii.eqlIgnoreCase(key, "matrix")) return "matrix";
-    if (std.ascii.eqlIgnoreCase(key, "secrets")) return "secrets";
-    if (std.ascii.eqlIgnoreCase(key, "permissions")) return "permissions";
-    if (std.ascii.eqlIgnoreCase(key, "outputs")) return "outputs";
-    if (std.ascii.eqlIgnoreCase(key, "strategy")) return "strategy";
-    if (std.ascii.eqlIgnoreCase(key, "inputs")) return "inputs";
-    if (std.ascii.eqlIgnoreCase(key, "services")) return "services";
-    if (std.ascii.eqlIgnoreCase(key, "container")) return "container";
-    if (std.ascii.eqlIgnoreCase(key, "defaults")) return "defaults";
-    if (std.ascii.eqlIgnoreCase(key, "concurrency")) return "concurrency";
-    if (std.ascii.eqlIgnoreCase(key, "on")) return "on";
-
-    if (std.mem.eql(u8, parent_section, "job")) return "job";
-    if (std.mem.eql(u8, parent_section, "strategy")) return "strategy";
-    if (std.mem.eql(u8, parent_section, "step")) return "step";
-    if (std.mem.eql(u8, parent_section, "services")) return "services";
-    if (std.mem.eql(u8, parent_section, "container")) return "container";
-
-    return parent_section;
+    return switch (value) {
+        .mapping => key,
+        else => parent_section,
+    };
 }
 
 fn walkDuplicateKeys(node: Node, section: []const u8, parent_key: ?[]const u8, list: *DiagnosticList) void {
     switch (node) {
         .mapping => |m| checkMapping(m, section, list),
         .sequence => |s| {
-            const item_section = blk: {
-                if (parent_key) |pk| {
-                    if (std.ascii.eqlIgnoreCase(pk, "steps")) break :blk "step";
-                }
-                break :blk section;
-            };
+            const item_section = if (parent_key) |pk|
+                (if (std.ascii.eqlIgnoreCase(pk, "steps")) "step" else section)
+            else
+                section;
             for (s.items) |item| {
                 walkDuplicateKeys(item, item_section, parent_key, list);
             }
@@ -71,16 +45,12 @@ fn walkDuplicateKeys(node: Node, section: []const u8, parent_key: ?[]const u8, l
 
 fn checkMapping(mapping: Mapping, section: []const u8, list: *DiagnosticList) void {
     for (mapping.entries, 0..) |entry, i| {
-        var first: ?Scalar = null;
         for (mapping.entries[0..i]) |earlier| {
             if (!std.ascii.eqlIgnoreCase(earlier.key.value, entry.key.value)) continue;
-            if (first == null) first = earlier.key;
-        }
-        if (first) |prior| {
             const message = std.fmt.allocPrint(
                 list.fixAllocator(),
                 "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
-                .{ entry.key.value, section, prior.span.start_line, prior.span.start_col },
+                .{ entry.key.value, section, earlier.key.span.start_line, earlier.key.span.start_col },
             ) catch return;
 
             list.append(.{
@@ -90,9 +60,10 @@ fn checkMapping(mapping: Mapping, section: []const u8, list: *DiagnosticList) vo
                 .span = entry.key.span,
                 .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
             }) catch return;
+            break;
         }
 
-        const child_section = sectionForMappingChild(section, entry.key.value);
+        const child_section = sectionForMappingChild(section, entry.key.value, entry.value);
         walkDuplicateKeys(entry.value, child_section, entry.key.value, list);
     }
 }
@@ -228,7 +199,7 @@ fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !v
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
     defer parser.deinit();
     const node = try parser.parse();
-    emitDuplicateKeyDiagnostics(node, diags);
+    walkDuplicateKeys(node, "workflow", null, diags);
 }
 
 test "SYN002: duplicated steps key is reported" {
