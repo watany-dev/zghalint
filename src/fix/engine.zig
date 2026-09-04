@@ -41,7 +41,8 @@ const FlatEdits = struct {
 /// Flatten all edits from multiple fixes into a single sorted, non-overlapping list.
 /// Edits are sorted by start_byte descending so they can be applied back-to-front
 /// without offset shifting. Overlapping edits are dropped (first wins by position).
-fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix) !FlatEdits {
+/// Edits with invalid byte ranges (end < start, or end > source_len) are also dropped.
+fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: usize) !FlatEdits {
     // Count total edits
     var total: usize = 0;
     for (fixes) |f| {
@@ -50,19 +51,27 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix) !FlatEdits {
 
     if (total == 0) return .{ .items = &.{}, .allocation = &.{} };
 
-    // Collect all edits
+    // Collect all edits (filtering invalid byte ranges up-front)
     var edits = try allocator.alloc(Edit, total);
 
     var idx: usize = 0;
     for (fixes) |f| {
         for (f.edits) |e| {
+            if (!isValidEdit(e, source_len)) continue;
             edits[idx] = e;
             idx += 1;
         }
     }
 
+    if (idx == 0) {
+        allocator.free(edits);
+        return .{ .items = &.{}, .allocation = &.{} };
+    }
+
+    const filtered = edits[0..idx];
+
     // Sort by start_byte ascending (for overlap detection), then we'll reverse
-    std.mem.sort(Edit, edits, {}, struct {
+    std.mem.sort(Edit, filtered, {}, struct {
         fn lessThan(_: void, a: Edit, b: Edit) bool {
             if (a.start_byte != b.start_byte) return a.start_byte < b.start_byte;
             return a.end_byte < b.end_byte;
@@ -72,23 +81,32 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix) !FlatEdits {
     // Remove overlapping edits (keep first by position, skip later overlaps)
     var write_idx: usize = 0;
     var last_end: usize = 0;
-    for (edits) |e| {
+    for (filtered) |e| {
         if (write_idx > 0 and e.start_byte < last_end) {
             // Overlapping — skip
             continue;
         }
-        edits[write_idx] = e;
+        filtered[write_idx] = e;
         last_end = e.end_byte;
         write_idx += 1;
     }
 
     // Get the valid portion
-    const result = edits[0..write_idx];
+    const result = filtered[0..write_idx];
 
     // Reverse to get descending order (apply back-to-front)
     std.mem.reverse(Edit, result);
 
     return .{ .items = result, .allocation = edits };
+}
+
+/// An edit is valid iff its byte range is non-inverted and within source bounds.
+/// Invalid edits are dropped by `flattenAndSort` to avoid arithmetic underflow or
+/// out-of-bounds reads in `applyFixes`.
+fn isValidEdit(e: Edit, source_len: usize) bool {
+    if (e.end_byte < e.start_byte) return false;
+    if (e.end_byte > source_len) return false;
+    return true;
 }
 
 /// Apply fixes to source content, returning new content with all edits applied.
@@ -98,7 +116,7 @@ pub fn applyFixes(
     source: []const u8,
     fixes: []const Fix,
 ) !ApplyResult {
-    const flat = try flattenAndSort(allocator, fixes);
+    const flat = try flattenAndSort(allocator, fixes, source.len);
     defer if (flat.allocation.len > 0) flat.deinit(allocator);
 
     const edits = flat.items;
@@ -318,4 +336,91 @@ test "fix with multiple edits in single fix" {
 test "fix safety toString" {
     try std.testing.expectEqualStrings("safe", FixSafety.safe.toString());
     try std.testing.expectEqualStrings("unsafe", FixSafety.unsafe.toString());
+}
+
+test "invalid edit: end_byte > source.len is skipped" {
+    const allocator = std.testing.allocator;
+    const source = "hello";
+    const edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 100, .replacement = "x" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "bad", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("hello", result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "invalid edit: end_byte < start_byte is skipped" {
+    const allocator = std.testing.allocator;
+    const source = "hello world";
+    const edits = [_]Edit{
+        .{ .start_byte = 5, .end_byte = 2, .replacement = "x" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "inverted", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("hello world", result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "mixed valid and invalid edits: valid ones still apply" {
+    const allocator = std.testing.allocator;
+    const source = "AAA BBB";
+    const valid_edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 3, .replacement = "XXX" },
+    };
+    const invalid_edits = [_]Edit{
+        // Out-of-bounds — should be skipped
+        .{ .start_byte = 4, .end_byte = 999, .replacement = "!" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "valid", .safety = .safe, .edits = &valid_edits },
+        .{ .description = "invalid", .safety = .safe, .edits = &invalid_edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("XXX BBB", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "all edits invalid: returns source unchanged" {
+    const allocator = std.testing.allocator;
+    const source = "unchanged";
+    const edits = [_]Edit{
+        .{ .start_byte = 20, .end_byte = 30, .replacement = "x" },
+        .{ .start_byte = 5, .end_byte = 3, .replacement = "y" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "bad1", .safety = .safe, .edits = edits[0..1] },
+        .{ .description = "bad2", .safety = .safe, .edits = edits[1..2] },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("unchanged", result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "edit at exact source end (end_byte == source.len) is valid" {
+    const allocator = std.testing.allocator;
+    const source = "abc";
+    const edits = [_]Edit{
+        .{ .start_byte = 3, .end_byte = 3, .replacement = "!" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "append", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("abc!", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
 }

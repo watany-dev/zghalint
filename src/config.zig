@@ -67,18 +67,23 @@ pub const Config = struct {
     repo_visibility: Visibility = .unknown,
     perf001: Perf001Override = .{},
     allocator: std.mem.Allocator,
+    /// Owns string data (rule IDs, ignore patterns) referenced by the fields
+    /// above. Decouples Config lifetime from the YAML source buffer.
+    strings_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{
             .rule_overrides = std.StringHashMap(RuleOverride).init(allocator),
             .ignore_patterns = .{},
             .allocator = allocator,
+            .strings_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
     pub fn deinit(self: *Config) void {
         self.rule_overrides.deinit();
         self.ignore_patterns.deinit(self.allocator);
+        self.strings_arena.deinit();
     }
 
     pub fn isRuleEnabled(self: *const Config, rule_id: []const u8) bool {
@@ -111,7 +116,10 @@ pub const ConfigError = error{
 
 /// Parse a .zghalint.yml config from source text.
 pub fn parseConfig(allocator: std.mem.Allocator, source: []const u8) ConfigError!Config {
-    var parser = yaml_parser.Parser.init(allocator, source);
+    var yaml_arena = std.heap.ArenaAllocator.init(allocator);
+    defer yaml_arena.deinit();
+
+    var parser = yaml_parser.Parser.init(yaml_arena.allocator(), source);
     defer parser.deinit();
 
     const node = parser.parse() catch return ConfigError.InvalidYaml;
@@ -129,12 +137,16 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         else => return ConfigError.InvalidConfig,
     };
 
+    // YAML scalar values are slices into the source buffer; dupe them into the
+    // Config-owned arena so the Config can outlive the source buffer.
+    const strings = config.strings_arena.allocator();
+
     // Parse "rules" section
     if (root.get("rules")) |rules_node| {
         switch (rules_node) {
             .mapping => |m| {
                 for (m.entries) |entry| {
-                    const rule_id = entry.key.value;
+                    const rule_id = strings.dupe(u8, entry.key.value) catch return ConfigError.OutOfMemory;
                     var override = RuleOverride{};
 
                     switch (entry.value) {
@@ -171,7 +183,8 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                 for (seq.items) |item| {
                     switch (item) {
                         .scalar => |s| {
-                            config.ignore_patterns.append(allocator, s.value) catch return ConfigError.OutOfMemory;
+                            const pattern = strings.dupe(u8, s.value) catch return ConfigError.OutOfMemory;
+                            config.ignore_patterns.append(allocator, pattern) catch return ConfigError.OutOfMemory;
                         },
                         else => {},
                     }
@@ -586,4 +599,37 @@ test "getEffectiveSeverity with override that has no severity set" {
     try config.rule_overrides.put("MY_RULE", .{ .severity = null, .enabled = true });
     // Should return the default severity
     try std.testing.expectEqual(Severity.warning, config.getEffectiveSeverity("MY_RULE", .warning));
+}
+
+test "config outlives source buffer (rule override)" {
+    const alloc = std.testing.allocator;
+    const src = try alloc.dupe(u8, "rules:\n  SEC001:\n    enabled: false\n");
+    defer alloc.free(src);
+
+    // Simulates main.loadConfig: parse from a buffer that is freed before return.
+    var config = try parseConfigFromFreedSource(alloc, src);
+    defer config.deinit();
+
+    try std.testing.expect(!config.isRuleEnabled("SEC001"));
+    try std.testing.expect(config.isRuleEnabled("BP001"));
+}
+
+test "config outlives source buffer (ignore pattern)" {
+    const alloc = std.testing.allocator;
+    const src = try alloc.dupe(u8, "ignore:\n  - '.github/workflows/legacy-*.yml'\n");
+    defer alloc.free(src);
+
+    var config = try parseConfigFromFreedSource(alloc, src);
+    defer config.deinit();
+
+    try std.testing.expect(config.isIgnored(".github/workflows/legacy-deploy.yml"));
+    try std.testing.expect(!config.isIgnored(".github/workflows/ci.yml"));
+}
+
+/// Mirrors `main.loadConfig`: the YAML source buffer is freed before the Config
+/// is returned, so parsed strings must be owned by Config (via `strings_arena`).
+fn parseConfigFromFreedSource(allocator: std.mem.Allocator, source: []const u8) ConfigError!Config {
+    const owned = try allocator.dupe(u8, source);
+    defer allocator.free(owned);
+    return parseConfig(allocator, owned);
 }
