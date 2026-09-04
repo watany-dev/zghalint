@@ -288,17 +288,33 @@ pub const Tokenizer = struct {
         };
     }
 
+    /// Consume a `${{ ... }}` interpolation starting at the current position.
+    /// Returns false (leaving the position untouched) when one does not start
+    /// here, or when it is not closed before the end of the line.
+    fn skipExpressionInterpolation(self: *Tokenizer) bool {
+        if (self.pos + 2 >= self.source.len) return false;
+        if (self.source[self.pos] != '$') return false;
+        if (self.source[self.pos + 1] != '{' or self.source[self.pos + 2] != '{') return false;
+
+        // Unterminated, or closed only on a later line: fall back to normal
+        // plain-scalar scanning.
+        const close = std.mem.indexOfPos(u8, self.source, self.pos + 3, "}}") orelse return false;
+        if (std.mem.indexOfScalarPos(u8, self.source, self.pos + 3, '\n')) |nl| {
+            if (nl < close) return false;
+        }
+        while (self.pos < close + 2) self.advance();
+        return true;
+    }
+
     fn scanPlainScalar(self: *Tokenizer) Token {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
-            // A GitHub Actions expression embeds flow indicators inside the
-            // scalar, so consume `${{ ... }}` whole. Otherwise a step body like
-            // `run: echo ${{ github.event.issue.title }}` would be truncated to
-            // `echo $` and the rules would never see the context reference.
-            if (ch == '$' and self.consumeActionsExpression()) continue;
+            // `${{ ... }}` is a GitHub Actions expression, not a YAML flow
+            // mapping: its braces and commas belong to the scalar.
+            if (self.skipExpressionInterpolation()) continue;
             if (ch == '\n' or ch == '#' or ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']') {
                 break;
             }
@@ -320,20 +336,6 @@ pub const Tokenizer = struct {
             .line = line,
             .column = col,
         };
-    }
-
-    /// If the cursor sits on a complete `${{ ... }}` expression on this line,
-    /// consume it and return true. Leaves the cursor untouched otherwise, so an
-    /// unterminated `${{` still falls back to the normal scalar rules.
-    fn consumeActionsExpression(self: *Tokenizer) bool {
-        const rest = self.source[self.pos..];
-        if (!std.mem.startsWith(u8, rest, "${{")) return false;
-        const close = std.mem.indexOfPos(u8, rest, 3, "}}") orelse return false;
-        if (std.mem.indexOfScalar(u8, rest[0..close], '\n') != null) return false;
-
-        const end = self.pos + close + 2;
-        while (self.pos < end) self.advance();
-        return true;
     }
 
     fn advance(self: *Tokenizer) void {
@@ -416,6 +418,37 @@ test "tokenizer plain scalar" {
     try std.testing.expectEqualStrings("hello", token.slice(tokenizer.source));
 }
 
+test "tokenizer plain scalar keeps a ${{ }} interpolation" {
+    var tokenizer = Tokenizer.init("echo \"${{ github.event.issue.body }}\"");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo \"${{ github.event.issue.body }}\"", token.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar keeps commas inside an interpolation" {
+    var tokenizer = Tokenizer.init("echo \"${{ join(github.event.commits.*.message, ' ') }}\"");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo \"${{ join(github.event.commits.*.message, ' ') }}\"", token.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar stops at an unterminated interpolation" {
+    var tokenizer = Tokenizer.init("echo ${{ oops");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar keeps expression with index access" {
+    var tokenizer = Tokenizer.init("echo ${{ github.event.commits[0].message }}");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings(
+        "echo ${{ github.event.commits[0].message }}",
+        token.slice(tokenizer.source),
+    );
+}
+
 test "tokenizer mapping key-value" {
     var tokenizer = Tokenizer.init("name: CI");
     _ = tokenizer.next(); // stream_start
@@ -459,34 +492,6 @@ test "tokenizer sequence entry" {
     const item = tokenizer.next();
     try std.testing.expectEqual(TokenKind.scalar, item.kind);
     try std.testing.expectEqualStrings("item", item.slice(tokenizer.source));
-}
-
-test "tokenizer plain scalar keeps GitHub Actions expression" {
-    var tokenizer = Tokenizer.init("echo \"${{ github.event.issue.title }}\" done");
-    _ = tokenizer.next(); // stream_start
-    const token = tokenizer.next();
-    try std.testing.expectEqual(TokenKind.scalar, token.kind);
-    try std.testing.expectEqualStrings(
-        "echo \"${{ github.event.issue.title }}\" done",
-        token.slice(tokenizer.source),
-    );
-}
-
-test "tokenizer plain scalar keeps expression with index access" {
-    var tokenizer = Tokenizer.init("echo ${{ github.event.commits[0].message }}");
-    _ = tokenizer.next(); // stream_start
-    const token = tokenizer.next();
-    try std.testing.expectEqualStrings(
-        "echo ${{ github.event.commits[0].message }}",
-        token.slice(tokenizer.source),
-    );
-}
-
-test "tokenizer unterminated expression still breaks at brace" {
-    var tokenizer = Tokenizer.init("echo ${{ github.sha");
-    _ = tokenizer.next(); // stream_start
-    const token = tokenizer.next();
-    try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
 }
 
 test "tokenizer flow mapping" {

@@ -18,12 +18,10 @@ pub const ValidationResult = struct {
 pub fn validate(allocator: std.mem.Allocator, workflow: types.Workflow) !ValidationResult {
     var errors = std.ArrayList(ValidationError){};
 
-    // on field is required (enforced by parser, but check events non-empty)
     if (workflow.on.events.len == 0) {
         try errors.append(allocator, .{ .message = "'on' must specify at least one event" });
     }
 
-    // jobs must be non-empty
     if (workflow.jobs.len == 0) {
         try errors.append(allocator, .{ .message = "'jobs' must contain at least one job" });
     }
