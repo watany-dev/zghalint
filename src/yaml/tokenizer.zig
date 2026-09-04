@@ -439,6 +439,16 @@ test "tokenizer plain scalar stops at an unterminated interpolation" {
     try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
 }
 
+test "tokenizer plain scalar keeps expression with index access" {
+    var tokenizer = Tokenizer.init("echo ${{ github.event.commits[0].message }}");
+    _ = tokenizer.next(); // stream_start
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings(
+        "echo ${{ github.event.commits[0].message }}",
+        token.slice(tokenizer.source),
+    );
+}
+
 test "tokenizer mapping key-value" {
     var tokenizer = Tokenizer.init("name: CI");
     _ = tokenizer.next(); // stream_start
