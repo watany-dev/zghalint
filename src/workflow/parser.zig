@@ -1167,6 +1167,35 @@ test "parseWorkflow captures removable span for fail-fast entry" {
     );
 }
 
+test "parseWorkflow captures job id_span and step id_value_span" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: setup
+        \\        run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    const job_id_span = wf.jobs[0].id_span orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("build", source[job_id_span.start_byte..job_id_span.end_byte]);
+
+    const step_id_span = wf.jobs[0].steps[0].id_value_span orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("setup", source[step_id_span.start_byte..step_id_span.end_byte]);
+}
+
 test "parseJob captures runs_on_value_span for scalar runs-on" {
     const yaml_parser_mod = @import("../yaml/parser.zig");
 
