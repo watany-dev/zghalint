@@ -1088,6 +1088,30 @@ pub const expression_rule = @import("engine.zig").Rule{
 // Tests
 // ============================================================
 
+fn expectNoDiagnostics(expr: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
+    if (list.len() != 0) {
+        std.debug.print("unexpected diagnostic for '{s}': {s}\n", .{ expr, list.get(0).message });
+        return error.UnexpectedDiagnostic;
+    }
+}
+
+fn expectSingleRule(expr: []const u8, rule_id: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings(rule_id, list.get(0).rule_id);
+}
+
 // --- Tokenizer Tests ---
 
 test "tokenizer: simple identifier" {
@@ -1385,65 +1409,27 @@ test "parser: byte offsets for star context access" {
 // --- Validator Tests ---
 
 test "validate: valid expression github.sha" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.sha", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("github.sha");
 }
 
 test "validate: valid expression github.ref" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.ref == 'refs/heads/main'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("github.ref == 'refs/heads/main'");
 }
 
 test "validate: valid function contains" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "contains(github.event_name, 'push')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    try expectSingleRule("contains(github.event_name, 'push')", "EXPR006");
 }
 
 test "validate: valid function success" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "success()", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("success()");
 }
 
 test "validate: valid expression with runner.os" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "runner.os == 'Linux'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("runner.os == 'Linux'");
 }
 
 test "validate: valid complex expression" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.event_name == 'push' && contains(github.ref, 'main')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    try expectSingleRule("github.event_name == 'push' && contains(github.ref, 'main')", "EXPR006");
 }
 
 test "validate: valid contexts env, secrets, matrix, steps, needs, inputs, vars, strategy, job, jobs" {
@@ -1467,25 +1453,11 @@ test "validate: valid contexts env, secrets, matrix, steps, needs, inputs, vars,
 }
 
 test "validate: unknown context" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "unknown.property", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR002", list.get(0).rule_id);
+    try expectSingleRule("unknown.property", "EXPR002");
 }
 
 test "validate: unknown github property" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.nonexistent_prop", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR003", list.get(0).rule_id);
+    try expectSingleRule("github.nonexistent_prop", "EXPR003");
 }
 
 test "validate: known github properties are not reported" {
@@ -1513,25 +1485,11 @@ test "validate: known github properties are not reported" {
 }
 
 test "validate: unknown runner property" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "runner.nonexistent", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR003", list.get(0).rule_id);
+    try expectSingleRule("runner.nonexistent", "EXPR003");
 }
 
 test "validate: unknown function" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "unknownFunc()", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR004", list.get(0).rule_id);
+    try expectSingleRule("unknownFunc()", "EXPR004");
 }
 
 test "validate: case() is a known function" {
@@ -1547,36 +1505,15 @@ test "validate: case() is a known function" {
 }
 
 test "validate: case() with too few arguments" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "case(github.ref_name, 'main')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
+    try expectSingleRule("case(github.ref_name, 'main')", "EXPR005");
 }
 
 test "validate: wrong arg count for contains" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "contains(github.ref)", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
+    try expectSingleRule("contains(github.ref)", "EXPR005");
 }
 
 test "validate: wrong arg count for success" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "success('unexpected')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
+    try expectSingleRule("success('unexpected')", "EXPR005");
 }
 
 test "validate: empty expression" {
@@ -1589,14 +1526,7 @@ test "validate: empty expression" {
 }
 
 test "validate: syntax error unclosed paren" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "(github.sha", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
+    try expectSingleRule("(github.sha", "EXPR001");
 }
 
 // --- findAndValidateExpressions Tests ---
@@ -1794,55 +1724,23 @@ test "validate: all valid runner properties" {
 // --- Edge cases ---
 
 test "validate: hashFiles with multiple args" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "hashFiles('**/package-lock.json', '**/yarn.lock')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("hashFiles('**/package-lock.json', '**/yarn.lock')");
 }
 
 test "validate: format with multiple args" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "format('{0}-{1}', github.ref, github.sha)", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("format('{0}-{1}', github.ref, github.sha)");
 }
 
 test "validate: nested function calls" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "contains(toJSON(github.event), 'push')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    try expectSingleRule("contains(toJSON(github.event), 'push')", "EXPR006");
 }
 
 test "validate: complex logical expression" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "!cancelled() && (success() || failure())", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("!cancelled() && (success() || failure())");
 }
 
 test "validate: toJSON wrong args" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "toJSON(github.event, 'extra')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
+    try expectSingleRule("toJSON(github.event, 'extra')", "EXPR005");
 }
 
 // --- EXPR006: unsound-contains tests ---
@@ -1861,25 +1759,11 @@ test "EXPR006: contains with string literal second arg" {
 }
 
 test "EXPR006: contains in complex expression" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "contains(github.ref, 'main') && github.event_name == 'push'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    try expectSingleRule("contains(github.ref, 'main') && github.event_name == 'push'", "EXPR006");
 }
 
 test "EXPR006: contains nested in not" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "!contains(github.ref, 'release')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
+    try expectSingleRule("!contains(github.ref, 'release')", "EXPR006");
 }
 
 test "EXPR006: multiple contains calls" {
@@ -1895,33 +1779,15 @@ test "EXPR006: multiple contains calls" {
 }
 
 test "EXPR006: no warning for startsWith" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "startsWith(github.ref, 'refs/heads/main')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("startsWith(github.ref, 'refs/heads/main')");
 }
 
 test "EXPR006: no warning for exact comparison" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.ref == 'refs/heads/main'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("github.ref == 'refs/heads/main'");
 }
 
 test "EXPR006: no warning for non-literal second arg" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "contains(github.ref, github.base_ref)", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("contains(github.ref, github.base_ref)");
 }
 
 test "EXPR006: checkStep contains in if condition" {
@@ -2077,66 +1943,27 @@ test "validate EXPR007: bare string literal right of ||" {
 }
 
 test "validate EXPR007: bare string literal right of &&" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.event_name != 'push' && 'pull_request'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+    try expectSingleRule("github.event_name != 'push' && 'pull_request'", "EXPR007");
 }
 
 test "validate EXPR007: bare string literal left of ||" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+    try expectSingleRule("'push' || github.event_name == 'pull_request'", "EXPR007");
 }
 
 test "validate EXPR007: bare number literal right of ||" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+    try expectSingleRule("github.run_attempt == 1 || 2", "EXPR007");
 }
 
 test "validate EXPR007: no false positive for proper comparison" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "github.event_name == 'push' || github.event_name == 'pull_request'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("github.event_name == 'push' || github.event_name == 'pull_request'");
 }
 
 test "validate EXPR007: no false positive for function call operands" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "success() || failure()", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("success() || failure()");
 }
 
 test "validate EXPR007: no false positive for boolean literal" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), "true || github.event_name == 'push'", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 0), list.len());
+    try expectNoDiagnostics("true || github.event_name == 'push'");
 }
 
 test "validate EXPR007: multiple bare literals in chained ||" {
@@ -2772,30 +2599,6 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
 }
 
 // --- Type engine integration (EXPR003 deep walk / EXPR017) ---
-
-fn expectNoDiagnostics(expr: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
-    if (list.len() != 0) {
-        std.debug.print("unexpected diagnostic for '{s}': {s}\n", .{ expr, list.get(0).message });
-        return error.UnexpectedDiagnostic;
-    }
-}
-
-fn expectSingleRule(expr: []const u8, rule_id: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expectEqualStrings(rule_id, list.get(0).rule_id);
-}
 
 test "EXPR003: property access on a string context value" {
     try expectSingleRule("github.repository.permissions.admin", "EXPR003");
