@@ -10,8 +10,6 @@ const yaml_parser = @import("yaml/parser.zig");
 const workflow_types = @import("workflow/types.zig");
 const workflow_parser = @import("workflow/parser.zig");
 const diagnostics = @import("diagnostics.zig");
-const rule_engine = @import("rules/engine.zig");
-const fix_engine = @import("fix/engine.zig");
 
 const Span = yaml.Span;
 const Node = yaml.Node;
@@ -20,7 +18,6 @@ const Diagnostic = diagnostics.Diagnostic;
 const EventConfig = workflow_types.EventConfig;
 const EventType = workflow_types.EventType;
 const Trigger = workflow_types.Trigger;
-const Rule = rule_engine.Rule;
 
 // ── Diagnostic assertions ──
 
@@ -75,7 +72,7 @@ pub fn mkScalar(value: []const u8) Node {
     return .{ .scalar = .{ .value = value, .style = .plain, .span = Span.point(1, 1, 0) } };
 }
 
-// ── Autofix harness ──
+// ── Workflow parsing ──
 
 /// Parse `source` into a `Workflow` allocated from `allocator` — which must
 /// outlive the result, so tests pass an arena's allocator.
@@ -83,44 +80,6 @@ pub fn parseWorkflowSource(allocator: std.mem.Allocator, source: []const u8) !wo
     var yp = yaml_parser.Parser.init(allocator, source);
     defer yp.deinit();
     return workflow_parser.parseWorkflow(allocator, try yp.parse());
-}
-
-/// Parse `source` as a workflow, run `rules` over it, apply the fixes they
-/// produce and hand back the rewritten source. `unsafe` also applies fixes
-/// marked `.unsafe`. The caller owns the result.
-pub fn lintAndFix(
-    allocator: std.mem.Allocator,
-    rules: []const Rule,
-    source: []const u8,
-    unsafe: bool,
-) !fix_engine.ApplyResult {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const wf = try parseWorkflowSource(alloc, source);
-
-    var diags = rule_engine.Engine.init(rules).run(alloc, &wf);
-    defer diags.deinit();
-
-    const fixes = try fix_engine.collectFixes(alloc, diags.items.items, unsafe);
-    // Copy out of the arena before it goes away.
-    const result = try fix_engine.applyFixes(alloc, source, fixes);
-    return .{
-        .content = try allocator.dupe(u8, result.content),
-        .edits_applied = result.edits_applied,
-    };
-}
-
-/// The single rule with `id`, as a slice, so a test can fix one rule at a time
-/// without the rest of the file's rules editing the same source.
-pub fn only(comptime rules: []const Rule, comptime id: []const u8) []const Rule {
-    comptime {
-        for (rules) |r| {
-            if (std.mem.eql(u8, r.id, id)) return &[_]Rule{r};
-        }
-        @compileError("no rule with id " ++ id);
-    }
 }
 
 // ── Environment ──
