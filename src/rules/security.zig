@@ -2064,47 +2064,48 @@ pub const security_rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 
-fn makeEmptyTrigger() Trigger {
-    return .{ .events = &.{} };
+const empty_trigger = test_support.empty_trigger;
+const release_trigger = test_support.makeTrigger(.release, "release");
+const pr_target_trigger = test_support.makeTrigger(.pull_request_target, "pull_request_target");
+const pr_trigger = test_support.makeTrigger(.pull_request, "pull_request");
+const issue_comment_trigger = test_support.makeTrigger(.issue_comment, "issue_comment");
+const workflow_run_trigger = test_support.makeTrigger(.workflow_run, "workflow_run");
+const push_trigger = test_support.makeTrigger(.push, "push");
+const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch, "workflow_dispatch");
+
+const hasDiagnostic = test_support.hasDiagnostic;
+const countDiagnostics = test_support.countDiagnostics;
+const findDiagnostic = test_support.findDiagnostic;
+
+/// Run the security rules over `wf`. The caller owns the returned list.
+fn runWorkflow(wf: Workflow) DiagnosticList {
+    return engine.Engine.init(&security_rules).run(testing.allocator, &wf);
 }
 
-fn makeReleaseTrigger() Trigger {
-    const events = &[_]EventConfig{
-        .{ .event = .release, .name = "release" },
-    };
-    return .{ .events = events };
+/// Run the security rules over a workflow triggered by `on` whose only job is `job`.
+fn runJobOn(on: Trigger, job: Job) DiagnosticList {
+    const jobs = [_]Job{job};
+    return runWorkflow(.{ .name = "CI", .on = on, .jobs = &jobs, .permissions = Permissions{} });
 }
 
-fn makePRTargetTrigger() Trigger {
-    const events = &[_]EventConfig{
-        .{ .event = .pull_request_target, .name = "pull_request_target" },
-    };
-    return .{ .events = events };
+/// Run the security rules over a workflow with no `on:` whose only job is `job`.
+fn runJob(job: Job) DiagnosticList {
+    return runJobOn(empty_trigger, job);
 }
 
-fn hasDiagnostic(list: *const DiagnosticList, rule_id: []const u8) bool {
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, rule_id)) return true;
-    }
-    return false;
+/// Run the security rules over a workflow whose only job runs `steps`.
+fn runSteps(steps: []const Step) DiagnosticList {
+    return runJob(.{ .id = "build", .steps = steps, .permissions = Permissions{} });
 }
 
-fn countDiagnostics(list: *const DiagnosticList, rule_id: []const u8) usize {
-    var count: usize = 0;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, rule_id)) count += 1;
-    }
-    return count;
-}
-
-fn findDiagnostic(list: *const DiagnosticList, rule_id: []const u8) ?Diagnostic {
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, rule_id)) return d;
-    }
-    return null;
+/// Run the security rules over a workflow whose only job runs `step`.
+fn runStep(step: Step) DiagnosticList {
+    const steps = [_]Step{step};
+    return runSteps(&steps);
 }
 
 fn makeSec017EnvMeta(
@@ -2123,71 +2124,31 @@ fn makeSec017EnvMeta(
 // --- SEC001: Unpinned action ---
 
 test "SEC001: unpinned action tag ref" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@v4") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@v4") });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC001"));
 }
 
 test "SEC001: unpinned action branch ref" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@main") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@main") });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC001"));
 }
 
 test "SEC001: pinned action (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29") });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC001"));
 }
 
 test "SEC001: local action (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("./my-local-action") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("./my-local-action") });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC001"));
 }
 
 test "SEC001: docker action (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("docker://alpine:3.8") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("docker://alpine:3.8") });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC001"));
 }
@@ -2197,15 +2158,7 @@ test "SEC001: docker action (no false positive)" {
 /// Build a single-step workflow with `run: body` (plus optional step `env`) and
 /// report whether SEC002 fires for it.
 fn sec002Fires(body: []const u8, env: ?workflow_types.StringMap) bool {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = body, .env = env },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = body, .env = env });
     defer list.deinit();
     return hasDiagnostic(&list, "SEC002");
 }
@@ -2238,18 +2191,13 @@ test "SEC002: element access under a container context" {
 /// Build a single-step workflow whose step is `uses: <ref>` with one `with:`
 /// entry (plus optional step `env`) and report whether SEC002 fires for it.
 fn sec002UsesFires(uses: []const u8, with_key: []const u8, with_value: []const u8, env: ?workflow_types.StringMap) bool {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     defer with.deinit();
     with.put(with_key, with_value) catch unreachable;
     const steps = [_]Step{
         .{ .uses = ActionRef.parse(uses), .with = with, .env = env },
     };
-    const jobs = [_]Job{
-        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "handle", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     return hasDiagnostic(&list, "SEC002");
 }
@@ -2300,88 +2248,60 @@ test "SEC002: untrusted input passed through env is not reported" {
 
 // --- SEC002: object filter (.*) references ---
 
-fn expectSec002(run: []const u8, expected: bool) !void {
-    try testing.expectEqual(expected, sec002Fires(run, null));
-}
-
 test "SEC002: object filter inside join()" {
-    try expectSec002("echo \"${{ join(github.event.commits.*.message, ' ') }}\"", true);
+    try testing.expectEqual(true, sec002Fires("echo \"${{ join(github.event.commits.*.message, ' ') }}\"", null));
 }
 
 test "SEC002: object filter inside toJSON()" {
-    try expectSec002("echo \"${{ toJSON(github.event.commits.*.author.name) }}\"", true);
+    try testing.expectEqual(true, sec002Fires("echo \"${{ toJSON(github.event.commits.*.author.name) }}\"", null));
 }
 
 test "SEC002: object filter on pull_request labels" {
-    try expectSec002("echo \"${{ github.event.pull_request.labels.*.name }}\"", true);
+    try testing.expectEqual(true, sec002Fires("echo \"${{ github.event.pull_request.labels.*.name }}\"", null));
 }
 
 test "SEC002: index access is treated as a wildcard segment" {
-    try expectSec002("echo \"${{ github.event.commits[0].message }}\"", true);
+    try testing.expectEqual(true, sec002Fires("echo \"${{ github.event.commits[0].message }}\"", null));
 }
 
 test "SEC002: object filter over a safe context (no false positive)" {
-    try expectSec002("echo \"${{ join(github.event.pull_request.assignees.*.login, ' ') }}\"", false);
+    try testing.expectEqual(false, sec002Fires("echo \"${{ join(github.event.pull_request.assignees.*.login, ' ') }}\"", null));
 }
 
 test "SEC002: dangerous path as a string literal (no false positive)" {
-    try expectSec002("echo \"${{ format('github.event.issue.body') }}\"", false);
+    try testing.expectEqual(false, sec002Fires("echo \"${{ format('github.event.issue.body') }}\"", null));
 }
 
 test "SEC002: dangerous name nested under another context (no false positive)" {
-    try expectSec002("echo \"${{ steps.meta.outputs.github.head_ref }}\"", false);
+    try testing.expectEqual(false, sec002Fires("echo \"${{ steps.meta.outputs.github.head_ref }}\"", null));
 }
 
 test "SEC002: bare labels reference without a filter" {
-    try expectSec002("echo \"${{ toJSON(github.event.pull_request.labels) }}\"", true);
+    try testing.expectEqual(true, sec002Fires("echo \"${{ toJSON(github.event.pull_request.labels) }}\"", null));
 }
 
 test "SEC002: reference rooted after a function call" {
-    try expectSec002("echo \"${{ fromJSON(steps.x.outputs.d).github.head_ref }}\"", true);
+    try testing.expectEqual(true, sec002Fires("echo \"${{ fromJSON(steps.x.outputs.d).github.head_ref }}\"", null));
 }
 
 test "SEC002: context names are case-insensitive" {
-    try expectSec002("echo \"${{ GitHub.Event.Issue.Body }}\"", true);
+    try testing.expectEqual(true, sec002Fires("echo \"${{ GitHub.Event.Issue.Body }}\"", null));
 }
 
 test "SEC008: run-only context is reported for GITHUB_ENV writes too" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"LABEL=${{ github.event.pull_request.labels.*.name }}\" >> $GITHUB_ENV" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo \"LABEL=${{ github.event.pull_request.labels.*.name }}\" >> $GITHUB_ENV" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC002: labels filter in if: is not reported (SEC006 scope)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "make deploy", .if_condition = "contains(github.event.pull_request.labels.*.name, 'deploy')" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "make deploy", .if_condition = "contains(github.event.pull_request.labels.*.name, 'deploy')" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC006"));
 }
 
 test "SEC006: object filter over untrusted context in if:" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "make deploy", .if_condition = "contains(github.event.commits.*.message, 'skip')" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "make deploy", .if_condition = "contains(github.event.commits.*.message, 'skip')" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC006"));
 }
@@ -2389,91 +2309,43 @@ test "SEC006: object filter over untrusted context in if:" {
 // --- SEC003: Hardcoded secrets ---
 
 test "SEC003: GitHub PAT in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "curl -H 'Authorization: token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "curl -H 'Authorization: token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
 }
 
 test "SEC003: AWS key in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
 }
 
 test "SEC003: Slack token in with" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("slack-token", "xoxb-1234-5678-abcdef") catch unreachable;
     defer with.deinit();
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("some/action@v1"), .with = with },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("some/action@v1"), .with = with });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
 }
 
 test "SEC003: Stripe key in env" {
-    const eng = engine.Engine.init(&security_rules);
     var env = workflow_types.StringMap.init(testing.allocator);
     env.put("STRIPE_KEY", "sk-live_abcdef123456") catch unreachable;
     defer env.deinit();
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
 }
 
 test "SEC003: no secret (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ secrets.MY_TOKEN }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ secrets.MY_TOKEN }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC003"));
 }
 
 test "SEC003: sk-test_ pattern detected" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "export KEY=sk-test_abcdefg" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "export KEY=sk-test_abcdefg" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
 }
@@ -2481,45 +2353,37 @@ test "SEC003: sk-test_ pattern detected" {
 // --- SEC004: Excessive permissions ---
 
 test "SEC004: write-all at workflow level" {
-    const eng = engine.Engine.init(&security_rules);
     const jobs = [_]Job{
         .{ .id = "build", .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{ .write_all = true } };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{ .write_all = true } };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC004"));
 }
 
 test "SEC004: write-all at job level" {
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .permissions = Permissions{ .write_all = true } },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .permissions = Permissions{ .write_all = true } });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC004"));
 }
 
 test "SEC004: read-all (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const jobs = [_]Job{
         .{ .id = "build", .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{ .read_all = true } };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{ .read_all = true } };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC004"));
 }
 
 test "SEC004: specific permissions (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const jobs = [_]Job{
         .{ .id = "build", .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{ .contents = .read } };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{ .contents = .read } };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC004"));
 }
@@ -2538,7 +2402,7 @@ test "SEC004: autofix replaces write-all with minimal permissions" {
     };
     const wf = Workflow{
         .name = "CI",
-        .on = makeEmptyTrigger(),
+        .on = empty_trigger,
         .jobs = &.{},
         .permissions = Permissions{ .write_all = true, .value_span = value_span },
     };
@@ -2586,7 +2450,7 @@ test "SEC004: autofix at job level replaces write-all" {
 test "SEC004: no fix when value_span is null" {
     const wf = Workflow{
         .name = "CI",
-        .on = makeEmptyTrigger(),
+        .on = empty_trigger,
         .jobs = &.{},
         .permissions = Permissions{ .write_all = true },
     };
@@ -2601,80 +2465,52 @@ test "SEC004: no fix when value_span is null" {
 // --- SEC005: Dangerous pull_request_target ---
 
 test "SEC005: PR target with checkout of head" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTargetTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
 
 test "SEC005: PR target with checkout of head ref" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.head_ref }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTargetTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
 
 test "SEC005: PR target without checkout (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .run = "echo safe" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTargetTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
 
 test "SEC005: PR target checkout without ref (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTargetTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
 
 test "SEC005: non-PR-target with checkout (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
     defer with.deinit();
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
@@ -2682,18 +2518,13 @@ test "SEC005: non-PR-target with checkout (no false positive)" {
 // --- SEC009: workflow_run untrusted checkout ---
 
 test "SEC009: workflow_run with checkout of workflow_run head_sha" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC009"));
     for (list.items.items) |d| {
@@ -2706,63 +2537,43 @@ test "SEC009: workflow_run with checkout of workflow_run head_sha" {
 }
 
 test "SEC009: workflow_run with checkout of workflow_run head_branch" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.workflow_run.head_branch }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC009: workflow_run without checkout (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .run = "echo safe" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC009: workflow_run checkout without ref (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
@@ -2770,26 +2581,13 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
 // --- SEC006: Untrusted input in conditions ---
 
 test "SEC006: dangerous context in step if condition" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = "contains(github.event.issue.title, 'deploy')" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .if_condition = "contains(github.event.issue.title, 'deploy')" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC006"));
 }
 
 test "SEC006: dangerous context in job if condition" {
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .if_condition = "contains(github.event.comment.body, '/approve')", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .if_condition = "contains(github.event.comment.body, '/approve')", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC006"));
 }
@@ -2797,15 +2595,7 @@ test "SEC006: dangerous context in job if condition" {
 /// The severity SEC006 reports for a step-level `if:` condition, or null when
 /// the rule stays quiet.
 fn sec006Severity(cond: []const u8) ?Severity {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = cond },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .if_condition = cond });
     defer list.deinit();
     for (list.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "SEC006")) return d.severity;
@@ -2836,15 +2626,7 @@ test "SEC006: attacker-authored free text in conditions is a warning" {
 }
 
 test "SEC006: safe context in condition (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC006"));
 }
@@ -2852,34 +2634,27 @@ test "SEC006: safe context in condition (no false positive)" {
 // --- SEC007: Missing permissions ---
 
 test "SEC007: no permissions defined" {
-    const eng = engine.Engine.init(&security_rules);
     const jobs = [_]Job{
         .{ .id = "build" },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC007"));
 }
 
 test "SEC007: permissions defined (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const jobs = [_]Job{
         .{ .id = "build" },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{ .contents = .read } };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{ .contents = .read } };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC007"));
 }
 
 test "SEC007: empty permissions block counts as defined" {
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build" },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC007"));
 }
@@ -2969,7 +2744,7 @@ test "SEC007: no fix when permissions_insertion_byte missing" {
 
     // Hand-built Workflow without permissions_insertion_byte set.
     const jobs = [_]Job{.{ .id = "build" }};
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
@@ -3121,113 +2896,49 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
 // --- SEC008: github-env injection ---
 
 test "SEC008: dangerous context written to GITHUB_ENV" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"VAR=${{ github.event.issue.title }}\" >> $GITHUB_ENV" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo \"VAR=${{ github.event.issue.title }}\" >> $GITHUB_ENV" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: dangerous context written to GITHUB_PATH" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"${{ github.head_ref }}\" >> $GITHUB_PATH" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo \"${{ github.head_ref }}\" >> $GITHUB_PATH" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: quoted GITHUB_ENV target" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"X=${{ github.event.comment.body }}\" >> \"$GITHUB_ENV\"" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo \"X=${{ github.event.comment.body }}\" >> \"$GITHUB_ENV\"" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: braced GITHUB_ENV target" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"X=${{ github.event.pull_request.title }}\" >> ${GITHUB_ENV}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo \"X=${{ github.event.pull_request.title }}\" >> ${GITHUB_ENV}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: safe value to GITHUB_ENV (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"VAR=safe\" >> $GITHUB_ENV" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo \"VAR=safe\" >> $GITHUB_ENV" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: dangerous context without env write (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ github.event.issue.title }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ github.event.issue.title }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: no run block (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@v4") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@v4") });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: safe context to GITHUB_ENV (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo \"SHA=${{ github.sha }}\" >> $GITHUB_ENV" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo \"SHA=${{ github.sha }}\" >> $GITHUB_ENV" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
@@ -3235,51 +2946,28 @@ test "SEC008: safe context to GITHUB_ENV (no false positive)" {
 // --- SEC010: secrets: inherit ---
 
 test "SEC010: secrets inherit in reusable workflow call" {
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .inherit = {} }, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .inherit = {} }, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC010"));
 }
 
 test "SEC010: explicit secrets (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     var secrets_map = workflow_types.StringMap.init(testing.allocator);
     secrets_map.put("deploy_key", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
     defer secrets_map.deinit();
-    const jobs = [_]Job{
-        .{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .map = secrets_map }, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .map = secrets_map }, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
 }
 
 test "SEC010: no secrets in reusable workflow call (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
 }
 
 test "SEC010: non-reusable job with no uses (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo hello" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo hello" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
 }
@@ -3287,151 +2975,71 @@ test "SEC010: non-reusable job with no uses (no false positive)" {
 // --- SEC012: Unredacted secrets via toJSON/fromJSON ---
 
 test "SEC012: toJSON(secrets) in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo '${{ toJSON(secrets) }}'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo '${{ toJSON(secrets) }}'" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: toJSON(secrets.MY_TOKEN) in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ toJSON(secrets.MY_TOKEN) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ toJSON(secrets.MY_TOKEN) }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: fromJSON(secrets.CONFIG) in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ fromJSON(secrets.CONFIG).api_key }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ fromJSON(secrets.CONFIG).api_key }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: toJSON(secrets) in with value" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("data", "${{ toJSON(secrets) }}") catch unreachable;
     defer with.deinit();
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("some/action@v1"), .with = with },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("some/action@v1"), .with = with });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: toJSON(secrets) in env value" {
-    const eng = engine.Engine.init(&security_rules);
     var env = workflow_types.StringMap.init(testing.allocator);
     env.put("ALL_SECRETS", "${{ toJSON(secrets) }}") catch unreachable;
     defer env.deinit();
-    const steps = [_]Step{
-        .{ .run = "echo debug", .env = env },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo debug", .env = env });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: case variant tojson(secrets)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ tojson(secrets) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ tojson(secrets) }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: toJSON(github) no false positive" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ toJSON(github) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ toJSON(github) }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: secrets reference without toJSON (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ secrets.MY_TOKEN }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ secrets.MY_TOKEN }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: no expression in run (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo hello" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo hello" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: only one diagnostic per step" {
-    const eng = engine.Engine.init(&security_rules);
     var env = workflow_types.StringMap.init(testing.allocator);
     env.put("A", "${{ toJSON(secrets) }}") catch unreachable;
     env.put("B", "${{ toJSON(secrets.X) }}") catch unreachable;
     defer env.deinit();
-    const steps = [_]Step{
-        .{ .run = "echo ${{ toJSON(secrets) }}", .env = env },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ toJSON(secrets) }}", .env = env });
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC012"));
 }
@@ -3489,7 +3097,6 @@ test "containsDangerousPRRef safe ref" {
 // --- Integration: multiple rules fire on same workflow ---
 
 test "multiple security rules fire together" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") }, // SEC001
         .{ .run = "echo ${{ github.event.issue.body }}" }, // SEC002
@@ -3498,8 +3105,8 @@ test "multiple security rules fire together" {
         .{ .id = "build", .steps = &steps },
     };
     // No permissions => SEC007
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC001"));
     try testing.expect(hasDiagnostic(&list, "SEC002"));
@@ -3509,124 +3116,55 @@ test "multiple security rules fire together" {
 // --- SEC014: Bot conditions ---
 
 test "SEC014: github.actor == dependabot[bot] in step condition" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo skip", .if_condition = "github.actor == 'dependabot[bot]'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo skip", .if_condition = "github.actor == 'dependabot[bot]'" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: github.actor != renovate[bot] in step condition" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = "github.actor != 'renovate[bot]'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .if_condition = "github.actor != 'renovate[bot]'" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: github.actor == github-actions[bot] in job condition" {
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .if_condition = "github.actor == 'github-actions[bot]'", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .if_condition = "github.actor == 'github-actions[bot]'", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: wrapped in dollar-brace expression" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo skip", .if_condition = "${{ github.actor == 'dependabot[bot]' }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo skip", .if_condition = "${{ github.actor == 'dependabot[bot]' }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: github.triggering_actor with bot check" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo skip", .if_condition = "github.triggering_actor == 'dependabot[bot]'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo skip", .if_condition = "github.triggering_actor == 'dependabot[bot]'" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: github.actor without bot pattern (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = "github.actor == 'octocat'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .if_condition = "github.actor == 'octocat'" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: bot pattern without github.actor (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = "contains(github.event.comment.body, 'dependabot[bot]')" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .if_condition = "contains(github.event.comment.body, 'dependabot[bot]')" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: safe condition with github.ref (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
 }
 
 test "SEC014: no condition (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
 }
@@ -3650,7 +3188,6 @@ test "containsActorBotCheck rejects bot without actor" {
 // --- Integration tests ---
 
 test "clean workflow passes all security rules" {
-    const eng = engine.Engine.init(&security_rules);
     var checkout_with = workflow_types.StringMap.init(testing.allocator);
     checkout_with.put("persist-credentials", "false") catch unreachable;
     defer checkout_with.deinit();
@@ -3664,8 +3201,8 @@ test "clean workflow passes all security rules" {
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{ .contents = .read } };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{ .contents = .read } };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 0), list.len());
 }
@@ -3673,21 +3210,19 @@ test "clean workflow passes all security rules" {
 // --- SEC016: Cache poisoning ---
 
 test "SEC016: release trigger + actions/cache" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v3") },
     };
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: release trigger + setup-node with cache" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("cache", "npm") catch unreachable;
     defer with.deinit();
@@ -3697,42 +3232,31 @@ test "SEC016: release trigger + setup-node with cache" {
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: deploy job name + actions/cache" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v3") },
     };
-    const jobs = [_]Job{
-        .{ .id = "deploy-prod", .name = "Deploy to Production", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "deploy-prod", .name = "Deploy to Production", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: regular CI workflow with cache (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v3") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .name = "Build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .name = "Build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: release trigger but no cache (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .run = "make build" },
@@ -3740,70 +3264,61 @@ test "SEC016: release trigger but no cache (no false positive)" {
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: deploy job without cache (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
     };
     const jobs = [_]Job{
         .{ .id = "deploy", .name = "Deploy", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CD", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CD", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: setup-node without cache input in release (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/setup-node@v4") },
     };
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: case-insensitive deploy job name" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v3") },
     };
     const jobs = [_]Job{
         .{ .id = "job1", .name = "DEPLOY to Prod", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CD", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CD", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: publish job id triggers rule" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v3") },
     };
-    const jobs = [_]Job{
-        .{ .id = "publish-npm", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "publish-npm", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: emits one diagnostic per offending step" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v3") },
         .{ .uses = ActionRef.parse("actions/cache@v3") },
@@ -3811,8 +3326,8 @@ test "SEC016: emits one diagnostic per offending step" {
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "Release", .on = makeReleaseTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC016"));
 }
@@ -3822,54 +3337,38 @@ test "SEC016: emits one diagnostic per offending step" {
 // ============================================================
 
 test "SEC013: plaintext credentials in container" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{
         .image = "node:14",
         .credentials = .{ .username = "myuser", .password = "mypassword" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC013"));
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC013"));
 }
 
 test "SEC013: plaintext credentials in service" {
-    const eng = engine.Engine.init(&security_rules);
     const services = [_]workflow_types.Service{
         .{ .name = "redis", .image = "redis", .credentials = .{ .username = "svcuser", .password = "svcpass" } },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .services = &services, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .services = &services, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC013"));
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC013"));
 }
 
 test "SEC013: plaintext password only" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{
         .image = "node:14",
         .credentials = .{ .username = "${{ secrets.DOCKER_USER }}", .password = "hardcoded_pass" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC013"));
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC013"));
 }
 
 test "SEC013: diagnostics from both container and service" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{
         .image = "node:14",
         .credentials = .{ .username = "user1", .password = "pass1" },
@@ -3877,64 +3376,39 @@ test "SEC013: diagnostics from both container and service" {
     const services = [_]workflow_types.Service{
         .{ .name = "db", .image = "postgres", .credentials = .{ .username = "dbuser", .password = "dbpass" } },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .services = &services, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .services = &services, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expectEqual(@as(usize, 4), countDiagnostics(&list, "SEC013"));
 }
 
 test "SEC013: secrets expression credentials (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{
         .image = "node:14",
         .credentials = .{ .username = "${{ secrets.DOCKER_USER }}", .password = "${{ secrets.DOCKER_PASS }}" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC013"));
 }
 
 test "SEC013: container without credentials (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{ .image = "node:14" };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC013"));
 }
 
 test "SEC013: job without container or services (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{.{ .run = "echo hello" }};
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo hello" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC013"));
 }
 
 test "SEC013: service with secrets credentials (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const services = [_]workflow_types.Service{
         .{ .name = "redis", .image = "redis", .credentials = .{ .username = "${{ secrets.REDIS_USER }}", .password = "${{ secrets.REDIS_PASS }}" } },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .services = &services, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .services = &services, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC013"));
 }
@@ -3964,116 +3438,70 @@ test "isSecretsExpression: non-secrets expression" {
 // ============================================================
 
 test "SC001: unpinned container image with tag" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{ .image = "node:14" };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: unpinned container image with latest tag" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{ .image = "redis:latest" };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: unpinned container image without tag" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{ .image = "redis" };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: unpinned service image" {
-    const eng = engine.Engine.init(&security_rules);
     const services = [_]workflow_types.Service{
         .{ .name = "db", .image = "postgres:13" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .services = &services, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .services = &services, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: both container and service unpinned" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{ .image = "node:14" };
     const services = [_]workflow_types.Service{
         .{ .name = "redis", .image = "redis:6" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .services = &services, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .services = &services, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(countDiagnostics(&list, "SC001") == 2);
 }
 
 test "SC001: pinned container image (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{ .image = "node@sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: pinned service image (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const services = [_]workflow_types.Service{
         .{ .name = "redis", .image = "redis@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .services = &services, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .services = &services, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: job without container or services (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{.{ .run = "echo hello" }};
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo hello" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: registry with digest is pinned (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const container = workflow_types.Container{ .image = "ghcr.io/owner/image@sha256:a1b2c3d4e5f6" };
-    const jobs = [_]Job{
-        .{ .id = "build", .container = container, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
@@ -4107,192 +3535,88 @@ test "isImagePinned: registry with digest" {
 // ============================================================
 
 test "SEC011: bare secrets in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ secrets }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ secrets }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: bare secrets with extra whitespace" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{  secrets  }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{  secrets  }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: toJSON(secrets) in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ toJSON(secrets) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ toJSON(secrets) }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: tojson(secrets) lowercase" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ tojson(secrets) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ tojson(secrets) }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: fromJSON(secrets) in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ fromJSON(secrets) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ fromJSON(secrets) }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: bare secrets in with value" {
-    const eng = engine.Engine.init(&security_rules);
     var with_map = workflow_types.StringMap.init(testing.allocator);
     defer with_map.deinit();
     with_map.put("data", "${{ secrets }}") catch unreachable;
-    const steps = [_]Step{
-        .{ .with = with_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .with = with_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: bare secrets in env value" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ALL_SECRETS", "${{ secrets }}") catch unreachable;
-    const steps = [_]Step{
-        .{ .env = env_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .env = env_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: toJSON with whitespace in parens" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ toJSON( secrets ) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ toJSON( secrets ) }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: individual secret is allowed" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ secrets.MY_TOKEN }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ secrets.MY_TOKEN }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: toJSON(secrets.TOKEN) is allowed" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ toJSON(secrets.MY_TOKEN) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ toJSON(secrets.MY_TOKEN) }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: toJSON(github) is allowed" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ toJSON(github) }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ toJSON(github) }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: no expression is allowed" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo hello world" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo hello world" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: one diagnostic per step" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ALL", "${{ toJSON(secrets) }}") catch unreachable;
-    const steps = [_]Step{
-        .{ .run = "echo ${{ secrets }}", .env = env_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ secrets }}", .env = env_map });
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC011"));
 }
@@ -4322,22 +3646,16 @@ test "exprIsWholeSecretsRef: empty string" {
 // ============================================================
 
 test "SEC015: checkout + upload-artifact triggers rule" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: checkout with other with: keys (no persist-credentials) + upload-artifact" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("fetch-depth", "0") catch unreachable;
     defer with.deinit();
@@ -4345,17 +3663,12 @@ test "SEC015: checkout with other with: keys (no persist-credentials) + upload-a
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: persist-credentials: true is vulnerable" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("persist-credentials", "true") catch unreachable;
     defer with.deinit();
@@ -4363,49 +3676,34 @@ test "SEC015: persist-credentials: true is vulnerable" {
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: SHA-pinned versions still detected" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29") },
         .{ .uses = ActionRef.parse("actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: multiple checkout steps emit one diagnostic per checkout" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .run = "make build" },
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC015"));
 }
 
 test "SEC015: checkout + persist-credentials: false (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("persist-credentials", "false") catch unreachable;
     defer with.deinit();
@@ -4413,47 +3711,32 @@ test "SEC015: checkout + persist-credentials: false (no false positive)" {
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: checkout only without upload-artifact (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .run = "make test" },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: upload-artifact only without checkout (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .run = "make build" },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: checkout and upload in different jobs (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps1 = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
     };
@@ -4464,29 +3747,23 @@ test "SEC015: checkout and upload in different jobs (no false positive)" {
         .{ .id = "build", .steps = &steps1, .permissions = Permissions{} },
         .{ .id = "upload", .steps = &steps2, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: upload before checkout does not trigger" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
 
 test "SEC015: only checkout before upload triggers in mixed ordering" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
@@ -4501,11 +3778,7 @@ test "SEC015: only checkout before upload triggers in mixed ordering" {
             .uses_value_end_byte = 120,
         },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC015"));
@@ -4522,7 +3795,6 @@ test "SEC015: only checkout before upload triggers in mixed ordering" {
 }
 
 test "SEC015: fix is safe and attached when span info present" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
@@ -4531,11 +3803,7 @@ test "SEC015: fix is safe and attached when span info present" {
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
 
     // Find the SEC015 diagnostic and verify fix
@@ -4559,7 +3827,6 @@ test "SEC015: fix is safe and attached when span info present" {
 }
 
 test "SEC015: fix inserts into existing with: block" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("fetch-depth", "0") catch unreachable;
     defer with.deinit();
@@ -4573,11 +3840,7 @@ test "SEC015: fix inserts into existing with: block" {
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
 
     for (list.items.items) |d| {
@@ -4594,7 +3857,6 @@ test "SEC015: fix inserts into existing with: block" {
 }
 
 test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
-    const eng = engine.Engine.init(&security_rules);
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("persist-credentials", "true") catch unreachable;
     defer with.deinit();
@@ -4608,11 +3870,7 @@ test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
 
     for (list.items.items) |d| {
@@ -4625,16 +3883,11 @@ test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
 }
 
 test "SEC015: no fix when span info absent (manually constructed step)" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
 
     for (list.items.items) |d| {
@@ -4782,19 +4035,11 @@ test "SEC015: integration ignores checkout after upload-artifact" {
 // --- SEC018: checkout-persist-credentials ---
 
 test "SEC018: with == null triggers with unsafe fix" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{
-            .uses = ActionRef.parse("actions/checkout@v4"),
-            .uses_key_col = 8,
-            .uses_value_end_byte = 50,
-        },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .uses_key_col = 8,
+        .uses_value_end_byte = 50,
+    });
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SEC018"));
@@ -4804,24 +4049,16 @@ test "SEC018: with == null triggers with unsafe fix" {
 }
 
 test "SEC018: with exists without persist-credentials triggers with fix" {
-    const eng = engine.Engine.init(&security_rules);
     var with_map = workflow_types.StringMap.init(testing.allocator);
     with_map.put("fetch-depth", "0") catch unreachable;
     defer with_map.deinit();
-    const steps = [_]Step{
-        .{
-            .uses = ActionRef.parse("actions/checkout@v4"),
-            .with = with_map,
-            .uses_key_col = 8,
-            .uses_value_end_byte = 50,
-            .with_last_entry_end_byte = 80,
-        },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .with = with_map,
+        .uses_key_col = 8,
+        .uses_value_end_byte = 50,
+        .with_last_entry_end_byte = 80,
+    });
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SEC018"));
@@ -4831,24 +4068,16 @@ test "SEC018: with exists without persist-credentials triggers with fix" {
 }
 
 test "SEC018: persist-credentials: true triggers without fix" {
-    const eng = engine.Engine.init(&security_rules);
     var with_map = workflow_types.StringMap.init(testing.allocator);
     with_map.put("persist-credentials", "true") catch unreachable;
     defer with_map.deinit();
-    const steps = [_]Step{
-        .{
-            .uses = ActionRef.parse("actions/checkout@v4"),
-            .with = with_map,
-            .uses_key_col = 8,
-            .uses_value_end_byte = 50,
-            .with_last_entry_end_byte = 80,
-        },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .with = with_map,
+        .uses_key_col = 8,
+        .uses_value_end_byte = 50,
+        .with_last_entry_end_byte = 80,
+    });
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SEC018"));
@@ -4858,43 +4087,27 @@ test "SEC018: persist-credentials: true triggers without fix" {
 }
 
 test "SEC018: persist-credentials: false does not trigger" {
-    const eng = engine.Engine.init(&security_rules);
     var with_map = workflow_types.StringMap.init(testing.allocator);
     with_map.put("persist-credentials", "false") catch unreachable;
     defer with_map.deinit();
-    const steps = [_]Step{
-        .{
-            .uses = ActionRef.parse("actions/checkout@v4"),
-            .with = with_map,
-            .uses_key_col = 8,
-            .uses_value_end_byte = 50,
-            .with_last_entry_end_byte = 80,
-        },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .with = with_map,
+        .uses_key_col = 8,
+        .uses_value_end_byte = 50,
+        .with_last_entry_end_byte = 80,
+    });
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SEC018"));
 }
 
 test "SEC018: autofix replacement contains with: block when with == null" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{
-            .uses = ActionRef.parse("actions/checkout@v4"),
-            .uses_key_col = 6,
-            .uses_value_end_byte = 50,
-        },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .uses_key_col = 6,
+        .uses_value_end_byte = 50,
+    });
     defer list.deinit();
 
     const diag = findDiagnostic(&list, "SEC018").?;
@@ -4907,24 +4120,16 @@ test "SEC018: autofix replacement contains with: block when with == null" {
 }
 
 test "SEC018: autofix appends entry when with already exists" {
-    const eng = engine.Engine.init(&security_rules);
     var with_map = workflow_types.StringMap.init(testing.allocator);
     with_map.put("fetch-depth", "0") catch unreachable;
     defer with_map.deinit();
-    const steps = [_]Step{
-        .{
-            .uses = ActionRef.parse("actions/checkout@v4"),
-            .with = with_map,
-            .uses_key_col = 6,
-            .uses_value_end_byte = 50,
-            .with_last_entry_end_byte = 80,
-        },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .with = with_map,
+        .uses_key_col = 6,
+        .uses_value_end_byte = 50,
+        .with_last_entry_end_byte = 80,
+    });
     defer list.deinit();
 
     const diag = findDiagnostic(&list, "SEC018").?;
@@ -4944,7 +4149,7 @@ test "SEC018: YAML-boolean capitalization variants are classified correctly" {
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with_false_caps },
     };
     const jobs_false = [_]Job{.{ .id = "build", .steps = &steps_false, .permissions = Permissions{} }};
-    const wf_false = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs_false, .permissions = Permissions{} };
+    const wf_false = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs_false, .permissions = Permissions{} };
     var list_false = eng.run(testing.allocator, &wf_false);
     defer list_false.deinit();
     try testing.expect(!hasDiagnostic(&list_false, "SEC018"));
@@ -4962,7 +4167,7 @@ test "SEC018: YAML-boolean capitalization variants are classified correctly" {
         },
     };
     const jobs_true = [_]Job{.{ .id = "build", .steps = &steps_true, .permissions = Permissions{} }};
-    const wf_true = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs_true, .permissions = Permissions{} };
+    const wf_true = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs_true, .permissions = Permissions{} };
     var list_true = eng.run(testing.allocator, &wf_true);
     defer list_true.deinit();
     try testing.expect(hasDiagnostic(&list_true, "SEC018"));
@@ -4983,7 +4188,7 @@ test "SEC018: non-checkout action does not trigger" {
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} };
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
 
@@ -4991,7 +4196,6 @@ test "SEC018: non-checkout action does not trigger" {
 }
 
 test "SEC018: both SEC015 and SEC018 fire for same checkout + upload-artifact" {
-    const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
@@ -5000,11 +4204,7 @@ test "SEC018: both SEC015 and SEC018 fire for same checkout + upload-artifact" {
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runSteps(&steps);
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SEC015"));
@@ -5018,122 +4218,58 @@ test "SEC018: both SEC015 and SEC018 fire for same checkout + upload-artifact" {
 // --- SEC019: Secrets outside env ---
 
 test "SEC019: secret in run block" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ secrets.MY_TOKEN }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ secrets.MY_TOKEN }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: secret in with value" {
-    const eng = engine.Engine.init(&security_rules);
     var with_map = workflow_types.StringMap.init(testing.allocator);
     defer with_map.deinit();
     with_map.put("token", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
-    const steps = [_]Step{
-        .{ .with = with_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .with = with_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: secret in env value is allowed" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("MY_TOKEN", "${{ secrets.MY_TOKEN }}") catch unreachable;
-    const steps = [_]Step{
-        .{ .env = env_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: GITHUB_TOKEN in with is allowed" {
-    const eng = engine.Engine.init(&security_rules);
     var with_map = workflow_types.StringMap.init(testing.allocator);
     defer with_map.deinit();
     with_map.put("token", "${{ secrets.GITHUB_TOKEN }}") catch unreachable;
-    const steps = [_]Step{
-        .{ .with = with_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .with = with_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: GITHUB_TOKEN in run is allowed" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{ secrets.GITHUB_TOKEN }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{ secrets.GITHUB_TOKEN }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: no secrets usage" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo hello" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo hello" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: secret with whitespace in expression" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo ${{  secrets.MY_TOKEN  }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo ${{  secrets.MY_TOKEN  }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: one diagnostic per step" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "${{ secrets.A }} ${{ secrets.B }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "${{ secrets.A }} ${{ secrets.B }}" });
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC019"));
 }
@@ -5141,7 +4277,6 @@ test "SEC019: one diagnostic per step" {
 // --- SEC017: Insecure commands ---
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
@@ -5154,14 +4289,7 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
         .end_byte = 14,
     });
     defer env_meta.deinit();
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
     try testing.expect(diag.fix != null);
@@ -5174,7 +4302,6 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
 }
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
@@ -5187,11 +4314,7 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
         .end_byte = 24,
     });
     defer env_meta.deinit();
-    const jobs = [_]Job{
-        .{ .id = "build", .env = env_map, .env_meta = env_meta, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJob(.{ .id = "build", .env = env_map, .env_meta = env_meta, .permissions = Permissions{} });
     defer list.deinit();
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
     try testing.expect(diag.fix != null);
@@ -5200,7 +4323,6 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
 }
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
@@ -5215,13 +4337,13 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
     defer env_meta.deinit();
     const wf = Workflow{
         .name = "CI",
-        .on = makeEmptyTrigger(),
+        .on = empty_trigger,
         .jobs = &.{},
         .permissions = Permissions{},
         .env = env_map,
         .env_meta = env_meta,
     };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runWorkflow(wf);
     defer list.deinit();
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
     try testing.expect(diag.fix != null);
@@ -5230,18 +4352,10 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
 }
 
 test "SEC017: fallback without env metadata keeps diagnostic" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env_map });
     defer list.deinit();
 
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
@@ -5250,7 +4364,6 @@ test "SEC017: fallback without env metadata keeps diagnostic" {
 }
 
 test "SEC017: fix preserves single quoted style" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
@@ -5263,14 +4376,7 @@ test "SEC017: fix preserves single quoted style" {
         .end_byte = 46,
     });
     defer env_meta.deinit();
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
 
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
@@ -5281,7 +4387,6 @@ test "SEC017: fix preserves single quoted style" {
 }
 
 test "SEC017: fix preserves double quoted style" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
@@ -5294,14 +4399,7 @@ test "SEC017: fix preserves double quoted style" {
         .end_byte = 56,
     });
     defer env_meta.deinit();
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
 
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
@@ -5312,7 +4410,6 @@ test "SEC017: fix preserves double quoted style" {
 }
 
 test "SEC017: literal style gets diagnostic without fix" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
@@ -5325,14 +4422,7 @@ test "SEC017: literal style gets diagnostic without fix" {
         .end_byte = 70,
     });
     defer env_meta.deinit();
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env_map, .env_meta = env_meta },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
 
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
@@ -5341,49 +4431,25 @@ test "SEC017: literal style gets diagnostic without fix" {
 }
 
 test "SEC017: value is false (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "false") catch unreachable;
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
 }
 
 test "SEC017: key absent (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
     env_map.put("SOME_OTHER_VAR", "true") catch unreachable;
-    const steps = [_]Step{
-        .{ .run = "echo test", .env = env_map },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
 }
 
 test "SEC017: no env (no false positive)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo test" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
 }
@@ -5510,276 +4576,108 @@ test "SEC017: integration applies fix to step env and preserves double quote/com
 // ============================================================
 
 test "BP007: base64 -d piped to bash" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo payload | base64 -d | bash" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo payload | base64 -d | bash" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: base64 --decode piped to sh" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "base64 --decode secret.txt | sh" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "base64 --decode secret.txt | sh" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: eval with variable expansion" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "eval $CMD" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "eval $CMD" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: eval with quoted variable" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "eval \"$SCRIPT\"" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "eval \"$SCRIPT\"" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: eval with braced variable" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "eval ${COMMAND}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "eval ${COMMAND}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: curl piped to bash" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "curl -s https://example.com/install.sh | bash" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "curl -s https://example.com/install.sh | bash" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: wget piped to sh" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "wget -qO- https://example.com/setup.sh | sh" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "wget -qO- https://example.com/setup.sh | sh" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: variable as command at line start" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "export CMD=\"malicious\"\n$CMD" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "export CMD=\"malicious\"\n$CMD" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on normal command" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo hello world" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo hello world" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on base64 decode to file" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "base64 -d file.txt > output.bin" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "base64 -d file.txt > output.bin" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on eval with literal string" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "eval \"echo hello\"" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "eval \"echo hello\"" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on curl saving to file" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "curl -o script.sh https://example.com/script.sh" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "curl -o script.sh https://example.com/script.sh" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on wget download" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "wget https://example.com/file.tar.gz" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "wget https://example.com/file.tar.gz" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on echo with variable" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo $VARIABLE" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "echo $VARIABLE" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on npm install" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "npm install" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "npm install" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on GitHub Actions expression" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "${{ github.token }}" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .run = "${{ github.token }}" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 // --- SEC020: Self-hosted runner on fork-accessible trigger ---
 
-fn makePRTrigger() Trigger {
-    const events = &[_]EventConfig{
-        .{ .event = .pull_request, .name = "pull_request" },
-    };
-    return .{ .events = events };
-}
-
-fn makeIssueCommentTrigger() Trigger {
-    const events = &[_]EventConfig{
-        .{ .event = .issue_comment, .name = "issue_comment" },
-    };
-    return .{ .events = events };
-}
-
-fn makeWorkflowRunTrigger() Trigger {
-    const events = &[_]EventConfig{
-        .{ .event = .workflow_run, .name = "workflow_run" },
-    };
-    return .{ .events = events };
-}
-
-fn makePushTrigger() Trigger {
-    const events = &[_]EventConfig{
-        .{ .event = .push, .name = "push" },
-    };
-    return .{ .events = events };
-}
-
-fn makeWorkflowDispatchTrigger() Trigger {
-    const events = &[_]EventConfig{
-        .{ .event = .workflow_dispatch, .name = "workflow_dispatch" },
-    };
-    return .{ .events = events };
-}
-
 test "SEC020: self-hosted + pull_request + public -> fires" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
     for (list.items.items) |d| {
@@ -5794,12 +4692,7 @@ test "SEC020: scalar runs_on with self-hosted prefix -> fires" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted-gpu", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on = "self-hosted-gpu", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }
@@ -5808,12 +4701,7 @@ test "SEC020: self-hosted + pull_request_target -> fires" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTargetTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }
@@ -5822,12 +4710,7 @@ test "SEC020: self-hosted + issue_comment -> fires" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeIssueCommentTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(issue_comment_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }
@@ -5836,12 +4719,7 @@ test "SEC020: self-hosted + workflow_run -> fires" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }
@@ -5850,14 +4728,13 @@ test "SEC020: multiple jobs, only self-hosted ones fire" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
     const jobs = [_]Job{
         .{ .id = "hosted", .runs_on = "ubuntu-latest", .permissions = Permissions{} },
         .{ .id = "selfa", .runs_on = "self-hosted", .permissions = Permissions{} },
         .{ .id = "selfb", .runs_on = "self-hosted-linux", .permissions = Permissions{} },
     };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    const wf = Workflow{ .name = "CI", .on = pr_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC020"));
 }
@@ -5866,12 +4743,7 @@ test "SEC020: ubuntu-latest + pull_request -> no fire" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "ubuntu-latest", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on = "ubuntu-latest", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC020"));
 }
@@ -5880,12 +4752,7 @@ test "SEC020: self-hosted + push only -> no fire" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePushTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(push_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC020"));
 }
@@ -5894,12 +4761,7 @@ test "SEC020: self-hosted + workflow_dispatch -> no fire" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeWorkflowDispatchTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(workflow_dispatch_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC020"));
 }
@@ -5908,12 +4770,7 @@ test "SEC020: repo_visibility private -> suppressed" {
     setRepoVisibility(.private);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC020"));
 }
@@ -5922,12 +4779,7 @@ test "SEC020: repo_visibility public -> fires" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }
@@ -5936,12 +4788,7 @@ test "SEC020: repo_visibility unknown default -> fires (fail-safe)" {
     setRepoVisibility(.unknown);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }
@@ -5950,12 +4797,7 @@ test "SEC020: runs_on null (reusable workflow caller) -> no fire" {
     setRepoVisibility(.public);
     defer setRepoVisibility(.unknown);
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "call", .runs_on = null, .uses = "./.github/workflows/reusable.yml", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "call", .runs_on = null, .uses = "./.github/workflows/reusable.yml", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC020"));
 }
@@ -5970,12 +4812,7 @@ test "SEC020: disabled via config suppresses after engine run" {
     defer cfg.deinit();
     try cfg.rule_overrides.put("SEC020", .{ .enabled = false });
 
-    const eng = engine.Engine.init(&security_rules);
-    const jobs = [_]Job{
-        .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
 
     var remaining: usize = 0;
@@ -5990,15 +4827,7 @@ test "SEC020: disabled via config suppresses after engine run" {
 // ── SC002: compromised-action-sha ──
 
 test "SC002: compromised SHA fires error" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("tj-actions/changed-files@0e58ed8671d6b60d0890c21b07f8835ace038e67") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("tj-actions/changed-files@0e58ed8671d6b60d0890c21b07f8835ace038e67") });
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SC002"));
@@ -6007,90 +4836,42 @@ test "SC002: compromised SHA fires error" {
 }
 
 test "SC002: compromised tag fires error" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("tj-actions/changed-files@v44") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("tj-actions/changed-files@v44") });
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SC002"));
 }
 
 test "SC002: same owner/repo with non-compromised SHA does not fire" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("tj-actions/changed-files@1111111111111111111111111111111111111111") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("tj-actions/changed-files@1111111111111111111111111111111111111111") });
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC002"));
 }
 
 test "SC002: same SHA on different owner/repo does not fire" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("other-owner/other-repo@0e58ed8671d6b60d0890c21b07f8835ace038e67") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("other-owner/other-repo@0e58ed8671d6b60d0890c21b07f8835ace038e67") });
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC002"));
 }
 
 test "SC002: local action skipped" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("./local-action") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("./local-action") });
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC002"));
 }
 
 test "SC002: docker action skipped" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("docker://alpine:latest") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("docker://alpine:latest") });
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC002"));
 }
 
 test "SC002: uppercase SHA still fires (case-insensitive match)" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("tj-actions/changed-files@0E58ED8671D6B60D0890C21B07F8835ACE038E67") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
+    var list = runStep(.{ .uses = ActionRef.parse("tj-actions/changed-files@0E58ED8671D6B60D0890C21B07F8835ACE038E67") });
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SC002"));
