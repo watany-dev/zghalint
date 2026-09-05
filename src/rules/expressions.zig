@@ -1990,14 +1990,7 @@ test "checkStep EXPR007: if condition with bare literal" {
     defer list.deinit();
 
     checkStep(&step, &list);
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
 }
 
 test "checkJob EXPR007: if condition with bare literal" {
@@ -2009,14 +2002,7 @@ test "checkJob EXPR007: if condition with bare literal" {
     defer list.deinit();
 
     checkJob(&job, &list);
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
 }
 
 // ============================================================

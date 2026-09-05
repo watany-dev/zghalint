@@ -290,14 +290,7 @@ test "engine runs workflow-level rule" {
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "BP001")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "BP001"));
 }
 
 test "engine runs job-level rule" {
@@ -309,14 +302,7 @@ test "engine runs job-level rule" {
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "BP002")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "BP002"));
 }
 
 test "engine runs step-level rule" {
@@ -331,15 +317,8 @@ test "engine runs step-level rule" {
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC001")) {
-            found = true;
-            try std.testing.expect(d.fix_hint != null);
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    const d = test_support.findDiagnostic(&list, "SEC001") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.fix_hint != null);
 }
 
 test "engine no false positive for pinned action" {
