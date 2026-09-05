@@ -271,11 +271,18 @@ pub const Parser = struct {
             self.skipNewlinesAndComments();
             if (self.current.kind == .flow_sequence_end) break;
 
+            const before = self.current.start;
             try items.append(self.allocator, try self.parseFlowValue());
 
             if (self.current.kind == .flow_entry) {
                 self.advance();
+                continue;
             }
+            // `parseFlowValue` returns a null node *without* consuming a token it
+            // does not understand — `[` running into block content such as
+            // `[\nname: CI` leaves the `:` in place. Stop instead of spinning on
+            // it forever.
+            if (self.current.start == before) break;
         }
 
         if (self.current.kind == .flow_sequence_end) {
@@ -670,4 +677,15 @@ test "parser deinit cleans up" {
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "a: b");
     parser.deinit();
+}
+
+test "parse terminates on an unclosed flow sequence running into block content" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The `:` after `name` starts no flow value, so the flow-sequence loop used
+    // to append null nodes forever without consuming it.
+    var parser = Parser.init(arena.allocator(), "[\nname: CI");
+    defer parser.deinit();
+    _ = try parser.parse();
 }
