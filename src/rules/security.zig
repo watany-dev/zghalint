@@ -597,14 +597,7 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList) void {
-    var has_workflow_run = false;
-    for (wf.on.events) |event| {
-        if (event.event == .workflow_run) {
-            has_workflow_run = true;
-            break;
-        }
-    }
-    if (!has_workflow_run) return;
+    if (!hasWorkflowRunTrigger(wf)) return;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
@@ -626,6 +619,66 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
 
 fn containsDangerousWorkflowRunRef(ref_val: []const u8) bool {
     return std.mem.indexOf(u8, ref_val, "github.event.workflow_run.") != null;
+}
+
+// ============================================================
+// SEC021 - workflow_run trust gate on a fork-controlled attribute
+// ============================================================
+
+/// `workflow_run` attributes whose value the author of the triggering run
+/// decides freely. A fork only has to name its branch `main` — or title its
+/// commit — to satisfy a gate built on one of them, and the job behind that
+/// gate runs privileged, with the base repository's secrets (#143).
+const workflow_run_forgeable_attrs = [_][]const u8{
+    "github.event.workflow_run.head_branch",
+    "github.event.workflow_run.display_title",
+    "github.event.workflow_run.head_commit.message",
+};
+
+/// The attributes that actually identify where the triggering run came from.
+/// A condition that already tests one of them is doing the real check, so a
+/// forgeable comparison sitting next to it narrows the gate instead of being it.
+const workflow_run_trusted_attrs = [_][]const u8{
+    "github.event.workflow_run.head_repository",
+    "github.event.workflow_run.head_sha",
+};
+
+/// SEC021 sees the gate, not what it guards: the job may well be a harmless
+/// notification. It warns rather than errors so a `workflow_run` workflow
+/// without secrets does not fail a build, while the pattern still surfaces.
+const sec021_severity: Severity = .warning;
+
+fn checkWorkflowRunUntrustedGate(wf: *const Workflow, list: *DiagnosticList) void {
+    if (!hasWorkflowRunTrigger(wf)) return;
+
+    for (wf.jobs) |*job| {
+        if (job.if_condition) |cond| {
+            reportForgeableWorkflowRunGate(cond, ifAnchorJob(job), list);
+        }
+        for (job.steps) |*step| {
+            const cond = step.if_condition orelse continue;
+            reportForgeableWorkflowRunGate(cond, ifAnchorStep(step), list);
+        }
+    }
+}
+
+fn reportForgeableWorkflowRunGate(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+    const match = findAnyContext(cond, &workflow_run_forgeable_attrs) orelse return;
+    if (containsAnyContext(cond, &workflow_run_trusted_attrs)) return;
+    list.append(.{
+        .rule_id = "SEC021",
+        .severity = sec021_severity,
+        .message = "workflow_run condition gates on an attribute the triggering fork controls, so it is not a trust boundary",
+        .span = anchor.at(cond, match.offset, match.len),
+        .fix_hint = "gate on the origin of the run instead: compare github.event.workflow_run.head_repository.full_name with github.repository, or match github.event.workflow_run.head_sha",
+    }) catch return;
+}
+
+fn hasWorkflowRunTrigger(wf: *const Workflow) bool {
+    for (wf.on.events) |event| {
+        if (event.event == .workflow_run) return true;
+    }
+    return false;
 }
 
 // ============================================================
@@ -1992,6 +2045,14 @@ pub const security_rules = [_]Rule{
         .check_workflow = &checkSelfHostedRunnerForkTriggeredWorkflow,
     },
     .{
+        .id = "SEC021",
+        .name = "workflow-run-untrusted-gate",
+        .description = "workflow_run condition gates on a fork-controlled attribute, which is not a trust boundary",
+        .severity = sec021_severity,
+        .category = .security,
+        .check_workflow = &checkWorkflowRunUntrustedGate,
+    },
+    .{
         .id = "SC002",
         .name = "compromised-action-sha",
         .description = "Action references a SHA or tag of a known-compromised release",
@@ -2773,6 +2834,124 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+// --- SEC021: workflow_run trust gate on a fork-controlled attribute ---
+
+test "SEC021: job condition gating on workflow_run head_branch" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "./deploy.sh" },
+    };
+    const jobs = [_]Job{
+        .{
+            .id = "deploy",
+            .if_condition = "github.event.workflow_run.head_branch == 'main'",
+            .steps = &steps,
+            .permissions = Permissions{},
+        },
+    };
+    const wf = Workflow{ .name = "Deploy", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC021")) {
+            try testing.expect(d.severity == .warning);
+            try testing.expect(d.fix_hint != null);
+        }
+    }
+}
+
+test "SEC021: step condition gating on workflow_run head_branch" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{
+            .if_condition = "${{ github.event.workflow_run.head_branch == 'main' }}",
+            .run = "./deploy.sh",
+        },
+    };
+    const jobs = [_]Job{
+        .{ .id = "deploy", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Deploy", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: display_title and head_commit.message are equally forgeable" {
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{
+            .id = "a",
+            .if_condition = "contains(github.event.workflow_run.display_title, 'release')",
+            .steps = &[_]Step{},
+            .permissions = Permissions{},
+        },
+        .{
+            .id = "b",
+            .if_condition = "startsWith(github.event.workflow_run.head_commit.message, 'release:')",
+            .steps = &[_]Step{},
+            .permissions = Permissions{},
+        },
+    };
+    const wf = Workflow{ .name = "Deploy", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    var count: usize = 0;
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC021")) count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "SEC021: head_repository check in the same condition is the real gate" {
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{
+            .id = "deploy",
+            .if_condition = "github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.head_branch == 'main'",
+            .steps = &[_]Step{},
+            .permissions = Permissions{},
+        },
+    };
+    const wf = Workflow{ .name = "Deploy", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: workflow_run conclusion gate (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{
+            .id = "deploy",
+            .if_condition = "github.event.workflow_run.conclusion == 'success'",
+            .steps = &[_]Step{},
+            .permissions = Permissions{},
+        },
+    };
+    const wf = Workflow{ .name = "Deploy", .on = makeWorkflowRunTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: head_branch outside a workflow_run workflow (no false positive)" {
+    const eng = engine.Engine.init(&security_rules);
+    const jobs = [_]Job{
+        .{
+            .id = "deploy",
+            .if_condition = "github.event.workflow_run.head_branch == 'main'",
+            .steps = &[_]Step{},
+            .permissions = Permissions{},
+        },
+    };
+    const wf = Workflow{ .name = "Deploy", .on = makePRTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
 }
 
 // --- SEC006: Untrusted input in conditions ---

@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **58 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **59 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -38,6 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:` |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
+| SEC021 | workflow-run-untrusted-gate | warning | `workflow_run` condition gates on a fork-controlled attribute, which is not a trust boundary |
 
 ### SEC002 / SEC008 vs. SEC006
 
@@ -52,6 +53,29 @@ SEC006 does not report ref-shaped inputs (`github.head_ref`,
 `.head.repo.default_branch`, `github.event.workflow_run.head_branch`) or label
 names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
 — is a common routing idiom. They stay untrusted for SEC002 and SEC008.
+
+### SEC021: the one ref-shaped gate that still matters
+
+A `workflow_run` workflow runs privileged, with the base repository's secrets,
+so an `if:` on `github.event.workflow_run.head_branch` is a trust gate rather
+than routing — and a fork walks through it by naming its branch `main`. SEC021
+covers exactly that case: it fires only inside a workflow triggered by
+`workflow_run`, only on attributes the triggering fork authors (`head_branch`,
+`display_title`, `head_commit.message`), and stays quiet when the same
+condition also tests `head_repository` or `head_sha`, which is the real check.
+
+It warns rather than errors because it sees the gate, not what the gate guards:
+the guarded job may be a harmless notification.
+
+```yaml
+# reported: any fork can create a branch named `main`
+if: github.event.workflow_run.head_branch == 'main'
+
+# not reported: the origin of the run is verified first
+if: >-
+  github.event.workflow_run.head_repository.full_name == github.repository &&
+  github.event.workflow_run.head_branch == 'main'
+```
 
 ## Supply Chain Security Rules (SC)
 
