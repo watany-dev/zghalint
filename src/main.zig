@@ -332,7 +332,7 @@ fn lintFile(
 }
 
 fn outputTerminal(diag_list: *zghalint.DiagnosticList, writer: anytype, use_color: bool) !void {
-    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, null, use_color);
+    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, use_color);
 }
 
 fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checked: usize) !void {
