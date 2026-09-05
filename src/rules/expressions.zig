@@ -63,6 +63,18 @@ pub const ExprTokenizer = struct {
         }
     }
 
+    /// A token whose text is fixed and known: advance past it and describe it.
+    fn emitSimple(self: *ExprTokenizer, kind: TokenKind, comptime text: []const u8) ExprToken {
+        const start = self.pos;
+        self.pos += text.len;
+        return .{ .kind = kind, .value = text, .pos = start };
+    }
+
+    /// Whether the character right after the current one is `c`.
+    fn peekIs(self: *const ExprTokenizer, c: u8) bool {
+        return self.pos + 1 < self.source.len and self.source[self.pos + 1] == c;
+    }
+
     pub fn next(self: *ExprTokenizer) ExprToken {
         self.skipWhitespace();
         if (self.pos >= self.source.len) {
@@ -73,81 +85,36 @@ pub const ExprTokenizer = struct {
         const c = self.source[self.pos];
 
         switch (c) {
-            '.' => {
-                self.pos += 1;
-                return .{ .kind = .dot, .value = ".", .pos = start };
-            },
-            '(' => {
-                self.pos += 1;
-                return .{ .kind = .open_paren, .value = "(", .pos = start };
-            },
-            ')' => {
-                self.pos += 1;
-                return .{ .kind = .close_paren, .value = ")", .pos = start };
-            },
-            '[' => {
-                self.pos += 1;
-                return .{ .kind = .open_bracket, .value = "[", .pos = start };
-            },
-            ']' => {
-                self.pos += 1;
-                return .{ .kind = .close_bracket, .value = "]", .pos = start };
-            },
-            ',' => {
-                self.pos += 1;
-                return .{ .kind = .comma, .value = ",", .pos = start };
-            },
-            '*' => {
-                self.pos += 1;
-                return .{ .kind = .star, .value = "*", .pos = start };
-            },
+            '.' => return self.emitSimple(.dot, "."),
+            '(' => return self.emitSimple(.open_paren, "("),
+            ')' => return self.emitSimple(.close_paren, ")"),
+            '[' => return self.emitSimple(.open_bracket, "["),
+            ']' => return self.emitSimple(.close_bracket, "]"),
+            ',' => return self.emitSimple(.comma, ","),
+            '*' => return self.emitSimple(.star, "*"),
             '!' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = "!=", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .not_op, .value = "!", .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, "!=");
+                return self.emitSimple(.not_op, "!");
             },
             '=' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = "==", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .@"error", .value = self.source[start .. start + 1], .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, "==");
+                return self.emitSimple(.@"error", "=");
             },
             '<' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = "<=", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .comparison_op, .value = "<", .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, "<=");
+                return self.emitSimple(.comparison_op, "<");
             },
             '>' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = ">=", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .comparison_op, .value = ">", .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, ">=");
+                return self.emitSimple(.comparison_op, ">");
             },
             '&' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '&') {
-                    self.pos += 2;
-                    return .{ .kind = .logical_op, .value = "&&", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .@"error", .value = self.source[start .. start + 1], .pos = start };
+                if (self.peekIs('&')) return self.emitSimple(.logical_op, "&&");
+                return self.emitSimple(.@"error", "&");
             },
             '|' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '|') {
-                    self.pos += 2;
-                    return .{ .kind = .logical_op, .value = "||", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .@"error", .value = self.source[start .. start + 1], .pos = start };
+                if (self.peekIs('|')) return self.emitSimple(.logical_op, "||");
+                return self.emitSimple(.@"error", "|");
             },
             '\'' => return self.readString(),
             else => {
