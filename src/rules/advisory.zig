@@ -72,24 +72,21 @@ pub fn deinitAdvisories() void {
 /// Eagerly load the advisory database (fresh disk cache -> network fallback).
 /// Safe to call multiple times; subsequent calls are no-ops.
 pub fn prefetch() void {
+    ensureLoaded();
+}
+
+/// Load the advisory database once per process. Both the eager `prefetch` and
+/// the lazy first rule invocation funnel through here.
+fn ensureLoaded() void {
     if (fetched) return;
     fetched = true;
-    if (advisory_arena) |*arena| {
-        const alloc = arena.allocator();
-        advisory_cache = loadAdvisories(alloc);
-    }
+    const arena = &(advisory_arena orelse return);
+    advisory_cache = loadAdvisories(arena.allocator());
 }
 
 /// Rule check function for SC003.
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
-    // Lazy fetch: only on first invocation
-    if (!fetched) {
-        fetched = true;
-        if (advisory_arena) |*arena| {
-            const alloc = arena.allocator();
-            advisory_cache = loadAdvisories(alloc);
-        }
-    }
+    ensureLoaded();
 
     const advisories = advisory_cache orelse return;
     const action_ref = step.uses orelse return;
@@ -131,29 +128,20 @@ const cache_subdir = "zghalint";
 const cache_filename = "advisories.json";
 
 fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
-    if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        var dir = std.fs.openDirAbsolute(xdg, .{}) catch return null;
-        const sub = dir.makeOpenPath(cache_subdir, .{}) catch {
-            dir.close();
-            return null;
-        };
-        dir.close();
-        return sub;
-    } else |_| {}
+    // XDG_CACHE_HOME is already a cache root; HOME needs the conventional
+    // `.cache` segment appended.
+    if (openCacheSubdir(allocator, "XDG_CACHE_HOME", cache_subdir)) |dir| return dir;
+    return openCacheSubdir(allocator, "HOME", ".cache/" ++ cache_subdir);
+}
 
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        var dir = std.fs.openDirAbsolute(home, .{}) catch return null;
-        const sub = dir.makeOpenPath(".cache/" ++ cache_subdir, .{}) catch {
-            dir.close();
-            return null;
-        };
-        dir.close();
-        return sub;
-    } else |_| {}
-
-    return null;
+/// `$<env_var>/<sub_path>`, created if missing. Null when the variable is unset
+/// or any step of the open fails.
+fn openCacheSubdir(allocator: Allocator, env_var: []const u8, comptime sub_path: []const u8) ?std.fs.Dir {
+    const base = std.process.getEnvVarOwned(allocator, env_var) catch return null;
+    defer allocator.free(base);
+    var dir = std.fs.openDirAbsolute(base, .{}) catch return null;
+    defer dir.close();
+    return dir.makeOpenPath(sub_path, .{}) catch null;
 }
 
 fn isCacheFresh(dir: std.fs.Dir) bool {
@@ -380,13 +368,13 @@ fn getJsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 }
 
 fn getJsonStringFromObj(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const val = obj.get(key) orelse return null;
     // first_patched_version can be an object with "identifier" field or a string
-    return switch (val) {
-        .string => |s| s,
-        .object => |o| getJsonString(o, "identifier"),
-        else => null,
+    if (getJsonString(obj, key)) |s| return s;
+    const nested = switch (obj.get(key) orelse return null) {
+        .object => |o| o,
+        else => return null,
     };
+    return getJsonString(nested, "identifier");
 }
 
 // ============================================================
