@@ -17,23 +17,16 @@ const UnknownKey = workflow_types.UnknownKey;
 
 // ── SYN003: Empty mapping / sequence sections ──
 
-fn emptySectionMessage(section: []const u8) []const u8 {
-    const messages = std.StaticStringMap([]const u8).initComptime(.{
-        .{ "on", "\"on\" section should not be empty" },
-        .{ "jobs", "\"jobs\" section should not be empty" },
-        .{ "steps", "\"steps\" section should not be empty" },
-        .{ "with", "\"with\" section should not be empty" },
-        .{ "env", "\"env\" section should not be empty" },
-        .{ "strategy", "\"strategy\" section should not be empty" },
-        .{ "matrix", "\"matrix\" section should not be empty" },
-        .{ "defaults", "\"defaults\" section should not be empty" },
-        .{ "container", "\"container\" section should not be empty" },
-        .{ "services", "\"services\" section should not be empty" },
-        .{ "outputs", "\"outputs\" section should not be empty" },
-        .{ "inputs", "\"inputs\" section should not be empty" },
-        .{ "secrets", "\"secrets\" section should not be empty" },
-    });
-    return messages.get(section) orelse "section should not be empty";
+/// The 13 section names all produce the same sentence, so format it instead of
+/// keeping a lookup table of identical strings.
+fn emptySectionMessage(list: *DiagnosticList, section: []const u8) []const u8 {
+    const generic = "section should not be empty";
+    if (section.len == 0) return generic;
+    return std.fmt.allocPrint(
+        list.fixAllocator(),
+        "\"{s}\" " ++ generic,
+        .{section},
+    ) catch generic;
 }
 
 fn checkEmptySections(sections: []const workflow_types.EmptySection, list: *DiagnosticList) void {
@@ -41,7 +34,7 @@ fn checkEmptySections(sections: []const workflow_types.EmptySection, list: *Diag
         list.append(.{
             .rule_id = "SYN003",
             .severity = .@"error",
-            .message = emptySectionMessage(section.name),
+            .message = emptySectionMessage(list, section.name),
             .span = section.span,
             .fix_hint = "remove this section if it is unnecessary",
         }) catch return;
@@ -199,10 +192,6 @@ fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
 
 // ── Shared span helpers ──
 
-fn spanOrFallback(primary: ?Span, fallback: Span) Span {
-    return primary orelse fallback;
-}
-
 fn needsSpan(job: *const Job, index: usize) Span {
     if (index < job.needs_spans.len) return job.needs_spans[index];
     return job.span;
@@ -241,7 +230,7 @@ fn reportInvalidId(list: *DiagnosticList, what: []const u8, id: []const u8, span
 }
 
 fn checkInvalidJobId(job: *const Job, diag_list: *DiagnosticList) void {
-    reportInvalidId(diag_list, "job", job.id, spanOrFallback(job.id_span, job.span));
+    reportInvalidId(diag_list, "job", job.id, (job.id_span orelse job.span));
     for (job.needs, 0..) |need, i| {
         reportInvalidId(diag_list, "job", need, needsSpan(job, i));
     }
@@ -249,7 +238,7 @@ fn checkInvalidJobId(job: *const Job, diag_list: *DiagnosticList) void {
 
 fn checkInvalidStepId(step: *const Step, diag_list: *DiagnosticList) void {
     const id = step.id orelse return;
-    reportInvalidId(diag_list, "step", id, spanOrFallback(step.id_value_span, step.span));
+    reportInvalidId(diag_list, "step", id, (step.id_value_span orelse step.span));
 }
 
 // ── SYN005: Duplicated job ID / step ID (case-insensitive) ──
@@ -285,8 +274,8 @@ fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
             reportDuplicateId(
                 list,
                 job.id,
-                spanOrFallback(prior.id_span, prior.span).start_line,
-                spanOrFallback(job.id_span, job.span),
+                (prior.id_span orelse prior.span).start_line,
+                (job.id_span orelse job.span),
                 job_id_dup_fmt,
                 "use a unique job ID within the workflow",
             );
@@ -304,8 +293,8 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
             reportDuplicateId(
                 list,
                 step_id,
-                spanOrFallback(prior_step.id_value_span, prior_step.span).start_line,
-                spanOrFallback(step.id_value_span, step.span),
+                (prior_step.id_value_span orelse prior_step.span).start_line,
+                (step.id_value_span orelse step.span),
                 step_id_dup_fmt,
                 "use a unique step ID within the job",
             );

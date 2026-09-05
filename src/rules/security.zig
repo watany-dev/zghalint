@@ -2839,7 +2839,7 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
-    best_practices.checkPushConcurrencyForTest(&wf, &list);
+    best_practices.checkPushConcurrency(&wf, &list);
 
     try testing.expectEqual(@as(usize, 2), list.len());
 
