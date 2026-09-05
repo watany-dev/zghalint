@@ -235,28 +235,12 @@ fn compareRest(
         .{ owner, repo, base_encoded, head },
     ) catch return .unknown;
 
-    var aw: std.Io.Writer.Allocating = .init(scratch);
-    defer aw.deinit();
+    var resp = http_client.fetchAuthenticatedJson(scratch, url) catch return .unknown;
+    defer resp.deinit();
 
-    const auth_value = http_client.getAuthHeader(scratch);
-    defer if (auth_value) |a| scratch.free(a);
+    if (resp.status != .ok) return .unknown;
 
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
-
-    const result = http_client.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
-    }) catch return .unknown;
-
-    if (result.status != .ok) return .unknown;
-
-    var response_list = aw.toArrayList();
-    defer response_list.deinit(scratch);
-
-    return parseCompareStatus(scratch, response_list.items);
+    return parseCompareStatus(scratch, resp.body);
 }
 
 fn parseCompareStatus(scratch: Allocator, body: []const u8) CompareStatus {

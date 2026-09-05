@@ -157,23 +157,22 @@ fn writeCacheFile(dir: std.fs.Dir, data: []const u8) void {
     file.writeAll(data) catch {};
 }
 
+/// One tab-separated line per advisory; absent optional fields are empty.
+/// `deserializeAdvisories` is the exact inverse.
 fn serializeAdvisories(allocator: Allocator, advisories: []const Advisory) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
     for (advisories) |adv| {
-        buf.appendSlice(allocator, adv.ghsa_id) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.action_slug) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.summary) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.severity) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.vulnerable_range orelse "") catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.patched_version orelse "") catch continue;
-        buf.append(allocator, '\n') catch continue;
+        try out.writer.print("{s}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
+            adv.ghsa_id,
+            adv.action_slug,
+            adv.summary,
+            adv.severity,
+            adv.vulnerable_range orelse "",
+            adv.patched_version orelse "",
+        });
     }
-    return buf.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Advisory {
@@ -252,28 +251,12 @@ fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
 
 fn fetchAndParse(allocator: Allocator) ![]const Advisory {
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
+    var resp = http_client.fetchAuthenticatedJson(allocator, api_url) catch return error.FetchFailed;
+    defer resp.deinit();
 
-    const auth_value = http_client.getAuthHeader(allocator);
-    defer if (auth_value) |auth| allocator.free(auth);
+    if (resp.status != .ok) return error.HttpError;
 
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
-
-    const result = http_client.fetch(.{
-        .location = .{ .url = api_url },
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
-    }) catch return error.FetchFailed;
-
-    if (result.status != .ok) return error.HttpError;
-
-    var response_list = aw.toArrayList();
-    defer response_list.deinit(allocator);
-
-    const advisories = try parseAdvisories(allocator, response_list.items);
+    const advisories = try parseAdvisories(allocator, resp.body);
 
     // Write parsed advisories to disk cache in compact TSV format
     if (serializeAdvisories(allocator, advisories)) |serialized| {
