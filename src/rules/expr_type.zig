@@ -60,19 +60,21 @@ pub const type_loose_object: Type = .{ .kind = .object, .shape = .loose };
 /// `{string => string}` map object.
 pub const type_map_string: Type = .{ .kind = .object, .shape = .map, .elem = &type_string };
 
+/// Binary search for `name` over a slice sorted by its `name` field.
+/// Shared by every static lookup table in the expression checker.
+pub fn findByName(comptime T: type, items: []const T, name: []const u8) ?*const T {
+    const idx = std.sort.binarySearch(T, items, name, struct {
+        fn order(key: []const u8, item: T) std.math.Order {
+            return std.mem.order(u8, key, item.name);
+        }
+    }.order) orelse return null;
+    return &items[idx];
+}
+
 /// Binary search over the sorted `props` of an object type.
 pub fn findProp(ty: TypeRef, name: []const u8) ?TypeRef {
-    var lo: usize = 0;
-    var hi: usize = ty.props.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        switch (std.mem.order(u8, ty.props[mid].name, name)) {
-            .lt => lo = mid + 1,
-            .gt => hi = mid,
-            .eq => return ty.props[mid].ty,
-        }
-    }
-    return null;
+    const prop = findByName(Prop, ty.props, name) orelse return null;
+    return prop.ty;
 }
 
 /// Merge two types. Conflicts collapse to `any` (ADR D5).
