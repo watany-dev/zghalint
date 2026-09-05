@@ -1,58 +1,70 @@
-# 実施ロードマップ（2026-09-05 更新）
+# 実施ロードマップ（2026-09-05 更新 / rev.3）
 
 オープンな PR / issue を main の実装状況と突き合わせて棚卸しし、以後の実施順序を示す。
 
 ## 0. 前版からの差分
 
-前版（2026-09-04）で「Phase 1 より前に潰すべき基盤欠陥」として挙げた 4 件は**すべて main にマージ済み**。
+前版（rev.2）以降、main は 2 つの波を消化した。
+
+### 0.1 基盤欠陥 4 件（rev.2 で P0 としたもの）— すべて解決済み
 
 | 項目 | 結果 |
 |---|---|
 | #131 / #137 プレーンスカラーの切り詰め | **解決**（PR #139）。`Tokenizer.flow_depth` を導入し、`,` `[` `]` `{` `}` を flow context の中でのみ指示子として扱うようになった |
 | #133 診断 span の `0:0` | **解決**（PR #140）。`src/rules/spans.zig` を新設し全ルールへ伝搬。`src/rules/` の `Span.point(0, 0, 0)` は 0 箇所 |
-| #132 E2E テスト | **解決**（PR #141）。`src/e2e_test.zig` + `tests/fixtures/e2e/*.yml` 10 本。併せて `src/rules/registry.zig` へルール登録表を抽出 |
+| #132 E2E テスト | **解決**（PR #141）。`src/e2e_test.zig` + `tests/fixtures/e2e/*.yml`。併せて `src/rules/registry.zig` へルール登録表を抽出 |
 | #138 SEC006 の誤検知 | **解決**（PR #144）。`if:` 条件専用の `condition_dangerous_contexts` を分離。`parseFlowSequence` が未閉じ `[` で回り続ける不具合も同 PR で修正 |
 
-main で実バイナリを回して確認した結果:
+これを受けて #62 / #101 / #102 / #103 / #133 / #138 を実バイナリの出力を根拠に close した。
+#55 の parity 進捗は **13/54 → 17/54（31%）**、オープン issue は 49 → 43 件。
 
-```
-# 前版で P0 とした「カンマ 1 個で後続ステップが丸ごと消える」再現
-- run: echo one, two
-- run: echo ${{ github.event.issue.title }}
-→ p1.yml:10:19: error[SEC002] script injection: untrusted context used in run: block
-```
+### 0.2 リファクタ波（#145 umbrella）— 完了
 
-検出されるようになっただけでなく、行 : 列も実位置（`10:19`）を指している。
-`if: startsWith(github.event.pull_request.head.ref, 'release/')` の EXPR001 / SEC006 誤検知も消えている。
+`ponytail-audit` 起点の重複削減 issue #145 とその sub-issue #146〜#150 が **すべて close**、
+PR #152〜#157 で main にマージ済み。主な構造変更:
 
-**基盤フェーズは完了**とみなし、以降は §3 の残件と Phase 1 に進む。
+| 変更 | 内容 |
+|---|---|
+| `src/test_support.zig` 新設 | `parseWorkflowSource` / `runStep` / `runJob` / `runWorkflow` / `lintAndFix` などテスト雛形を集約（#146） |
+| `src/workflow/validator.zig` 廃止 | `schema.zig` と `type_validation.zig` に分割（#147） |
+| `src/rules/json_util.zig` 新設 | ルール間で重複していた JSON 処理を集約（#148） |
+| ADR 番号の重複解消 | 同番号が複数あった状態を `0001`〜`0009` に整理（SEC009 は ADR-0004、式の静的型検査は ADR-0009） |
+| ドキュメント整理 | 完了済みの `docs/codebase-improvements.md` と autofix 実装計画書を削除（#150） |
+| ビルド整理 | `build.zig` から未使用の `addLibrary` / `fmt` ステップ / embed path を削除。版番号は `build.zig.zon` 一本に集約し `build_options` 経由で `main.zig` が読む。`scripts/setup-zig.sh` の wrapper は `-fllvm` 注入のみに簡素化（#150） |
+
+実測: `src/**/*.zig` は 29,891 行、`zig build test` は **1099 テスト**（前版 1142。重複テストの集約による減少で、カバレッジの後退ではない）。
+
+**基盤フェーズ・整理フェーズはいずれも完了**とみなし、以降は §3 の残件と Phase 1 に進む。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
 | ルール数（`docs/rules.md`） | 59 |
-| #55 actionlint parity | 53 sub-issue 中 13 close 済み + 4 実装済み未 close（#62 #101 #102 #103）＝ 実質 17 完了 |
+| `src/**/*.zig` | 29,891 行 |
+| ユニットテスト | 1099 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **17 close 済み（31%）** |
 | 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129 |
-| E2E テスト | `src/e2e_test.zig` に fixture 駆動で 10 本 |
-| PBT（`tests/pbt/`） | xfail 0 件。#138 対応で SEC006 の条件テーブル由来の draw を追加 |
-| オープン PR | #130（本 PR）と #142（draft・ツール系） |
-| オープン issue | 49 件。うち #55 本体と parity sub-issue 40 件 |
+| E2E テスト | `src/e2e_test.zig` に fixture 駆動 |
+| PBT（`tests/pbt/`） | xfail 0 件 |
+| オープン PR | #130（本 PR）と #151（#143 の下準備リファクタ） |
+| オープン issue | 43 件。うち #55 本体と parity sub-issue 40 件 |
+| 未解決の既知バグ | #143（`workflow_run` 信頼ゲート無検出）、#136（SYN002 / SYN005 二重報告）。いずれも main のバイナリで再現を確認済み |
 
-## 2. 今すぐ close できる issue
+## 2. close 済みの棚卸し結果
 
-main の実装と `docs/rules.md`、および実バイナリの挙動で確認済み。作業は不要。
+rev.2 の §2 で「実装済み・未 close」と判定した 6 件は、根拠を各 issue にコメントしたうえで close 済み。
 
-| issue | 確認方法 |
+| issue | close の根拠 |
 |---|---|
-| #62 SYN007 env 変数名 | `env: { "BAD NAME": x }` → `SYN007: environment variable name "BAD NAME" is invalid`。`docs/rules.md` にも記載あり |
-| #101 SEC002 untrusted inputs 拡充 | `security.zig` の `dangerous_contexts` が 20 エントリ（`workflow_run.head_branch`、`pages`、`commits` 等を含む） |
+| #62 SYN007 env 変数名 | `checkEnvNames` が workflow / job / step の 3 レベルに配線済み。`env: { "BAD NAME": x }` → `SYN007` を実位置で報告 |
+| #101 SEC002 untrusted inputs 拡充 | `security.zig` の untrusted context テーブルを拡充済み。現在は `run_dangerous_contexts`（21 エントリ）と `condition_dangerous_contexts`（15 エントリ）の 2 本立て（close 時点の 3 系統からリファクタ波で集約された） |
 | #102 SEC002 object filter `.*` | `${{ github.event.commits.*.message }}` → SEC002。`${{ steps.meta.outputs.github.head_ref }}` は正しく非報告 |
 | #103 SEC002 github-script の `script:` | `actions/github-script` の `with.script` → `SEC002: ... used in actions/github-script script: input` |
-| #133 診断 span | `Span.point(0, 0, 0)` が 0 箇所。上記のとおり実位置を報告 |
-| #138 SEC006 の誤検知 | PR #144 でマージ済み。ただし副作用が #143 として残っているので、close の際は #143 へリンクする |
+| #133 診断 span | `Span.point(0, 0, 0)` が 0 箇所 |
+| #138 SEC006 の誤検知 | PR #144。ただし副作用が #143 として残るため、close コメントで #143 へリンク済み |
 
-#131 と #137 は重複だったが、いずれも既に close 済み。
+**現時点で「作業不要のまま open」な issue はない。** 残り 43 件はすべて実装作業を伴う。
 
 ## 3. 最優先: #138 の副作用と積み残しバグ
 
@@ -70,7 +82,8 @@ jobs:
       - run: ./deploy.sh
 ```
 
-main のバイナリで確認したところ、このファイルに対して **SEC 系の診断は 1 件も出ない**（BP001 / BP002 / SEC007 のみ）。
+main（`07496d7`）のバイナリで確認したところ、`permissions` と `timeout-minutes` を書いたこのワークフローは
+**`No issues found.`** になる。信頼ゲートの穴に対する診断は 1 件も出ない。
 `workflow_run` は privileged コンテキストで走るため、ゲート突破は権限昇格に直結する。
 
 SEC009 の `checkWorkflowRunUntrustedCheckout` は `step.uses` と `with.ref` しか見ておらず `if:` を検査しない。
@@ -88,15 +101,17 @@ p4.yml:8:3: error[SYN005]: job ID "build" duplicates...
 ```
 
 同一位置・同一原因で 2 件。#118 で E2E のアサーションを件数比較から緩める原因になった。
-ADR-0003（SEC002 と SEC009 の責務境界）と同じ形で、SYN002 の走査対象から `jobs:` を外し、
+ADR-0004（SEC002 と SEC009 の責務境界）と同じ形で、SYN002 の走査対象から `jobs:` を外し、
 ジョブ ID の重複は SYN005 の責務に一本化する。修正後は E2E を `diags.len()` の厳密比較に戻せる。
 
 ## 4. オープン PR の裁き方
 
 | PR | 内容 | 判定 |
 |---|---|---|
-| #130 | 本ロードマップ | main（`5271a4d`）に追随のうえマージ。docs のみで競合なし |
-| #142 | autopilot skills の vendoring（draft・154 ファイル / +22,595 行） | **製品コードに触らない**ので本ロードマップの対象外。`.claude/` `.agents/` `AGENTS.md` `.gitignore` のみ。リポジトリに 2 万行超のサードパーティ skill 定義を抱えるかは別途判断が要る |
+| #130 | 本ロードマップ | main（`07496d7`）に追随のうえマージ。docs のみで競合なし |
+| #151 | `refactor(security): extract findAnyContext from containsAnyContext`（+258 / -12、4 ファイル） | #143 の下準備。マッチ位置を返すようにして診断のアンカーに使えるようにする、挙動不変のリファクタ。**base が `5271a4d` のままでリファクタ波 12 コミット分遅れており、CI も未実行**（`total_count: 0`）。main を取り込んで CI を回してからマージし、その上に #143 の本体を載せる |
+
+rev.2 で保留にしていた PR #142（skills の vendoring）は close 済みで、`.agents/skills` も main から削除された。
 
 ## 5. ロードマップ
 
@@ -104,7 +119,7 @@ ADR-0003（SEC002 と SEC009 の責務境界）と同じ形で、SYN002 の走�
 
 - 1 issue = 1 PR = 1 ルール。TDD（Red → Green → Refactor）、完了時に `docs/rules.md` へ行追加
 - 同一ファイル（`types.zig` / `parser.zig` / `security.zig`）を触る issue は直列にし、rebase 地獄を避ける
-- 誤検出ゼロを優先。不確かなものは検出しない（ADR-0006 の方針を全ルールに適用）
+- 誤検出ゼロを優先。不確かなものは検出しない（ADR-0009 の方針を全ルールに適用）
 - 新ルールは `src/rules/registry.zig` へ登録し、`tests/fixtures/e2e/` に fixture を 1 本足す
 
 ### Phase 1: 依存なし・小粒ルール
@@ -151,7 +166,7 @@ ADR-0003（SEC002 と SEC009 の責務境界）と同じ形で、SYN002 の走�
 
 ### Phase 4: contextual typing（エンジン T4 = #129）
 
-各 issue で「存在検証」を実装し、最後に `TypeEnv` overlay へ接続する（ADR-0006 の二重メンテ期間を短くするため Phase 4 内で一気に片付ける）。
+各 issue で「存在検証」を実装し、最後に `TypeEnv` overlay へ接続する（ADR-0009 の二重メンテ期間を短くするため Phase 4 内で一気に片付ける）。
 
 | 順 | issue | ルール | 依存 |
 |---|---|---|---|
@@ -185,15 +200,14 @@ ADR-0003（SEC002 と SEC009 の責務境界）と同じ形で、SYN002 の走�
 
 | 項目 | 位置づけ |
 |---|---|
-| #134 SEC021 untrusted checkout ref | #55 の対象外。ADR-0004 と `docs/design/sec021-untrusted-checkout-ref-design.md` で設計済み・未実装。#143 と同じ `security.zig` の `workflow_run` 周辺を触るので、**#143 の直後にまとめて着手**すると手戻りが少ない |
+| #134 SEC021 untrusted checkout ref | #55 の対象外。ADR-0006 と `docs/design/sec021-untrusted-checkout-ref-design.md` で設計済み・未実装。#143 と同じ `security.zig` の `workflow_run` 周辺を触るので、**#143 の直後にまとめて着手**すると手戻りが少ない |
 | #135 SC007 typosquat 検出 | 同上（`docs/design/sc007-typosquat-design.md`）。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
-| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。#131 の `flow_depth` 対応と同じ層なので、記憶が新しいうちに着手すると得。`docs/codebase-improvements.md` §7 の yaml/parser 整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
-| `docs/codebase-improvements.md` 優先度 1〜8 | 各 Phase で該当ファイルを触る前に Tidy First で消化する |
+| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。#131 の `flow_depth` 対応と同じ層なので、記憶が新しいうちに着手すると得。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
 | `docs/design/pbt-strategy.md` #3〜#5 | xfail は解消済み。新ルールが増えるたびに detection PBT を横展開する |
 
 ## 6. 直近の着手順（上位 10 件）
 
-§2 の close 作業を済ませたうえで、次の順に着手する。
+close 作業（§2）とリファクタ波（§0.2）はいずれも完了しているので、次の順に着手する。
 
 | 順 | issue | 理由 |
 |---|---|---|
@@ -215,3 +229,5 @@ ADR-0003（SEC002 と SEC009 の責務境界）と同じ形で、SYN002 の走�
 - エージェント PR は CI 緑でもマージ前に main へ rebase する
 - ルールを追加・変更したら `tests/fixtures/e2e/` に fixture を足し、行 : 列まで含めてアサートする（#131 を見逃したのは、既存のインラインテストが `Step` 構造体を直接組み立てておりパーサを通っていなかったため）
 - 各 Phase 完了時に `docs/rules.md` のルール数と #55 の進捗表を更新する
+- リファクタ波でテスト雛形が `src/test_support.zig` に集約された。新ルールのテストは自前でワークフローを組み立てず、`parseWorkflowSource` / `runStep` / `runJob` / `runWorkflow` を使う
+- `scripts/setup-zig.sh` が簡素化され `zig build` は build.zig 一本になった。**古い wrapper が `/usr/local/bin/zig` に残っていると `no module named 'build_options'` でビルドが落ちる**。main を取り込んだら `bash scripts/setup-zig.sh` を必ず流し直す
