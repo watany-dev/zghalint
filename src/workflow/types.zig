@@ -284,6 +284,9 @@ pub const Step = struct {
     run: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     with: ?StringMap = null,
+    /// Value spans and styles of the `with:` entries (for diagnostics that
+    /// scan a `with:` value, e.g. SEC003/SEC005/SEC011).
+    with_meta: ?ScalarValueMetaMap = null,
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
@@ -307,8 +310,12 @@ pub const Step = struct {
     uses_value_style: ?yaml_types.ScalarStyle = null,
     /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
     with_last_entry_end_byte: ?usize = null,
-    /// Value span of the `run:` scalar (for future SEC008 family).
-    run_value_span: ?yaml_types.Span = null,
+    /// Span and style of the `run:` scalar. The style is needed to map an
+    /// offset inside `run` back to a source line/column (block scalars start
+    /// one line below their `|` / `>` indicator).
+    run_meta: ?ScalarValueMeta = null,
+    /// Span of the `uses:` scalar value (for SEC001 and the SC00x family).
+    uses_value_span: ?yaml_types.Span = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
     /// Byte position for appending an entry to the step mapping (end of last entry's line).

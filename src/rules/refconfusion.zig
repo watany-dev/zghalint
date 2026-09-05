@@ -7,6 +7,7 @@ const rest_fallback = @import("rest_fallback.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
+const spans = @import("spans.zig");
 const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
@@ -100,7 +101,7 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     // Check cache
     if (cache.get(key)) |status| {
         if (status == .ambiguous) {
-            emitDiagnostic(list, owner, repo, ref);
+            emitDiagnostic(list, spans.usesSpan(step), owner, repo, ref);
         }
         return;
     }
@@ -110,7 +111,7 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     cache.put(key, status) catch return;
 
     if (status == .ambiguous) {
-        emitDiagnostic(list, owner, repo, ref);
+        emitDiagnostic(list, spans.usesSpan(step), owner, repo, ref);
     }
 }
 
@@ -118,14 +119,14 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
 // Diagnostic emission
 // ============================================================
 
-fn emitDiagnostic(list: *DiagnosticList, owner: []const u8, repo: []const u8, ref: []const u8) void {
+fn emitDiagnostic(list: *DiagnosticList, span: Span, owner: []const u8, repo: []const u8, ref: []const u8) void {
     const alloc = list.fixAllocator();
     const message = std.fmt.allocPrint(alloc, "action ref '{s}' matches both a tag and a branch in {s}/{s}; an attacker could create a tag to hijack this reference", .{ ref, owner, repo }) catch return;
     list.append(.{
         .rule_id = "SC006",
         .severity = .warning,
         .message = message,
-        .span = Span.point(0, 0, 0),
+        .span = span,
         .fix_hint = "pin to a full 40-character commit SHA to avoid ref confusion",
     }) catch return;
 }

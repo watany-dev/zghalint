@@ -8,6 +8,7 @@ const rest_fallback = @import("rest_fallback.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
+const spans = @import("spans.zig");
 const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
@@ -79,7 +80,7 @@ pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
             .rule_id = "SC004",
             .severity = .warning,
             .message = "action references an archived repository that is no longer maintained",
-            .span = Span.point(0, 0, 0),
+            .span = spans.usesSpan(step),
             .fix_hint = "migrate to an actively maintained alternative",
         }) catch return;
     }

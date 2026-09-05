@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 const expr_type = @import("expr_type.zig");
 const catalog = @import("expr_catalog.zig");
 const expr_check = @import("expr_check.zig");
+const spans = @import("spans.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -12,6 +13,7 @@ pub const Severity = diagnostics.Severity;
 pub const Fix = diagnostics.Fix;
 pub const Edit = diagnostics.Edit;
 pub const Span = yaml.Span;
+pub const Anchor = spans.Anchor;
 pub const Step = workflow_types.Step;
 pub const Job = workflow_types.Job;
 pub const StringMap = workflow_types.StringMap;
@@ -921,10 +923,15 @@ fn literalInteriorIsClean(lit_value: []const u8) bool {
 /// can emit byte-accurate Edits. Pass `null` when the base byte cannot be
 /// determined reliably; in that case diagnostics are still emitted but the
 /// autofix Edit is suppressed (see `validateExpression`).
+/// Validate every `${{ ... }}` expression in `text`.
+///
+/// `anchor` maps an offset inside `text` back to a source position, so each
+/// expression is reported where it actually appears instead of at the start of
+/// the enclosing scalar.
 pub fn findAndValidateExpressions(
     allocator: std.mem.Allocator,
     text: []const u8,
-    base_span: Span,
+    anchor: Anchor,
     list: *DiagnosticList,
     text_base_byte: ?usize,
 ) void {
@@ -945,14 +952,15 @@ pub fn findAndValidateExpressions(
                     break :blk i;
                 };
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
-                validateExpression(allocator, trimmed, base_span, list, expr_base_byte);
+                const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
+                validateExpression(allocator, trimmed, expr_span, list, expr_base_byte);
                 pos = expr_start + end_offset + 2;
             } else {
                 list.append(.{
                     .rule_id = "EXPR001",
                     .severity = .@"error",
                     .message = "unclosed expression: missing }}",
-                    .span = base_span,
+                    .span = anchor.at(text, pos, text.len - pos),
                 }) catch return;
                 return;
             }
@@ -991,27 +999,28 @@ fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
 
 pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
-    const span = Span.point(0, 0, 0);
 
     // Check 'run' field — the scalar style is not tracked, and `run:` is
     // very commonly a block scalar (`|` / `>`) whose content-start byte
     // cannot be recovered from `value_span`. Pass null so autofix byte
     // ranges are never computed from an unreliable base.
     if (step.run) |run_val| {
-        findAndValidateExpressions(allocator, run_val, span, list, null);
+        const run_anchor = spans.runAnchor(step);
+        findAndValidateExpressions(allocator, run_val, run_anchor, list, null);
     }
 
     // Check 'if' field
     if (step.if_condition) |if_val| {
+        const if_anchor = Anchor.fromMeta(step.if_condition_meta, step.span);
         const if_base: ?usize = if (step.if_condition_meta) |m| scalarValueStartByte(m) else null;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, span, list, if_base);
+            findAndValidateExpressions(allocator, if_val, if_anchor, list, if_base);
         } else {
             const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
             if (trimmed.len > 0) {
                 const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
                 const abs: ?usize = if (if_base) |b| b + leading else null;
-                validateExpression(allocator, trimmed, span, list, abs);
+                validateExpression(allocator, trimmed, if_anchor.at(if_val, leading, trimmed.len), list, abs);
             }
         }
     }
@@ -1019,40 +1028,37 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     // Check 'with' values — per-entry scalar spans are not captured, so the
     // absolute byte base is unknown. Suppress fix generation.
     if (step.with) |with_map| {
-        for (with_map.values()) |value| {
-            findAndValidateExpressions(allocator, value, span, list, null);
+        for (with_map.keys(), with_map.values()) |key, value| {
+            const with_meta = if (step.with_meta) |m| m.get(key) else null;
+            findAndValidateExpressions(allocator, value, Anchor.fromMeta(with_meta, step.span), list, null);
         }
     }
 
     // Check 'env' values — use env_meta when available for accurate byte tracking.
     if (step.env) |env_map| {
         for (env_map.keys(), env_map.values()) |key, value| {
-            const base: ?usize = blk: {
-                if (step.env_meta) |meta| {
-                    if (meta.get(key)) |m| break :blk scalarValueStartByte(m);
-                }
-                break :blk null;
-            };
-            findAndValidateExpressions(allocator, value, span, list, base);
+            const entry_meta = if (step.env_meta) |meta| meta.get(key) else null;
+            const base: ?usize = if (entry_meta) |m| scalarValueStartByte(m) else null;
+            findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, step.span), list, base);
         }
     }
 }
 
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
-    const span = Span.point(0, 0, 0);
 
     // Check 'if' field
     if (job.if_condition) |if_val| {
+        const if_anchor = Anchor.fromMeta(job.if_condition_meta, job.span);
         const if_base: ?usize = if (job.if_condition_meta) |m| scalarValueStartByte(m) else null;
         if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, span, list, if_base);
+            findAndValidateExpressions(allocator, if_val, if_anchor, list, if_base);
         } else {
             const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
             if (trimmed.len > 0) {
                 const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
                 const abs: ?usize = if (if_base) |b| b + leading else null;
-                validateExpression(allocator, trimmed, span, list, abs);
+                validateExpression(allocator, trimmed, if_anchor.at(if_val, leading, trimmed.len), list, abs);
             }
         }
     }
@@ -1060,13 +1066,9 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     // Check 'env' values
     if (job.env) |env_map| {
         for (env_map.keys(), env_map.values()) |key, value| {
-            const base: ?usize = blk: {
-                if (job.env_meta) |meta| {
-                    if (meta.get(key)) |m| break :blk scalarValueStartByte(m);
-                }
-                break :blk null;
-            };
-            findAndValidateExpressions(allocator, value, span, list, base);
+            const entry_meta = if (job.env_meta) |meta| meta.get(key) else null;
+            const base: ?usize = if (entry_meta) |m| scalarValueStartByte(m) else null;
+            findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, job.span), list, base);
         }
     }
 }
@@ -1605,7 +1607,7 @@ test "find expressions: single expression in string" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha }}", Span.point(1, 1, 0), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha }}", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1615,7 +1617,7 @@ test "find expressions: multiple expressions" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "${{ github.sha }} and ${{ github.ref }}", Span.point(1, 1, 0), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "${{ github.sha }} and ${{ github.ref }}", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1625,7 +1627,7 @@ test "find expressions: unclosed expression" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha", Span.point(1, 1, 0), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
 }
@@ -1634,7 +1636,7 @@ test "find expressions: no expressions in plain text" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(std.testing.allocator, "echo hello world", Span.point(1, 1, 0), &list, 0);
+    findAndValidateExpressions(std.testing.allocator, "echo hello world", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1644,7 +1646,7 @@ test "find expressions: expression with unknown context" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "${{ badcontext.value }}", Span.point(1, 1, 0), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "${{ badcontext.value }}", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR002", list.get(0).rule_id);
 }
@@ -2441,8 +2443,6 @@ test "EXPR006 autofix: suppressed for `run:` values" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // `run:` is commonly a block scalar; even plain-scalar form is treated
-    // conservatively because the style is not tracked on Step.run_value_span.
     const source =
         \\name: t
         \\on: push

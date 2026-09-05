@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const engine = @import("engine.zig");
+const spans = @import("spans.zig");
 const fix_builder = @import("../fix/builder.zig");
 const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
@@ -37,6 +38,40 @@ pub const Edit = diagnostics.Edit;
 pub const SecretsConfig = workflow_types.SecretsConfig;
 pub const EventType = workflow_types.EventType;
 pub const Rule = engine.Rule;
+pub const Anchor = spans.Anchor;
+
+// ============================================================
+// Diagnostic anchors
+//
+// Every diagnostic points at the narrowest source location the parser
+// preserved: the scalar the finding was read from, falling back to the
+// enclosing step or job when a value carries no span of its own.
+// ============================================================
+
+fn ifAnchorStep(step: *const Step) Anchor {
+    return Anchor.fromMeta(step.if_condition_meta, step.span);
+}
+
+fn ifAnchorJob(job: *const Job) Anchor {
+    return Anchor.fromMeta(job.if_condition_meta, job.span);
+}
+
+fn withAnchor(step: *const Step, key: []const u8) Anchor {
+    const meta = if (step.with_meta) |m| m.get(key) else null;
+    return Anchor.fromMeta(meta, step.span);
+}
+
+fn envAnchor(step: *const Step, key: []const u8) Anchor {
+    const meta = if (step.env_meta) |m| m.get(key) else null;
+    return Anchor.fromMeta(meta, step.span);
+}
+
+/// A `${{ ... }}` expression located inside a scanned string, expressed as an
+/// offset and length within that string so an `Anchor` can turn it into a span.
+const ExprMatch = struct {
+    offset: usize,
+    len: usize,
+};
 
 // ============================================================
 // Dangerous GitHub contexts that can be controlled by users
@@ -142,7 +177,7 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .rule_id = "SEC001",
                 .severity = .warning,
                 .message = "action reference is not pinned to a SHA",
-                .span = Span.point(0, 0, 0),
+                .span = spans.usesSpan(step),
                 .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
             }) catch return;
         }
@@ -157,7 +192,7 @@ const script_injection_fix_hint = "assign the context to an environment variable
 
 fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
     if (step.run) |run_body| {
-        checkContextsInString(run_body, &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+        checkContextsInString(run_body, spans.runAnchor(step), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
     }
     checkScriptInputInjection(step, list);
 }
@@ -168,8 +203,8 @@ fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
     if (!isGithubScriptAction(ref)) return;
     const with_map = step.with orelse return;
-    const body = getWithInput(with_map, "script") orelse return;
-    checkContextsInString(body, &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
+    const input = getWithInput(with_map, "script") orelse return;
+    checkContextsInString(input.value, withAnchor(step, input.key), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
 }
 
 fn isGithubScriptAction(ref: ActionRef) bool {
@@ -182,11 +217,14 @@ fn isGithubScriptAction(ref: ActionRef) bool {
 }
 
 /// Look up a `with:` input by name. The runner exposes inputs as `INPUT_<UPPERCASE>`,
-/// so input names resolve case-insensitively.
-fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?[]const u8 {
+/// so input names resolve case-insensitively; the matched key is returned so the
+/// diagnostic can anchor on that exact scalar.
+fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?struct { key: []const u8, value: []const u8 } {
     var it = with_map.iterator();
     while (it.next()) |entry| {
-        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) return entry.value_ptr.*;
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) {
+            return .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+        }
     }
     return null;
 }
@@ -198,30 +236,30 @@ fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?[]const u
 fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
-        checkStringForSecrets(run_body, list);
+        checkStringForSecrets(run_body, spans.runAnchor(step), list);
     }
     // Check with: values
     if (step.with) |with_map| {
-        for (with_map.values()) |val| {
-            checkStringForSecrets(val, list);
+        for (with_map.keys(), with_map.values()) |key, val| {
+            checkStringForSecrets(val, withAnchor(step, key), list);
         }
     }
     // Check env: values
     if (step.env) |env_map| {
-        for (env_map.values()) |val| {
-            checkStringForSecrets(val, list);
+        for (env_map.keys(), env_map.values()) |key, val| {
+            checkStringForSecrets(val, envAnchor(step, key), list);
         }
     }
 }
 
-fn checkStringForSecrets(s: []const u8, list: *DiagnosticList) void {
+fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     for (secret_prefixes) |prefix| {
-        if (containsSecretPrefix(s, prefix)) {
+        if (indexOfSecretPrefix(s, prefix)) |offset| {
             list.append(.{
                 .rule_id = "SEC003",
                 .severity = .@"error",
                 .message = "potential hardcoded secret detected",
-                .span = Span.point(0, 0, 0),
+                .span = anchor.at(s, offset, prefix.len),
                 .fix_hint = "use a GitHub secret (secrets.YOUR_SECRET) instead of hardcoding credentials",
             }) catch return;
             return; // One diagnostic per string is enough
@@ -229,15 +267,20 @@ fn checkStringForSecrets(s: []const u8, list: *DiagnosticList) void {
     }
 }
 
-fn containsSecretPrefix(s: []const u8, prefix: []const u8) bool {
-    if (s.len < prefix.len) return false;
+/// Offset of `prefix` inside `s`, or null when it does not occur.
+fn indexOfSecretPrefix(s: []const u8, prefix: []const u8) ?usize {
+    if (s.len < prefix.len) return null;
     var i: usize = 0;
     while (i + prefix.len <= s.len) : (i += 1) {
         if (std.mem.eql(u8, s[i .. i + prefix.len], prefix)) {
-            return true;
+            return i;
         }
     }
-    return false;
+    return null;
+}
+
+fn containsSecretPrefix(s: []const u8, prefix: []const u8) bool {
+    return indexOfSecretPrefix(s, prefix) != null;
 }
 
 // ============================================================
@@ -263,7 +306,7 @@ fn makeWriteAllFix(list: *DiagnosticList, value_span: Span) ?Fix {
 fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
         if (perms.write_all) {
-            const span = perms.value_span orelse Span.point(0, 0, 0);
+            const span = perms.value_span orelse spans.workflow_head;
             list.append(.{
                 .rule_id = "SEC004",
                 .severity = .warning,
@@ -279,7 +322,7 @@ fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
 fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
     if (job.permissions) |perms| {
         if (perms.write_all) {
-            const span = perms.value_span orelse Span.point(0, 0, 0);
+            const span = perms.value_span orelse job.span;
             list.append(.{
                 .rule_id = "SEC004",
                 .severity = .warning,
@@ -320,7 +363,7 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
                                     .rule_id = "SEC005",
                                     .severity = .@"error",
                                     .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
-                                    .span = Span.point(0, 0, 0),
+                                    .span = withAnchor(step, "ref").whole(),
                                     .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
                                 }) catch return;
                             }
@@ -350,17 +393,17 @@ fn containsDangerousPRRef(ref_val: []const u8) bool {
 
 fn checkUntrustedInCondition(step: *const Step, list: *DiagnosticList) void {
     const cond = step.if_condition orelse return;
-    checkConditionForDangerousContext(cond, list);
+    checkConditionForDangerousContext(cond, ifAnchorStep(step), list);
 }
 
 fn checkUntrustedInConditionJob(job: *const Job, list: *DiagnosticList) void {
     const cond = job.if_condition orelse return;
-    checkConditionForDangerousContext(cond, list);
+    checkConditionForDangerousContext(cond, ifAnchorJob(job), list);
 }
 
 /// In GitHub Actions, `if:` conditions are implicitly wrapped in `${{ }}`,
 /// so they may contain dangerous contexts either directly or inside `${{ }}`.
-fn checkConditionForDangerousContext(cond: []const u8, list: *DiagnosticList) void {
+fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     // First check for ${{ expr }} wrapped patterns
     var has_expr = false;
     var pos: usize = 0;
@@ -371,7 +414,7 @@ fn checkConditionForDangerousContext(cond: []const u8, list: *DiagnosticList) vo
         }
     }
     if (has_expr) {
-        checkContextsInString(cond, &dangerous_contexts, "SEC006", "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
+        checkContextsInString(cond, anchor, &dangerous_contexts, "SEC006", "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
     } else {
         // Bare expression (no ${{ }}), check directly
         if (containsDangerousContext(cond)) {
@@ -379,7 +422,7 @@ fn checkConditionForDangerousContext(cond: []const u8, list: *DiagnosticList) vo
                 .rule_id = "SEC006",
                 .severity = .@"error",
                 .message = "untrusted context used in if: condition expression",
-                .span = Span.point(0, 0, 0),
+                .span = anchor.whole(),
                 .fix_hint = "validate the input before using it in a condition",
             }) catch return;
         }
@@ -411,7 +454,7 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
             .rule_id = "SEC007",
             .severity = .info,
             .message = "workflow does not define top-level permissions, defaults may be overly broad",
-            .span = Span.point(0, 0, 0),
+            .span = spans.workflow_head,
             .fix_hint = "add a top-level 'permissions:' block to restrict GITHUB_TOKEN scope",
             .fix = makeMissingPermissionsFix(wf, list),
         }) catch return;
@@ -427,9 +470,9 @@ const github_env_targets = [_][]const u8{
     "GITHUB_PATH",
 };
 
-/// Check whether `s` contains `>> $GITHUB_ENV` / `>> $GITHUB_PATH` (with
-/// optional quotes or braces around the variable).
-fn containsGithubEnvWrite(s: []const u8) bool {
+/// Offset of a `>> $GITHUB_ENV` / `>> $GITHUB_PATH` write in `s` (with
+/// optional quotes or braces around the variable), or null when there is none.
+fn indexOfGithubEnvWrite(s: []const u8) ?usize {
     var i: usize = 0;
     while (i + 1 < s.len) : (i += 1) {
         if (s[i] == '>' and s[i + 1] == '>') {
@@ -464,13 +507,17 @@ fn containsGithubEnvWrite(s: []const u8) bool {
                     }
                     // ensure end-of-string or non-identifier char
                     if (k >= s.len or !isIdentChar(s[k])) {
-                        return true;
+                        return i;
                     }
                 }
             }
         }
     }
-    return false;
+    return null;
+}
+
+fn containsGithubEnvWrite(s: []const u8) bool {
+    return indexOfGithubEnvWrite(s) != null;
 }
 
 /// Return true if `s` contains any `${{ dangerous_context }}` expression.
@@ -502,13 +549,13 @@ fn hasDangerousContextExpression(s: []const u8) bool {
 
 fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
     const run_body = step.run orelse return;
-    if (!containsGithubEnvWrite(run_body)) return;
+    const write_offset = indexOfGithubEnvWrite(run_body) orelse return;
     if (!hasDangerousContextExpression(run_body)) return;
     list.append(.{
         .rule_id = "SEC008",
         .severity = .@"error",
         .message = "untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment variable injection",
-        .span = Span.point(0, 0, 0),
+        .span = spans.runAnchor(step).at(run_body, write_offset, 2),
         .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
     }) catch return;
 }
@@ -538,7 +585,7 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
                 .rule_id = "SEC009",
                 .severity = .@"error",
                 .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                .span = Span.point(0, 0, 0),
+                .span = withAnchor(step, "ref").whole(),
                 .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
             }) catch return;
         }
@@ -563,7 +610,7 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SEC010",
                     .severity = .warning,
                     .message = "reusable workflow call uses 'secrets: inherit', which passes all secrets implicitly",
-                    .span = Span.point(0, 0, 0),
+                    .span = job.span,
                     .fix_hint = "explicitly specify only the secrets the called workflow needs instead of using 'inherit'",
                 }) catch return;
             },
@@ -579,43 +626,44 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
 fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
-        if (checkStringForOverprovisionedSecrets(run_body)) {
-            emitSEC011(list);
+        if (findOverprovisionedSecrets(run_body)) |m| {
+            emitSEC011(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
             return;
         }
     }
     // Check with: values
     if (step.with) |with_map| {
-        for (with_map.values()) |val| {
-            if (checkStringForOverprovisionedSecrets(val)) {
-                emitSEC011(list);
+        for (with_map.keys(), with_map.values()) |key, val| {
+            if (findOverprovisionedSecrets(val)) |m| {
+                emitSEC011(withAnchor(step, key).at(val, m.offset, m.len), list);
                 return;
             }
         }
     }
     // Check env: values
     if (step.env) |env_map| {
-        for (env_map.values()) |val| {
-            if (checkStringForOverprovisionedSecrets(val)) {
-                emitSEC011(list);
+        for (env_map.keys(), env_map.values()) |key, val| {
+            if (findOverprovisionedSecrets(val)) |m| {
+                emitSEC011(envAnchor(step, key).at(val, m.offset, m.len), list);
                 return;
             }
         }
     }
 }
 
-fn emitSEC011(list: *DiagnosticList) void {
+fn emitSEC011(span: Span, list: *DiagnosticList) void {
     list.append(.{
         .rule_id = "SEC011",
         .severity = .warning,
         .message = "entire secrets context is exposed; reference only the specific secrets you need",
-        .span = Span.point(0, 0, 0),
+        .span = span,
         .fix_hint = "replace ${{ secrets }} or toJSON(secrets) with individual references like ${{ secrets.MY_TOKEN }}",
     }) catch return;
 }
 
-/// Check if a string contains ${{ ... }} expressions that reference the entire secrets context.
-fn checkStringForOverprovisionedSecrets(s: []const u8) bool {
+/// Find the first `${{ ... }}` expression in `s` that references the entire
+/// secrets context. Returns its offset and length within `s`.
+fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
     var pos: usize = 0;
     while (pos + 4 < s.len) : (pos += 1) {
         if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
@@ -632,13 +680,13 @@ fn checkStringForOverprovisionedSecrets(s: []const u8) bool {
             if (depth == 0) {
                 const expr = s[expr_start..j];
                 if (exprIsWholeSecretsRef(expr)) {
-                    return true;
+                    return .{ .offset = pos, .len = j + 2 - pos };
                 }
                 pos = j + 1;
             }
         }
     }
-    return false;
+    return null;
 }
 
 /// Check if an expression references the entire secrets context (not an individual secret).
@@ -691,25 +739,25 @@ fn exprIsWholeSecretsRef(expr: []const u8) bool {
 fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
-        if (checkStringForUnredactedSecrets(run_body)) {
-            emitSEC012(list);
+        if (findUnredactedSecrets(run_body)) |m| {
+            emitSEC012(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
             return;
         }
     }
     // Check with: values
     if (step.with) |with_map| {
-        for (with_map.values()) |val| {
-            if (checkStringForUnredactedSecrets(val)) {
-                emitSEC012(list);
+        for (with_map.keys(), with_map.values()) |key, val| {
+            if (findUnredactedSecrets(val)) |m| {
+                emitSEC012(withAnchor(step, key).at(val, m.offset, m.len), list);
                 return;
             }
         }
     }
     // Check env: values
     if (step.env) |env_map| {
-        for (env_map.values()) |val| {
-            if (checkStringForUnredactedSecrets(val)) {
-                emitSEC012(list);
+        for (env_map.keys(), env_map.values()) |key, val| {
+            if (findUnredactedSecrets(val)) |m| {
+                emitSEC012(envAnchor(step, key).at(val, m.offset, m.len), list);
                 return;
             }
         }
@@ -722,14 +770,16 @@ fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
 
 fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) void {
     if (job.container) |container| {
-        checkCredentialsForHardcoded(container.credentials, list);
+        checkCredentialsForHardcoded(container.credentials, job.span, list);
     }
     for (job.services) |service| {
-        checkCredentialsForHardcoded(service.credentials, list);
+        checkCredentialsForHardcoded(service.credentials, job.span, list);
     }
 }
 
-fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, list: *DiagnosticList) void {
+/// `credentials:` values carry no span of their own, so findings point at the
+/// job that declares the container or service.
+fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, job_span: Span, list: *DiagnosticList) void {
     const credentials = creds orelse return;
     if (credentials.username) |username| {
         if (!isSecretsExpression(username)) {
@@ -737,7 +787,7 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, list: *Diagn
                 .rule_id = "SEC013",
                 .severity = .@"error",
                 .message = "hardcoded credentials in container configuration",
-                .span = Span.point(0, 0, 0),
+                .span = job_span,
                 .fix_hint = "use ${{ secrets.YOUR_SECRET }} for container credentials instead of plaintext values",
             }) catch return;
         }
@@ -748,7 +798,7 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, list: *Diagn
                 .rule_id = "SEC013",
                 .severity = .@"error",
                 .message = "hardcoded credentials in container configuration",
-                .span = Span.point(0, 0, 0),
+                .span = job_span,
                 .fix_hint = "use ${{ secrets.YOUR_SECRET }} for container credentials instead of plaintext values",
             }) catch return;
         }
@@ -768,8 +818,9 @@ fn isSecretsExpression(value: []const u8) bool {
 // SEC019 - Secrets used outside env: block
 // ============================================================
 
-/// Check if a string contains ${{ secrets.* }} expressions (excluding secrets.GITHUB_TOKEN).
-fn checkStringForSecretsOutsideEnv(s: []const u8) bool {
+/// Find the first `${{ secrets.* }}` expression in `s` (excluding
+/// secrets.GITHUB_TOKEN). Returns its offset and length within `s`.
+fn findSecretsOutsideEnv(s: []const u8) ?ExprMatch {
     var pos: usize = 0;
     while (pos + 4 < s.len) : (pos += 1) {
         if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
@@ -788,22 +839,22 @@ fn checkStringForSecretsOutsideEnv(s: []const u8) bool {
                 if (std.mem.startsWith(u8, inner, "secrets.")) {
                     const secret_name = inner["secrets.".len..];
                     if (!std.mem.eql(u8, secret_name, "GITHUB_TOKEN")) {
-                        return true;
+                        return .{ .offset = pos, .len = j + 2 - pos };
                     }
                 }
                 pos = j + 1;
             }
         }
     }
-    return false;
+    return null;
 }
 
-fn emitSEC019(list: *DiagnosticList) void {
+fn emitSEC019(span: Span, list: *DiagnosticList) void {
     list.append(.{
         .rule_id = "SEC019",
         .severity = .info,
         .message = "secret used directly in run:/with: instead of being bound through env:",
-        .span = Span.point(0, 0, 0),
+        .span = span,
         .fix_hint = "bind the secret to an env: variable first, then reference the env var in run:/with:",
     }) catch return;
 }
@@ -811,16 +862,16 @@ fn emitSEC019(list: *DiagnosticList) void {
 fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
-        if (checkStringForSecretsOutsideEnv(run_body)) {
-            emitSEC019(list);
+        if (findSecretsOutsideEnv(run_body)) |m| {
+            emitSEC019(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
             return;
         }
     }
     // Check with: values
     if (step.with) |with_map| {
-        for (with_map.values()) |val| {
-            if (checkStringForSecretsOutsideEnv(val)) {
-                emitSEC019(list);
+        for (with_map.keys(), with_map.values()) |key, val| {
+            if (findSecretsOutsideEnv(val)) |m| {
+                emitSEC019(withAnchor(step, key).at(val, m.offset, m.len), list);
                 return;
             }
         }
@@ -845,7 +896,7 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
                     .rule_id = "SEC016",
                     .severity = .warning,
                     .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
-                    .span = Span.point(0, 0, 0),
+                    .span = spans.usesSpan(step),
                     .fix_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope",
                 }) catch return;
             }
@@ -853,18 +904,19 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-fn emitSEC012(list: *DiagnosticList) void {
+fn emitSEC012(span: Span, list: *DiagnosticList) void {
     list.append(.{
         .rule_id = "SEC012",
         .severity = .@"error",
         .message = "secret exposed via toJSON()/fromJSON() bypasses masking",
-        .span = Span.point(0, 0, 0),
+        .span = span,
         .fix_hint = "avoid passing secrets through toJSON()/fromJSON(); assign individual secret values to environment variables instead",
     }) catch return;
 }
 
-/// Check if a string contains ${{ ... }} expressions with toJSON(secrets...) or fromJSON(secrets...) patterns.
-fn checkStringForUnredactedSecrets(s: []const u8) bool {
+/// Find the first `${{ ... }}` expression in `s` with a toJSON(secrets...) or
+/// fromJSON(secrets...) pattern. Returns its offset and length within `s`.
+fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
     var pos: usize = 0;
     while (pos + 4 < s.len) : (pos += 1) {
         if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
@@ -881,13 +933,13 @@ fn checkStringForUnredactedSecrets(s: []const u8) bool {
             if (depth == 0) {
                 const expr = s[expr_start..j];
                 if (exprHasSecretJsonCall(expr)) {
-                    return true;
+                    return .{ .offset = pos, .len = j + 2 - pos };
                 }
                 pos = j + 1;
             }
         }
     }
-    return false;
+    return null;
 }
 
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
@@ -977,17 +1029,17 @@ fn exprHasSecretJsonCall(expr: []const u8) bool {
 
 fn checkBotConditionStep(step: *const Step, list: *DiagnosticList) void {
     const cond = step.if_condition orelse return;
-    checkConditionForBotActorCheck(cond, list);
+    checkConditionForBotActorCheck(cond, ifAnchorStep(step), list);
 }
 
 fn checkBotConditionJob(job: *const Job, list: *DiagnosticList) void {
     const cond = job.if_condition orelse return;
-    checkConditionForBotActorCheck(cond, list);
+    checkConditionForBotActorCheck(cond, ifAnchorJob(job), list);
 }
 
 /// Check if an if-condition compares github.actor / github.triggering_actor
 /// against a bot account name (containing "[bot]"). This is spoofable.
-fn checkConditionForBotActorCheck(cond: []const u8, list: *DiagnosticList) void {
+fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     // Check for ${{ expr }} wrapped patterns
     var has_expr = false;
     var pos: usize = 0;
@@ -999,7 +1051,7 @@ fn checkConditionForBotActorCheck(cond: []const u8, list: *DiagnosticList) void 
     }
 
     if (has_expr) {
-        checkBotActorInString(cond, list);
+        checkBotActorInString(cond, anchor, list);
     } else {
         // Bare expression
         if (containsActorBotCheck(cond)) {
@@ -1007,7 +1059,7 @@ fn checkConditionForBotActorCheck(cond: []const u8, list: *DiagnosticList) void 
                 .rule_id = "SEC014",
                 .severity = .warning,
                 .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
-                .span = Span.point(0, 0, 0),
+                .span = anchor.whole(),
                 .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
             }) catch return;
         }
@@ -1015,7 +1067,7 @@ fn checkConditionForBotActorCheck(cond: []const u8, list: *DiagnosticList) void 
 }
 
 /// Scan a string for ${{ expr }} patterns that contain actor + [bot] checks.
-fn checkBotActorInString(s: []const u8, list: *DiagnosticList) void {
+fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     var pos: usize = 0;
     while (pos + 4 < s.len) : (pos += 1) {
         if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
@@ -1031,11 +1083,12 @@ fn checkBotActorInString(s: []const u8, list: *DiagnosticList) void {
             if (depth == 0) {
                 const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
                 if (containsActorBotCheck(expr)) {
+                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
                     list.append(.{
                         .rule_id = "SEC014",
                         .severity = .warning,
                         .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
-                        .span = Span.point(0, 0, 0),
+                        .span = anchor.at(s, match.offset, match.len),
                         .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
                     }) catch return;
                     return;
@@ -1087,7 +1140,7 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SEC015",
                     .severity = .warning,
                     .message = "actions/checkout persists credentials by default; combined with upload-artifact, the GITHUB_TOKEN may leak via uploaded artifacts",
-                    .span = Span.point(0, 0, 0),
+                    .span = spans.usesSpan(step),
                     .fix_hint = "add 'persist-credentials: false' to the checkout step's 'with:' block",
                 };
 
@@ -1178,7 +1231,7 @@ fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) voi
         .rule_id = "SEC018",
         .severity = .warning,
         .message = message,
-        .span = Span.point(0, 0, 0),
+        .span = spans.usesSpan(step),
         .fix_hint = "add 'with.persist-credentials: false' unless you need git push / gh from later steps",
     };
 
@@ -1235,7 +1288,7 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
             .rule_id = "SC002",
             .severity = .@"error",
             .message = message,
-            .span = Span.point(0, 0, 0),
+            .span = spans.usesSpan(step),
             .fix_hint = "rollback to a pre-incident SHA or migrate to a trusted fork; do not re-pin to any tag of this action",
         }) catch return;
         return;
@@ -1246,8 +1299,12 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
 // Shared helpers
 // ============================================================
 
-/// Scan a string for ${{ dangerous_context }} patterns
-fn checkContextsInString(s: []const u8, contexts: []const []const u8, rule_id: []const u8, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
+/// Scan a string for `${{ dangerous_context }}` patterns.
+///
+/// Every offending expression is reported separately: a single `run:` block can
+/// interpolate several untrusted values, and each one is its own injection
+/// point with its own source location.
+fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []const u8, rule_id: []const u8, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
     // Find all ${{ ... }} expressions
     var pos: usize = 0;
     while (pos + 4 < s.len) : (pos += 1) {
@@ -1265,14 +1322,14 @@ fn checkContextsInString(s: []const u8, contexts: []const []const u8, rule_id: [
             if (depth == 0) {
                 const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
                 if (containsAnyContext(expr, contexts)) {
+                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
                     list.append(.{
                         .rule_id = rule_id,
                         .severity = .@"error",
                         .message = message,
-                        .span = Span.point(0, 0, 0),
+                        .span = anchor.at(s, match.offset, match.len),
                         .fix_hint = fix_hint,
                     }) catch return;
-                    return; // One diagnostic per string
                 }
                 pos = j + 1;
             }
@@ -1433,7 +1490,9 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SC001",
                     .severity = .warning,
                     .message = "container image is not pinned to a SHA256 digest",
-                    .span = Span.point(0, 0, 0),
+                    // `container.image` is parsed without a span; the job is the
+                    // narrowest location available.
+                    .span = job.span,
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
                 }) catch return;
             }
@@ -1446,7 +1505,9 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SC001",
                     .severity = .warning,
                     .message = "service image is not pinned to a SHA256 digest",
-                    .span = Span.point(0, 0, 0),
+                    // `services.<id>.image` is parsed without a span; the job is
+                    // the narrowest location available.
+                    .span = job.span,
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
                 }) catch return;
             }
@@ -1473,7 +1534,7 @@ fn buildInsecureCommandsFix(list: *DiagnosticList, meta: ScalarValueMeta) ?Fix {
     };
 }
 
-fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, env_meta: ?ScalarValueMetaMap, list: *DiagnosticList) void {
+fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, env_meta: ?ScalarValueMetaMap, fallback: Span, list: *DiagnosticList) void {
     if (env_map.get("ACTIONS_ALLOW_UNSECURE_COMMANDS")) |val| {
         if (std.mem.eql(u8, val, "true")) {
             const meta = if (env_meta) |m| m.get("ACTIONS_ALLOW_UNSECURE_COMMANDS") else null;
@@ -1481,7 +1542,7 @@ fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, env_meta: ?Sca
                 .rule_id = "SEC017",
                 .severity = .warning,
                 .message = "insecure workflow commands are enabled via ACTIONS_ALLOW_UNSECURE_COMMANDS",
-                .span = if (meta) |m| m.value_span else Span.point(0, 0, 0),
+                .span = if (meta) |m| m.value_span else fallback,
                 .fix_hint = "remove ACTIONS_ALLOW_UNSECURE_COMMANDS or set it to false; use environment files instead of set-env/add-path",
             };
 
@@ -1496,19 +1557,19 @@ fn checkEnvForInsecureCommands(env_map: workflow_types.StringMap, env_meta: ?Sca
 
 fn checkInsecureCommandsStep(step: *const Step, list: *DiagnosticList) void {
     if (step.env) |env_map| {
-        checkEnvForInsecureCommands(env_map, step.env_meta, list);
+        checkEnvForInsecureCommands(env_map, step.env_meta, step.span, list);
     }
 }
 
 fn checkInsecureCommandsJob(job: *const Job, list: *DiagnosticList) void {
     if (job.env) |env_map| {
-        checkEnvForInsecureCommands(env_map, job.env_meta, list);
+        checkEnvForInsecureCommands(env_map, job.env_meta, job.span, list);
     }
 }
 
 fn checkInsecureCommandsWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     if (wf.env) |env_map| {
-        checkEnvForInsecureCommands(env_map, wf.env_meta, list);
+        checkEnvForInsecureCommands(env_map, wf.env_meta, spans.workflow_head, list);
     }
 }
 
@@ -1565,7 +1626,7 @@ fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
             .rule_id = "BP007",
             .severity = .warning,
             .message = "potentially obfuscated command execution detected",
-            .span = Span.point(0, 0, 0),
+            .span = spans.runAnchor(step).whole(),
             .fix_hint = "avoid indirect command execution; use explicit, readable commands",
         }) catch return;
     }
@@ -5987,4 +6048,74 @@ test "SC002: uppercase SHA still fires (case-insensitive match)" {
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SC002"));
+}
+
+test "SEC002: each untrusted reference in a run: block is reported at its own position" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: |
+        \\          echo "${{ github.event.issue.title }}"
+        \\          echo "${{ github.event.comment.body }}"
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkScriptInjection(&wf.jobs[0].steps[0], &list);
+
+    // Both interpolations are injection points, each at its own line, and the
+    // column is the `$` of the expression (10 spaces + `echo "`).
+    try testing.expectEqual(@as(usize, 2), list.len());
+    try testing.expectEqual(@as(u32, 8), list.get(0).span.start_line);
+    try testing.expectEqual(@as(u32, 17), list.get(0).span.start_col);
+    try testing.expectEqual(@as(u32, 9), list.get(1).span.start_line);
+    try testing.expectEqual(@as(u32, 17), list.get(1).span.start_col);
+}
+
+test "SEC001: unpinned action is reported at the uses: value" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkUnpinnedAction(&wf.jobs[0].steps[0], &list);
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(@as(u32, 7), list.get(0).span.start_line);
+    try testing.expectEqual(@as(u32, 15), list.get(0).span.start_col);
 }

@@ -566,7 +566,9 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
         switch (entry.value) {
-            .scalar => |s| step.run_value_span = s.span,
+            .scalar => |s| {
+                step.run_meta = .{ .value_span = s.span, .style = s.style };
+            },
             else => {},
         }
         if (entry.full_span) |fs| {
@@ -588,6 +590,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         switch (uses_node) {
             .scalar => |s| {
                 step.uses = types.ActionRef.parse(s.value);
+                step.uses_value_span = s.span;
                 step.uses_value_end_byte = s.span.end_byte;
                 step.uses_value_style = s.style;
             },
@@ -628,7 +631,9 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     if (m.get("with")) |with_node| {
         try recordEmpty(&empty, ctx.allocator, "with", with_node);
         if (!isEmptyContainer(with_node)) {
-            step.with = try parseStringMap(ctx.allocator, with_node);
+            const parsed_with = try parseStringMapWithMeta(ctx.allocator, with_node);
+            step.with = parsed_with.values;
+            step.with_meta = parsed_with.meta;
             switch (with_node) {
                 .mapping => |with_mapping| {
                     if (with_mapping.entries.len > 0) {
@@ -2026,4 +2031,46 @@ test "parseServices with scalar image" {
     try testing.expectEqualStrings("redis", services[0].name);
     try testing.expectEqualStrings("redis:6", services[0].image.?);
     try testing.expect(services[0].credentials == null);
+}
+
+test "parseStep captures run/uses/with source metadata" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\          ref: main
+        \\      - run: |
+        \\          echo hello
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const checkout = wf.jobs[0].steps[0];
+    const uses_span = checkout.uses_value_span.?;
+    try testing.expectEqual(@as(u32, 7), uses_span.start_line);
+    try testing.expectEqualStrings(
+        "actions/checkout@v4",
+        source[uses_span.start_byte..uses_span.end_byte],
+    );
+    try testing.expectEqual(yaml.ScalarStyle.plain, checkout.with_meta.?.get("ref").?.style);
+    try testing.expectEqual(@as(u32, 9), checkout.with_meta.?.get("ref").?.value_span.start_line);
+
+    const run_step = wf.jobs[0].steps[1];
+    try testing.expectEqual(yaml.ScalarStyle.literal, run_step.run_meta.?.style);
+    // The `run:` span starts at the `|` indicator, one line above the content.
+    try testing.expectEqual(@as(u32, 10), run_step.run_meta.?.value_span.start_line);
 }
