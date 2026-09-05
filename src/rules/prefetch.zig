@@ -583,6 +583,7 @@ fn fetchNamedRefs(scratch: Allocator, set: NamedSet) void {
 // Tests
 // ============================================================
 
+const test_support = @import("../test_support.zig");
 const testing = std.testing;
 const ActionRef = workflow_types.ActionRef;
 const Step = workflow_types.Step;
@@ -859,8 +860,8 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var xdg = try XdgCacheScope.init(tmp.dir);
-    defer xdg.deinit();
+    var env = try test_support.EnvGuard.setDir(testing.allocator, "XDG_CACHE_HOME", tmp.dir);
+    defer env.deinit();
 
     // Stage a fresh entry at the real on-disk cache location so that
     // `disk_cache.load` (via XDG resolution) finds it.
@@ -895,40 +896,6 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     try testing.expectEqual(@as(usize, 0), sets.named_refs.count());
 }
 
-const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
-const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
-
-/// Point `XDG_CACHE_HOME` at `dir` for the lifetime of the scope so that
-/// `disk_cache.save` / `load` resolve into a `std.testing.tmpDir`.
-const XdgCacheScope = struct {
-    path_z: [:0]u8,
-    saved_z: ?[:0]u8,
-
-    fn init(dir: std.fs.Dir) !XdgCacheScope {
-        const path = try dir.realpathAlloc(testing.allocator, ".");
-        defer testing.allocator.free(path);
-        const path_z = try testing.allocator.dupeZ(u8, path);
-        errdefer testing.allocator.free(path_z);
-
-        const saved = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
-        defer if (saved) |v| testing.allocator.free(v);
-        const saved_z: ?[:0]u8 = if (saved) |v| try testing.allocator.dupeZ(u8, v) else null;
-
-        _ = libc_setenv("XDG_CACHE_HOME", path_z.ptr, 1);
-        return .{ .path_z = path_z, .saved_z = saved_z };
-    }
-
-    fn deinit(self: *XdgCacheScope) void {
-        if (self.saved_z) |z| {
-            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
-            testing.allocator.free(z);
-        } else {
-            _ = libc_unsetenv("XDG_CACHE_HOME");
-        }
-        testing.allocator.free(self.path_z);
-    }
-};
-
 test "applyResults: persists repo state to the provided cache dir" {
     archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
@@ -939,8 +906,8 @@ test "applyResults: persists repo state to the provided cache dir" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    var xdg = try XdgCacheScope.init(tmp.dir);
-    defer xdg.deinit();
+    var env = try test_support.EnvGuard.setDir(testing.allocator, "XDG_CACHE_HOME", tmp.dir);
+    defer env.deinit();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -985,8 +952,8 @@ test "persistRepoResult: writes branches/default_branch/impostor (v2)" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    var xdg = try XdgCacheScope.init(tmp.dir);
-    defer xdg.deinit();
+    var env = try test_support.EnvGuard.setDir(testing.allocator, "XDG_CACHE_HOME", tmp.dir);
+    defer env.deinit();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

@@ -608,9 +608,51 @@ test "parseAdvisories: multiple vulnerabilities" {
 }
 
 // --- Check function tests ---
+/// The advisory every SC003 test mocks: `evil/action` is vulnerable below 1.0.0.
+const mock_advisories = [_]Advisory{.{
+    .ghsa_id = "GHSA-test-1234",
+    .action_slug = "evil/action",
+    .vulnerable_range = "< 1.0.0",
+    .patched_version = "1.0.0",
+    .diagnostic_message = "action 'evil/action' has known vulnerability GHSA-test-1234",
+    .diagnostic_hint = "update to version 1.0.0 or later",
+}};
+
+/// The same advisory without version bounds, so every version is vulnerable.
+const unbounded_advisories = [_]Advisory{blk: {
+    var a = mock_advisories[0];
+    a.vulnerable_range = null;
+    a.patched_version = null;
+    break :blk a;
+}};
+
+/// Run SC003 over a single step that `uses` the given ref, or runs a shell
+/// command when it is null, against `advisories`. The advisory data is already
+/// fetched and the linter is online. Module state is saved and restored so
+/// tests stay independent of each other.
+fn runWithAdvisories(advisories: []const Advisory, uses_ref: ?[]const u8) DiagnosticList {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+    advisory_cache = advisories;
+    is_offline = false;
+    fetched = true;
+
+    const step = Step{
+        .uses = if (uses_ref) |r| ActionRef.parse(r) else null,
+        .run = if (uses_ref == null) "echo hello" else null,
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    checkKnownVulnerableAction(&step, &list);
+    return list;
+}
 
 test "SC003: offline mode produces no diagnostics" {
-    // Ensure offline mode
     const prev_cache = advisory_cache;
     const prev_offline = is_offline;
     const prev_fetched = fetched;
@@ -631,254 +673,52 @@ test "SC003: offline mode produces no diagnostics" {
 }
 
 test "SC003: detects known vulnerable action" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-test-1234",
-            .action_slug = "evil/action",
-            .vulnerable_range = "< 1.0.0",
-            .patched_version = "1.0.0",
-            .diagnostic_message = "action 'evil/action' has known vulnerability GHSA-test-1234",
-            .diagnostic_hint = "update to version 1.0.0 or later",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    const step = Step{ .uses = ActionRef.parse("evil/action@v0.9.0") };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&mock_advisories, "evil/action@v0.9.0");
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expectEqualStrings("SC003", list.get(0).rule_id);
 }
 
 test "SC003: safe action not flagged" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-test-1234",
-            .action_slug = "evil/action",
-            .vulnerable_range = "< 1.0.0",
-            .patched_version = "1.0.0",
-            .diagnostic_message = "action 'evil/action' has known vulnerability",
-            .diagnostic_hint = "update to version 1.0.0 or later",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    const step = Step{ .uses = ActionRef.parse("actions/checkout@v4") };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&mock_advisories, "actions/checkout@v4");
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC003: patched version not flagged" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-test-1234",
-            .action_slug = "evil/action",
-            .vulnerable_range = "< 1.0.0",
-            .patched_version = "1.0.0",
-            .diagnostic_message = "action 'evil/action' has known vulnerability",
-            .diagnostic_hint = "update to version 1.0.0 or later",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    const step = Step{ .uses = ActionRef.parse("evil/action@v1.0.0") };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&mock_advisories, "evil/action@v1.0.0");
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC003: SHA ref with vulnerable action still warns" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-test-1234",
-            .action_slug = "evil/action",
-            .vulnerable_range = "< 1.0.0",
-            .patched_version = "1.0.0",
-            .diagnostic_message = "action 'evil/action' has known vulnerability",
-            .diagnostic_hint = "update to version 1.0.0 or later",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    // SHA ref: can't determine version, is_pinned=true so skip version check -> warn
-    const step = Step{ .uses = ActionRef.parse("evil/action@a5ac7e51b41094c92402da3b24376905380afc29") };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&mock_advisories, "evil/action@a5ac7e51b41094c92402da3b24376905380afc29");
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expectEqualStrings("SC003", list.get(0).rule_id);
 }
 
 test "SC003: local action skipped" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-test-1234",
-            .action_slug = "evil/action",
-            .vulnerable_range = "< 1.0.0",
-            .patched_version = "1.0.0",
-            .diagnostic_message = "action 'evil/action' has known vulnerability",
-            .diagnostic_hint = "update to version 1.0.0 or later",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    const step = Step{ .uses = ActionRef.parse("./local-action") };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&mock_advisories, "./local-action");
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC003: step without uses skipped" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-test-1234",
-            .action_slug = "evil/action",
-            .vulnerable_range = "< 1.0.0",
-            .patched_version = "1.0.0",
-            .diagnostic_message = "action 'evil/action' has known vulnerability",
-            .diagnostic_hint = "update to version 1.0.0 or later",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    const step = Step{ .run = "echo hello" };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&mock_advisories, null);
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC003: advisory without version range always flags" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-no-range",
-            .action_slug = "evil/action",
-            .vulnerable_range = null,
-            .patched_version = null,
-            .diagnostic_message = "action 'evil/action' has known vulnerability",
-            .diagnostic_hint = "check advisory for remediation",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    const step = Step{ .uses = ActionRef.parse("evil/action@v99.0.0") };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&unbounded_advisories, "evil/action@v99.0.0");
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 1), list.len());
 }
 
 test "SC003: invalid owner characters rejected" {
-    const mock_advisories = [_]Advisory{
-        .{
-            .ghsa_id = "GHSA-test-1234",
-            .action_slug = "evil/action",
-            .vulnerable_range = "< 1.0.0",
-            .patched_version = "1.0.0",
-            .diagnostic_message = "action 'evil/action' has known vulnerability",
-            .diagnostic_hint = "update to version 1.0.0 or later",
-        },
-    };
-
-    const prev_cache = advisory_cache;
-    const prev_offline = is_offline;
-    const prev_fetched = fetched;
-    advisory_cache = &mock_advisories;
-    is_offline = false;
-    fetched = true;
-    defer {
-        advisory_cache = prev_cache;
-        is_offline = prev_offline;
-        fetched = prev_fetched;
-    }
-
-    // URL-unsafe owner should be rejected before any network call
-    const step = Step{ .uses = ActionRef.parse("evil?owner/action@v0.9.0") };
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithAdvisories(&mock_advisories, "evil?owner/action@v0.9.0");
     defer list.deinit();
-    checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 

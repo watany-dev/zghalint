@@ -151,6 +151,7 @@ pub fn fetchAuthenticatedJson(
 // Tests
 // ============================================================
 
+const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
 test "writeStandardHeaders without auth yields 2 entries" {
@@ -196,19 +197,8 @@ test "init is idempotent and deinit resets state" {
 }
 
 test "getAuthHeader: returns Bearer <token> when GITHUB_TOKEN set" {
-    const saved = std.process.getEnvVarOwned(testing.allocator, "GITHUB_TOKEN") catch null;
-    defer if (saved) |s| testing.allocator.free(s);
-    const saved_z: ?[:0]u8 = if (saved) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
-    defer if (saved_z) |z| testing.allocator.free(z);
-
-    _ = libc_setenv("GITHUB_TOKEN", "ghp_mock_token", 1);
-    defer {
-        if (saved_z) |z| {
-            _ = libc_setenv("GITHUB_TOKEN", z.ptr, 1);
-        } else {
-            _ = libc_unsetenv("GITHUB_TOKEN");
-        }
-    }
+    var env = try test_support.EnvGuard.set(testing.allocator, "GITHUB_TOKEN", "ghp_mock_token");
+    defer env.deinit();
 
     const header = getAuthHeader(testing.allocator) orelse return error.TestExpectedNonNull;
     defer testing.allocator.free(header);
@@ -216,17 +206,8 @@ test "getAuthHeader: returns Bearer <token> when GITHUB_TOKEN set" {
 }
 
 test "getAuthHeader: returns null when GITHUB_TOKEN unset" {
-    const saved = std.process.getEnvVarOwned(testing.allocator, "GITHUB_TOKEN") catch null;
-    defer if (saved) |s| testing.allocator.free(s);
-    const saved_z: ?[:0]u8 = if (saved) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
-    defer if (saved_z) |z| testing.allocator.free(z);
-
-    _ = libc_unsetenv("GITHUB_TOKEN");
-    defer {
-        if (saved_z) |z| {
-            _ = libc_setenv("GITHUB_TOKEN", z.ptr, 1);
-        }
-    }
+    var env = try test_support.EnvGuard.set(testing.allocator, "GITHUB_TOKEN", null);
+    defer env.deinit();
 
     try testing.expect(getAuthHeader(testing.allocator) == null);
 }
@@ -254,6 +235,3 @@ test "fetchAuthenticatedJson: short-circuits on expired deadline" {
     const result = fetchAuthenticatedJson(testing.allocator, "http://127.0.0.1:1/irrelevant");
     try testing.expectError(error.NetworkDeadlineExceeded, result);
 }
-
-const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
-const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });

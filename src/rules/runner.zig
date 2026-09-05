@@ -116,17 +116,9 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
-fn dummySpan(start_byte: usize, end_byte: usize) Span {
-    return .{
-        .start_line = 1,
-        .start_col = 1,
-        .end_line = 1,
-        .end_col = 1,
-        .start_byte = start_byte,
-        .end_byte = end_byte,
-    };
-}
+const dummySpan = test_support.dummySpan;
 
 test "RUNNER001: retired ubuntu-20.04 emits error with unsafe fix" {
     const job = Job{
@@ -213,8 +205,6 @@ test "RUNNER001: unknown label produces no diagnostic" {
 }
 
 test "RUNNER001: autofix end-to-end replaces label in YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -232,9 +222,7 @@ test "RUNNER001: autofix end-to-end replaces label in YAML source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkDeprecatedRunner(&wf.jobs[0], &diags);

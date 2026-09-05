@@ -130,230 +130,102 @@ fn emitDiagnostic(list: *DiagnosticList, span: Span, owner: []const u8, repo: []
 
 const testing = std.testing;
 
-test "SC006: offline mode produces no diagnostics" {
-    // ref_cache defaults to null (offline), so check should be a no-op
-    const prev_cache = ref_cache;
-    ref_cache = null;
-    defer ref_cache = prev_cache;
+const RefCacheEntry = struct { key: []const u8, status: RefStatus };
 
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-
-    const step = Step{ .uses = ActionRef.parse("owner/repo@main") };
-    checkRefConfusion(&step, &list);
-    try testing.expectEqual(@as(usize, 0), list.len());
-}
-
-test "SC006: detects ambiguous ref from cache" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
-    cache.put("owner/repo@main", .ambiguous) catch unreachable;
-
+/// Run SC006 over a single step that `uses` the given ref, or runs a shell
+/// command when it is null, with `entries` preloaded into the ref cache. A null
+/// `entries` reproduces offline mode, where there is no cache at all. Module
+/// state is saved and restored so tests stay independent of each other; the
+/// diagnostic's message lives in the returned list's own arena, so the cache
+/// arena can go away here.
+fn runWithRefCache(entries: ?[]const RefCacheEntry, uses_ref: ?[]const u8) DiagnosticList {
     const prev_cache = ref_cache;
     const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
     defer {
         ref_cache = prev_cache;
         ref_arena = prev_arena;
     }
 
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
 
-    const step = Step{ .uses = ActionRef.parse("owner/repo@main") };
+    if (entries) |es| {
+        var cache = std.StringHashMap(RefStatus).init(arena.allocator());
+        for (es) |e| cache.put(e.key, e.status) catch unreachable;
+        ref_cache = cache;
+        ref_arena = arena;
+    } else {
+        ref_cache = null;
+    }
+
+    const step = Step{
+        .uses = if (uses_ref) |r| ActionRef.parse(r) else null,
+        .run = if (uses_ref == null) "echo hello" else null,
+    };
+    var list = DiagnosticList.init(testing.allocator);
     checkRefConfusion(&step, &list);
+    return list;
+}
+
+test "SC006: offline mode produces no diagnostics" {
+    var list = runWithRefCache(null, "owner/repo@main");
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC006: detects ambiguous ref from cache" {
+    var list = runWithRefCache(&.{.{ .key = "owner/repo@main", .status = .ambiguous }}, "owner/repo@main");
+    defer list.deinit();
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expectEqualStrings("SC006", list.get(0).rule_id);
 }
 
 test "SC006: non-ambiguous ref (no false positive)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
-    cache.put("owner/repo@v1", .not_ambiguous) catch unreachable;
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithRefCache(&.{.{ .key = "owner/repo@v1", .status = .not_ambiguous }}, "owner/repo@v1");
     defer list.deinit();
-
-    const step = Step{ .uses = ActionRef.parse("owner/repo@v1") };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC006: fetch failed (no false positive, fail-open)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
-    cache.put("owner/repo@develop", .fetch_failed) catch unreachable;
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithRefCache(&.{.{ .key = "owner/repo@develop", .status = .fetch_failed }}, "owner/repo@develop");
     defer list.deinit();
-
-    const step = Step{ .uses = ActionRef.parse("owner/repo@develop") };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC006: pinned SHA (no false positive)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(RefStatus).init(arena.allocator());
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithRefCache(&.{}, "owner/repo@a5ac7e51b41094c92402da3b24376905380afc29");
     defer list.deinit();
-
-    const step = Step{ .uses = ActionRef.parse("owner/repo@a5ac7e51b41094c92402da3b24376905380afc29") };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC006: local action (no false positive)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(RefStatus).init(arena.allocator());
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithRefCache(&.{}, "./local");
     defer list.deinit();
-
-    const step = Step{ .uses = ActionRef.parse("./local") };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC006: docker action (no false positive)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(RefStatus).init(arena.allocator());
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithRefCache(&.{}, "docker://alpine:3.8");
     defer list.deinit();
-
-    const step = Step{ .uses = ActionRef.parse("docker://alpine:3.8") };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC006: step without uses (no false positive)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(RefStatus).init(arena.allocator());
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    var list = runWithRefCache(&.{}, null);
     defer list.deinit();
-
-    const step = Step{ .run = "echo hello" };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC006: invalid owner characters rejected" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
-    cache.put("evil?org/repo@main", .ambiguous) catch unreachable;
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    // URL-unsafe owner should be silently rejected.
+    var list = runWithRefCache(&.{.{ .key = "evil?org/repo@main", .status = .ambiguous }}, "evil?org/repo@main");
     defer list.deinit();
-
-    // URL-unsafe owner should be silently rejected
-    const step = Step{ .uses = ActionRef.parse("evil?org/repo@main") };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "SC006: invalid ref characters rejected" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(RefStatus).init(arena.allocator());
-
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    ref_cache = cache;
-    ref_arena = arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
-
-    var list = DiagnosticList.init(testing.allocator);
+    // ref with URL-unsafe characters should be rejected.
+    var list = runWithRefCache(&.{}, "owner/repo@ref?query");
     defer list.deinit();
-
-    // ref with URL-unsafe characters should be rejected
-    const step = Step{ .uses = ActionRef.parse("owner/repo@ref?query") };
-    checkRefConfusion(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
 }

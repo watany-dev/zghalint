@@ -174,6 +174,10 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const yaml_parser_mod = @import("../yaml/parser.zig");
+const test_support = @import("../test_support.zig");
+
+const hasDiagnostic = test_support.hasDiagnostic;
+const findDiagnostic = test_support.findDiagnostic;
 
 fn parseYamlWithArena(arena: *std.heap.ArenaAllocator, source: []const u8) !Node {
     const alloc = arena.allocator();
@@ -196,14 +200,7 @@ test "DEP001: detect missing cooldown" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(hasDiagnostic(&diags, "DEP001"));
 }
 
 test "DEP001: no warning when cooldown is configured" {
@@ -287,20 +284,13 @@ test "DEP002: detect insecure-external-code-execution allow" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
-            found = true;
-            try std.testing.expect(d.fix != null);
-            const fix = d.fix.?;
-            try std.testing.expectEqualStrings("set insecure-external-code-execution to deny", fix.description);
-            try std.testing.expect(fix.safety == .safe);
-            try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
-            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.fix != null);
+    const fix = d.fix.?;
+    try std.testing.expectEqualStrings("set insecure-external-code-execution to deny", fix.description);
+    try std.testing.expect(fix.safety == .safe);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
 }
 
 test "DEP002: fix preserves single quoted style" {
@@ -316,16 +306,10 @@ test "DEP002: fix preserves single quoted style" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
-            const fix = d.fix orelse return error.TestUnexpectedResult;
-            // replaceScalar swaps only the inner content between quotes.
-            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP002") orelse return error.TestUnexpectedResult;
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    // replaceScalar swaps only the inner content between quotes.
+    try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
 }
 
 test "DEP002: fix preserves double quoted style" {
@@ -341,16 +325,10 @@ test "DEP002: fix preserves double quoted style" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
-            const fix = d.fix orelse return error.TestUnexpectedResult;
-            // replaceScalar swaps only the inner content between quotes.
-            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP002") orelse return error.TestUnexpectedResult;
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    // replaceScalar swaps only the inner content between quotes.
+    try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
 }
 
 test "DEP002: no warning when set to deny" {
@@ -500,16 +478,10 @@ test "DEP001: fix metadata is attached with .unsafe" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
-            const fix = d.fix orelse return error.TestExpectedNonNull;
-            try std.testing.expect(fix.safety == .unsafe);
-            try std.testing.expectEqualStrings("insert cooldown block", fix.description);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP001") orelse return error.TestUnexpectedResult;
+    const fix = d.fix orelse return error.TestExpectedNonNull;
+    try std.testing.expect(fix.safety == .unsafe);
+    try std.testing.expectEqualStrings("insert cooldown block", fix.description);
 }
 
 test "DEP001: autofix inserts cooldown at end of entry (block form)" {
@@ -565,14 +537,8 @@ test "DEP001: fix is null for flow-style mapping entry" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
-            try std.testing.expect(d.fix == null);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP001") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.fix == null);
 }
 
 test "DEP001 + DEP002: coexist on the same entry" {

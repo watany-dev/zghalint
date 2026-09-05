@@ -520,6 +520,7 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
 
@@ -527,9 +528,7 @@ fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var parser = yaml_parser.Parser.init(alloc, source);
-    const yaml_node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
     checkUnknownKeys(&wf, list);
 }
 
@@ -872,9 +871,7 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    const node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const rule_engine = engine.Engine.init(&rules);
     var list = rule_engine.run(testing.allocator, &wf);
@@ -1149,24 +1146,16 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
     try expectSyn003(diags, &.{});
 }
 
-fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
-    const alloc = arena.allocator();
-    var parser = yaml_parser.Parser.init(alloc, source);
-    const yaml_node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+/// Run SYN004 over `source`. The workflow lives in an arena that is released
+/// before returning; the diagnostics only borrow string literals.
+fn runSyn004(source: []const u8, list: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
     checkMappingValueTypes(&wf, list);
 }
 
-fn dummySpan(start_byte: usize, end_byte: usize) Span {
-    return .{
-        .start_line = 1,
-        .start_col = 1,
-        .end_line = 1,
-        .end_col = 1,
-        .start_byte = start_byte,
-        .end_byte = end_byte,
-    };
-}
+const dummySpan = test_support.dummySpan;
 
 test "SYN006: job ID starting with a digit is reported" {
     const job = Job{
@@ -1346,9 +1335,7 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
         \\
     ;
 
-    var yp = yaml_parser.Parser.init(alloc, source);
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
@@ -1581,9 +1568,7 @@ test "SYN002: engine.run emits via yaml_root" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    const node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(arena.allocator(), node);
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
 
     const engine_inst = engine.Engine.init(&rules);
     var diags = engine_inst.run(testing.allocator, &wf);
@@ -1714,12 +1699,10 @@ test "SYN004: mapping value type validation" {
     };
 
     for (cases) |case| {
-        var arena = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
         var diags = DiagnosticList.init(testing.allocator);
         defer diags.deinit();
 
-        try runSyn004(case.source, &arena, &diags);
+        try runSyn004(case.source, &diags);
         try testing.expectEqual(case.want, diags.len());
 
         if (case.message_contains) |needle| {
@@ -1942,9 +1925,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
         \\
     ;
 
-    var yp = yaml_parser.Parser.init(alloc, source);
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&rules);
     var diags = eng.run(alloc, &wf);
@@ -1983,9 +1964,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
 }
 
 fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
-    var yp = yaml_parser.Parser.init(alloc, source);
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     checkWorkflowEnvNames(&wf, list);
     for (wf.jobs) |*job| {

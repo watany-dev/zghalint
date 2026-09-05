@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 
@@ -218,10 +219,6 @@ const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 const ActionRef = workflow_types.ActionRef;
 
-fn makeEmptyTrigger() Trigger {
-    return .{ .events = &.{} };
-}
-
 // --- Test rule check functions ---
 
 fn warnMissingName(wf: *const Workflow, list: *DiagnosticList) void {
@@ -289,18 +286,11 @@ const test_rules = [_]Rule{
 
 test "engine runs workflow-level rule" {
     const engine = Engine.init(&test_rules);
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &.{} };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &.{} };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "BP001")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "BP001"));
 }
 
 test "engine runs job-level rule" {
@@ -308,18 +298,11 @@ test "engine runs job-level rule" {
     const jobs = [_]Job{
         .{ .id = "build" },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .name = "CI", .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "BP002")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "BP002"));
 }
 
 test "engine runs step-level rule" {
@@ -330,19 +313,12 @@ test "engine runs step-level rule" {
     const jobs = [_]Job{
         .{ .id = "build", .name = "Build", .steps = &steps },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .name = "CI", .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC001")) {
-            found = true;
-            try std.testing.expect(d.fix_hint != null);
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    const d = test_support.findDiagnostic(&list, "SEC001") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.fix_hint != null);
 }
 
 test "engine no false positive for pinned action" {
@@ -353,7 +329,7 @@ test "engine no false positive for pinned action" {
     const jobs = [_]Job{
         .{ .id = "build", .name = "Build", .steps = &steps },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .name = "CI", .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
@@ -372,7 +348,7 @@ test "engine no false positive for local action" {
     const jobs = [_]Job{
         .{ .id = "build", .name = "Build", .steps = &steps },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .name = "CI", .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
@@ -392,7 +368,7 @@ test "engine returns all expected diagnostics" {
     const jobs = [_]Job{
         .{ .id = "test", .steps = &steps },
     };
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
@@ -403,7 +379,7 @@ test "engine returns all expected diagnostics" {
 test "engine with empty rules" {
     const empty_rules = [_]Rule{};
     const engine = Engine.init(&empty_rules);
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &.{} };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &.{} };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
@@ -412,7 +388,7 @@ test "engine with empty rules" {
 
 test "engine with empty workflow" {
     const engine = Engine.init(&test_rules);
-    const wf = Workflow{ .name = "Empty", .on = makeEmptyTrigger(), .jobs = &.{} };
+    const wf = Workflow{ .name = "Empty", .on = test_support.empty_trigger, .jobs = &.{} };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
@@ -593,7 +569,7 @@ test "postProcess: drops SC005 when same step is impostor" {
 
     const steps = [_]Step{.{ .uses = ActionRef.parse("evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") }};
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -630,7 +606,7 @@ test "postProcess: keeps SC005 when impostor is legitimate" {
 
     const steps = [_]Step{.{ .uses = ActionRef.parse("ok/lib@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }};
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -668,7 +644,7 @@ test "postProcess: drops only the matching SC005 entry, not unrelated ones" {
         .{ .uses = ActionRef.parse("o/b@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") },
     };
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -704,7 +680,7 @@ test "postProcess: no-op when impostor module offline" {
     // stale_refs offline → lookupCachedTagResult returns null → no drops.
     const steps = [_]Step{.{ .uses = ActionRef.parse("o/r@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }};
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();

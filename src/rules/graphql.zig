@@ -478,6 +478,7 @@ fn collectRefOids(
 // Tests
 // ============================================================
 
+const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
 test "buildQuery: empty repos produces wrapper only" {
@@ -988,21 +989,10 @@ test "parseResponse: needs_impostor + branch HEAD oid match (used downstream by 
 }
 
 test "batchQuery: no GITHUB_TOKEN in env returns NoToken" {
-    // Save current token value so we can restore it after the test.
-    const saved = std.process.getEnvVarOwned(testing.allocator, "GITHUB_TOKEN") catch null;
-    defer if (saved) |s| testing.allocator.free(s);
-    const saved_z: ?[:0]u8 = if (saved) |s| testing.allocator.dupeZ(u8, s) catch null else null;
-    defer if (saved_z) |z| testing.allocator.free(z);
-
-    _ = libc_unsetenv("GITHUB_TOKEN");
-    defer if (saved_z) |z| {
-        _ = libc_setenv("GITHUB_TOKEN", z.ptr, 1);
-    };
+    var env = try test_support.EnvGuard.set(testing.allocator, "GITHUB_TOKEN", null);
+    defer env.deinit();
 
     const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
     const result = batchQuery(testing.allocator, &repos);
     try testing.expectError(error.NoToken, result);
 }
-
-const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
-const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });

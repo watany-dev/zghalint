@@ -813,6 +813,7 @@ fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
 fn mkSpan() yaml.Span {
     return yaml.Span.point(1, 1, 0);
@@ -829,9 +830,7 @@ fn mkSpanBytes(start_byte: usize, end_byte: usize) yaml.Span {
     };
 }
 
-fn mkScalar(value: []const u8) Node {
-    return .{ .scalar = .{ .value = value, .style = .plain, .span = mkSpan() } };
-}
+const mkScalar = test_support.mkScalar;
 
 fn mkScalarStyled(value: []const u8, style: yaml.ScalarStyle, span: yaml.Span) Node {
     return .{ .scalar = .{ .value = value, .style = style, .span = span } };

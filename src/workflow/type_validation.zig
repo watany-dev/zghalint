@@ -107,14 +107,13 @@ pub fn checkNumber(
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
 fn mkSpan(byte: usize) Span {
     return Span.point(1, 1, byte);
 }
 
-fn mkScalar(value: []const u8) Node {
-    return .{ .scalar = .{ .value = value, .style = .plain, .span = mkSpan(0) } };
-}
+const mkScalar = test_support.mkScalar;
 
 test "checkBool accepts true and false" {
     var list = std.ArrayList(TypeMismatch){};

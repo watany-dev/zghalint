@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const fix_builder = @import("../fix/builder.zig");
 const diagnostics = @import("../diagnostics.zig");
@@ -188,13 +189,9 @@ pub const rules = [_]Rule{
 
 // ── Tests ──
 
-fn makeEmptyTrigger() workflow_types.Trigger {
-    return .{ .events = &.{} };
-}
-
 test "PERM001: detect write-all scope" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .write_all = true },
         .jobs = &.{},
     };
@@ -207,7 +204,7 @@ test "PERM001: detect write-all scope" {
 
 test "PERM001: detect contents write" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .contents = .write },
         .jobs = &.{},
     };
@@ -219,7 +216,7 @@ test "PERM001: detect contents write" {
 
 test "PERM001: no warning for read-only" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .contents = .read },
         .jobs = &.{},
     };
@@ -231,7 +228,7 @@ test "PERM001: no warning for read-only" {
 
 test "PERM001: no warning for read-all scope" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .read_all = true },
         .jobs = &.{},
     };
@@ -249,7 +246,7 @@ test "PERM001: detect broad permissions at job level" {
         },
     };
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .jobs = &jobs,
     };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -260,7 +257,7 @@ test "PERM001: detect broad permissions at job level" {
 
 test "PERM001: detect multiple write permissions" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .contents = .write, .packages = .write },
         .jobs = &.{},
     };
@@ -393,8 +390,6 @@ test "PERM002: fix is null when job_indent is zero" {
 }
 
 test "PERM002: autofix inserts permissions block after runs-on" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -412,9 +407,7 @@ test "PERM002: autofix inserts permissions block after runs-on" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkJobPermissions(&wf.jobs[0], &diags);
@@ -442,8 +435,6 @@ test "PERM002: autofix inserts permissions block after runs-on" {
 }
 
 test "PERM002: multiple jobs get fixes applied in back-to-front order" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -465,9 +456,7 @@ test "PERM002: multiple jobs get fixes applied in back-to-front order" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     for (wf.jobs) |*job| checkJobPermissions(job, &diags);
@@ -660,8 +649,6 @@ test "PERM001: id-token mixed with other writes produces per-field fixes except 
         \\  id-token: write
         \\
     ;
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -679,9 +666,7 @@ test "PERM001: id-token mixed with other writes produces per-field fixes except 
         \\
     , .{source});
 
-    var yp = yaml_parser_mod.Parser.init(alloc, wrapped);
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, wrapped);
 
     var diags = DiagnosticList.init(alloc);
     checkBroadPermissions(&wf, &diags);
