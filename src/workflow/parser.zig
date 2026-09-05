@@ -550,26 +550,20 @@ fn parsePermissions(node: Node) ParseError!ParsedPermissions {
             var perms = types.Permissions{ .value_span = m.span };
             var meta = types.PermissionsMeta{};
             for (m.entries) |entry| {
+                // parsePermissionLevel only accepts scalars, so the value span
+                // for `meta` is always available alongside the level.
                 const level = parsePermissionLevel(entry.value) orelse continue;
-                setPermissionField(&perms, entry.key.value, level);
-                setPermissionMetaField(&meta, entry.key.value, entry.value);
+                inline for (types.permission_scopes) |field| {
+                    if (std.mem.eql(u8, entry.key.value, comptime types.permissionScopeKey(field))) {
+                        @field(perms, field) = level;
+                        @field(meta, field) = entry.value.scalar.span;
+                        break;
+                    }
+                }
             }
             return .{ .permissions = perms, .meta = meta };
         },
         else => return error.InvalidValue,
-    }
-}
-
-fn setPermissionMetaField(meta: *types.PermissionsMeta, key: []const u8, value: Node) void {
-    const scalar_span: yaml.Span = switch (value) {
-        .scalar => |s| s.span,
-        else => return,
-    };
-    inline for (types.permission_scopes) |field| {
-        if (std.mem.eql(u8, key, comptime types.permissionScopeKey(field))) {
-            @field(meta, field) = scalar_span;
-            return;
-        }
     }
 }
 
@@ -582,15 +576,6 @@ fn parsePermissionLevel(node: Node) ?types.PermissionLevel {
             return null;
         },
         else => return null,
-    }
-}
-
-fn setPermissionField(perms: *types.Permissions, key: []const u8, level: types.PermissionLevel) void {
-    inline for (types.permission_scopes) |field| {
-        if (std.mem.eql(u8, key, comptime types.permissionScopeKey(field))) {
-            @field(perms, field) = level;
-            return;
-        }
     }
 }
 
