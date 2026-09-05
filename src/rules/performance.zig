@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
@@ -10,7 +11,6 @@ const workspace = @import("../workspace.zig");
 const Rule = engine.Rule;
 const Job = engine.Job;
 const Step = engine.Step;
-const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const spans = @import("spans.zig");
 const Span = yaml_types.Span;
@@ -33,6 +33,7 @@ const SetupKind = enum { with_cache_input, bun_independent, uv_independent };
 const CacheableSetup = struct {
     setup_action: []const u8,
     cache_key: []const u8,
+    message: []const u8,
     fix_hint_base: []const u8,
     kind: SetupKind = .with_cache_input,
 };
@@ -41,27 +42,32 @@ const cacheable_setups = [_]CacheableSetup{
     .{
         .setup_action = "actions/setup-node",
         .cache_key = "cache",
+        .message = "Job uses actions/setup-node without caching. Add actions/cache or set 'cache' input.",
         .fix_hint_base = "Set 'cache' to the package manager ('npm', 'yarn', or 'pnpm') in the action's 'with' inputs, or add a separate actions/cache step.",
     },
     .{
         .setup_action = "actions/setup-python",
         .cache_key = "cache",
+        .message = "Job uses actions/setup-python without caching. Add actions/cache or set 'cache' input.",
         .fix_hint_base = "Set 'cache' to the package manager ('pip', 'pipenv', or 'poetry') in the action's 'with' inputs, or add a separate actions/cache step.",
     },
     .{
         .setup_action = "actions/setup-go",
         .cache_key = "cache",
+        .message = "Job uses actions/setup-go without caching. Add actions/cache or set 'cache' input.",
         .fix_hint_base = "Add 'cache: true' to the setup action's 'with' inputs (requires go.sum), or add a separate actions/cache step.",
     },
     .{
         .setup_action = "oven-sh/setup-bun",
         .cache_key = "",
+        .message = "Job uses oven-sh/setup-bun without caching. Add an actions/cache step keyed by your bun lockfile.",
         .fix_hint_base = "Add an actions/cache step after setup-bun with path '~/.bun/install/cache' keyed by your bun lockfile (bun.lock or bun.lockb).",
         .kind = .bun_independent,
     },
     .{
         .setup_action = "astral-sh/setup-uv",
         .cache_key = "enable-cache",
+        .message = "Job uses astral-sh/setup-uv with 'enable-cache: false' and no actions/cache step. Remove the input, set it to 'true', or add an actions/cache step.",
         .fix_hint_base = "Remove the 'enable-cache: false' input or set it to 'true' to restore astral-sh/setup-uv's built-in caching.",
         .kind = .uv_independent,
     },
@@ -107,20 +113,8 @@ fn buildCacheFix(
             edits.appendSlice(alloc, appended) catch continue;
         } else {
             const anchor = step.uses_value_end_byte orelse continue;
-            const parent_indent = alloc.alloc(u8, col - 1) catch continue;
-            @memset(parent_indent, ' ');
-            const child_indent = alloc.alloc(u8, col + 1) catch continue;
-            @memset(child_indent, ' ');
-            const replacement = std.fmt.allocPrint(
-                alloc,
-                "\n{s}with:\n{s}cache: {s}",
-                .{ parent_indent, child_indent, cache_value },
-            ) catch continue;
-            edits.append(alloc, .{
-                .start_byte = anchor,
-                .end_byte = anchor,
-                .replacement = replacement,
-            }) catch continue;
+            const inserted = fix_builder.insertWithEntry(alloc, anchor, col, "cache", cache_value) orelse continue;
+            edits.appendSlice(alloc, inserted) catch continue;
         }
     }
 
@@ -141,60 +135,66 @@ const DispatchResult = struct {
     hint_extra: ?[]const u8,
 };
 
+/// setup actions whose cache manager is inferred from a lockfile probe.
+/// `manager` / `ambiguous` name the `workspace.Context` fields to read.
+const InferredCacheSetup = struct {
+    action: []const u8,
+    manager: []const u8,
+    ambiguous: []const u8,
+    override_key: []const u8,
+};
+
+const inferred_cache_setups = [_]InferredCacheSetup{
+    .{
+        .action = "actions/setup-node",
+        .manager = "node_cache",
+        .ambiguous = "ambiguous_node_lockfiles",
+        .override_key = "node_cache_manager",
+    },
+    .{
+        .action = "actions/setup-python",
+        .manager = "python_cache",
+        .ambiguous = "ambiguous_python_lockfiles",
+        .override_key = "python_cache_manager",
+    },
+};
+
 fn dispatchCacheFix(
     diag_list: *DiagnosticList,
     job: *const Job,
     setup_action: []const u8,
 ) DispatchResult {
+    const none = DispatchResult{ .fix = null, .hint_extra = null };
     const alloc = diag_list.fixAllocator();
     const ctx = workspace.current;
 
-    if (std.mem.eql(u8, setup_action, "actions/setup-node")) {
-        if (ctx.node_cache) |mgr| {
-            const mgr_str = mgr.toString();
-            const description = std.fmt.allocPrint(
-                alloc,
-                "add \"cache: {s}\" to actions/setup-node step(s)",
-                .{mgr_str},
-            ) catch return .{ .fix = null, .hint_extra = null };
-            return .{
-                .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
-                .hint_extra = null,
-            };
+    inline for (inferred_cache_setups) |setup| {
+        if (std.mem.eql(u8, setup_action, setup.action)) {
+            if (@field(ctx, setup.manager)) |mgr| {
+                const mgr_str = mgr.toString();
+                const description = std.fmt.allocPrint(
+                    alloc,
+                    "add \"cache: {s}\" to {s} step(s)",
+                    .{ mgr_str, setup.action },
+                ) catch return none;
+                return .{
+                    .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
+                    .hint_extra = null,
+                };
+            }
+            const ambiguous = @field(ctx, setup.ambiguous);
+            if (ambiguous.len > 0) {
+                return .{
+                    .fix = null,
+                    .hint_extra = formatAmbiguity(alloc, ambiguous, setup.override_key),
+                };
+            }
+            return none;
         }
-        if (ctx.ambiguous_node_lockfiles.len > 0) {
-            return .{
-                .fix = null,
-                .hint_extra = formatAmbiguity(alloc, ctx.ambiguous_node_lockfiles, "node_cache_manager"),
-            };
-        }
-        return .{ .fix = null, .hint_extra = null };
-    }
-
-    if (std.mem.eql(u8, setup_action, "actions/setup-python")) {
-        if (ctx.python_cache) |mgr| {
-            const mgr_str = mgr.toString();
-            const description = std.fmt.allocPrint(
-                alloc,
-                "add \"cache: {s}\" to actions/setup-python step(s)",
-                .{mgr_str},
-            ) catch return .{ .fix = null, .hint_extra = null };
-            return .{
-                .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
-                .hint_extra = null,
-            };
-        }
-        if (ctx.ambiguous_python_lockfiles.len > 0) {
-            return .{
-                .fix = null,
-                .hint_extra = formatAmbiguity(alloc, ctx.ambiguous_python_lockfiles, "python_cache_manager"),
-            };
-        }
-        return .{ .fix = null, .hint_extra = null };
     }
 
     if (std.mem.eql(u8, setup_action, "actions/setup-go")) {
-        if (!ctx.go_sum_present) return .{ .fix = null, .hint_extra = null };
+        if (!ctx.go_sum_present) return none;
         return .{
             .fix = buildCacheFix(
                 diag_list,
@@ -207,7 +207,7 @@ fn dispatchCacheFix(
         };
     }
 
-    return .{ .fix = null, .hint_extra = null };
+    return none;
 }
 
 fn formatAmbiguity(
@@ -215,14 +215,7 @@ fn formatAmbiguity(
     lockfiles: []const []const u8,
     override_key: []const u8,
 ) ?[]const u8 {
-    var joined = std.ArrayList(u8){};
-    var first = true;
-    for (lockfiles) |name| {
-        if (!first) joined.appendSlice(alloc, ", ") catch return null;
-        joined.appendSlice(alloc, name) catch return null;
-        first = false;
-    }
-    const list = joined.toOwnedSlice(alloc) catch return null;
+    const list = std.mem.join(alloc, ", ", lockfiles) catch return null;
     return std.fmt.allocPrint(
         alloc,
         " Detected lockfiles: {s} — specify via .zghalint.yml rules.PERF001.{s}.",
@@ -232,139 +225,84 @@ fn formatAmbiguity(
 
 fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
     inline for (cacheable_setups) |ca| {
-        switch (comptime ca.kind) {
-            .with_cache_input => checkWithCacheInput(ca, job, diag_list),
-            .bun_independent => checkBunCache(ca, job, diag_list),
-            .uv_independent => checkUvCache(ca, job, diag_list),
-        }
+        checkCacheableSetup(ca, job, diag_list);
     }
 }
 
-fn checkWithCacheInput(
+/// PERF001 for one setup action. The step scan and the diagnostic are shared;
+/// `ca.kind` only decides what counts as "already cached" and how the fix hint
+/// is enriched.
+fn checkCacheableSetup(
     comptime ca: CacheableSetup,
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
-    // Span of the first uncached setup step, so the diagnostic points at the
-    // action that is missing the cache rather than at the job.
+    // Span of the first setup step that warrants a warning, so the diagnostic
+    // points at the action rather than at the job.
     var setup_span: ?Span = null;
     var has_cache = false;
-
-    for (job.steps) |*step| {
-        if (step.uses) |action_ref| {
-            const action_name = util.actionBaseName(action_ref.raw);
-
-            if (std.mem.eql(u8, action_name, ca.setup_action)) {
-                if (setup_span == null) setup_span = spans.usesSpan(step);
-                if (step.with) |with| {
-                    if (with.get(ca.cache_key)) |val| {
-                        if (val.len > 0) has_cache = true;
-                    }
-                }
-            }
-
-            if (std.mem.eql(u8, action_name, "actions/cache")) {
-                has_cache = true;
-            }
-        }
-    }
-
-    const span = setup_span orelse return;
-    if (has_cache) return;
-
-    const dispatched = dispatchCacheFix(diag_list, job, ca.setup_action);
-    const base_hint = ca.fix_hint_base;
-    const hint: []const u8 = if (dispatched.hint_extra) |extra| blk: {
-        const combined = std.fmt.allocPrint(
-            diag_list.fixAllocator(),
-            "{s}{s}",
-            .{ base_hint, extra },
-        ) catch break :blk base_hint;
-        break :blk combined;
-    } else base_hint;
-
-    diag_list.append(.{
-        .rule_id = "PERF001",
-        .severity = .warning,
-        .message = "Job uses " ++ ca.setup_action ++ " without caching. Add actions/cache or set 'cache' input.",
-        .span = span,
-        .fix_hint = hint,
-        .fix = dispatched.fix,
-    }) catch return;
-}
-
-fn checkBunCache(
-    comptime ca: CacheableSetup,
-    job: *const Job,
-    diag_list: *DiagnosticList,
-) void {
-    var setup_span: ?Span = null;
-    var has_cache_step = false;
-
-    for (job.steps) |*step| {
-        const action_ref = step.uses orelse continue;
-        const action_name = util.actionBaseName(action_ref.raw);
-        if (std.mem.eql(u8, action_name, ca.setup_action) and setup_span == null) setup_span = spans.usesSpan(step);
-        if (std.mem.eql(u8, action_name, "actions/cache")) has_cache_step = true;
-    }
-
-    const span = setup_span orelse return;
-    if (has_cache_step) return;
-
-    const base_hint = ca.fix_hint_base;
-    const hint: []const u8 = if (!workspace.current.bun_lockfile_present) blk: {
-        const combined = std.fmt.allocPrint(
-            diag_list.fixAllocator(),
-            "{s} Note: no bun.lock or bun.lockb detected at the workspace root.",
-            .{base_hint},
-        ) catch break :blk base_hint;
-        break :blk combined;
-    } else base_hint;
-
-    diag_list.append(.{
-        .rule_id = "PERF001",
-        .severity = .warning,
-        .message = "Job uses oven-sh/setup-bun without caching. Add an actions/cache step keyed by your bun lockfile.",
-        .span = span,
-        .fix_hint = hint,
-    }) catch return;
-}
-
-fn checkUvCache(
-    comptime ca: CacheableSetup,
-    job: *const Job,
-    diag_list: *DiagnosticList,
-) void {
-    var uv_cache_disabled_span: ?Span = null;
-    var has_cache_step = false;
 
     for (job.steps) |*step| {
         const action_ref = step.uses orelse continue;
         const action_name = util.actionBaseName(action_ref.raw);
 
         if (std.mem.eql(u8, action_name, "actions/cache")) {
-            has_cache_step = true;
+            has_cache = true;
             continue;
         }
-
         if (!std.mem.eql(u8, action_name, ca.setup_action)) continue;
 
-        const with = step.with orelse continue;
-        const enable_cache_val = with.get(ca.cache_key) orelse continue;
-        if (std.mem.eql(u8, enable_cache_val, "false") and uv_cache_disabled_span == null) {
-            uv_cache_disabled_span = spans.usesSpan(step);
+        switch (comptime ca.kind) {
+            .with_cache_input => {
+                if (setup_span == null) setup_span = spans.usesSpan(step);
+                const with = step.with orelse continue;
+                const val = with.get(ca.cache_key) orelse continue;
+                if (val.len > 0) has_cache = true;
+            },
+            .bun_independent => {
+                if (setup_span == null) setup_span = spans.usesSpan(step);
+            },
+            .uv_independent => {
+                const with = step.with orelse continue;
+                const val = with.get(ca.cache_key) orelse continue;
+                if (std.mem.eql(u8, val, "false") and setup_span == null) {
+                    setup_span = spans.usesSpan(step);
+                }
+            },
         }
     }
 
-    const span = uv_cache_disabled_span orelse return;
-    if (has_cache_step) return;
+    const span = setup_span orelse return;
+    if (has_cache) return;
+
+    const dispatched: DispatchResult = switch (comptime ca.kind) {
+        .with_cache_input => dispatchCacheFix(diag_list, job, ca.setup_action),
+        .bun_independent => .{
+            .fix = null,
+            .hint_extra = if (workspace.current.bun_lockfile_present)
+                null
+            else
+                " Note: no bun.lock or bun.lockb detected at the workspace root.",
+        },
+        .uv_independent => .{ .fix = null, .hint_extra = null },
+    };
+
+    const hint: []const u8 = if (dispatched.hint_extra) |extra| blk: {
+        const combined = std.fmt.allocPrint(
+            diag_list.fixAllocator(),
+            "{s}{s}",
+            .{ ca.fix_hint_base, extra },
+        ) catch break :blk ca.fix_hint_base;
+        break :blk combined;
+    } else ca.fix_hint_base;
 
     diag_list.append(.{
         .rule_id = "PERF001",
         .severity = .warning,
-        .message = "Job uses astral-sh/setup-uv with 'enable-cache: false' and no actions/cache step. Remove the input, set it to 'true', or add an actions/cache step.",
+        .message = ca.message,
         .span = span,
-        .fix_hint = ca.fix_hint_base,
+        .fix_hint = hint,
+        .fix = dispatched.fix,
     }) catch return;
 }
 
@@ -890,14 +828,6 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
     workspace.set(.{ .go_sum_present = true });
     defer workspace.clear();
 
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -912,23 +842,11 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    var diags = DiagnosticList.init(alloc);
-    checkCacheNotUsed(&wf.jobs[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, fix.safety);
-    try std.testing.expectEqual(@as(usize, 2), fix.edits.len);
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCacheNotUsed }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, result.first_safety.?);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
 
     const cache_count = std.mem.count(u8, result.content, "cache: true");
@@ -939,14 +857,6 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
 test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
     workspace.set(.{ .node_cache = .npm });
     defer workspace.clear();
-
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
 
     const source =
         \\name: CI
@@ -959,17 +869,7 @@ test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    var diags = DiagnosticList.init(alloc);
-    checkCacheNotUsed(&wf.jobs[0], &diags);
-
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCacheNotUsed }, true);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.content, "cache: npm") != null);
@@ -1225,8 +1125,6 @@ test "PERF003: no autofix without removable span" {
 }
 
 test "PERF003: autofix removes fail-fast line from workflow source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1249,10 +1147,7 @@ test "PERF003: autofix removes fail-fast line from workflow source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     defer diags.deinit();
@@ -1311,10 +1206,6 @@ test "PERF003: no warning without strategy" {
 }
 
 test "PERF001: fixture harness applies expected fix" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
     const node_ambiguous_lockfiles = [_][]const u8{ "package-lock.json", "yarn.lock" };
 
     const Case = struct {
@@ -1388,32 +1279,23 @@ test "PERF001: fixture harness applies expected fix" {
             return err;
         };
 
-        var yp = yaml_parser_mod.Parser.init(alloc, input);
-        defer yp.deinit();
-        const yaml_node = try yp.parse();
-        const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+        const result = try test_support.lintAndFix(std.testing.allocator, input, .{ .job = &checkCacheNotUsed }, true);
+        defer result.deinit(std.testing.allocator);
 
-        var diags = DiagnosticList.init(alloc);
-        checkCacheNotUsed(&wf.jobs[0], &diags);
-
-        try std.testing.expectEqual(@as(usize, 1), diags.len());
+        try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
         if (case.expected_path) |exp_path| {
             const expected = try cwd.readFileAlloc(alloc, exp_path, 64 * 1024);
-            const fix = diags.get(0).fix orelse {
+            if (result.fix_count == 0) {
                 std.debug.print("case '{s}': expected fix, got null\n", .{case.name});
                 return error.TestExpectedFix;
-            };
-            const fixes = [_]Fix{fix};
-            const result = try fix_engine.applyFixes(std.testing.allocator, input, &fixes);
-            defer result.deinit(std.testing.allocator);
-
+            }
             std.testing.expectEqualStrings(expected, result.content) catch |err| {
                 std.debug.print("case '{s}' output mismatch\n", .{case.name});
                 return err;
             };
         } else {
-            try std.testing.expect(diags.get(0).fix == null);
+            try std.testing.expectEqual(@as(usize, 0), result.fix_count);
         }
     }
 }

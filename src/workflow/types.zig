@@ -78,10 +78,26 @@ pub const PermissionsMeta = struct {
     statuses: ?yaml_types.Span = null,
 };
 
+/// The `permissions:` scope keys, in schema order. `Permissions` and
+/// `PermissionsMeta` declare exactly these, so `PermissionsMeta` doubles as the
+/// key list for anything that walks the scopes.
+pub const permission_scopes = std.meta.fieldNames(PermissionsMeta);
+
+/// Field names use `_` where the YAML key uses `-`.
+pub fn permissionScopeKey(comptime field_name: []const u8) []const u8 {
+    comptime {
+        var buf: [field_name.len]u8 = field_name[0..field_name.len].*;
+        for (&buf) |*c| {
+            if (c.* == '_') c.* = '-';
+        }
+        const key = buf;
+        return &key;
+    }
+}
+
 /// Concurrency configuration
 pub const Concurrency = struct {
     group: []const u8,
-    cancel_in_progress: bool = false,
 };
 
 /// Key spans for the mutually exclusive `EventFilter` entries. A non-null
@@ -104,45 +120,7 @@ pub const EventFilter = struct {
     tags_ignore: []const []const u8 = &.{},
     paths: []const []const u8 = &.{},
     paths_ignore: []const []const u8 = &.{},
-    types: []const []const u8 = &.{},
     spans: EventFilterSpans = .{},
-};
-
-/// Schedule entry (cron expression)
-pub const ScheduleEntry = struct {
-    cron: []const u8,
-};
-
-/// Input definition for workflow_dispatch / workflow_call
-pub const InputDef = struct {
-    description: ?[]const u8 = null,
-    required: bool = false,
-    default: ?[]const u8 = null,
-    input_type: ?[]const u8 = null,
-};
-
-/// Output definition for workflow_call
-pub const OutputDef = struct {
-    description: ?[]const u8 = null,
-    value: ?[]const u8 = null,
-};
-
-/// Secret definition for workflow_call
-pub const SecretDef = struct {
-    description: ?[]const u8 = null,
-    required: bool = false,
-};
-
-/// Workflow dispatch trigger configuration
-pub const WorkflowDispatch = struct {
-    inputs: ?std.StringArrayHashMap(InputDef) = null,
-};
-
-/// Workflow call trigger configuration
-pub const WorkflowCall = struct {
-    inputs: ?std.StringArrayHashMap(InputDef) = null,
-    outputs: ?std.StringArrayHashMap(OutputDef) = null,
-    secrets: ?std.StringArrayHashMap(SecretDef) = null,
 };
 
 /// Known event types
@@ -189,11 +167,7 @@ pub const EventType = enum {
 /// A single event configuration within a trigger
 pub const EventConfig = struct {
     event: EventType,
-    name: []const u8,
     filter: ?EventFilter = null,
-    schedule: []const ScheduleEntry = &.{},
-    workflow_dispatch: ?WorkflowDispatch = null,
-    workflow_call: ?WorkflowCall = null,
 };
 
 /// Trigger configuration (the `on:` field)
@@ -271,7 +245,6 @@ pub const Strategy = struct {
     fail_fast_value_span: ?yaml_types.Span = null,
     /// Span of the removable `fail-fast` entry in block-style YAML.
     fail_fast_entry_span: ?yaml_types.Span = null,
-    max_parallel: ?u32 = null,
 };
 
 /// A single workflow step
@@ -295,9 +268,6 @@ pub const Step = struct {
     if_condition: ?[]const u8 = null,
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
-    continue_on_error: bool = false,
-    timeout_minutes: ?u32 = null,
-    working_directory: ?[]const u8 = null,
     /// Span of the step mapping in source YAML (for autofix anchor).
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     /// Column of the `uses:` key in source YAML (for autofix indentation).
@@ -318,8 +288,6 @@ pub const Step = struct {
     uses_value_span: ?yaml_types.Span = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
-    /// Byte position for appending an entry to the step mapping (end of last entry's line).
-    env_insertion_byte: ?usize = null,
 };
 
 /// Secrets configuration for reusable workflow jobs
@@ -377,7 +345,6 @@ pub const Job = struct {
     timeout_minutes_specified: bool = false,
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
-    continue_on_error: bool = false,
     container: ?Container = null,
     services: []const Service = &.{},
     empty_sections: []const EmptySection = &.{},
@@ -421,6 +388,15 @@ pub const Workflow = struct {
     concurrency_insertion_byte: ?usize = null,
     /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
     yaml_root: ?yaml_types.Node = null,
+
+    /// Whether the workflow is triggered by `ev`. Many rules only apply to a
+    /// single trigger, so they gate on this before walking the jobs.
+    pub fn hasEvent(self: *const Workflow, ev: EventType) bool {
+        for (self.on.events) |event| {
+            if (event.event == ev) return true;
+        }
+        return false;
+    }
 };
 
 const type_validation = @import("type_validation.zig");
@@ -495,79 +471,4 @@ test "ActionRef unpinned ref" {
 test "ActionRef SHA-like but wrong length" {
     const ref = ActionRef.parse("actions/checkout@abcdef1234");
     try std.testing.expect(!ref.is_pinned);
-}
-
-test "PermissionLevel values" {
-    try std.testing.expect(@intFromEnum(PermissionLevel.read) != @intFromEnum(PermissionLevel.write));
-    try std.testing.expect(@intFromEnum(PermissionLevel.none) != @intFromEnum(PermissionLevel.read));
-}
-
-test "Permissions default all null" {
-    const p = Permissions{};
-    try std.testing.expect(p.actions == null);
-    try std.testing.expect(p.contents == null);
-    try std.testing.expect(!p.read_all);
-    try std.testing.expect(!p.write_all);
-}
-
-test "Concurrency fields" {
-    const c = Concurrency{ .group = "ci-${{ github.ref }}" };
-    try std.testing.expectEqualStrings("ci-${{ github.ref }}", c.group);
-    try std.testing.expect(!c.cancel_in_progress);
-}
-
-test "Step default fields" {
-    const step = Step{};
-    try std.testing.expect(step.id == null);
-    try std.testing.expect(step.uses == null);
-    try std.testing.expect(step.run == null);
-    try std.testing.expect(!step.continue_on_error);
-}
-
-test "Job default fields" {
-    const job = Job{ .id = "build" };
-    try std.testing.expectEqualStrings("build", job.id);
-    try std.testing.expect(job.runs_on == null);
-    try std.testing.expect(job.steps.len == 0);
-    try std.testing.expect(job.needs.len == 0);
-    try std.testing.expect(job.uses == null);
-}
-
-test "SecretsConfig inherit" {
-    const s = SecretsConfig{ .inherit = {} };
-    switch (s) {
-        .inherit => {},
-        .map => unreachable,
-    }
-}
-
-test "Workflow construction" {
-    var events = [_]EventConfig{
-        .{ .event = .push, .name = "push" },
-    };
-    var jobs = [_]Job{
-        .{ .id = "build" },
-    };
-    const wf = Workflow{
-        .name = "CI",
-        .on = .{ .events = &events },
-        .jobs = &jobs,
-    };
-    try std.testing.expectEqualStrings("CI", wf.name.?);
-    try std.testing.expectEqual(@as(usize, 1), wf.on.events.len);
-    try std.testing.expectEqual(@as(usize, 1), wf.jobs.len);
-}
-
-test "EventFilter defaults empty" {
-    const f = EventFilter{};
-    try std.testing.expectEqual(@as(usize, 0), f.branches.len);
-    try std.testing.expectEqual(@as(usize, 0), f.tags.len);
-    try std.testing.expectEqual(@as(usize, 0), f.paths.len);
-    try std.testing.expectEqual(@as(usize, 0), f.types.len);
-}
-
-test "Strategy defaults" {
-    const s = Strategy{};
-    try std.testing.expect(s.fail_fast);
-    try std.testing.expect(s.max_parallel == null);
 }

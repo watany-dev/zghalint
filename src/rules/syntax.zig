@@ -17,23 +17,16 @@ const UnknownKey = workflow_types.UnknownKey;
 
 // ── SYN003: Empty mapping / sequence sections ──
 
-fn emptySectionMessage(section: []const u8) []const u8 {
-    const messages = std.StaticStringMap([]const u8).initComptime(.{
-        .{ "on", "\"on\" section should not be empty" },
-        .{ "jobs", "\"jobs\" section should not be empty" },
-        .{ "steps", "\"steps\" section should not be empty" },
-        .{ "with", "\"with\" section should not be empty" },
-        .{ "env", "\"env\" section should not be empty" },
-        .{ "strategy", "\"strategy\" section should not be empty" },
-        .{ "matrix", "\"matrix\" section should not be empty" },
-        .{ "defaults", "\"defaults\" section should not be empty" },
-        .{ "container", "\"container\" section should not be empty" },
-        .{ "services", "\"services\" section should not be empty" },
-        .{ "outputs", "\"outputs\" section should not be empty" },
-        .{ "inputs", "\"inputs\" section should not be empty" },
-        .{ "secrets", "\"secrets\" section should not be empty" },
-    });
-    return messages.get(section) orelse "section should not be empty";
+/// The 13 section names all produce the same sentence, so format it instead of
+/// keeping a lookup table of identical strings.
+fn emptySectionMessage(list: *DiagnosticList, section: []const u8) []const u8 {
+    const generic = "section should not be empty";
+    if (section.len == 0) return generic;
+    return std.fmt.allocPrint(
+        list.fixAllocator(),
+        "\"{s}\" " ++ generic,
+        .{section},
+    ) catch generic;
 }
 
 fn checkEmptySections(sections: []const workflow_types.EmptySection, list: *DiagnosticList) void {
@@ -41,7 +34,7 @@ fn checkEmptySections(sections: []const workflow_types.EmptySection, list: *Diag
         list.append(.{
             .rule_id = "SYN003",
             .severity = .@"error",
-            .message = emptySectionMessage(section.name),
+            .message = emptySectionMessage(list, section.name),
             .span = section.span,
             .fix_hint = "remove this section if it is unnecessary",
         }) catch return;
@@ -197,17 +190,6 @@ fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-// ── Shared span helpers ──
-
-fn spanOrFallback(primary: ?Span, fallback: Span) Span {
-    return primary orelse fallback;
-}
-
-fn needsSpan(job: *const Job, index: usize) Span {
-    if (index < job.needs_spans.len) return job.needs_spans[index];
-    return job.span;
-}
-
 // ── SYN006: Invalid job ID / step ID naming ──
 
 fn isValidId(id: []const u8) bool {
@@ -241,15 +223,15 @@ fn reportInvalidId(list: *DiagnosticList, what: []const u8, id: []const u8, span
 }
 
 fn checkInvalidJobId(job: *const Job, diag_list: *DiagnosticList) void {
-    reportInvalidId(diag_list, "job", job.id, spanOrFallback(job.id_span, job.span));
+    reportInvalidId(diag_list, "job", job.id, (job.id_span orelse job.span));
     for (job.needs, 0..) |need, i| {
-        reportInvalidId(diag_list, "job", need, needsSpan(job, i));
+        reportInvalidId(diag_list, "job", need, if (i < job.needs_spans.len) job.needs_spans[i] else job.span);
     }
 }
 
 fn checkInvalidStepId(step: *const Step, diag_list: *DiagnosticList) void {
     const id = step.id orelse return;
-    reportInvalidId(diag_list, "step", id, spanOrFallback(step.id_value_span, step.span));
+    reportInvalidId(diag_list, "step", id, (step.id_value_span orelse step.span));
 }
 
 // ── SYN005: Duplicated job ID / step ID (case-insensitive) ──
@@ -285,8 +267,8 @@ fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
             reportDuplicateId(
                 list,
                 job.id,
-                spanOrFallback(prior.id_span, prior.span).start_line,
-                spanOrFallback(job.id_span, job.span),
+                (prior.id_span orelse prior.span).start_line,
+                (job.id_span orelse job.span),
                 job_id_dup_fmt,
                 "use a unique job ID within the workflow",
             );
@@ -304,8 +286,8 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
             reportDuplicateId(
                 list,
                 step_id,
-                spanOrFallback(prior_step.id_value_span, prior_step.span).start_line,
-                spanOrFallback(step.id_value_span, step.span),
+                (prior_step.id_value_span orelse prior_step.span).start_line,
+                (step.id_value_span orelse step.span),
                 step_id_dup_fmt,
                 "use a unique step ID within the job",
             );
@@ -384,7 +366,7 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
             .rule_id = "SYN008",
             .severity = .warning,
             .message = "job ID is duplicated in 'needs'",
-            .span = needsSpan(job, i),
+            .span = if (i < job.needs_spans.len) job.needs_spans[i] else job.span,
             .fix_hint = "remove the repeated job ID from 'needs'",
         }) catch return;
     }
@@ -531,19 +513,15 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
-const Trigger = workflow_types.Trigger;
-const yaml_parser_mod = @import("../yaml/parser.zig");
 
 fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
     checkUnknownKeys(&wf, list);
 }
 
@@ -886,10 +864,7 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
-    const node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const rule_engine = engine.Engine.init(&rules);
     var list = rule_engine.run(testing.allocator, &wf);
@@ -1164,25 +1139,16 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
     try expectSyn003(diags, &.{});
 }
 
-fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
-    const alloc = arena.allocator();
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+/// Run SYN004 over `source`. The workflow lives in an arena that is released
+/// before returning; the diagnostics only borrow string literals.
+fn runSyn004(source: []const u8, list: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
     checkMappingValueTypes(&wf, list);
 }
 
-fn dummySpan(start_byte: usize, end_byte: usize) Span {
-    return .{
-        .start_line = 1,
-        .start_col = 1,
-        .end_line = 1,
-        .end_col = 1,
-        .start_byte = start_byte,
-        .end_byte = end_byte,
-    };
-}
+const dummySpan = test_support.dummySpan;
 
 test "SYN006: job ID starting with a digit is reported" {
     const job = Job{
@@ -1362,10 +1328,7 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
@@ -1385,21 +1348,26 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
     try testing.expect(std.mem.startsWith(u8, diags.get(2).message, "invalid job ID \"1-build\""));
 }
 
-fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
+/// Run SYN012's exclusive-filter check over a workflow with just these events.
+fn runOn(events: []const EventConfig) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };
-    checkExclusiveFilters(&wf, list);
+    var list = DiagnosticList.init(testing.allocator);
+    checkExclusiveFilters(&wf, &list);
+    return list;
 }
 
-fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
+/// Run SYN008's duplicate-needs check over a job with just this `needs` list.
+fn runOnNeeds(needs: []const []const u8) DiagnosticList {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
-    checkDuplicateNeeds(&job, diags);
+    var diags = DiagnosticList.init(testing.allocator);
+    checkDuplicateNeeds(&job, &diags);
+    return diags;
 }
 
 fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     walkDuplicateKeys(node, "workflow", null, diags);
 }
@@ -1599,10 +1567,7 @@ test "SYN002: engine.run emits via yaml_root" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
-    const node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(arena.allocator(), node);
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
 
     const engine_inst = engine.Engine.init(&rules);
     var diags = engine_inst.run(testing.allocator, &wf);
@@ -1733,12 +1698,10 @@ test "SYN004: mapping value type validation" {
     };
 
     for (cases) |case| {
-        var arena = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
         var diags = DiagnosticList.init(testing.allocator);
         defer diags.deinit();
 
-        try runSyn004(case.source, &arena, &diags);
+        try runSyn004(case.source, &diags);
         try testing.expectEqual(case.want, diags.len());
 
         if (case.message_contains) |needle| {
@@ -1752,14 +1715,20 @@ test "SYN004: mapping value type validation" {
     }
 }
 
-fn runOnDuplicateJobIds(jobs: []const Job, diags: *DiagnosticList) void {
+/// Run SYN005's duplicate-job-ID check over a workflow with just these jobs.
+fn runOnDuplicateJobIds(jobs: []const Job) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = jobs };
-    checkDuplicateJobIds(&wf, diags);
+    var diags = DiagnosticList.init(testing.allocator);
+    checkDuplicateJobIds(&wf, &diags);
+    return diags;
 }
 
-fn runOnDuplicateStepIds(steps: []const Step, diags: *DiagnosticList) void {
+/// Run SYN006's duplicate-step-ID check over a job with just these steps.
+fn runOnDuplicateStepIds(steps: []const Step) DiagnosticList {
     const job = Job{ .id = "build", .runs_on = "ubuntu-latest", .steps = steps };
-    checkDuplicateStepIds(&job, diags);
+    var diags = DiagnosticList.init(testing.allocator);
+    checkDuplicateStepIds(&job, &diags);
+    return diags;
 }
 
 test "SYN005: duplicate job IDs" {
@@ -1787,10 +1756,8 @@ test "SYN005: duplicate job IDs" {
     };
 
     for (cases) |c| {
-        var diags = DiagnosticList.init(testing.allocator);
+        var diags = runOnDuplicateJobIds(&c.jobs);
         defer diags.deinit();
-
-        runOnDuplicateJobIds(&c.jobs, &diags);
 
         try testing.expectEqual(@as(usize, 1), diags.len());
         const diag = diags.get(0);
@@ -1802,15 +1769,13 @@ test "SYN005: duplicate job IDs" {
 }
 
 test "SYN005: job ID repeated three times reports on each subsequent occurrence" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const jobs = [_]Job{
         .{ .id = "build", .id_span = Span.point(3, 3, 20) },
         .{ .id = "Build", .id_span = Span.point(6, 3, 50) },
         .{ .id = "BUILD", .id_span = Span.point(9, 3, 80) },
     };
-    runOnDuplicateJobIds(&jobs, &diags);
+    var diags = runOnDuplicateJobIds(&jobs);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 2), diags.len());
     try testing.expectEqualStrings(
@@ -1824,14 +1789,12 @@ test "SYN005: job ID repeated three times reports on each subsequent occurrence"
 }
 
 test "SYN005: distinct job IDs produce no diagnostic" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const jobs = [_]Job{
         .{ .id = "build", .id_span = Span.point(3, 3, 20) },
         .{ .id = "test", .id_span = Span.point(6, 3, 50) },
     };
-    runOnDuplicateJobIds(&jobs, &diags);
+    var diags = runOnDuplicateJobIds(&jobs);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -1861,10 +1824,8 @@ test "SYN005: duplicate step IDs within a job" {
     };
 
     for (cases) |c| {
-        var diags = DiagnosticList.init(testing.allocator);
+        var diags = runOnDuplicateStepIds(&c.steps);
         defer diags.deinit();
-
-        runOnDuplicateStepIds(&c.steps, &diags);
 
         try testing.expectEqual(@as(usize, 1), diags.len());
         const diag = diags.get(0);
@@ -1876,15 +1837,13 @@ test "SYN005: duplicate step IDs within a job" {
 }
 
 test "SYN005: step ID repeated three times reports on each subsequent occurrence" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const steps = [_]Step{
         .{ .id = "setup", .id_value_span = Span.point(7, 11, 100), .run = "echo hi" },
         .{ .id = "Setup", .id_value_span = Span.point(9, 11, 140), .run = "echo hi" },
         .{ .id = "SETUP", .id_value_span = Span.point(11, 11, 180), .run = "echo hi" },
     };
-    runOnDuplicateStepIds(&steps, &diags);
+    var diags = runOnDuplicateStepIds(&steps);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 2), diags.len());
     try testing.expectEqualStrings(
@@ -1921,14 +1880,12 @@ test "SYN005: same step ID in different jobs is allowed" {
 }
 
 test "SYN005: steps without id are ignored" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const steps = [_]Step{
         .{ .run = "echo hi" },
         .{ .run = "echo bye" },
     };
-    runOnDuplicateStepIds(&steps, &diags);
+    var diags = runOnDuplicateStepIds(&steps);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -1961,10 +1918,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
         \\
     ;
 
-    var yp = yaml_parser.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&rules);
     var diags = eng.run(alloc, &wf);
@@ -2003,10 +1957,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
 }
 
 fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     checkWorkflowEnvNames(&wf, list);
     for (wf.jobs) |*job| {
@@ -2185,10 +2136,8 @@ test "SYN007: a non-scalar env value still has its key validated" {
 }
 
 test "SYN008: duplicated job ID is reported" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "build", "build" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "build", "build" }, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -2197,28 +2146,22 @@ test "SYN008: duplicated job ID is reported" {
 }
 
 test "SYN008: duplicate detection is case-insensitive" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "Build", "bUILD" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "Build", "bUILD" }, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "SYN008: a job ID repeated three times reports once" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "build", "build", "build" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "build", "build", "build" }, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "SYN008: distinct job IDs produce no diagnostic" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "build", "lint" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "build", "lint" }, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -2226,13 +2169,10 @@ test "SYN008: distinct job IDs produce no diagnostic" {
 test "SYN012: branches with branches-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -2248,13 +2188,10 @@ test "SYN012: branches with branches-ignore is an error" {
 test "SYN012: tags with tags-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .tags = Span.point(1, 1, 10), .tags_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings(
@@ -2266,13 +2203,10 @@ test "SYN012: tags with tags-ignore is an error" {
 test "SYN012: paths with paths-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .paths = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings(
@@ -2284,7 +2218,6 @@ test "SYN012: paths with paths-ignore is an error" {
 test "SYN012: all three conflicting pairs are reported separately" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{
             .branches = Span.point(1, 1, 10),
             .branches_ignore = Span.point(1, 1, 20),
@@ -2294,10 +2227,8 @@ test "SYN012: all three conflicting pairs are reported separately" {
             .paths_ignore = Span.point(1, 1, 60),
         } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 3), diags.len());
 }
@@ -2305,13 +2236,10 @@ test "SYN012: all three conflicting pairs are reported separately" {
 test "SYN012: filters from different pairs may coexist" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -2321,17 +2249,14 @@ test "SYN012: an empty filter value still counts as present" {
     // conflict with `branches-ignore` must still be reported.
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{
             .branches = &.{},
             .branches_ignore = &.{"wip/**"},
             .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) },
         },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
@@ -2340,29 +2265,23 @@ test "SYN012: separate events using opposite halves are fine" {
     const events = [_]EventConfig{
         .{
             .event = .push,
-            .name = "push",
             .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10) } },
         },
         .{
             .event = .pull_request,
-            .name = "pull_request",
             .filter = .{ .spans = .{ .branches_ignore = Span.point(1, 1, 40) } },
         },
     };
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
 test "SYN012: event without a filter is ignored" {
-    const events = [_]EventConfig{.{ .event = .push, .name = "push" }};
-    var diags = DiagnosticList.init(testing.allocator);
+    const events = [_]EventConfig{.{ .event = .push }};
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -2370,13 +2289,10 @@ test "SYN012: event without a filter is ignored" {
 test "SYN012: diagnostic points at the first key when the ignore form comes first" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 40), .branches_ignore = Span.point(1, 1, 10) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqual(@as(usize, 40), diags.get(0).span.start_byte);

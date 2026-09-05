@@ -13,14 +13,6 @@ const TypeRef = t.TypeRef;
 
 const any = &t.type_any;
 
-/// Context types for one workflow. Overlays (steps / matrix / needs / inputs /
-/// secrets) are added in T4; until then every lookup goes to the builtin catalog.
-pub const TypeEnv = struct {
-    pub fn lookup(_: *const TypeEnv, name: []const u8) ?TypeRef {
-        return catalog.lookupContext(name);
-    }
-};
-
 /// The first type error found while walking a path. Only one is reported per
 /// expression node; the result type collapses to `any` so errors do not cascade.
 pub const Problem = union(enum) {
@@ -95,7 +87,11 @@ fn stripQuotes(s: []const u8) []const u8 {
 }
 
 /// Walk a context path and infer its type, reporting the first type error.
-pub fn walkPath(path: []const u8, env: *const TypeEnv) WalkResult {
+///
+/// Every root name resolves against the builtin catalog. Per-workflow overlays
+/// (steps / matrix / needs / inputs / secrets) arrive with T4; see
+/// `docs/design/expr-static-typecheck-design.md` §4.
+pub fn walkPath(path: []const u8) WalkResult {
     var iter = SegmentIter{ .path = path };
     const first = iter.next() orelse return .{ .ty = any };
     const root_name = switch (first) {
@@ -103,13 +99,13 @@ pub fn walkPath(path: []const u8, env: *const TypeEnv) WalkResult {
         else => return .{ .ty = any },
     };
 
-    var current = env.lookup(root_name) orelse
+    var current = catalog.lookupContext(root_name) orelse
         return .{ .ty = any, .problem = .{ .unknown_context = root_name } };
     var receiver_end = iter.prev_end;
 
     while (iter.next()) |seg| {
         const receiver_path = path[0..receiver_end];
-        const step = applySegment(current, seg, receiver_path, env);
+        const step = applySegment(current, seg, receiver_path);
         if (step.problem) |p| return .{ .ty = any, .problem = p };
         current = step.ty;
         receiver_end = iter.prev_end;
@@ -117,16 +113,16 @@ pub fn walkPath(path: []const u8, env: *const TypeEnv) WalkResult {
     return .{ .ty = current };
 }
 
-fn applySegment(recv: TypeRef, seg: Segment, receiver_path: []const u8, env: *const TypeEnv) WalkResult {
+fn applySegment(recv: TypeRef, seg: Segment, receiver_path: []const u8) WalkResult {
     if (recv.kind == .any) return .{ .ty = any };
     return switch (seg) {
-        .ident => |name| derefProp(recv, name, receiver_path, env),
+        .ident => |name| derefProp(recv, name, receiver_path),
         .star => objectFilter(recv, receiver_path),
-        .index_string => |key| indexString(recv, key, receiver_path, env),
+        .index_string => |key| indexString(recv, key, receiver_path),
     };
 }
 
-fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8, env: *const TypeEnv) WalkResult {
+fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8) WalkResult {
     switch (recv.kind) {
         .object => {
             if (t.findProp(recv, name)) |ty| return .{ .ty = ty };
@@ -138,16 +134,6 @@ fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8, env: *c
                     .name = name,
                 } } },
             };
-        },
-        // `arr.*.prop` keeps filtering element-wise.
-        .array => {
-            if (!recv.deref) return notAnObject(recv, name, receiver_path);
-            const elem = recv.elem orelse any;
-            if (elem.kind == .any) return .{ .ty = any };
-            const inner = derefProp(elem, name, receiver_path, env);
-            if (inner.problem) |p| return .{ .ty = any, .problem = p };
-            if (inner.ty.kind == .any) return .{ .ty = &t.type_array_any };
-            return .{ .ty = any };
         },
         else => return notAnObject(recv, name, receiver_path),
     }
@@ -186,9 +172,9 @@ fn objectFilter(recv: TypeRef, receiver_path: []const u8) WalkResult {
     }
 }
 
-fn indexString(recv: TypeRef, key: []const u8, receiver_path: []const u8, env: *const TypeEnv) WalkResult {
+fn indexString(recv: TypeRef, key: []const u8, receiver_path: []const u8) WalkResult {
     return switch (recv.kind) {
-        .object => derefProp(recv, key, receiver_path, env),
+        .object => derefProp(recv, key, receiver_path),
         // String subscripts on arrays are not meaningful but are not worth a
         // false positive either.
         .array => .{ .ty = any },
@@ -200,16 +186,16 @@ fn indexString(recv: TypeRef, key: []const u8, receiver_path: []const u8, env: *
 // typeOf
 // ============================================================
 
-pub fn typeOf(node: *const ExprNode, env: *const TypeEnv) TypeRef {
+pub fn typeOf(node: *const ExprNode) TypeRef {
     return switch (node.kind) {
-        .context_access => walkPath(node.value, env).ty,
+        .context_access => walkPath(node.value).ty,
         .function_call => functionReturnType(node),
         .binary_op => blk: {
             if (isCompareOp(node.value)) break :blk &t.type_bool;
             if (node.children.len == 2) {
                 break :blk t.merge(
-                    typeOf(&node.children[0], env),
-                    typeOf(&node.children[1], env),
+                    typeOf(&node.children[0]),
+                    typeOf(&node.children[1]),
                 );
             }
             break :blk any;
@@ -295,10 +281,8 @@ pub fn checkCompare(op: []const u8, lhs: TypeRef, rhs: TypeRef) bool {
 // ============================================================
 
 const testing = std.testing;
-const empty_env = TypeEnv{};
-
 fn walkTy(path: []const u8) TypeRef {
-    return walkPath(path, &empty_env).ty;
+    return walkPath(path).ty;
 }
 
 test "walk: github.sha is string" {
@@ -310,26 +294,26 @@ test "walk: github.ref_protected is bool" {
 }
 
 test "walk: github.event.pull_request is any" {
-    const r = walkPath("github.event.pull_request.head.sha", &empty_env);
+    const r = walkPath("github.event.pull_request.head.sha");
     try testing.expectEqual(t.TypeKind.any, r.ty.kind);
     try testing.expectEqual(@as(?Problem, null), r.problem);
 }
 
 test "walk: unknown context is reported" {
-    const r = walkPath("foo.bar", &empty_env);
+    const r = walkPath("foo.bar");
     try testing.expect(r.problem != null);
     try testing.expectEqualStrings("foo", r.problem.?.unknown_context);
 }
 
 test "walk: unknown github property is reported" {
-    const r = walkPath("github.reposiory", &empty_env);
+    const r = walkPath("github.reposiory");
     try testing.expect(r.problem != null);
     try testing.expectEqualStrings("reposiory", r.problem.?.unknown_property.name);
     try testing.expectEqualStrings("github", r.problem.?.unknown_property.receiver_path);
 }
 
 test "walk: property access on a string is reported" {
-    const r = walkPath("github.repository.permissions", &empty_env);
+    const r = walkPath("github.repository.permissions");
     try testing.expect(r.problem != null);
     try testing.expectEqualStrings("permissions", r.problem.?.not_an_object.name);
     try testing.expectEqualStrings("github.repository", r.problem.?.not_an_object.receiver_path);
@@ -337,7 +321,7 @@ test "walk: property access on a string is reported" {
 }
 
 test "walk: unknown job property is reported" {
-    const r = walkPath("job.unknown", &empty_env);
+    const r = walkPath("job.unknown");
     try testing.expect(r.problem != null);
 }
 
@@ -354,7 +338,7 @@ test "walk: contexts awaiting overlay stay silent" {
         "inputs.name",
         "jobs.build.outputs.x",
     }) |path| {
-        const r = walkPath(path, &empty_env);
+        const r = walkPath(path);
         try testing.expectEqual(@as(?Problem, null), r.problem);
         try testing.expectEqual(t.TypeKind.any, r.ty.kind);
     }
@@ -368,7 +352,7 @@ test "walk: map contexts yield string values" {
 
 test "walk: bracket access behaves like a property" {
     try testing.expectEqual(t.TypeKind.string, walkTy("github['sha']").kind);
-    const r = walkPath("github['reposiory']", &empty_env);
+    const r = walkPath("github['reposiory']");
     try testing.expect(r.problem != null);
 }
 
@@ -380,7 +364,7 @@ test "walk: object filter produces an array" {
 
 test "walk: strategy is loose but typed for known keys" {
     try testing.expectEqual(t.TypeKind.number, walkTy("strategy.job-index").kind);
-    const r = walkPath("strategy.unknown", &empty_env);
+    const r = walkPath("strategy.unknown");
     try testing.expectEqual(@as(?Problem, null), r.problem);
 }
 

@@ -41,29 +41,6 @@ pub fn stepNameFromRun(allocator: std.mem.Allocator, run: []const u8) ?[]const u
     return allocator.dupe(u8, first_line[0..max_len]) catch null;
 }
 
-/// Write a JSON-escaped string (with surrounding quotes) to the writer.
-/// Control characters below 0x20 are emitted as `\uXXXX` escapes.
-pub fn writeJsonString(writer: anytype, s: []const u8) !void {
-    try writer.writeByte('"');
-    for (s) |c| {
-        switch (c) {
-            '"' => try writer.writeAll("\\\""),
-            '\\' => try writer.writeAll("\\\\"),
-            '\n' => try writer.writeAll("\\n"),
-            '\r' => try writer.writeAll("\\r"),
-            '\t' => try writer.writeAll("\\t"),
-            else => {
-                if (c < 0x20) {
-                    try writer.print("\\u{x:0>4}", .{c});
-                } else {
-                    try writer.writeByte(c);
-                }
-            },
-        }
-    }
-    try writer.writeByte('"');
-}
-
 /// ASCII-only Levenshtein distance. Returns `std.math.maxInt(usize)` for inputs
 /// longer than MAX_LEN to avoid pathological allocations.
 pub fn levenshteinDistance(a: []const u8, b: []const u8) usize {
@@ -142,26 +119,4 @@ test "stepNameFromRun trims and caps length" {
     const long = "a" ** 50;
     const result = stepNameFromRun(alloc, long).?;
     try std.testing.expectEqual(@as(usize, 40), result.len);
-}
-
-test "writeJsonString escapes special characters" {
-    const allocator = std.testing.allocator;
-
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(allocator);
-
-    try writeJsonString(buf.writer(allocator), "hello");
-    try std.testing.expectEqualStrings("\"hello\"", buf.items);
-
-    buf.clearRetainingCapacity();
-    try writeJsonString(buf.writer(allocator), "a\"b\\c");
-    try std.testing.expectEqualStrings("\"a\\\"b\\\\c\"", buf.items);
-
-    buf.clearRetainingCapacity();
-    try writeJsonString(buf.writer(allocator), "line1\nline2\tend\r");
-    try std.testing.expectEqualStrings("\"line1\\nline2\\tend\\r\"", buf.items);
-
-    buf.clearRetainingCapacity();
-    try writeJsonString(buf.writer(allocator), "\x01");
-    try std.testing.expectEqualStrings("\"\\u0001\"", buf.items);
 }

@@ -1,6 +1,6 @@
 .{
     .name = .zghalint,
-    .version = "0.1.0",
+    .version = "0.0.1-rc.1",
     .minimum_zig_version = "0.15.2",
     .fingerprint = 0xccb6b88831c9b737,
     .paths = .{

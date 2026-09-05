@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
@@ -16,7 +17,6 @@ const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
-const Edit = diagnostics_mod.Edit;
 const FixSafety = diagnostics_mod.FixSafety;
 
 // ── BP001: Missing timeout-minutes ──
@@ -106,36 +106,28 @@ fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
 
 const DeprecatedAction = struct {
     action: []const u8,
-    version: []const u8,
+    /// Major versions strictly below this are deprecated (`v1` .. `vN-1`).
+    deprecated_below: u8,
     replacement: []const u8,
 };
 
 const deprecated_actions = [_]DeprecatedAction{
-    .{ .action = "actions/checkout", .version = "v1", .replacement = "v4" },
-    .{ .action = "actions/checkout", .version = "v2", .replacement = "v4" },
-    .{ .action = "actions/checkout", .version = "v3", .replacement = "v4" },
-    .{ .action = "actions/setup-node", .version = "v1", .replacement = "v4" },
-    .{ .action = "actions/setup-node", .version = "v2", .replacement = "v4" },
-    .{ .action = "actions/setup-node", .version = "v3", .replacement = "v4" },
-    .{ .action = "actions/setup-python", .version = "v1", .replacement = "v5" },
-    .{ .action = "actions/setup-python", .version = "v2", .replacement = "v5" },
-    .{ .action = "actions/setup-python", .version = "v3", .replacement = "v5" },
-    .{ .action = "actions/setup-python", .version = "v4", .replacement = "v5" },
-    .{ .action = "actions/setup-go", .version = "v1", .replacement = "v5" },
-    .{ .action = "actions/setup-go", .version = "v2", .replacement = "v5" },
-    .{ .action = "actions/setup-go", .version = "v3", .replacement = "v5" },
-    .{ .action = "actions/setup-java", .version = "v1", .replacement = "v4" },
-    .{ .action = "actions/setup-java", .version = "v2", .replacement = "v4" },
-    .{ .action = "actions/setup-java", .version = "v3", .replacement = "v4" },
-    .{ .action = "actions/upload-artifact", .version = "v1", .replacement = "v4" },
-    .{ .action = "actions/upload-artifact", .version = "v2", .replacement = "v4" },
-    .{ .action = "actions/upload-artifact", .version = "v3", .replacement = "v4" },
-    .{ .action = "actions/download-artifact", .version = "v1", .replacement = "v4" },
-    .{ .action = "actions/download-artifact", .version = "v2", .replacement = "v4" },
-    .{ .action = "actions/download-artifact", .version = "v3", .replacement = "v4" },
-    .{ .action = "actions/cache", .version = "v1", .replacement = "v4" },
-    .{ .action = "actions/cache", .version = "v2", .replacement = "v4" },
+    .{ .action = "actions/checkout", .deprecated_below = 4, .replacement = "v4" },
+    .{ .action = "actions/setup-node", .deprecated_below = 4, .replacement = "v4" },
+    .{ .action = "actions/setup-python", .deprecated_below = 5, .replacement = "v5" },
+    .{ .action = "actions/setup-go", .deprecated_below = 4, .replacement = "v5" },
+    .{ .action = "actions/setup-java", .deprecated_below = 4, .replacement = "v4" },
+    .{ .action = "actions/upload-artifact", .deprecated_below = 4, .replacement = "v4" },
+    .{ .action = "actions/download-artifact", .deprecated_below = 4, .replacement = "v4" },
+    .{ .action = "actions/cache", .deprecated_below = 3, .replacement = "v4" },
 };
+
+/// Major version of a bare `vN` tag (single digit, as every deprecated tag is).
+fn majorTag(version: []const u8) ?u8 {
+    if (version.len != 2 or version[0] != 'v') return null;
+    if (!std.ascii.isDigit(version[1])) return null;
+    return version[1] - '0';
+}
 
 fn buildDeprecatedActionFix(
     list: *DiagnosticList,
@@ -186,8 +178,11 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_name = util.actionBaseName(action_ref.raw);
     const version = action_ref.ref orelse return;
 
+    const major = majorTag(version);
     for (deprecated_actions) |dep| {
-        if (std.mem.eql(u8, action_name, dep.action) and std.mem.eql(u8, version, dep.version)) {
+        if (std.mem.eql(u8, action_name, dep.action) and
+            major != null and major.? >= 1 and major.? < dep.deprecated_below)
+        {
             var diag = Diagnostic{
                 .rule_id = "BP003",
                 .severity = .warning,
@@ -195,7 +190,7 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
                 .span = step.span,
                 .fix_hint = "Upgrade to a newer version.",
             };
-            diag.fix = buildDeprecatedActionFix(diag_list, step, dep.version, dep.replacement);
+            diag.fix = buildDeprecatedActionFix(diag_list, step, version, dep.replacement);
             diag_list.append(diag) catch return;
             return;
         }
@@ -241,19 +236,8 @@ fn checkCrossPlatformShell(job: *const Job, diag_list: *DiagnosticList) void {
 }
 
 fn hasWindowsTarget(job: *const Job) bool {
-    if (job.runs_on) |runs_on| {
-        if (containsWindows(runs_on)) return true;
-    }
-    return false;
-}
-
-fn containsWindows(s: []const u8) bool {
-    if (s.len < 7) return false;
-    var i: usize = 0;
-    while (i + 7 <= s.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(s[i .. i + 7], "windows")) return true;
-    }
-    return false;
+    const runs_on = job.runs_on orelse return false;
+    return std.ascii.indexOfIgnoreCase(runs_on, "windows") != null;
 }
 
 // ── BP005: Push trigger without concurrency ──
@@ -281,20 +265,8 @@ fn buildPushConcurrencyFix(list: *DiagnosticList, wf: *const Workflow) ?Fix {
     };
 }
 
-pub fn checkPushConcurrencyForTest(wf: *const Workflow, diag_list: *DiagnosticList) void {
-    checkPushConcurrency(wf, diag_list);
-}
-
-fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
-    var has_push = false;
-    for (wf.on.events) |event| {
-        if (event.event == .push) {
-            has_push = true;
-            break;
-        }
-    }
-
-    if (has_push and wf.concurrency == null) {
+pub fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    if (wf.hasEvent(.push) and wf.concurrency == null) {
         diag_list.append(.{
             .rule_id = "BP005",
             .severity = .info,
@@ -426,10 +398,6 @@ pub const rules = [_]Rule{
 
 // ── Tests ──
 
-fn makeEmptyTrigger() workflow_types.Trigger {
-    return .{ .events = &.{} };
-}
-
 test "BP001: detect missing timeout-minutes" {
     const job = Job{ .id = "build" };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -503,14 +471,6 @@ test "BP001: autofix generated with real span" {
 }
 
 test "BP001: autofix applied to YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -522,24 +482,10 @@ test "BP001: autofix applied to YAML source" {
         \\
     ;
 
-    // Parse YAML → Workflow
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    // Run rule
-    var diags = DiagnosticList.init(alloc);
-    checkMissingTimeout(&wf.jobs[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    // Apply fix
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkMissingTimeout }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     // Verify the fixed source contains timeout-minutes
     try std.testing.expect(std.mem.indexOf(u8, result.content, "timeout-minutes: 30") != null);
@@ -615,9 +561,6 @@ test "BP002: no fix for local actions" {
 }
 
 test "BP002: no fix when `if:` precedes `uses:` in step" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -636,10 +579,7 @@ test "BP002: no fix when `if:` precedes `uses:` in step" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkMissingStepName(&wf.jobs[0].steps[0], &diags);
@@ -649,14 +589,6 @@ test "BP002: no fix when `if:` precedes `uses:` in step" {
 }
 
 test "BP002: autofix applied to YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -668,20 +600,10 @@ test "BP002: autofix applied to YAML source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    var diags = DiagnosticList.init(alloc);
-    checkMissingStepName(&wf.jobs[0].steps[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .step = &checkMissingStepName }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "name: Checkout") != null);
@@ -783,14 +705,6 @@ test "BP003: autofix with single-quoted scalar keeps quotes" {
 }
 
 test "BP003: autofix applied to YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -802,20 +716,10 @@ test "BP003: autofix applied to YAML source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    var diags = DiagnosticList.init(alloc);
-    checkDeprecatedAction(&wf.jobs[0].steps[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .step = &checkDeprecatedAction }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "actions/checkout@v4") != null);
@@ -913,14 +817,6 @@ test "BP004: attaches unsafe fix when shell_insertion_byte and span are present"
 }
 
 test "BP004: autofix applied to YAML source inserts shell: bash after run" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -932,21 +828,11 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    var diags = DiagnosticList.init(alloc);
-    checkCrossPlatformShell(&wf.jobs[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-    try std.testing.expectEqual(FixSafety.unsafe, fix.safety);
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCrossPlatformShell }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try std.testing.expectEqual(FixSafety.unsafe, result.first_safety.?);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "shell: bash") != null);
@@ -959,7 +845,7 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
 
 test "BP005: detect push without concurrency" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -974,11 +860,11 @@ test "BP005: detect push without concurrency" {
 
 test "BP005: no warning when concurrency is set" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
-        .concurrency = .{ .group = "ci-${{ github.ref }}", .cancel_in_progress = true },
+        .concurrency = .{ .group = "ci-${{ github.ref }}" },
         .jobs = &.{},
     };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -989,7 +875,7 @@ test "BP005: no warning when concurrency is set" {
 
 test "BP005: no warning without push trigger" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .pull_request, .name = "pull_request" },
+        .{ .event = .pull_request },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -1003,7 +889,7 @@ test "BP005: no warning without push trigger" {
 
 test "BP005: fix metadata is attached with .unsafe" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -1024,7 +910,7 @@ test "BP005: fix metadata is attached with .unsafe" {
 
 test "BP005: fix is null when concurrency_insertion_byte is missing" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -1040,14 +926,6 @@ test "BP005: fix is null when concurrency_insertion_byte is missing" {
 }
 
 test "BP005: autofix inserts block-form concurrency after on: line" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -1059,19 +937,10 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    var diags = DiagnosticList.init(alloc);
-    checkPushConcurrency(&wf, &diags);
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .workflow = &checkPushConcurrency }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expectEqualStrings(

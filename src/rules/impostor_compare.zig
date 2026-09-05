@@ -20,6 +20,7 @@
 const std = @import("std");
 const engine = @import("engine.zig");
 const http_client = @import("http_client.zig");
+const json_util = @import("json_util.zig");
 const impostor = @import("impostor.zig");
 const graphql = @import("graphql.zig");
 
@@ -173,11 +174,8 @@ fn classifyImpostorViaCompare(
     // tag candidates and the default branch in the fix_hint.
     return .{
         .status = .impostor,
-        .suggested_tags = bridgeOids(scratch, pc.tag_oids),
-        .suggested_default = if (pc.default_branch) |def|
-            bridgeSingle(def)
-        else
-            null,
+        .suggested_tags = pc.tag_oids,
+        .suggested_default = pc.default_branch,
     };
 }
 
@@ -235,41 +233,18 @@ fn compareRest(
         .{ owner, repo, base_encoded, head },
     ) catch return .unknown;
 
-    var aw: std.Io.Writer.Allocating = .init(scratch);
-    defer aw.deinit();
+    var resp = http_client.fetchAuthenticatedJson(scratch, url) catch return .unknown;
+    defer resp.deinit();
 
-    const auth_value = http_client.getAuthHeader(scratch);
-    defer if (auth_value) |a| scratch.free(a);
+    if (resp.status != .ok) return .unknown;
 
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
-
-    const result = http_client.fetch(.{
-        .location = .{ .url = url },
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
-    }) catch return .unknown;
-
-    if (result.status != .ok) return .unknown;
-
-    var response_list = aw.toArrayList();
-    defer response_list.deinit(scratch);
-
-    return parseCompareStatus(scratch, response_list.items);
+    return parseCompareStatus(scratch, resp.body);
 }
 
 fn parseCompareStatus(scratch: Allocator, body: []const u8) CompareStatus {
     const root = std.json.parseFromSliceLeaky(std.json.Value, scratch, body, .{}) catch return .unknown;
-    const obj = switch (root) {
-        .object => |o| o,
-        else => return .unknown,
-    };
-    const status_val = obj.get("status") orelse return .unknown;
-    const status = switch (status_val) {
-        .string => |s| s,
-        else => return .unknown,
-    };
+    const obj = json_util.asObject(root) orelse return .unknown;
+    const status = json_util.stringField(obj, "status") orelse return .unknown;
     if (std.mem.eql(u8, status, "identical") or std.mem.eql(u8, status, "behind")) {
         return .reachable;
     }
@@ -280,26 +255,6 @@ fn parseCompareStatus(scratch: Allocator, body: []const u8) CompareStatus {
 }
 
 // ============================================================
-// graphql.NamedOid ↔ impostor.NamedOid bridges
-// ============================================================
-
-/// Convert graphql.NamedOid slices into the impostor.NamedOid layout.
-/// Both structs are field-compatible but live in different modules to
-/// avoid a circular import.
-fn bridgeOids(scratch: Allocator, src: []const graphql.NamedOid) []const impostor.NamedOid {
-    if (src.len == 0) return &.{};
-    var out = scratch.alloc(impostor.NamedOid, src.len) catch return &.{};
-    for (src, 0..) |s, i| {
-        out[i] = .{ .name = s.name, .oid = s.oid };
-    }
-    return out;
-}
-
-fn bridgeSingle(src: graphql.NamedOid) impostor.NamedOid {
-    return .{ .name = src.name, .oid = src.oid };
-}
-
-// ============================================================
 // URL helpers
 // ============================================================
 
@@ -307,26 +262,13 @@ fn bridgeSingle(src: graphql.NamedOid) impostor.NamedOid {
 /// embed in a single URL path segment. Returns the input unchanged when
 /// nothing needs encoding. Null return signals allocation failure.
 fn percentEncodePathSegment(scratch: Allocator, s: []const u8) ?[]const u8 {
-    var n_encoded: usize = 0;
     for (s) |c| {
-        if (!isUnreserved(c)) n_encoded += 1;
-    }
-    if (n_encoded == 0) return s;
+        if (!isUnreserved(c)) break;
+    } else return s;
 
-    const out = scratch.alloc(u8, s.len + n_encoded * 2) catch return null;
-    var i: usize = 0;
-    for (s) |c| {
-        if (isUnreserved(c)) {
-            out[i] = c;
-            i += 1;
-        } else {
-            out[i] = '%';
-            out[i + 1] = hexDigit(@intCast((c >> 4) & 0xf));
-            out[i + 2] = hexDigit(@intCast(c & 0xf));
-            i += 3;
-        }
-    }
-    return out;
+    var out: std.Io.Writer.Allocating = .init(scratch);
+    std.Uri.Component.percentEncode(&out.writer, s, isUnreserved) catch return null;
+    return out.written();
 }
 
 fn isUnreserved(c: u8) bool {
@@ -334,10 +276,6 @@ fn isUnreserved(c: u8) bool {
         'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
         else => false,
     };
-}
-
-fn hexDigit(v: u4) u8 {
-    return if (v < 10) '0' + @as(u8, v) else 'A' + @as(u8, v) - 10;
 }
 
 // ============================================================

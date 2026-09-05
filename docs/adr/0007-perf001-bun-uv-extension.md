@@ -1,4 +1,4 @@
-# 0005. PERF001 検査対象拡張: oven-sh/setup-bun と astral-sh/setup-uv
+# 0007. PERF001 検査対象拡張: oven-sh/setup-bun と astral-sh/setup-uv
 
 - Status: Accepted
 - Date: 2026-04-20
@@ -6,7 +6,7 @@
 
 ## Context
 
-`PERF001` (cache-not-used) は ADR 0004 の時点で `actions/setup-node` /
+`PERF001` (cache-not-used) は ADR 0005 の時点で `actions/setup-node` /
 `actions/setup-python` / `actions/setup-go` を対象としていた。近年普及した
 runtime installer のうち以下 2 種は別系統の action として提供されており、
 既存ロジックではカバーできないことが判明した:
@@ -127,7 +127,7 @@ runtime installer のうち以下 2 種は別系統の action として提供さ
 - 実装プラン: `/root/.claude/plans/perf001-uv-bun-dreamy-scroll.md`
 - 設計書: `docs/design/perf001-lockfile-detection-design.md` の「独立 setup
   action の取り扱い (bun / uv)」セクション
-- 関連 ADR: `docs/adr/0004-perf001-cache-extension.md`
+- 関連 ADR: `docs/adr/0005-perf001-cache-extension.md`
 - 外部情報確認:
   - `actions/setup-node` action.yml: cache input は npm/yarn/pnpm のみ
   - `actions/setup-python` action.yml: cache input は pip/pipenv/poetry のみ

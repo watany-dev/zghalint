@@ -85,7 +85,6 @@ fn lintSource(
     source: []const u8,
 ) !diagnostics.DiagnosticList {
     var yp = yaml_parser.Parser.init(alloc, source);
-    defer yp.deinit();
 
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);

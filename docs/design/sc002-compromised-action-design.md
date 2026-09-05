@@ -6,7 +6,7 @@ tj-actions/changed-files（GHSA-mrrh-fwg8-r2c3, 2025-03-14）級の **公表済�
 
 データはソースコード埋込み（ADR D9）。ネットワーク I/O 不要で `--offline` / `--quick` でも動作する。これは zghalint の主要セールスポイントの 1 つになる。
 
-本設計書の判断は `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` の D7 / D9 を単一情報源とする。行番号は本ドキュメント記述時点（commit `f427b0a`）のもの。
+本設計書の判断は `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` の D7 / D9 を単一情報源とする。行番号は本ドキュメント記述時点（commit `f427b0a`）のもの。
 
 ## スコープ
 
@@ -227,7 +227,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 
 ## 参考
 
-- `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D7 / D9 / D11）
+- `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D7 / D9 / D11）
 - tj-actions/changed-files incident — GHSA-mrrh-fwg8-r2c3, 2025-03-14
 - `src/rules/advisory.zig:20-123` — SC003 実装、Advisory 型定義の参考
 - `src/rules/archived.zig:69-92, :189-198` — SC004 `.dependency` category 実装

@@ -39,22 +39,24 @@ fn nodeKindLabel(node: Node) []const u8 {
     };
 }
 
-/// Validate a bool field (`true` / `false` only). Returns the parsed value, or
-/// null when the value is an expression or invalid.
-pub fn checkBool(
+/// Validate a scalar field of type `T` (`bool` or `u32`). Returns the parsed
+/// value, or null when the value is an expression or the wrong type.
+fn checkScalar(
+    comptime T: type,
+    comptime expected: []const u8,
+    comptime parse: fn ([]const u8) ?T,
     node: Node,
     field: []const u8,
     mismatches: ?*std.ArrayList(TypeMismatch),
     allocator: std.mem.Allocator,
-) ?bool {
+) ?T {
     switch (node) {
         .scalar => |s| {
             if (containsExpression(s.value)) return null;
-            if (std.mem.eql(u8, s.value, "true")) return true;
-            if (std.mem.eql(u8, s.value, "false")) return false;
+            if (parse(s.value)) |v| return v;
             report(mismatches, allocator, .{
                 .field = field,
-                .expected = "bool",
+                .expected = expected,
                 .actual = "string",
                 .span = s.span,
             });
@@ -63,7 +65,7 @@ pub fn checkBool(
         else => {
             report(mismatches, allocator, .{
                 .field = field,
-                .expected = "bool",
+                .expected = expected,
                 .actual = nodeKindLabel(node),
                 .span = node.getSpan(),
             });
@@ -72,38 +74,32 @@ pub fn checkBool(
     }
 }
 
-/// Validate a non-negative integer field. Returns the parsed value, or null
-/// when the value is an expression or invalid.
+fn parseBoolValue(value: []const u8) ?bool {
+    if (std.mem.eql(u8, value, "true")) return true;
+    if (std.mem.eql(u8, value, "false")) return false;
+    return null;
+}
+
+fn parseU32Value(value: []const u8) ?u32 {
+    return std.fmt.parseInt(u32, value, 10) catch null;
+}
+
+pub fn checkBool(
+    node: Node,
+    field: []const u8,
+    mismatches: ?*std.ArrayList(TypeMismatch),
+    allocator: std.mem.Allocator,
+) ?bool {
+    return checkScalar(bool, "bool", parseBoolValue, node, field, mismatches, allocator);
+}
+
 pub fn checkNumber(
     node: Node,
     field: []const u8,
     mismatches: ?*std.ArrayList(TypeMismatch),
     allocator: std.mem.Allocator,
 ) ?u32 {
-    switch (node) {
-        .scalar => |s| {
-            if (containsExpression(s.value)) return null;
-            if (std.fmt.parseInt(u32, s.value, 10)) |n| {
-                return n;
-            } else |_| {}
-            report(mismatches, allocator, .{
-                .field = field,
-                .expected = "number",
-                .actual = "string",
-                .span = s.span,
-            });
-            return null;
-        },
-        else => {
-            report(mismatches, allocator, .{
-                .field = field,
-                .expected = "number",
-                .actual = nodeKindLabel(node),
-                .span = node.getSpan(),
-            });
-            return null;
-        },
-    }
+    return checkScalar(u32, "number", parseU32Value, node, field, mismatches, allocator);
 }
 
 // ============================================================
@@ -111,14 +107,13 @@ pub fn checkNumber(
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
 fn mkSpan(byte: usize) Span {
     return Span.point(1, 1, byte);
 }
 
-fn mkScalar(value: []const u8) Node {
-    return .{ .scalar = .{ .value = value, .style = .plain, .span = mkSpan(0) } };
-}
+const mkScalar = test_support.mkScalar;
 
 test "checkBool accepts true and false" {
     var list = std.ArrayList(TypeMismatch){};

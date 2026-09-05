@@ -2,7 +2,7 @@
 //!
 //! Single source of truth for EXPR002 (context names), EXPR003 (properties)
 //! and EXPR004/EXPR005 (function names and arity).
-//! See `docs/adr/0006-expr-static-typecheck.md` (D2, D3).
+//! See `docs/adr/0009-expr-static-typecheck.md` (D2, D3).
 
 const std = @import("std");
 const t = @import("expr_type.zig");
@@ -167,17 +167,8 @@ const contexts = [_]ContextEntry{
 
 /// Returns null for an unknown context name (EXPR002).
 pub fn lookupContext(name: []const u8) ?TypeRef {
-    var lo: usize = 0;
-    var hi: usize = contexts.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        switch (std.mem.order(u8, contexts[mid].name, name)) {
-            .lt => lo = mid + 1,
-            .gt => hi = mid,
-            .eq => return contexts[mid].ty,
-        }
-    }
-    return null;
+    const ctx = t.findByName(ContextEntry, &contexts, name) orelse return null;
+    return ctx.ty;
 }
 
 // ============================================================
@@ -215,17 +206,7 @@ const functions = [_]FuncSig{
 
 /// Returns null for an unknown function name (EXPR004).
 pub fn lookupFunction(name: []const u8) ?*const FuncSig {
-    var lo: usize = 0;
-    var hi: usize = functions.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        switch (std.mem.order(u8, functions[mid].name, name)) {
-            .lt => lo = mid + 1,
-            .gt => hi = mid,
-            .eq => return &functions[mid],
-        }
-    }
-    return null;
+    return t.findByName(FuncSig, &functions, name);
 }
 
 // ============================================================

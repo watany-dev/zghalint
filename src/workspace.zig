@@ -11,10 +11,7 @@ pub const NodeCache = enum {
     }
 
     pub fn fromString(s: []const u8) ?NodeCache {
-        if (std.mem.eql(u8, s, "npm")) return .npm;
-        if (std.mem.eql(u8, s, "yarn")) return .yarn;
-        if (std.mem.eql(u8, s, "pnpm")) return .pnpm;
-        return null;
+        return std.meta.stringToEnum(NodeCache, s);
     }
 };
 
@@ -29,10 +26,7 @@ pub const PythonCache = enum {
     }
 
     pub fn fromString(s: []const u8) ?PythonCache {
-        if (std.mem.eql(u8, s, "pip")) return .pip;
-        if (std.mem.eql(u8, s, "pipenv")) return .pipenv;
-        if (std.mem.eql(u8, s, "poetry")) return .poetry;
-        return null;
+        return std.meta.stringToEnum(PythonCache, s);
     }
 };
 

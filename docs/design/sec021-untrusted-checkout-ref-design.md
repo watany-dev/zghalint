@@ -6,7 +6,7 @@
 
 `SEC021` はこれら残りのトリガー群に対して checkout ref への untrusted 代入を検知する。SEC005 / SEC009 と**重複発火させない**。
 
-本設計書の判断は `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` の D6 を単一情報源とする。行番号は本ドキュメント記述時点（commit `f427b0a`）のもの。
+本設計書の判断は `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` の D6 を単一情報源とする。行番号は本ドキュメント記述時点（commit `f427b0a`）のもの。
 
 ## スコープ
 
@@ -216,7 +216,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 
 ## 参考
 
-- `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D2 / D3 / D6）
+- `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D2 / D3 / D6）
 - `docs/design/sec009-workflow-run-untrusted-checkout-design.md` — 同級ルールの設計書テンプレート
 - `src/rules/security.zig:237-282` — SEC005 実装 + `containsDangerousPRRef`
 - `src/rules/security.zig:457-487` — SEC009 実装 + `containsDangerousWorkflowRunRef`

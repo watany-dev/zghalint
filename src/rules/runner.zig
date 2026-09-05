@@ -10,18 +10,34 @@ const DiagnosticList = engine.DiagnosticList;
 const Severity = engine.Severity;
 const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
-const Edit = diagnostics_mod.Edit;
 const Span = yaml_types.Span;
 
 // ── RUNNER001: Deprecated or retired runner label ──
 
-const LabelStatus = enum { retired, deprecated };
+const LabelStatus = enum {
+    retired,
+    deprecated,
+
+    /// A retired label makes the run fail outright; a deprecated one still works.
+    fn severity(self: LabelStatus) Severity {
+        return switch (self) {
+            .retired => .@"error",
+            .deprecated => .warning,
+        };
+    }
+
+    fn message(self: LabelStatus) []const u8 {
+        return switch (self) {
+            .retired => "runs-on label is retired and the workflow will fail to start",
+            .deprecated => "runs-on label is deprecated and scheduled for retirement",
+        };
+    }
+};
 
 const DeprecatedLabel = struct {
     label: []const u8,
     status: LabelStatus,
     replacement: []const u8,
-    note: []const u8,
 };
 
 const deprecated_labels = [_]DeprecatedLabel{
@@ -29,58 +45,28 @@ const deprecated_labels = [_]DeprecatedLabel{
         .label = "ubuntu-18.04",
         .status = .retired,
         .replacement = "ubuntu-22.04",
-        .note = "removed 2023-04",
     },
     .{
         .label = "ubuntu-20.04",
         .status = .retired,
         .replacement = "ubuntu-22.04",
-        .note = "removed 2025-04-15",
     },
     .{
         .label = "macos-11",
         .status = .retired,
         .replacement = "macos-13",
-        .note = "removed 2024-06",
     },
     .{
         .label = "macos-12",
         .status = .retired,
         .replacement = "macos-13",
-        .note = "removed 2024-12",
     },
     .{
         .label = "windows-2019",
         .status = .deprecated,
         .replacement = "windows-2022",
-        .note = "scheduled for retirement",
     },
 };
-
-fn severityFor(status: LabelStatus) Severity {
-    return switch (status) {
-        .retired => .@"error",
-        .deprecated => .warning,
-    };
-}
-
-fn buildReplacementFix(
-    list: *DiagnosticList,
-    value_span: Span,
-    replacement: []const u8,
-) ?Fix {
-    const edits = list.allocEdit(.{
-        .start_byte = value_span.start_byte,
-        .end_byte = value_span.end_byte,
-        .replacement = replacement,
-    }) orelse return null;
-
-    return .{
-        .description = "Replace with supported runner label",
-        .safety = .unsafe,
-        .edits = edits,
-    };
-}
 
 fn checkDeprecatedRunner(job: *const Job, diag_list: *DiagnosticList) void {
     const runs_on = job.runs_on orelse return;
@@ -89,18 +75,23 @@ fn checkDeprecatedRunner(job: *const Job, diag_list: *DiagnosticList) void {
         if (!std.mem.eql(u8, runs_on, entry.label)) continue;
 
         const span = job.runs_on_value_span orelse job.span;
-        const fix: ?Fix = if (job.runs_on_value_span) |vs|
-            buildReplacementFix(diag_list, vs, entry.replacement)
-        else
-            null;
+        const fix: ?Fix = if (job.runs_on_value_span) |vs| blk: {
+            const edits = diag_list.allocEdit(.{
+                .start_byte = vs.start_byte,
+                .end_byte = vs.end_byte,
+                .replacement = entry.replacement,
+            }) orelse break :blk null;
+            break :blk Fix{
+                .description = "Replace with supported runner label",
+                .safety = .unsafe,
+                .edits = edits,
+            };
+        } else null;
 
         diag_list.append(.{
             .rule_id = "RUNNER001",
-            .severity = severityFor(entry.status),
-            .message = switch (entry.status) {
-                .retired => "runs-on label is retired and the workflow will fail to start",
-                .deprecated => "runs-on label is deprecated and scheduled for retirement",
-            },
+            .severity = entry.status.severity(),
+            .message = entry.status.message(),
             .span = span,
             .fix_hint = entry.replacement,
             .fix = fix,
@@ -125,17 +116,9 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
-fn dummySpan(start_byte: usize, end_byte: usize) Span {
-    return .{
-        .start_line = 1,
-        .start_col = 1,
-        .end_line = 1,
-        .end_col = 1,
-        .start_byte = start_byte,
-        .end_byte = end_byte,
-    };
-}
+const dummySpan = test_support.dummySpan;
 
 test "RUNNER001: retired ubuntu-20.04 emits error with unsafe fix" {
     const job = Job{
@@ -222,14 +205,6 @@ test "RUNNER001: unknown label produces no diagnostic" {
 }
 
 test "RUNNER001: autofix end-to-end replaces label in YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -241,21 +216,10 @@ test "RUNNER001: autofix end-to-end replaces label in YAML source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
-
-    var diags = DiagnosticList.init(alloc);
-    checkDeprecatedRunner(&wf.jobs[0], &diags);
-
-    try testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDeprecatedRunner }, true);
     defer result.deinit(testing.allocator);
 
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
     try testing.expect(std.mem.indexOf(u8, result.content, "ubuntu-22.04") != null);
     try testing.expect(std.mem.indexOf(u8, result.content, "ubuntu-20.04") == null);

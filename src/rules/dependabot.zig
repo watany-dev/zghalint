@@ -2,14 +2,12 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
-const fix_engine = @import("../fix/engine.zig");
 const fix_builder = @import("../fix/builder.zig");
 
 const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
 const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
-const Span = yaml_types.Span;
 const Fix = diagnostics_mod.Fix;
 
 // ── DEP001: dependabot-cooldown ──
@@ -49,19 +47,36 @@ fn buildCooldownFix(list: *DiagnosticList, entry: yaml_types.Mapping) ?Fix {
     };
 }
 
-fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
-    const updates_node = root.get("updates") orelse return;
-    const items = switch (updates_node) {
+/// Walk the mappings under `updates:`, skipping anything that is not a mapping.
+/// Both DEP001 and DEP002 are per-update-entry checks.
+fn updateEntries(root: Mapping) UpdateEntryIterator {
+    const node = root.get("updates") orelse return .{ .items = &.{} };
+    return .{ .items = switch (node) {
         .sequence => |seq| seq.items,
-        else => return,
-    };
+        else => &.{},
+    } };
+}
 
-    for (items) |item| {
-        const entry = switch (item) {
-            .mapping => |m| m,
-            else => continue,
-        };
+const UpdateEntryIterator = struct {
+    items: []const yaml_types.Node,
+    index: usize = 0,
 
+    fn next(self: *UpdateEntryIterator) ?Mapping {
+        while (self.index < self.items.len) {
+            const item = self.items[self.index];
+            self.index += 1;
+            switch (item) {
+                .mapping => |m| return m,
+                else => continue,
+            }
+        }
+        return null;
+    }
+};
+
+fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
+    var it = updateEntries(root);
+    while (it.next()) |entry| {
         if (entry.get("cooldown") == null) {
             var diag = diagnostics_mod.Diagnostic{
                 .rule_id = "DEP001",
@@ -97,17 +112,8 @@ fn buildInsecureExecutionFix(
 }
 
 fn checkInsecureExecution(root: Mapping, diag_list: *DiagnosticList) void {
-    const updates_node = root.get("updates") orelse return;
-    const items = switch (updates_node) {
-        .sequence => |seq| seq.items,
-        else => return,
-    };
-
-    for (items) |item| {
-        const entry = switch (item) {
-            .mapping => |m| m,
-            else => continue,
-        };
+    var it = updateEntries(root);
+    while (it.next()) |entry| {
 
         // Find the entry to get the value's span
         for (entry.entries) |map_entry| {
@@ -167,11 +173,14 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const yaml_parser_mod = @import("../yaml/parser.zig");
+const test_support = @import("../test_support.zig");
+
+const hasDiagnostic = test_support.hasDiagnostic;
+const findDiagnostic = test_support.findDiagnostic;
 
 fn parseYamlWithArena(arena: *std.heap.ArenaAllocator, source: []const u8) !Node {
     const alloc = arena.allocator();
     var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
     return parser.parse();
 }
 
@@ -190,14 +199,7 @@ test "DEP001: detect missing cooldown" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(hasDiagnostic(&diags, "DEP001"));
 }
 
 test "DEP001: no warning when cooldown is configured" {
@@ -281,20 +283,13 @@ test "DEP002: detect insecure-external-code-execution allow" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
-            found = true;
-            try std.testing.expect(d.fix != null);
-            const fix = d.fix.?;
-            try std.testing.expectEqualStrings("set insecure-external-code-execution to deny", fix.description);
-            try std.testing.expect(fix.safety == .safe);
-            try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
-            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.fix != null);
+    const fix = d.fix.?;
+    try std.testing.expectEqualStrings("set insecure-external-code-execution to deny", fix.description);
+    try std.testing.expect(fix.safety == .safe);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
 }
 
 test "DEP002: fix preserves single quoted style" {
@@ -310,16 +305,10 @@ test "DEP002: fix preserves single quoted style" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
-            const fix = d.fix orelse return error.TestUnexpectedResult;
-            // replaceScalar swaps only the inner content between quotes.
-            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP002") orelse return error.TestUnexpectedResult;
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    // replaceScalar swaps only the inner content between quotes.
+    try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
 }
 
 test "DEP002: fix preserves double quoted style" {
@@ -335,16 +324,10 @@ test "DEP002: fix preserves double quoted style" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP002")) {
-            const fix = d.fix orelse return error.TestUnexpectedResult;
-            // replaceScalar swaps only the inner content between quotes.
-            try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP002") orelse return error.TestUnexpectedResult;
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    // replaceScalar swaps only the inner content between quotes.
+    try std.testing.expectEqualStrings("deny", fix.edits[0].replacement);
 }
 
 test "DEP002: no warning when set to deny" {
@@ -407,21 +390,10 @@ test "DEP002: autofix rewrites allow to deny without disturbing other updates" {
         \\    insecure-external-code-execution: deny
     ;
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const node = try parseYamlWithArena(&arena, source);
-    var diags = DiagnosticList.init(std.testing.allocator);
-    defer diags.deinit();
-    lintDependabot(node, &diags);
-
-    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, false);
-    defer std.testing.allocator.free(fixes);
-
-    try std.testing.expectEqual(@as(usize, 2), fixes.len);
-
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .document = &lintDependabot }, false);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 2), result.fix_count);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
     try std.testing.expectEqualStrings(
         \\version: 2
@@ -494,16 +466,10 @@ test "DEP001: fix metadata is attached with .unsafe" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
-            const fix = d.fix orelse return error.TestExpectedNonNull;
-            try std.testing.expect(fix.safety == .unsafe);
-            try std.testing.expectEqualStrings("insert cooldown block", fix.description);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP001") orelse return error.TestUnexpectedResult;
+    const fix = d.fix orelse return error.TestExpectedNonNull;
+    try std.testing.expect(fix.safety == .unsafe);
+    try std.testing.expectEqualStrings("insert cooldown block", fix.description);
 }
 
 test "DEP001: autofix inserts cooldown at end of entry (block form)" {
@@ -517,20 +483,10 @@ test "DEP001: autofix inserts cooldown at end of entry (block form)" {
         \\
     ;
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const node = try parseYamlWithArena(&arena, source);
-    var diags = DiagnosticList.init(std.testing.allocator);
-    defer diags.deinit();
-    lintDependabot(node, &diags);
-
-    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
-    defer std.testing.allocator.free(fixes);
-    try std.testing.expectEqual(@as(usize, 1), fixes.len);
-
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .document = &lintDependabot }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 1), result.fix_count);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expectEqualStrings(
         \\version: 2
@@ -559,14 +515,8 @@ test "DEP001: fix is null for flow-style mapping entry" {
     defer diags.deinit();
     lintDependabot(node, &diags);
 
-    var found = false;
-    for (diags.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "DEP001")) {
-            try std.testing.expect(d.fix == null);
-            found = true;
-        }
-    }
-    try std.testing.expect(found);
+    const d = findDiagnostic(&diags, "DEP001") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.fix == null);
 }
 
 test "DEP001 + DEP002: coexist on the same entry" {
@@ -581,20 +531,10 @@ test "DEP001 + DEP002: coexist on the same entry" {
         \\
     ;
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const node = try parseYamlWithArena(&arena, source);
-    var diags = DiagnosticList.init(std.testing.allocator);
-    defer diags.deinit();
-    lintDependabot(node, &diags);
-
-    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
-    defer std.testing.allocator.free(fixes);
-    try std.testing.expectEqual(@as(usize, 2), fixes.len);
-
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .document = &lintDependabot }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 2), result.fix_count);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
     try std.testing.expectEqualStrings(
         \\version: 2

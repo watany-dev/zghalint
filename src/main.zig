@@ -4,7 +4,7 @@ const Config = zghalint.Config;
 const OutputFormat = zghalint.OutputFormat;
 const ColorMode = zghalint.ColorMode;
 
-const version = "0.0.1-rc.1";
+const version = @import("build_options").version;
 
 const FixMode = enum {
     off,
@@ -148,7 +148,7 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
     // Also check for .github/dependabot.yml and .github/dependabot.yaml
     inline for ([_][]const u8{ ".github/dependabot.yml", ".github/dependabot.yaml" }) |dep_path| {
         if (std.fs.cwd().access(dep_path, .{})) |_| {
-            const path_copy = try std.fmt.allocPrint(allocator, "{s}", .{dep_path});
+            const path_copy = try allocator.dupe(u8, dep_path);
             try files.append(allocator, path_copy);
         } else |_| {}
     }
@@ -161,6 +161,46 @@ fn isDependabotFile(path: []const u8) bool {
         std.mem.endsWith(u8, path, "dependabot.yaml");
 }
 
+/// Read a whole workflow / config file, reporting open and read failures on
+/// `stderr`. Null means the file was skipped; the caller owns the returned
+/// bytes.
+fn readSourceFile(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    stderr: *std.Io.Writer,
+) ?[]u8 {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
+        return null;
+    };
+    defer file.close();
+
+    return file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
+        return null;
+    };
+}
+
+/// Move the diagnostics the config keeps into `all_diags`, applying the
+/// severity override and stamping the file path.
+///
+/// `appendOwning` is required because `diag_list`'s fix arena dies with the
+/// caller's frame; `Fix.edits` would otherwise dangle.
+fn appendFiltered(
+    all_diags: *zghalint.DiagnosticList,
+    diag_list: *zghalint.DiagnosticList,
+    config: *const Config,
+    file_path: []const u8,
+) void {
+    for (diag_list.items.items) |diag| {
+        if (!config.isRuleEnabled(diag.rule_id)) continue;
+        var d = diag;
+        d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
+        d.file = file_path;
+        all_diags.appendOwning(d) catch {};
+    }
+}
+
 fn lintDependabotFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -171,16 +211,7 @@ fn lintDependabotFile(
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
-    defer file.close();
-
-    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
+    const source = readSourceFile(allocator, file_path, stderr) orelse return;
     defer allocator.free(source);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -188,7 +219,6 @@ fn lintDependabotFile(
     const arena_alloc = arena.allocator();
 
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
@@ -200,13 +230,7 @@ fn lintDependabotFile(
 
     zghalint.rules.dependabot.lintDependabot(yaml_node, &diag_list);
 
-    for (diag_list.items.items) |diag| {
-        if (!config.isRuleEnabled(diag.rule_id)) continue;
-        var d = diag;
-        d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
-        d.file = file_path;
-        all_diags.appendOwning(d) catch {};
-    }
+    appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
 /// Pre-parse every workflow file and pre-fetch network-dependent rule data
@@ -235,14 +259,13 @@ fn prefetchNetworkData(
         const source = file.readToEndAlloc(scratch, 10 * 1024 * 1024) catch continue;
 
         var yaml_parser = zghalint.yaml.Parser.init(scratch, source);
-        defer yaml_parser.deinit();
 
         const yaml_node = yaml_parser.parse() catch continue;
         const workflow = zghalint.workflow.parseWorkflow(scratch, yaml_node) catch continue;
         try workflows.append(scratch, workflow);
     }
 
-    _ = zghalint.rules.prefetch.prefetchAllWithOptions(
+    zghalint.rules.prefetch.prefetchAllWithOptions(
         scratch,
         workflows.items,
         .{ .no_cache = no_cache },
@@ -250,7 +273,7 @@ fn prefetchNetworkData(
 }
 
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
-    const path = config_path orelse zghalint.config.findConfigFile(".") orelse return Config.init(allocator);
+    const path = config_path orelse zghalint.config.defaultConfigPath() orelse return Config.init(allocator);
 
     const file = std.fs.cwd().openFile(path, .{}) catch return Config.init(allocator);
     defer file.close();
@@ -271,16 +294,7 @@ fn lintFile(
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
-    defer file.close();
-
-    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
+    const source = readSourceFile(allocator, file_path, stderr) orelse return;
     defer allocator.free(source);
 
     // Arena for YAML/workflow parsing (freed after diagnostics are collected)
@@ -290,7 +304,6 @@ fn lintFile(
 
     // YAML parse
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
@@ -319,30 +332,7 @@ fn lintFile(
         zghalint.rules.engine.postProcess(allocator, &workflow, &diag_list);
     }
 
-    // Apply config: filter disabled rules, override severity, set file.
-    // Use `appendOwning` because `diag_list`'s fix_arena is deinitialized when
-    // this function returns; Fix.edits would otherwise dangle.
-    for (diag_list.items.items) |diag| {
-        if (!config.isRuleEnabled(diag.rule_id)) continue;
-        var d = diag;
-        d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
-        d.file = file_path;
-        all_diags.appendOwning(d) catch {};
-    }
-}
-
-fn outputTerminal(diag_list: *zghalint.DiagnosticList, writer: anytype, use_color: bool) !void {
-    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, null, use_color);
-}
-
-fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checked: usize) !void {
-    try zghalint.output.renderJson(writer, diag_list.*, files_checked);
-    try writer.writeAll("\n");
-}
-
-fn outputSarif(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
-    try zghalint.output.renderSarif(writer, diag_list.*, &all_rules);
-    try writer.writeAll("\n");
+    appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
 fn applyFixesForFile(
@@ -580,30 +570,19 @@ pub fn main() !u8 {
     const use_color = switch (config.color_mode) {
         .always => true,
         .never => false,
-        .auto => std.posix.isatty(std.fs.File.stdout().handle),
+        .auto => std.Io.tty.detectConfig(std.fs.File.stdout()) != .no_color,
     };
 
-    // Output
-    switch (config.output_format) {
-        .terminal => {
-            outputTerminal(&all_diags, stdout, use_color) catch {
-                return 2;
-            };
-            try stdout.flush();
-        },
-        .json => {
-            outputJson(&all_diags, stdout, files.len) catch {
-                return 2;
-            };
-            try stdout.flush();
-        },
-        .sarif => {
-            outputSarif(&all_diags, stdout) catch {
-                return 2;
-            };
-            try stdout.flush();
-        },
-    }
+    // Output. Only the terminal format is self-terminating; the machine-readable
+    // formats get an explicit trailing newline.
+    const rendered = switch (config.output_format) {
+        .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, use_color),
+        .json => zghalint.output.renderJson(stdout, all_diags, files.len),
+        .sarif => zghalint.output.renderSarif(stdout, all_diags, &all_rules),
+    };
+    rendered catch return 2;
+    if (config.output_format != .terminal) stdout.writeAll("\n") catch return 2;
+    try stdout.flush();
 
     // Exit code
     if (hasErrors(&all_diags)) return 1;

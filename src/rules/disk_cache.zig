@@ -28,7 +28,9 @@
 //! them to v2.
 
 const std = @import("std");
+const json_util = @import("json_util.zig");
 const graphql = @import("graphql.zig");
+const impostor = @import("impostor.zig");
 const engine = @import("engine.zig");
 
 const Allocator = std.mem.Allocator;
@@ -45,28 +47,13 @@ pub const cache_format_current: u8 = 2;
 // Public types
 // ============================================================
 
-pub const ShaEntry = struct {
-    sha: []const u8,
-    resolution: graphql.ShaTagResolution,
-};
-
-pub const NamedEntry = struct {
-    ref: []const u8,
-    is_tag: bool,
-    is_branch: bool,
-};
-
-pub const BranchEntry = struct {
-    name: []const u8,
-    oid: []const u8,
-};
-
-/// Mirrors `impostor.ImpostorStatus` but is duplicated here to avoid a
-/// circular import (impostor.zig depends on diagnostics, disk_cache must
-/// stay leaf-level for the persistence pipeline). Translation happens in
-/// the prefetch layer, identical to how `graphql.ShaTagResolution` and
-/// `stale_refs.TagResolution` are kept apart.
-pub const ImpostorStatus = enum { legitimate, impostor, unknown };
+// The cache stores exactly what the fetch layers produce, so the entry types
+// are those layers' types rather than field-compatible copies. Sharing them
+// keeps prefetch free of identity conversions in both directions.
+pub const ShaEntry = graphql.ShaTagResult;
+pub const NamedEntry = graphql.NamedRefResult;
+pub const BranchEntry = graphql.NamedOid;
+pub const ImpostorStatus = impostor.ImpostorStatus;
 
 pub const ImpostorEntry = struct {
     sha: []const u8,
@@ -76,17 +63,17 @@ pub const ImpostorEntry = struct {
 pub const CachedRepo = struct {
     cached_at: i64 = 0,
     archived: ?bool = null,
-    shas: []ShaEntry = &.{},
-    named: []NamedEntry = &.{},
+    shas: []const ShaEntry = &.{},
+    named: []const NamedEntry = &.{},
     /// SC008 step2 inputs: branch names + HEAD oids snapshotted at
     /// fetch time. Empty for v1 entries.
-    branches: []BranchEntry = &.{},
+    branches: []const BranchEntry = &.{},
     /// SC008 step3 input: default branch name + HEAD oid. null for v1
     /// entries or when GraphQL didn't surface it.
     default_branch: ?BranchEntry = null,
     /// SC008 final verdicts. Empty for v1 entries; populated as the
     /// compare phase decides each SHA.
-    impostor: []ImpostorEntry = &.{},
+    impostor: []const ImpostorEntry = &.{},
 };
 
 // ============================================================
@@ -177,10 +164,7 @@ pub fn loadFromDir(
     const parse_alloc = parse_arena.allocator();
 
     const root = std.json.parseFromSliceLeaky(std.json.Value, parse_alloc, body, .{}) catch return null;
-    const obj = switch (root) {
-        .object => |o| o,
-        else => return null,
-    };
+    const obj = json_util.asObject(root) orelse return null;
 
     const cached_at: i64 = blk: {
         const v = obj.get("cached_at") orelse break :blk 0;
@@ -194,108 +178,89 @@ pub fn loadFromDir(
     var result: CachedRepo = .{ .cached_at = cached_at };
 
     if (obj.get("archived")) |v| {
-        result.archived = switch (v) {
-            .bool => |b| b,
-            else => null,
-        };
+        result.archived = json_util.asBool(v);
     }
 
-    if (obj.get("shas")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(ShaEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 2) continue;
-                if (fields[0] != .string or fields[1] != .string) continue;
-                if (!engine.isValidSha(fields[0].string)) continue;
-                const res = parseResolutionCode(fields[1].string) orelse continue;
-                const sha_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                list.append(allocator, .{ .sha = sha_copy, .resolution = res }) catch continue;
-            }
-            result.shas = list.toOwnedSlice(allocator) catch &.{};
-        }
-    }
-
-    if (obj.get("named")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(NamedEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 3) continue;
-                if (fields[0] != .string) continue;
-                if (!engine.isValidGitRef(fields[0].string)) continue;
-                const ref_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                const is_tag = intFieldAsBool(fields[1]);
-                const is_branch = intFieldAsBool(fields[2]);
-                list.append(allocator, .{ .ref = ref_copy, .is_tag = is_tag, .is_branch = is_branch }) catch continue;
-            }
-            result.named = list.toOwnedSlice(allocator) catch &.{};
-        }
-    }
-
-    if (obj.get("branches")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(BranchEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 2) continue;
-                if (fields[0] != .string or fields[1] != .string) continue;
-                if (!engine.isValidGitRef(fields[0].string)) continue;
-                if (!engine.isValidSha(fields[1].string)) continue;
-                const name_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                const oid_copy = allocator.dupe(u8, fields[1].string) catch {
-                    allocator.free(name_copy);
-                    continue;
-                };
-                list.append(allocator, .{ .name = name_copy, .oid = oid_copy }) catch continue;
-            }
-            result.branches = list.toOwnedSlice(allocator) catch &.{};
-        }
-    }
+    result.shas = parseEntryArray(ShaEntry, allocator, obj, "shas", parseShaEntry);
+    result.named = parseEntryArray(NamedEntry, allocator, obj, "named", parseNamedEntry);
+    result.branches = parseEntryArray(BranchEntry, allocator, obj, "branches", parseBranchEntry);
+    result.impostor = parseEntryArray(ImpostorEntry, allocator, obj, "impostor", parseImpostorEntry);
 
     if (obj.get("default_branch")) |v| {
-        if (v == .array and v.array.items.len >= 2) {
-            const name_v = v.array.items[0];
-            const oid_v = v.array.items[1];
-            if (name_v == .string and oid_v == .string and
-                engine.isValidGitRef(name_v.string) and engine.isValidSha(oid_v.string))
-            {
-                if (allocator.dupe(u8, name_v.string)) |name_copy| {
-                    if (allocator.dupe(u8, oid_v.string)) |oid_copy| {
-                        result.default_branch = .{ .name = name_copy, .oid = oid_copy };
-                    } else |_| {
-                        allocator.free(name_copy);
-                    }
-                } else |_| {}
-            }
-        }
-    }
-
-    if (obj.get("impostor")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(ImpostorEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 2) continue;
-                if (fields[0] != .string or fields[1] != .string) continue;
-                if (!engine.isValidSha(fields[0].string)) continue;
-                const status = parseImpostorCode(fields[1].string) orelse continue;
-                const sha_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                list.append(allocator, .{ .sha = sha_copy, .status = status }) catch continue;
-            }
-            result.impostor = list.toOwnedSlice(allocator) catch &.{};
-        }
+        if (v == .array) result.default_branch = parseBranchEntry(allocator, v.array.items);
     }
 
     return result;
+}
+
+/// Decode the `key` array of `obj` into owned `T` entries.
+/// `parseEntry` returns null for a malformed or unvalidatable row, which is
+/// skipped: a partially corrupt cache file degrades to a partial cache hit
+/// rather than a hard failure.
+fn parseEntryArray(
+    comptime T: type,
+    allocator: Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    comptime parseEntry: fn (Allocator, []const std.json.Value) ?T,
+) []T {
+    const v = obj.get(key) orelse return &.{};
+    if (v != .array) return &.{};
+
+    var list = std.ArrayList(T){};
+    defer list.deinit(allocator);
+    for (v.array.items) |entry| {
+        if (entry != .array) continue;
+        const parsed = parseEntry(allocator, entry.array.items) orelse continue;
+        list.append(allocator, parsed) catch continue;
+    }
+    return list.toOwnedSlice(allocator) catch &.{};
+}
+
+/// The string at `fields[idx]`, or null when absent or not a string.
+fn stringField(fields: []const std.json.Value, idx: usize) ?[]const u8 {
+    if (idx >= fields.len) return null;
+    if (fields[idx] != .string) return null;
+    return fields[idx].string;
+}
+
+fn parseShaEntry(allocator: Allocator, fields: []const std.json.Value) ?ShaEntry {
+    const sha = stringField(fields, 0) orelse return null;
+    const code = stringField(fields, 1) orelse return null;
+    if (!engine.isValidSha(sha)) return null;
+    const res = parseResolutionCode(code) orelse return null;
+    return .{ .sha = allocator.dupe(u8, sha) catch return null, .resolution = res };
+}
+
+fn parseNamedEntry(allocator: Allocator, fields: []const std.json.Value) ?NamedEntry {
+    if (fields.len < 3) return null;
+    const ref = stringField(fields, 0) orelse return null;
+    if (!engine.isValidGitRef(ref)) return null;
+    return .{
+        .ref = allocator.dupe(u8, ref) catch return null,
+        .is_tag = intFieldAsBool(fields[1]),
+        .is_branch = intFieldAsBool(fields[2]),
+    };
+}
+
+fn parseBranchEntry(allocator: Allocator, fields: []const std.json.Value) ?BranchEntry {
+    const name = stringField(fields, 0) orelse return null;
+    const oid = stringField(fields, 1) orelse return null;
+    if (!engine.isValidGitRef(name) or !engine.isValidSha(oid)) return null;
+    const name_copy = allocator.dupe(u8, name) catch return null;
+    const oid_copy = allocator.dupe(u8, oid) catch {
+        allocator.free(name_copy);
+        return null;
+    };
+    return .{ .name = name_copy, .oid = oid_copy };
+}
+
+fn parseImpostorEntry(allocator: Allocator, fields: []const std.json.Value) ?ImpostorEntry {
+    const sha = stringField(fields, 0) orelse return null;
+    const code = stringField(fields, 1) orelse return null;
+    if (!engine.isValidSha(sha)) return null;
+    const status = parseImpostorCode(code) orelse return null;
+    return .{ .sha = allocator.dupe(u8, sha) catch return null, .status = status };
 }
 
 fn parseImpostorCode(code: []const u8) ?ImpostorStatus {
@@ -308,11 +273,11 @@ fn parseImpostorCode(code: []const u8) ?ImpostorStatus {
     };
 }
 
-fn impostorCode(status: ImpostorStatus) u8 {
+fn impostorCode(status: ImpostorStatus) []const u8 {
     return switch (status) {
-        .legitimate => 'l',
-        .impostor => 'i',
-        .unknown => 'u',
+        .legitimate => "l",
+        .impostor => "i",
+        .unknown => "u",
     };
 }
 
@@ -326,11 +291,11 @@ fn parseResolutionCode(code: []const u8) ?graphql.ShaTagResolution {
     };
 }
 
-fn resolutionCode(res: graphql.ShaTagResolution) u8 {
+fn resolutionCode(res: graphql.ShaTagResolution) []const u8 {
     return switch (res) {
-        .has_tag => 'h',
-        .no_tag => 'n',
-        .unknown => 'u',
+        .has_tag => "h",
+        .no_tag => "n",
+        .unknown => "u",
     };
 }
 
@@ -367,50 +332,46 @@ pub fn saveToDir(
     const name = try repoFilename(allocator, owner, repo);
     defer allocator.free(name);
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(allocator);
+    var doc: std.Io.Writer.Allocating = .init(allocator);
+    defer doc.deinit();
+    var js: std.json.Stringify = .{ .writer = &doc.writer };
 
-    try buf.writer(allocator).print("{{\"cache_format\":{d}", .{cache_format_current});
-    try buf.writer(allocator).print(",\"cached_at\":{d}", .{entry.cached_at});
+    try js.beginObject();
+    try js.objectField("cache_format");
+    try js.write(cache_format_current);
+    try js.objectField("cached_at");
+    try js.write(entry.cached_at);
+    try js.objectField("archived");
+    try js.write(entry.archived);
 
-    if (entry.archived) |b| {
-        try buf.writer(allocator).print(",\"archived\":{s}", .{if (b) "true" else "false"});
-    } else {
-        try buf.appendSlice(allocator, ",\"archived\":null");
-    }
+    try js.objectField("shas");
+    try js.beginArray();
+    for (entry.shas) |e| try js.write(.{ e.sha, resolutionCode(e.resolution) });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, ",\"shas\":[");
-    for (entry.shas, 0..) |s, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",\"{c}\"]", .{ s.sha, resolutionCode(s.resolution) });
-    }
+    try js.objectField("named");
+    try js.beginArray();
+    for (entry.named) |e| try js.write(.{ e.ref, @intFromBool(e.is_tag), @intFromBool(e.is_branch) });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, "],\"named\":[");
-    for (entry.named, 0..) |n, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",{d},{d}]", .{ n.ref, @intFromBool(n.is_tag), @intFromBool(n.is_branch) });
-    }
+    try js.objectField("branches");
+    try js.beginArray();
+    for (entry.branches) |e| try js.write(.{ e.name, e.oid });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, "],\"branches\":[");
-    for (entry.branches, 0..) |b, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",\"{s}\"]", .{ b.name, b.oid });
-    }
-    try buf.append(allocator, ']');
-
+    try js.objectField("default_branch");
     if (entry.default_branch) |db| {
-        try buf.writer(allocator).print(",\"default_branch\":[\"{s}\",\"{s}\"]", .{ db.name, db.oid });
+        try js.write(.{ db.name, db.oid });
     } else {
-        try buf.appendSlice(allocator, ",\"default_branch\":null");
+        try js.write(null);
     }
 
-    try buf.appendSlice(allocator, ",\"impostor\":[");
-    for (entry.impostor, 0..) |im, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",\"{c}\"]", .{ im.sha, impostorCode(im.status) });
-    }
+    try js.objectField("impostor");
+    try js.beginArray();
+    for (entry.impostor) |e| try js.write(.{ e.sha, impostorCode(e.status) });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, "]}");
+    try js.endObject();
 
     // Refuse to write through a symlink planted in the cache directory.
     // A same-user attacker could otherwise redirect the truncate+write to an
@@ -429,7 +390,7 @@ pub fn saveToDir(
     var write_buf: [4096]u8 = undefined;
     var af = dir.atomicFile(name, .{ .write_buffer = &write_buf }) catch return;
     defer af.deinit();
-    af.file_writer.interface.writeAll(buf.items) catch return;
+    af.file_writer.interface.writeAll(doc.written()) catch return;
     af.finish() catch return;
 }
 
@@ -437,6 +398,7 @@ pub fn saveToDir(
 // Tests
 // ============================================================
 
+const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
 test "isFresh: recent timestamp is fresh" {
@@ -455,9 +417,9 @@ test "parseResolutionCode round-trips" {
 }
 
 test "resolutionCode maps each enum variant" {
-    try testing.expectEqual(@as(u8, 'h'), resolutionCode(.has_tag));
-    try testing.expectEqual(@as(u8, 'n'), resolutionCode(.no_tag));
-    try testing.expectEqual(@as(u8, 'u'), resolutionCode(.unknown));
+    try testing.expectEqualStrings("h", resolutionCode(.has_tag));
+    try testing.expectEqualStrings("n", resolutionCode(.no_tag));
+    try testing.expectEqualStrings("u", resolutionCode(.unknown));
 }
 
 test "intFieldAsBool decodes JSON variants" {
@@ -642,20 +604,8 @@ test "load/save: round-trip via XDG_CACHE_HOME" {
     const tmp_path_z = try testing.allocator.dupeZ(u8, tmp_path);
     defer testing.allocator.free(tmp_path_z);
 
-    // Snapshot current env so we leave the process state untouched.
-    const saved_xdg = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
-    defer if (saved_xdg) |s| testing.allocator.free(s);
-    const saved_xdg_z: ?[:0]u8 = if (saved_xdg) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
-    defer if (saved_xdg_z) |z| testing.allocator.free(z);
-
-    _ = libc_setenv("XDG_CACHE_HOME", tmp_path_z.ptr, 1);
-    defer {
-        if (saved_xdg_z) |z| {
-            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
-        } else {
-            _ = libc_unsetenv("XDG_CACHE_HOME");
-        }
-    }
+    var env = try test_support.EnvGuard.set(testing.allocator, "XDG_CACHE_HOME", tmp_path_z);
+    defer env.deinit();
 
     const now = std.time.timestamp();
     try save(testing.allocator, "xdg-o", "xdg-r", .{ .cached_at = now, .archived = true });
@@ -669,9 +619,6 @@ test "load/save: round-trip via XDG_CACHE_HOME" {
     try testing.expect(loaded.archived.?);
     try testing.expectEqual(now, loaded.cached_at);
 }
-
-const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
-const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
 
 test "loadFromDir: invalid sha hex is dropped" {
     var tmp = testing.tmpDir(.{});
@@ -744,9 +691,9 @@ test "parseImpostorCode round-trips" {
 }
 
 test "impostorCode maps each enum variant" {
-    try testing.expectEqual(@as(u8, 'l'), impostorCode(.legitimate));
-    try testing.expectEqual(@as(u8, 'i'), impostorCode(.impostor));
-    try testing.expectEqual(@as(u8, 'u'), impostorCode(.unknown));
+    try testing.expectEqualStrings("l", impostorCode(.legitimate));
+    try testing.expectEqualStrings("i", impostorCode(.impostor));
+    try testing.expectEqualStrings("u", impostorCode(.unknown));
 }
 
 test "saveToDir/loadFromDir: v2 round-trips branches/default_branch/impostor" {

@@ -1,4 +1,4 @@
-# 0004. PERF001 autofix 拡張: setup-node / setup-python / setup-go gating
+# 0005. PERF001 autofix 拡張: setup-node / setup-python / setup-go gating
 
 - Status: Accepted
 - Date: 2026-04-19
@@ -10,7 +10,7 @@
 を挿入する形で実装されている。`actions/setup-node` / `actions/setup-python` は
 `cache` input に具体的なマネージャ名（`npm`/`yarn`/`pnpm`/`pip`/`pipenv`/`poetry`）
 を要求するため、リポジトリ内の lockfile を検出して推論する仕組みが必要で、
-`docs/design/autofix-implementation-plan.md` では「lockfile 検出基盤が前提」として
+autofix 実装計画では「lockfile 検出基盤が前提」として
 保留されていた。
 
 本 ADR は grill-me / update-plan セッションで確定した、lockfile probe を導入して
@@ -105,6 +105,5 @@ setup-node / setup-python の autofix を解禁し、併せて setup-go の fix 
 ## Related
 
 - `docs/design/perf001-lockfile-detection-design.md`（設計書）
-- `docs/design/autofix-implementation-plan.md`（推奨実装順の更新）
 - `src/workspace.zig`（実装）
 - `src/rules/performance.zig`（fix dispatcher）

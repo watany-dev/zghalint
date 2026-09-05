@@ -3,10 +3,9 @@
 ## 目的
 
 `BP003` は既知の deprecated action version（例: `actions/checkout@v1`）を検出するが、現状は `fix_hint` のみで自動修正を提供していない。
-`docs/design/autofix-implementation-plan.md` では `BP003` を Phase 1 の優先実装候補（`可 / 中 / 高`）としており、本設計書では既存の置換表と edit-based autofix 基盤の上で安全に実装する方法を定義する。
+`BP003` は autofix Phase 1 の優先実装候補（`可 / 中 / 高`）であり、本設計書では既存の置換表と edit-based autofix 基盤の上で安全に実装する方法を定義する。
 
 関連資料:
-- `docs/design/autofix-implementation-plan.md`
 - `docs/design/dep002-autofix-design.md`（scalar style 分岐の先例）
 
 ## スコープ
@@ -153,7 +152,6 @@ BP003 の autofix は `.safe` とする。
 - `src/workflow/parser.zig`
 - `src/rules/best_practices.zig`
 - `docs/design/bp003-autofix-design.md`（本書）
-- `docs/design/autofix-implementation-plan.md`
 
 ### 変更内容
 

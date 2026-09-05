@@ -206,7 +206,7 @@ repo_visibility: unknown
 ## Development
 
 ```bash
-zig build                           # Build executable and library
+zig build                           # Build the CLI executable
 zig build run -- [workflow files]   # Run with arguments
 zig build test                      # Run all unit tests
 zig build test --summary all        # With detailed summary

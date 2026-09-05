@@ -9,7 +9,6 @@ const rest_fallback = @import("rest_fallback.zig");
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const spans = @import("spans.zig");
-const Span = yaml.Span;
 const Step = workflow_types.Step;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
@@ -88,12 +87,6 @@ pub fn setCachedTagResult(
     tag_cache.?.put(key, resolution) catch return;
 }
 
-/// Return the arena allocator used for cache keys, so the prefetch
-/// orchestrator can stage allocations that live for the rule's lifetime.
-pub fn getArenaAllocator() ?Allocator {
-    return if (stale_refs_arena) |*arena| arena.allocator() else null;
-}
-
 /// Rule check function for SC005.
 pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     var cache = &(tag_cache orelse return); // null => offline, skip
@@ -130,6 +123,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 const ActionRef = workflow_types.ActionRef;
 const Workflow = workflow_types.Workflow;
 const Job = workflow_types.Job;
@@ -138,17 +132,19 @@ const Rule = engine.Rule;
 const Engine = engine.Engine;
 const security = @import("security.zig");
 
-fn hasDiagnostic(list: *DiagnosticList, rule_id: []const u8) bool {
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, rule_id)) return true;
-    }
-    return false;
-}
+const hasDiagnostic = test_support.hasDiagnostic;
 
 // -- Check function tests (using mock cache) --
+// -- Check function tests (using mock cache) --
 
-test "SC005: stale SHA (no_tag) produces info diagnostic" {
-    // Save and restore module state
+const TagCacheEntry = struct { key: []const u8, resolution: TagResolution };
+
+/// Run SC005 over a one-step workflow whose step `uses` the given ref, or runs a
+/// shell command when it is null, with `entries` preloaded into the tag cache.
+/// A null `entries` reproduces offline mode, where there is no cache at all.
+/// Module state is saved and restored so tests stay independent of each other.
+/// Diagnostics only borrow string literals, so the arena can go away here.
+fn runWithTagCache(entries: ?[]const TagCacheEntry, uses_ref: ?[]const u8) DiagnosticList {
     const prev_cache = tag_cache;
     const prev_arena = stale_refs_arena;
     defer {
@@ -158,21 +154,22 @@ test "SC005: stale SHA (no_tag) produces info diagnostic" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
 
-    var cache = std.StringHashMap(TagResolution).init(alloc);
-    cache.put("evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", .no_tag) catch unreachable;
-    tag_cache = cache;
-    stale_refs_arena = arena;
+    if (entries) |es| {
+        var cache = std.StringHashMap(TagResolution).init(arena.allocator());
+        for (es) |e| cache.put(e.key, e.resolution) catch unreachable;
+        tag_cache = cache;
+        stale_refs_arena = arena;
+    } else {
+        tag_cache = null;
+    }
 
     var steps = [_]Step{.{
-        .uses = ActionRef.parse("evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+        .uses = if (uses_ref) |r| ActionRef.parse(r) else null,
+        .run = if (uses_ref == null) "echo hello" else null,
     }};
     var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
+    const wf = Workflow{ .jobs = &jobs, .on = .{ .events = &.{} } };
 
     const rules_arr = [_]Rule{.{
         .id = "SC005",
@@ -182,8 +179,12 @@ test "SC005: stale SHA (no_tag) produces info diagnostic" {
         .category = .dependency,
         .check_step = &checkStaleActionRef,
     }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    return Engine.init(&rules_arr).run(testing.allocator, &wf);
+}
+
+test "SC005: stale SHA (no_tag) produces info diagnostic" {
+    const sha_ref = "evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    var list = runWithTagCache(&.{.{ .key = sha_ref, .resolution = .no_tag }}, sha_ref);
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SC005"));
@@ -192,310 +193,59 @@ test "SC005: stale SHA (no_tag) produces info diagnostic" {
 }
 
 test "SC005: tagged SHA (has_tag) produces no diagnostic" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var cache = std.StringHashMap(TagResolution).init(alloc);
-    cache.put("actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11", .has_tag) catch unreachable;
-    tag_cache = cache;
-    stale_refs_arena = arena;
-
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    const sha_ref = "actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11";
+    var list = runWithTagCache(&.{.{ .key = sha_ref, .resolution = .has_tag }}, sha_ref);
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
 }
 
 test "SC005: unknown resolution produces no diagnostic" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var cache = std.StringHashMap(TagResolution).init(alloc);
-    cache.put("private/repo@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .unknown) catch unreachable;
-    tag_cache = cache;
-    stale_refs_arena = arena;
-
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("private/repo@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    const sha_ref = "private/repo@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    var list = runWithTagCache(&.{.{ .key = sha_ref, .resolution = .unknown }}, sha_ref);
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
 }
 
 test "SC005: non-pinned action (tag ref) is skipped" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    tag_cache = cache;
-    stale_refs_arena = arena;
-
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("actions/checkout@v4"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    var list = runWithTagCache(&.{}, "actions/checkout@v4");
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
 }
 
 test "SC005: local action is skipped" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    tag_cache = cache;
-    stale_refs_arena = arena;
-
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("./local-action"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    var list = runWithTagCache(&.{}, "./local-action");
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
 }
 
 test "SC005: docker action is skipped" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    tag_cache = cache;
-    stale_refs_arena = arena;
-
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("docker://alpine:3.18"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    var list = runWithTagCache(&.{}, "docker://alpine:3.18");
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
 }
 
 test "SC005: step without uses is skipped" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    tag_cache = cache;
-    stale_refs_arena = arena;
-
-    var steps = [_]Step{.{
-        .run = "echo hello",
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    var list = runWithTagCache(&.{}, null);
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
 }
 
 test "SC005: offline mode (null cache) produces no diagnostic" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    tag_cache = null;
-    stale_refs_arena = null;
-
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{
-        .jobs = &jobs,
-        .on = .{ .events = &.{} },
-    };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    var list = runWithTagCache(null, "evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
 }
 
 test "SC005: invalid owner characters rejected" {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    tag_cache = cache;
-    stale_refs_arena = arena;
-
-    // URL-unsafe owner should be silently rejected
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("evil?org/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{ .jobs = &jobs, .on = .{ .events = &.{} } };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC005",
-        .name = "stale-action-refs",
-        .description = "test",
-        .severity = .info,
-        .category = .dependency,
-        .check_step = &checkStaleActionRef,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    // URL-unsafe owner should be silently rejected.
+    var list = runWithTagCache(&.{}, "evil?org/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 0), list.items.items.len);

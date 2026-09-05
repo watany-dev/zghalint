@@ -13,10 +13,7 @@ pub const OutputFormat = enum {
     sarif,
 
     pub fn fromString(s: []const u8) ?OutputFormat {
-        if (std.mem.eql(u8, s, "terminal")) return .terminal;
-        if (std.mem.eql(u8, s, "json")) return .json;
-        if (std.mem.eql(u8, s, "sarif")) return .sarif;
-        return null;
+        return std.meta.stringToEnum(OutputFormat, s);
     }
 };
 
@@ -26,10 +23,7 @@ pub const ColorMode = enum {
     never,
 
     pub fn fromString(s: []const u8) ?ColorMode {
-        if (std.mem.eql(u8, s, "auto")) return .auto;
-        if (std.mem.eql(u8, s, "always")) return .always;
-        if (std.mem.eql(u8, s, "never")) return .never;
-        return null;
+        return std.meta.stringToEnum(ColorMode, s);
     }
 };
 
@@ -39,10 +33,7 @@ pub const Visibility = enum {
     unknown,
 
     pub fn fromString(s: []const u8) ?Visibility {
-        if (std.mem.eql(u8, s, "public")) return .public;
-        if (std.mem.eql(u8, s, "private")) return .private;
-        if (std.mem.eql(u8, s, "unknown")) return .unknown;
-        return null;
+        return std.meta.stringToEnum(Visibility, s);
     }
 };
 
@@ -120,7 +111,6 @@ pub fn parseConfig(allocator: std.mem.Allocator, source: []const u8) ConfigError
     defer yaml_arena.deinit();
 
     var parser = yaml_parser.Parser.init(yaml_arena.allocator(), source);
-    defer parser.deinit();
 
     const node = parser.parse() catch return ConfigError.InvalidYaml;
 
@@ -146,7 +136,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         switch (rules_node) {
             .mapping => |m| {
                 for (m.entries) |entry| {
-                    const rule_id = strings.dupe(u8, entry.key.value) catch return ConfigError.OutOfMemory;
+                    const rule_id = try strings.dupe(u8, entry.key.value);
                     var override = RuleOverride{};
 
                     switch (entry.value) {
@@ -169,7 +159,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                         else => {},
                     }
 
-                    config.rule_overrides.put(rule_id, override) catch return ConfigError.OutOfMemory;
+                    try config.rule_overrides.put(rule_id, override);
                 }
             },
             else => {},
@@ -183,8 +173,8 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                 for (seq.items) |item| {
                     switch (item) {
                         .scalar => |s| {
-                            const pattern = strings.dupe(u8, s.value) catch return ConfigError.OutOfMemory;
-                            config.ignore_patterns.append(allocator, pattern) catch return ConfigError.OutOfMemory;
+                            const pattern = try strings.dupe(u8, s.value);
+                            try config.ignore_patterns.append(allocator, pattern);
                         },
                         else => {},
                     }
@@ -224,11 +214,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
 }
 
 fn parseSeverity(s: []const u8) ?Severity {
-    if (std.mem.eql(u8, s, "error")) return .@"error";
-    if (std.mem.eql(u8, s, "warning")) return .warning;
-    if (std.mem.eql(u8, s, "info")) return .info;
-    if (std.mem.eql(u8, s, "hint")) return .hint;
-    return null;
+    return std.meta.stringToEnum(Severity, s);
 }
 
 fn parseBool(s: []const u8) bool {
@@ -268,12 +254,9 @@ fn matchGlob(pattern: []const u8, str: []const u8) bool {
     return pi == pattern.len;
 }
 
-/// Find .zghalint.yml by searching from the given directory upwards.
-pub fn findConfigFile(start_dir: []const u8) ?[]const u8 {
-    // We just check the given directory for .zghalint.yml
-    // In a real implementation we'd walk upward, but for simplicity
-    // we check a fixed name in the start directory.
-    _ = start_dir;
+/// Path of the default config file when it exists in the current working
+/// directory. No upward search is performed.
+pub fn defaultConfigPath() ?[]const u8 {
     const path = ".zghalint.yml";
     std.fs.cwd().access(path, .{}) catch return null;
     return path;

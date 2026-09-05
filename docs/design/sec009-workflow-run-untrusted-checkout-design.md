@@ -20,7 +20,7 @@ secure Part 2: Untrusted input" で本クラスを明示的に警告しており
 untrusted ref を検出する新ルール `SEC009` を追加する方針を定義する。
 
 関連資料:
-- `docs/adr/0003-sec009-workflow-run-untrusted-checkout.md`（決定記録）
+- `docs/adr/0004-sec009-workflow-run-untrusted-checkout.md`（決定記録）
 - `docs/design/sec020-self-hosted-runner-fork-triggered-design.md`（設計書フォーマットの基準）
 - `src/rules/security.zig:237-283`（SEC005 の先行実装）
 
@@ -169,7 +169,7 @@ SEC008 の Rule エントリ（`src/rules/security.zig:1496-1502`）の直後に
 - `docs/rules.md`
 - `README.md`
 - `docs/design/sec009-workflow-run-untrusted-checkout-design.md`（本ファイル新規）
-- `docs/adr/0003-sec009-workflow-run-untrusted-checkout.md`（新規）
+- `docs/adr/0004-sec009-workflow-run-untrusted-checkout.md`（新規）
 
 ### 変更内容
 

@@ -1,4 +1,4 @@
-# 0002. SEC009 workflow_run-untrusted-checkout
+# 0004. SEC009 workflow_run-untrusted-checkout
 
 - Status: Accepted
 - Date: 2026-04-19

@@ -7,8 +7,6 @@
 本設計書では、特定のパターンに限定して `contains(ctx, 'lit')` → `ctx == 'lit'` への書き換え edit を `--fix-unsafe` で適用できるようにする。意味論が変わる（substring match → 完全一致）ため常に unsafe fix となる。
 
 関連資料:
-- `docs/design/autofix-implementation-plan.md`
-- `docs/design/sec017-autofix-design.md`（`env_meta` 拡張の先例。`if_condition_meta` は同じパターン）
 - `docs/design/bp002-autofix-design.md`（workflow model への最小拡張パターン）
 
 ## スコープ
@@ -271,7 +269,6 @@ EXPR006 の autofix は `.unsafe` とする。
 
 - `contains('foo-bar', 'foo')` = true だが `'foo-bar' == 'foo'` = false で、意味論が変わる
 - `--fix` ではなく `--fix-unsafe` 専用
-- `docs/design/autofix-implementation-plan.md:192-200` の unsafe リストに準拠
 - 既存の `PERM001` 個別 `write→read` や `BP004` の `shell: bash` 挿入と同じポリシー
 
 ## 実装差分
@@ -282,7 +279,6 @@ EXPR006 の autofix は `.unsafe` とする。
 - `src/workflow/types.zig`（Step / Job に `if_condition_meta`）
 - `src/workflow/parser.zig`（if: の value span / style 記録）
 - `docs/design/expr006-autofix-design.md`（本書）
-- `docs/design/autofix-implementation-plan.md`（件数表・Phase 3 表・EXPR006 行の更新 = イテレーション 7）
 
 ### 変更しないもの
 
@@ -320,7 +316,6 @@ EXPR006 の autofix は `.unsafe` とする。
 5. EXPR006 fix 生成を TDD で実装、V1 境界テスト追加（イテレーション 4）
 6. integration test（YAML → lint → applyFixes → 再パース）を追加（イテレーション 5）
 7. V2: unary_op 親検出と `!=` 変換（イテレーション 6、別コミット）
-8. `docs/design/autofix-implementation-plan.md` の実装ステータスを更新（イテレーション 7、doc-only コミット）
 
 各イテレーションの完了時に `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を実行する。
 

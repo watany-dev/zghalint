@@ -14,6 +14,14 @@ const Edit = diagnostics.Edit;
 const Span = yaml_types.Span;
 const ScalarStyle = yaml_types.ScalarStyle;
 
+/// Wrap a single edit in an owned slice. Every builder here produces exactly one
+/// edit; only its byte range and replacement text differ.
+fn oneEdit(alloc: std.mem.Allocator, start_byte: usize, end_byte: usize, replacement: []const u8) ?[]const Edit {
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{ .start_byte = start_byte, .end_byte = end_byte, .replacement = replacement };
+    return edits;
+}
+
 pub const InsertPos = struct {
     byte: usize,
     indent: u32,
@@ -49,9 +57,7 @@ pub fn insertMappingEntry(
     i += value.len;
     buf[i] = '\n';
 
-    const edits = alloc.alloc(Edit, 1) catch return null;
-    edits[0] = .{ .start_byte = pos.byte, .end_byte = pos.byte, .replacement = buf };
-    return edits;
+    return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
 /// Build a single-Edit slice inserting "key: value\n<indent spaces>" at `pos.byte`.
@@ -81,9 +87,7 @@ pub fn insertMappingEntryBefore(
     i += 1;
     @memset(buf[i..][0..indent_len], ' ');
 
-    const edits = alloc.alloc(Edit, 1) catch return null;
-    edits[0] = .{ .start_byte = pos.byte, .end_byte = pos.byte, .replacement = buf };
-    return edits;
+    return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
 /// Build a single-Edit slice appending "\n<indent>key: value" at `after_byte`.
@@ -110,9 +114,32 @@ pub fn appendMappingEntry(
     i += 2;
     @memcpy(buf[i..][0..value.len], value);
 
-    const edits = alloc.alloc(Edit, 1) catch return null;
-    edits[0] = .{ .start_byte = after_byte, .end_byte = after_byte, .replacement = buf };
-    return edits;
+    return oneEdit(alloc, after_byte, after_byte, buf);
+}
+
+/// Build a single-Edit slice appending a fresh `with:` block at `after_byte`:
+///   \n<col-1 spaces>with:\n<col+1 spaces>key: value
+/// `uses_key_col` is the 1-based column of the step's `uses:` key, which the
+/// new `with:` aligns with. Returns null when the column is unknown (0) or OOM.
+pub fn insertWithEntry(
+    alloc: std.mem.Allocator,
+    after_byte: usize,
+    uses_key_col: u32,
+    key: []const u8,
+    value: []const u8,
+) ?[]const Edit {
+    if (uses_key_col == 0) return null;
+    const parent_indent = alloc.alloc(u8, uses_key_col - 1) catch return null;
+    @memset(parent_indent, ' ');
+    const child_indent = alloc.alloc(u8, uses_key_col + 1) catch return null;
+    @memset(child_indent, ' ');
+    const replacement = std.fmt.allocPrint(
+        alloc,
+        "\n{s}with:\n{s}{s}: {s}",
+        .{ parent_indent, child_indent, key, value },
+    ) catch return null;
+
+    return oneEdit(alloc, after_byte, after_byte, replacement);
 }
 
 /// Build a single-Edit slice inserting a multi-line block mapping at `pos.byte`.
@@ -164,9 +191,7 @@ pub fn insertMappingEntryBlock(
         i += 1;
     }
 
-    const edits = alloc.alloc(Edit, 1) catch return null;
-    edits[0] = .{ .start_byte = pos.byte, .end_byte = pos.byte, .replacement = buf };
-    return edits;
+    return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
 /// Build a single-Edit slice replacing the scalar at `value_span` with `new_value`,
@@ -192,26 +217,14 @@ pub fn replaceScalar(
     const content_start = value_span.start_byte + quote_offset;
     if (content_end < content_start) return null;
 
-    const edits = alloc.alloc(Edit, 1) catch return null;
-    edits[0] = .{
-        .start_byte = content_start,
-        .end_byte = content_end,
-        .replacement = new_value,
-    };
-    return edits;
+    return oneEdit(alloc, content_start, content_end, new_value);
 }
 
 /// Build a single-Edit slice that deletes `entry_span` (replacement is empty).
 /// Typical usage is with `MappingEntry.full_span`, which covers the key line
 /// plus its trailing newline.
 pub fn deleteMappingEntry(alloc: std.mem.Allocator, entry_span: Span) ?[]const Edit {
-    const edits = alloc.alloc(Edit, 1) catch return null;
-    edits[0] = .{
-        .start_byte = entry_span.start_byte,
-        .end_byte = entry_span.end_byte,
-        .replacement = "",
-    };
-    return edits;
+    return oneEdit(alloc, entry_span.start_byte, entry_span.end_byte, "");
 }
 
 // ============================================================

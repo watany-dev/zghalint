@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 
@@ -218,89 +219,75 @@ const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 const ActionRef = workflow_types.ActionRef;
 
-fn makeEmptyTrigger() Trigger {
-    return .{ .events = &.{} };
+// --- Test rules ---
+//
+// The engine only needs to know that each hook is reached, so these stubs fire
+// unconditionally instead of re-implementing real rules; the actual BP/SEC
+// logic is covered where those rules live.
+
+fn markWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
+    _ = wf;
+    list.append(.{
+        .rule_id = "TEST-WF",
+        .severity = .warning,
+        .message = "workflow hook ran",
+        .span = Span.point(1, 1, 0),
+    }) catch return;
 }
 
-// --- Test rule check functions ---
-
-fn warnMissingName(wf: *const Workflow, list: *DiagnosticList) void {
-    if (wf.name == null) {
-        list.append(.{
-            .rule_id = "BP001",
-            .severity = .warning,
-            .message = "workflow is missing a name",
-            .span = Span.point(1, 1, 0),
-        }) catch return;
-    }
+fn markJob(job: *const Job, list: *DiagnosticList) void {
+    list.append(.{
+        .rule_id = "TEST-JOB",
+        .severity = .info,
+        .message = "job hook ran",
+        .span = job.span,
+    }) catch return;
 }
 
-fn warnMissingJobName(job: *const Job, list: *DiagnosticList) void {
-    if (job.name == null) {
-        list.append(.{
-            .rule_id = "BP002",
-            .severity = .info,
-            .message = "job is missing a display name",
-            .span = job.span,
-        }) catch return;
-    }
-}
-
-fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
-    if (step.uses) |action_ref| {
-        if (!action_ref.is_local and !action_ref.is_docker and !action_ref.is_pinned) {
-            list.append(.{
-                .rule_id = "SEC001",
-                .severity = .warning,
-                .message = "action reference is not pinned to a SHA",
-                .span = step.uses_value_span orelse step.span,
-                .fix_hint = "pin to a full commit SHA",
-            }) catch return;
-        }
-    }
+fn markStep(step: *const Step, list: *DiagnosticList) void {
+    list.append(.{
+        .rule_id = "TEST-STEP",
+        .severity = .warning,
+        .message = "step hook ran",
+        .span = step.uses_value_span orelse step.span,
+        .fix_hint = "step hook fix hint",
+    }) catch return;
 }
 
 const test_rules = [_]Rule{
     .{
-        .id = "BP001",
-        .name = "workflow-name",
-        .description = "Workflows should have a name",
+        .id = "TEST-WF",
+        .name = "workflow-hook",
+        .description = "Fires once per workflow",
         .severity = .warning,
         .category = .best_practice,
-        .check_workflow = &warnMissingName,
+        .check_workflow = &markWorkflow,
     },
     .{
-        .id = "BP002",
-        .name = "job-name",
-        .description = "Jobs should have a display name",
+        .id = "TEST-JOB",
+        .name = "job-hook",
+        .description = "Fires once per job",
         .severity = .info,
         .category = .best_practice,
-        .check_job = &warnMissingJobName,
+        .check_job = &markJob,
     },
     .{
-        .id = "SEC001",
-        .name = "pinned-action",
-        .description = "Actions should be pinned to a SHA",
+        .id = "TEST-STEP",
+        .name = "step-hook",
+        .description = "Fires once per step",
         .severity = .warning,
         .category = .security,
-        .check_step = &checkUnpinnedAction,
+        .check_step = &markStep,
     },
 };
 
 test "engine runs workflow-level rule" {
     const engine = Engine.init(&test_rules);
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &.{} };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &.{} };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "BP001")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
 }
 
 test "engine runs job-level rule" {
@@ -308,18 +295,11 @@ test "engine runs job-level rule" {
     const jobs = [_]Job{
         .{ .id = "build" },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .name = "CI", .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "BP002")) {
-            found = true;
-            break;
-        }
-    }
-    try std.testing.expect(found);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-JOB"));
 }
 
 test "engine runs step-level rule" {
@@ -330,57 +310,12 @@ test "engine runs step-level rule" {
     const jobs = [_]Job{
         .{ .id = "build", .name = "Build", .steps = &steps },
     };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .name = "CI", .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    var found = false;
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC001")) {
-            found = true;
-            try std.testing.expect(d.fix_hint != null);
-            break;
-        }
-    }
-    try std.testing.expect(found);
-}
-
-test "engine no false positive for pinned action" {
-    const engine = Engine.init(&test_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .name = "Build", .steps = &steps },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
-    var list = engine.run(std.testing.allocator, &wf);
-    defer list.deinit();
-
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC001")) {
-            try std.testing.expect(false);
-        }
-    }
-}
-
-test "engine no false positive for local action" {
-    const engine = Engine.init(&test_rules);
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("./my-action") },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .name = "Build", .steps = &steps },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs };
-    var list = engine.run(std.testing.allocator, &wf);
-    defer list.deinit();
-
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC001")) {
-            try std.testing.expect(false);
-        }
-    }
+    const d = test_support.findDiagnostic(&list, "TEST-STEP") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.fix_hint != null);
 }
 
 test "engine returns all expected diagnostics" {
@@ -392,18 +327,18 @@ test "engine returns all expected diagnostics" {
     const jobs = [_]Job{
         .{ .id = "test", .steps = &steps },
     };
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    // Should have BP001, BP002, SEC001
-    try std.testing.expect(list.len() >= 3);
+    // One diagnostic from each of the three hooks.
+    try std.testing.expectEqual(@as(usize, 3), list.len());
 }
 
 test "engine with empty rules" {
     const empty_rules = [_]Rule{};
     const engine = Engine.init(&empty_rules);
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &.{} };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &.{} };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
@@ -412,21 +347,19 @@ test "engine with empty rules" {
 
 test "engine with empty workflow" {
     const engine = Engine.init(&test_rules);
-    const wf = Workflow{ .name = "Empty", .on = makeEmptyTrigger(), .jobs = &.{} };
+    const wf = Workflow{ .name = "Empty", .on = test_support.empty_trigger, .jobs = &.{} };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    // Only BP001 should NOT fire (name is present), no jobs/steps to check
-    for (list.items.items) |d| {
-        try std.testing.expect(!std.mem.eql(u8, d.rule_id, "BP002"));
-        try std.testing.expect(!std.mem.eql(u8, d.rule_id, "SEC001"));
-    }
+    // No jobs or steps, so only the workflow hook fires.
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
 }
 
 test "rule struct field access" {
     const rule = test_rules[0];
-    try std.testing.expectEqualStrings("BP001", rule.id);
-    try std.testing.expectEqualStrings("workflow-name", rule.name);
+    try std.testing.expectEqualStrings("TEST-WF", rule.id);
+    try std.testing.expectEqualStrings("workflow-hook", rule.name);
     try std.testing.expect(rule.severity == .warning);
     try std.testing.expect(rule.category == .best_practice);
     try std.testing.expect(rule.check_workflow != null);
@@ -593,7 +526,7 @@ test "postProcess: drops SC005 when same step is impostor" {
 
     const steps = [_]Step{.{ .uses = ActionRef.parse("evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef") }};
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -630,7 +563,7 @@ test "postProcess: keeps SC005 when impostor is legitimate" {
 
     const steps = [_]Step{.{ .uses = ActionRef.parse("ok/lib@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }};
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -668,7 +601,7 @@ test "postProcess: drops only the matching SC005 entry, not unrelated ones" {
         .{ .uses = ActionRef.parse("o/b@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") },
     };
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -704,7 +637,7 @@ test "postProcess: no-op when impostor module offline" {
     // stale_refs offline → lookupCachedTagResult returns null → no drops.
     const steps = [_]Step{.{ .uses = ActionRef.parse("o/r@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }};
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
-    const wf = Workflow{ .on = makeEmptyTrigger(), .jobs = &jobs };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
