@@ -240,7 +240,7 @@ fn prefetchNetworkData(
         try workflows.append(scratch, workflow);
     }
 
-    _ = zghalint.rules.prefetch.prefetchAllWithOptions(
+    zghalint.rules.prefetch.prefetchAllWithOptions(
         scratch,
         workflows.items,
         .{ .no_cache = no_cache },
