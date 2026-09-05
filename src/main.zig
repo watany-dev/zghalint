@@ -148,7 +148,7 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
     // Also check for .github/dependabot.yml and .github/dependabot.yaml
     inline for ([_][]const u8{ ".github/dependabot.yml", ".github/dependabot.yaml" }) |dep_path| {
         if (std.fs.cwd().access(dep_path, .{})) |_| {
-            const path_copy = try std.fmt.allocPrint(allocator, "{s}", .{dep_path});
+            const path_copy = try allocator.dupe(u8, dep_path);
             try files.append(allocator, path_copy);
         } else |_| {}
     }
@@ -580,7 +580,7 @@ pub fn main() !u8 {
     const use_color = switch (config.color_mode) {
         .always => true,
         .never => false,
-        .auto => std.posix.isatty(std.fs.File.stdout().handle),
+        .auto => std.Io.tty.detectConfig(std.fs.File.stdout()) != .no_color,
     };
 
     // Output

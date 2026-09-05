@@ -358,14 +358,8 @@ pub const Parser = struct {
         // Block scalars - extract content after indicator line
         if (raw.len >= 1 and (raw[0] == '|' or raw[0] == '>')) {
             const style: ScalarStyle = if (raw[0] == '|') .literal else .folded;
-            // Find first newline
-            var content_start: usize = 0;
-            for (raw, 0..) |ch, i| {
-                if (ch == '\n') {
-                    content_start = i + 1;
-                    break;
-                }
-            }
+            // Content starts after the indicator line.
+            const content_start = if (std.mem.indexOfScalar(u8, raw, '\n')) |nl| nl + 1 else 0;
             return .{
                 .value = if (content_start < raw.len) raw[content_start..] else "",
                 .style = style,

@@ -160,6 +160,10 @@ const NamedKey = struct {
     ref: []const u8,
 };
 
+/// `"{owner}/{repo}@{ref}"` — each component is bounded by `engine.isValidGitRef`
+/// (255 bytes), plus the `/` and `@` separators.
+const max_ref_key_len = 255 * 3 + 2;
+
 const RepoSet = std.StringHashMapUnmanaged(RepoKey);
 const ShaSet = std.StringHashMapUnmanaged(ShaKey);
 const NamedSet = std.StringHashMapUnmanaged(NamedKey);
@@ -245,7 +249,6 @@ fn applyDiskCache(
 
         const entry = disk_cache.load(scratch, owner, repo) orelse continue;
         hits += applyCacheEntry(
-            scratch,
             sets,
             repo_key,
             owner,
@@ -265,7 +268,6 @@ fn applyDiskCache(
 /// refs it covered from `sets`. Factored out of `applyDiskCache` so tests
 /// can drive the mutation logic without staging files on disk.
 fn applyCacheEntry(
-    scratch: Allocator,
     sets: *RefSets,
     repo_key: []const u8,
     owner: []const u8,
@@ -288,17 +290,16 @@ fn applyCacheEntry(
 
     if (stale_active) {
         for (entry.shas) |s| {
-            var sha_buf = std.ArrayList(u8){};
-            defer sha_buf.deinit(scratch);
-            sha_buf.writer(scratch).print("{s}/{s}@{s}", .{ owner, repo, s.sha }) catch continue;
-            if (sets.sha_refs.getPtr(sha_buf.items)) |_| {
+            var key_buf: [max_ref_key_len]u8 = undefined;
+            const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, s.sha }) catch continue;
+            if (sets.sha_refs.getPtr(key)) |_| {
                 const mapped: stale_refs.TagResolution = switch (s.resolution) {
                     .has_tag => .has_tag,
                     .no_tag => .no_tag,
                     .unknown => .unknown,
                 };
                 stale_refs.setCachedTagResult(owner, repo, s.sha, mapped);
-                _ = sets.sha_refs.remove(sha_buf.items);
+                _ = sets.sha_refs.remove(key);
                 hits += 1;
             }
         }
@@ -306,16 +307,15 @@ fn applyCacheEntry(
 
     if (refconf_active) {
         for (entry.named) |n| {
-            var ref_buf = std.ArrayList(u8){};
-            defer ref_buf.deinit(scratch);
-            ref_buf.writer(scratch).print("{s}/{s}@{s}", .{ owner, repo, n.ref }) catch continue;
-            if (sets.named_refs.getPtr(ref_buf.items)) |_| {
+            var key_buf: [max_ref_key_len]u8 = undefined;
+            const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, n.ref }) catch continue;
+            if (sets.named_refs.getPtr(key)) |_| {
                 const status: refconfusion.RefStatus = if (n.is_tag and n.is_branch)
                     .ambiguous
                 else
                     .not_ambiguous;
                 refconfusion.setCachedRefResult(owner, repo, n.ref, status);
-                _ = sets.named_refs.remove(ref_buf.items);
+                _ = sets.named_refs.remove(key);
                 hits += 1;
             }
         }
@@ -774,7 +774,7 @@ test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits
         .named = @constCast(&named),
     };
 
-    const hits = applyCacheEntry(alloc, &sets, repo_key, "o", "r", entry, true, true, true, false);
+    const hits = applyCacheEntry(&sets, repo_key, "o", "r", entry, true, true, true, false);
     try testing.expectEqual(@as(usize, 3), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
@@ -807,7 +807,7 @@ test "applyCacheEntry: inactive rules skip corresponding categories" {
     };
 
     // archived_active=true, stale_active=false, refconf_active=false
-    const hits = applyCacheEntry(alloc, &sets, "o/r", "o", "r", entry, true, false, false, false);
+    const hits = applyCacheEntry(&sets, "o/r", "o", "r", entry, true, false, false, false);
     try testing.expectEqual(@as(usize, 1), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 1), sets.sha_refs.count()); // untouched
@@ -841,7 +841,7 @@ test "applyCacheEntry: impostor_active hydrates SC008 verdicts from disk" {
         .impostor = @constCast(&imp_entries),
     };
 
-    _ = applyCacheEntry(alloc, &sets, "o/r", "o", "r", entry, false, false, false, true);
+    _ = applyCacheEntry(&sets, "o/r", "o", "r", entry, false, false, false, true);
 
     const legit = impostor.lookupCachedImpostorResult("o", "r", sha_legit) orelse
         return error.TestExpectedNonNull;

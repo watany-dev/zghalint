@@ -394,7 +394,7 @@ fn getJsonStringFromObj(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 // ============================================================
 
 fn slugMatches(advisory_slug: []const u8, owner: []const u8, repo: []const u8) bool {
-    const slash_pos = std.mem.indexOf(u8, advisory_slug, "/") orelse return false;
+    const slash_pos = std.mem.indexOfScalar(u8, advisory_slug, '/') orelse return false;
     const adv_owner = advisory_slug[0..slash_pos];
     const adv_repo = advisory_slug[slash_pos + 1 ..];
     return std.mem.eql(u8, adv_owner, owner) and std.mem.eql(u8, adv_repo, repo);

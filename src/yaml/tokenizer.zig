@@ -391,17 +391,16 @@ pub const Tokenizer = struct {
             const after = self.source[self.pos + str.len];
             if (after != '\n' and after != ' ' and after != '\t') return false;
         }
-        return std.mem.eql(u8, self.source[self.pos .. self.pos + str.len], str);
+        return std.mem.startsWith(u8, self.source[self.pos..], str);
     }
 
     fn emitSimple(self: *Tokenizer, kind: TokenKind, len: usize) Token {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
-        var i: usize = 0;
-        while (i < len) : (i += 1) {
-            self.advance();
-        }
+        // Simple tokens never span a newline, so the cursor advances flat.
+        self.pos += len;
+        self.column += @intCast(len);
         return .{
             .kind = kind,
             .start = start,

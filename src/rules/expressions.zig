@@ -943,14 +943,7 @@ pub fn findAndValidateExpressions(
                 const expr_content = text[expr_start .. expr_start + end_offset];
                 const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
                 // Compute leading trim offset so `trimmed`'s absolute byte is accurate.
-                const leading_trim = blk: {
-                    var i: usize = 0;
-                    while (i < expr_content.len) : (i += 1) {
-                        const c = expr_content[i];
-                        if (c != ' ' and c != '\t' and c != '\n' and c != '\r') break;
-                    }
-                    break :blk i;
-                };
+                const leading_trim = std.mem.indexOfNone(u8, expr_content, " \t\n\r") orelse 0;
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
                 const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
                 validateExpression(allocator, trimmed, expr_span, list, expr_base_byte);
