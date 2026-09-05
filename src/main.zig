@@ -248,7 +248,7 @@ fn prefetchNetworkData(
 }
 
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
-    const path = config_path orelse zghalint.config.findConfigFile(".") orelse return Config.init(allocator);
+    const path = config_path orelse zghalint.config.defaultConfigPath() orelse return Config.init(allocator);
 
     const file = std.fs.cwd().openFile(path, .{}) catch return Config.init(allocator);
     defer file.close();
