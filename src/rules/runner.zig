@@ -205,12 +205,6 @@ test "RUNNER001: unknown label produces no diagnostic" {
 }
 
 test "RUNNER001: autofix end-to-end replaces label in YAML source" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -222,18 +216,10 @@ test "RUNNER001: autofix end-to-end replaces label in YAML source" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkDeprecatedRunner(&wf.jobs[0], &diags);
-
-    try testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDeprecatedRunner }, true);
     defer result.deinit(testing.allocator);
 
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
     try testing.expect(std.mem.indexOf(u8, result.content, "ubuntu-22.04") != null);
     try testing.expect(std.mem.indexOf(u8, result.content, "ubuntu-20.04") == null);

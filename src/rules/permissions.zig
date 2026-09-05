@@ -390,12 +390,6 @@ test "PERM002: fix is null when job_indent is zero" {
 }
 
 test "PERM002: autofix inserts permissions block after runs-on" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -407,15 +401,10 @@ test "PERM002: autofix inserts permissions block after runs-on" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkJobPermissions(&wf.jobs[0], &diags);
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &.{fix});
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkJobPermissions }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expectEqualStrings(
@@ -435,12 +424,6 @@ test "PERM002: autofix inserts permissions block after runs-on" {
 }
 
 test "PERM002: multiple jobs get fixes applied in back-to-front order" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -456,20 +439,11 @@ test "PERM002: multiple jobs get fixes applied in back-to-front order" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    for (wf.jobs) |*job| checkJobPermissions(job, &diags);
-
-    try std.testing.expectEqual(@as(usize, 2), diags.len());
-
-    const fixes = [_]Fix{
-        diags.get(0).fix orelse return error.TestExpectedNonNull,
-        diags.get(1).fix orelse return error.TestExpectedNonNull,
-    };
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkJobPermissions }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 2), result.diagnostic_count);
+    try std.testing.expectEqual(@as(usize, 2), result.fix_count);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
     try std.testing.expectEqualStrings(
         \\name: CI

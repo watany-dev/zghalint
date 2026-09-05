@@ -10,6 +10,7 @@ const yaml_parser = @import("yaml/parser.zig");
 const workflow_types = @import("workflow/types.zig");
 const workflow_parser = @import("workflow/parser.zig");
 const diagnostics = @import("diagnostics.zig");
+const fix_engine = @import("fix/engine.zig");
 
 const Span = yaml.Span;
 const Node = yaml.Node;
@@ -78,6 +79,80 @@ pub fn mkScalar(value: []const u8) Node {
 pub fn parseWorkflowSource(allocator: std.mem.Allocator, source: []const u8) !workflow_types.Workflow {
     var yp = yaml_parser.Parser.init(allocator, source);
     return workflow_parser.parseWorkflow(allocator, try yp.parse());
+}
+
+// ── Autofix harness ──
+
+/// A single rule check function, at whichever level it runs.
+pub const Check = union(enum) {
+    workflow: *const fn (*const workflow_types.Workflow, *DiagnosticList) void,
+    job: *const fn (*const workflow_types.Job, *DiagnosticList) void,
+    step: *const fn (*const workflow_types.Step, *DiagnosticList) void,
+    /// A check over a raw YAML document, for configs that are not workflows.
+    document: *const fn (Node, *DiagnosticList) void,
+};
+
+/// The rewritten source plus the counts autofix tests assert on.
+pub const FixOutcome = struct {
+    /// Source after every fix was applied. Owned by the caller.
+    content: []const u8,
+    /// Edits the fix engine actually applied.
+    edits_applied: usize,
+    /// Diagnostics the check produced, fixable or not.
+    diagnostic_count: usize,
+    /// How many of those carried a fix.
+    fix_count: usize,
+    /// Safety of the first fix, when there was one.
+    first_safety: ?diagnostics.FixSafety,
+
+    pub fn deinit(self: FixOutcome, allocator: std.mem.Allocator) void {
+        allocator.free(self.content);
+    }
+};
+
+/// Parse `source`, run `check` over every workflow / job / step in it, and apply
+/// the fixes the resulting diagnostics carry — the end-to-end path a rule's
+/// autofix takes through the CLI. `include_unsafe` is `--fix-unsafe`: with it
+/// off, only fixes marked safe are applied.
+///
+/// Diagnostics and their fix strings live in an arena that dies here; the fix
+/// engine copies what it needs into the returned `content`.
+pub fn lintAndFix(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    check: Check,
+    include_unsafe: bool,
+) !FixOutcome {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var diags = DiagnosticList.init(alloc);
+    switch (check) {
+        .document => |f| {
+            var yp = yaml_parser.Parser.init(alloc, source);
+            f(try yp.parse(), &diags);
+        },
+        else => {
+            const wf = try parseWorkflowSource(alloc, source);
+            switch (check) {
+                .workflow => |f| f(&wf, &diags),
+                .job => |f| for (wf.jobs) |*job| f(job, &diags),
+                .step => |f| for (wf.jobs) |*job| for (job.steps) |*step| f(step, &diags),
+                .document => unreachable,
+            }
+        },
+    }
+
+    const fixes = try fix_engine.collectFixes(alloc, diags.items.items, include_unsafe);
+    const result = try fix_engine.applyFixes(allocator, source, fixes);
+    return .{
+        .content = result.content,
+        .edits_applied = result.edits_applied,
+        .diagnostic_count = diags.len(),
+        .fix_count = fixes.len,
+        .first_safety = if (fixes.len > 0) fixes[0].safety else null,
+    };
 }
 
 // ── Environment ──
