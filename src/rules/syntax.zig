@@ -1159,9 +1159,12 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
     try expectSyn003(diags, &.{});
 }
 
-fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
-    const alloc = arena.allocator();
-    const wf = try test_support.parseWorkflowSource(alloc, source);
+/// Run SYN004 over `source`. The workflow lives in an arena that is released
+/// before returning; the diagnostics only borrow string literals.
+fn runSyn004(source: []const u8, list: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
     checkMappingValueTypes(&wf, list);
 }
 
@@ -1710,12 +1713,10 @@ test "SYN004: mapping value type validation" {
     };
 
     for (cases) |case| {
-        var arena = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
         var diags = DiagnosticList.init(testing.allocator);
         defer diags.deinit();
 
-        try runSyn004(case.source, &arena, &diags);
+        try runSyn004(case.source, &diags);
         try testing.expectEqual(case.want, diags.len());
 
         if (case.message_contains) |needle| {
