@@ -38,8 +38,10 @@ SEC006 が warning なのは「weak gate だが実行には至らない」ため
 
 ### D4. 対象コンテキストは fork が著者となる可変属性のみ
 
-- 報告する: `github.event.workflow_run.head_branch` / `head_commit.*` / `display_title`
-- 報告しない: `head_sha`（不変の 1 コミットを指す）、`head_repository.*`（これは修正手段そのもの）、`conclusion` / `name` など base 側が決める属性
+- 報告する: `github.event.workflow_run.head_branch` / `head_commit.message` / `head_commit.author.*` / `head_commit.committer.*` / `display_title`
+- 報告しない: `head_sha` と `head_commit.id`（同一の不変コミットを指す）、`head_commit.timestamp`、`head_repository.*`（これは修正手段そのもの）、`conclusion` / `name` など base 側が決める属性
+
+`head_commit` を前置詞として扱うと `head_commit.id` まで報告してしまい、`head_sha` を非報告とした判断と矛盾する。そのため fork が著者となるフィールドを明示列挙する。
 
 issue 本文の「`head_branch` / `head_sha` 以外の可変な属性」という記述は、`head_sha` を信頼の根拠として残す意図として読み、`head_branch` は報告対象に含めた（issue の再現例そのものが `head_branch` であるため）。
 
@@ -47,8 +49,10 @@ issue 本文の「`head_branch` / `head_sha` 以外の可変な属性」とい�
 
 同じ `if:` が次のいずれかを含む場合、ゲートは成立しているので報告しない。
 
-- `github.event.workflow_run.head_repository.*` — トリガー元リポジトリの同一性検査。fork には偽装できない
+- `github.event.workflow_run.head_repository.full_name` / `.name` / `.id` / `.owner` — トリガー元リポジトリの同一性検査。fork には偽装できない
 - `github.event.workflow_run.event`（ただし条件文字列に `pull_request` を含まない場合のみ）— fork は base リポジトリの push run を起こせないため `event == 'push'` は有効な anchor。比較する literal が anchor の本体なので、`event == 'pull_request'` は anchor と見なさない
+
+anchor は **`==` の被演算子であること**を要求する（参照の左右どちらでも可）。`head_repository.full_name != github.repository` は untrusted な run を除外するのではなく選択するので anchor ではない。同じ理由で `head_repository.fork` は anchor 表に入れない（`fork == true` は fork 専用ゲートである）。
 
 job の `if:` が anchor を持つ場合、その job の step は job 条件を通過して初めて走るので step 条件も報告しない。
 

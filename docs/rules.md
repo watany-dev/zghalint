@@ -62,12 +62,15 @@ is not routing. That workflow runs with the base repository's secrets, and a
 fork picks its own branch names, so `if: github.event.workflow_run.head_branch
 == 'main'` is a gate the attacker walks through. SEC022 covers exactly that
 case: `on: workflow_run` only, and only for the attributes the fork authors
-(`head_branch`, `head_commit.*`, `display_title`). A condition that also
-verifies the triggering repository —
+(`head_branch`, `head_commit.message` / `.author` / `.committer`,
+`display_title`). A condition that also verifies the triggering repository —
 `github.event.workflow_run.head_repository.full_name == github.repository`, or
-`github.event.workflow_run.event == 'push'` — is sound, and is not reported;
-neither is `head_sha`, which names one immutable commit. A trust check on the
-job covers the steps inside it.
+`github.event.workflow_run.event == 'push'` — is sound, and is not reported.
+The anchor must be an equality check: `head_repository.full_name !=
+github.repository` selects the fork runs rather than excluding them, and
+`head_repository.fork == true` is a fork-only gate, so neither counts. Values
+that name one immutable commit — `head_sha`, `head_commit.id` — are never
+reported. A trust check on the job covers the steps inside it.
 
 ## Supply Chain Security Rules (SC)
 
