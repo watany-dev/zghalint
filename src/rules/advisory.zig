@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
 const http_client = @import("http_client.zig");
+const json_util = @import("json_util.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -285,36 +286,21 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
     var result = std.ArrayList(Advisory){};
 
     for (items) |item| {
-        const obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
+        const obj = json_util.asObject(item) orelse continue;
+        const ghsa_id = json_util.stringField(obj, "ghsa_id") orelse continue;
+        const summary = json_util.stringField(obj, "summary") orelse "";
+        const severity = json_util.stringField(obj, "severity") orelse "unknown";
 
-        const ghsa_id = getJsonString(obj, "ghsa_id") orelse continue;
-        const summary = getJsonString(obj, "summary") orelse "";
-        const severity = getJsonString(obj, "severity") orelse "unknown";
-
-        const vulns_val = obj.get("vulnerabilities") orelse continue;
-        const vulns = switch (vulns_val) {
-            .array => |a| a.items,
-            else => continue,
-        };
+        const vulns = json_util.arrayField(obj, "vulnerabilities") orelse continue;
 
         for (vulns) |vuln_item| {
-            const vuln = switch (vuln_item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const pkg_val = vuln.get("package") orelse continue;
-            const pkg = switch (pkg_val) {
-                .object => |o| o,
-                else => continue,
-            };
-            const ecosystem = getJsonString(pkg, "ecosystem") orelse continue;
+            const vuln = json_util.asObject(vuln_item) orelse continue;
+            const pkg = json_util.objField(vuln, "package") orelse continue;
+            const ecosystem = json_util.stringField(pkg, "ecosystem") orelse continue;
             if (!std.mem.eql(u8, ecosystem, "actions")) continue;
 
-            const action_name = getJsonString(pkg, "name") orelse continue;
-            const range = getJsonString(vuln, "vulnerable_version_range");
+            const action_name = json_util.stringField(pkg, "name") orelse continue;
+            const range = json_util.stringField(vuln, "vulnerable_version_range");
             const patched = getJsonStringFromObj(vuln, "first_patched_version");
 
             const message = std.fmt.allocPrint(allocator, "action '{s}' has known vulnerability {s}: {s}", .{
@@ -342,22 +328,11 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
     return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
-fn getJsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const val = obj.get(key) orelse return null;
-    return switch (val) {
-        .string => |s| s,
-        else => null,
-    };
-}
-
 fn getJsonStringFromObj(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     // first_patched_version can be an object with "identifier" field or a string
-    if (getJsonString(obj, key)) |s| return s;
-    const nested = switch (obj.get(key) orelse return null) {
-        .object => |o| o,
-        else => return null,
-    };
-    return getJsonString(nested, "identifier");
+    if (json_util.stringField(obj, key)) |s| return s;
+    const nested = json_util.objField(obj, key) orelse return null;
+    return json_util.stringField(nested, "identifier");
 }
 
 // ============================================================

@@ -28,6 +28,7 @@
 //! them to v2.
 
 const std = @import("std");
+const json_util = @import("json_util.zig");
 const graphql = @import("graphql.zig");
 const engine = @import("engine.zig");
 
@@ -177,10 +178,7 @@ pub fn loadFromDir(
     const parse_alloc = parse_arena.allocator();
 
     const root = std.json.parseFromSliceLeaky(std.json.Value, parse_alloc, body, .{}) catch return null;
-    const obj = switch (root) {
-        .object => |o| o,
-        else => return null,
-    };
+    const obj = json_util.asObject(root) orelse return null;
 
     const cached_at: i64 = blk: {
         const v = obj.get("cached_at") orelse break :blk 0;
@@ -194,10 +192,7 @@ pub fn loadFromDir(
     var result: CachedRepo = .{ .cached_at = cached_at };
 
     if (obj.get("archived")) |v| {
-        result.archived = switch (v) {
-            .bool => |b| b,
-            else => null,
-        };
+        result.archived = json_util.asBool(v);
     }
 
     result.shas = parseEntryArray(ShaEntry, allocator, obj, "shas", parseShaEntry);

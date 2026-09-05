@@ -20,6 +20,7 @@
 const std = @import("std");
 const engine = @import("engine.zig");
 const http_client = @import("http_client.zig");
+const json_util = @import("json_util.zig");
 const impostor = @import("impostor.zig");
 const graphql = @import("graphql.zig");
 
@@ -245,15 +246,8 @@ fn compareRest(
 
 fn parseCompareStatus(scratch: Allocator, body: []const u8) CompareStatus {
     const root = std.json.parseFromSliceLeaky(std.json.Value, scratch, body, .{}) catch return .unknown;
-    const obj = switch (root) {
-        .object => |o| o,
-        else => return .unknown,
-    };
-    const status_val = obj.get("status") orelse return .unknown;
-    const status = switch (status_val) {
-        .string => |s| s,
-        else => return .unknown,
-    };
+    const obj = json_util.asObject(root) orelse return .unknown;
+    const status = json_util.stringField(obj, "status") orelse return .unknown;
     if (std.mem.eql(u8, status, "identical") or std.mem.eql(u8, status, "behind")) {
         return .reachable;
     }

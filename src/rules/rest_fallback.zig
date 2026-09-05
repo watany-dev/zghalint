@@ -14,6 +14,7 @@
 const std = @import("std");
 
 const http_client = @import("http_client.zig");
+const json_util = @import("json_util.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -85,16 +86,9 @@ pub fn fetchArchiveStatus(allocator: Allocator, owner: []const u8, repo: []const
 fn parseArchivedField(allocator: Allocator, body: []const u8) RestError!bool {
     const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch return error.JsonParseError;
 
-    const obj = switch (root) {
-        .object => |o| o,
-        else => return error.UnexpectedFormat,
-    };
-
+    const obj = json_util.asObject(root) orelse return error.UnexpectedFormat;
     const archived_val = obj.get("archived") orelse return error.MissingField;
-    return switch (archived_val) {
-        .bool => |b| b,
-        else => error.UnexpectedFormat,
-    };
+    return json_util.asBool(archived_val) orelse error.UnexpectedFormat;
 }
 
 // ============================================================
@@ -139,18 +133,11 @@ fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8
     var annotated_count: usize = 0;
 
     for (items) |item| {
-        const obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
-        const ref_obj_val = obj.get("object") orelse continue;
-        const ref_obj = switch (ref_obj_val) {
-            .object => |o| o,
-            else => continue,
-        };
+        const obj = json_util.asObject(item) orelse continue;
+        const ref_obj = json_util.objField(obj, "object") orelse continue;
 
-        const obj_sha = getJsonString(ref_obj, "sha") orelse continue;
-        const obj_type = getJsonString(ref_obj, "type") orelse continue;
+        const obj_sha = json_util.stringField(ref_obj, "sha") orelse continue;
+        const obj_type = json_util.stringField(ref_obj, "type") orelse continue;
 
         if (std.mem.eql(u8, obj_type, "commit")) {
             if (std.mem.eql(u8, obj_sha, target_sha)) return .has_tag;
@@ -196,29 +183,13 @@ fn parseTagObject(body: []const u8) RestError![]const u8 {
 
     const root = std.json.parseFromSliceLeaky(std.json.Value, fba.allocator(), body, .{}) catch return error.JsonParseError;
 
-    const obj = switch (root) {
-        .object => |o| o,
-        else => return error.UnexpectedFormat,
-    };
+    const obj = json_util.asObject(root) orelse return error.UnexpectedFormat;
+    const inner = json_util.objField(obj, "object") orelse return error.UnexpectedFormat;
 
-    const inner_val = obj.get("object") orelse return error.UnexpectedFormat;
-    const inner = switch (inner_val) {
-        .object => |o| o,
-        else => return error.UnexpectedFormat,
-    };
-
-    const obj_type = getJsonString(inner, "type") orelse return error.UnexpectedFormat;
+    const obj_type = json_util.stringField(inner, "type") orelse return error.UnexpectedFormat;
     if (!std.mem.eql(u8, obj_type, "commit")) return error.UnexpectedFormat;
 
-    return getJsonString(inner, "sha") orelse error.UnexpectedFormat;
-}
-
-fn getJsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const val = obj.get(key) orelse return null;
-    return switch (val) {
-        .string => |s| s,
-        else => null,
-    };
+    return json_util.stringField(inner, "sha") orelse error.UnexpectedFormat;
 }
 
 // ============================================================
