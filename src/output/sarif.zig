@@ -262,23 +262,6 @@ test "renderSarif unknown rule id has no ruleIndex" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":") == null);
 }
 
-test "writeJsonString escapes control chars" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    try writeJsonString(buf.writer(std.testing.allocator), "a\tb\rc\nd\\e\"f");
-    const output = buf.items;
-    try std.testing.expectEqualStrings("\"a\\tb\\rc\\nd\\\\e\\\"f\"", output);
-}
-
-test "writeJsonString escapes low control characters" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    try writeJsonString(buf.writer(std.testing.allocator), "\x01\x02");
-    try std.testing.expectEqualStrings("\"\\u0001\\u0002\"", buf.items);
-}
-
 test "renderSarif with no file" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);

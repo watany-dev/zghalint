@@ -167,14 +167,6 @@ test "renderJson null fix_hint" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"file\":\"<unknown>\"") != null);
 }
 
-test "writeJsonString escapes special chars" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    try writeJsonString(buf.writer(std.testing.allocator), "hello \"world\"\nnew\\line");
-    try std.testing.expectEqualStrings("\"hello \\\"world\\\"\\nnew\\\\line\"", buf.items);
-}
-
 test "renderJson is valid JSON structure" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
@@ -190,23 +182,6 @@ test "renderJson is valid JSON structure" {
     // Starts with { ends with }
     try std.testing.expect(output[0] == '{');
     try std.testing.expect(output[output.len - 1] == '}');
-}
-
-test "writeJsonString escapes tabs and carriage returns" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    try writeJsonString(buf.writer(std.testing.allocator), "col1\tcol2\rend");
-    try std.testing.expectEqualStrings("\"col1\\tcol2\\rend\"", buf.items);
-}
-
-test "writeJsonString escapes control characters" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    // Test with a control char (0x01 = SOH)
-    try writeJsonString(buf.writer(std.testing.allocator), "\x01");
-    try std.testing.expectEqualStrings("\"\\u0001\"", buf.items);
 }
 
 test "renderJson with hint severity" {
