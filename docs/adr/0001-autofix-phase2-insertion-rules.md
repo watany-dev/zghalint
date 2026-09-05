@@ -6,7 +6,7 @@
 
 ## Context
 
-`docs/design/autofix-implementation-plan.md` の Phase 1（SEC017, DEP002, PERF003, BP003, BP002）は完全実装済み。
+autofix 実装計画の Phase 1（SEC017, DEP002, PERF003, BP003, BP002）は完全実装済み。
 次に進める autofix として、挿入系 unsafe fix を束ねた Phase 2 の先頭 3 ルール（BP005, PERM002, DEP001）を対象にする。
 
 これらは共通して「既存の mapping に block 形式の新規エントリを挿入する」挙動であり、専用 helper を整備することで以降の BP004 / PERM001 残 / PERF001 への足場になる。
@@ -66,7 +66,7 @@
 3. PERM002 autofix
 4. DEP001 autofix
 5. PBT 強化（strategies と `--fix-unsafe` 対応 PBT）
-6. ドキュメント更新（`autofix-implementation-plan.md` のステータス反映、Phase 2 横断設計書の新規作成、`pbt-strategy.md` カバレッジ表追記）
+6. ドキュメント更新（Phase 2 横断設計書の新規作成、`pbt-strategy.md` カバレッジ表追記）
 
 各コミットで CLAUDE.md の CI ゲート（`zig build && zig fmt --check && zig build test --summary all`）を通す。
 
@@ -94,7 +94,6 @@
 ## References
 
 - `/root/.claude/plans/autofix-floofy-sundae.md` — 対応する実装プラン
-- `docs/design/autofix-implementation-plan.md` — 42 診断 ID 棚卸し、Phase 1-3 の優先度付け
 - `docs/design/pbt-strategy.md` — PBT 戦略、既知 xfail 一覧
 - `docs/design/bp002-autofix-design.md`, `bp003-autofix-design.md`, `dep002-autofix-design.md` — Phase 1 per-rule 設計書（本 ADR は Phase 2 を束ねる位置づけ）
 - `src/fix/builder.zig` — 既存 edit builder

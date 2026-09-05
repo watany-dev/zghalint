@@ -139,7 +139,7 @@ pub const TrustedAction = struct {
 ### D10. ドキュメント更新対象
 
 - `docs/adr/0006-security-gap-fill-*.md`: 本 ADR（ADR 連番は `0003` の次。`0002-` が 2 つある既存混乱は無視して `0004` を採る）
-- `docs/design/sec018-autofix-design.md`: SEC018 autofix 設計書（`sec017-autofix-design.md` の構成に倣う）
+- `docs/design/sec018-autofix-design.md`: SEC018 autofix 設計書
 - `docs/rules.md`: **必須更新**。冒頭 "includes **45 rules**" → "**49 rules**"、Security / Supply Chain テーブルに 4 行追加
 - `README.md`: ルール件数言及があれば 45→49 更新、新規 4 ルールを Changelog 的に追記
 
@@ -184,7 +184,6 @@ Tidy → Red → Green → Refactor を各ルール単位で。推奨順序:
 ## 参考
 
 - `docs/adr/0003-runner001-deprecated-runner.md` — 類似の ADR 構成・autofix unsafe 判断の先例
-- `docs/design/sec017-autofix-design.md` — SEC018 autofix 設計書のテンプレート
 - `docs/rules.md` — zghalint ルールカタログ（単一情報源）
 - `src/rules/security.zig:1472` — `security_rules` 配列への追加箇所
 - `src/workflow/types.zig:247-278` — `Step` 構造体（autofix 用 span すべて既存）

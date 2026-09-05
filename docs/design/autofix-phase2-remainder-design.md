@@ -170,7 +170,7 @@ ADR 0001 § D6 のコミット分割パターンを踏襲し、5 コミットで
 2. **BP004 autofix**: rule + Zig インラインテスト（parser 変更なし）
 3. **PERF001 autofix**: rule + Zig インラインテスト（parser 変更なし）
 4. **PBT 強化**: `strategies.py` に 3 strategy 追加 + `test_autofix_idempotency.py` 拡張
-5. **ドキュメント更新**: 本設計書新規 + `autofix-implementation-plan.md` / `pbt-strategy.md` ステータス反映 + ADR 0002
+5. **ドキュメント更新**: 本設計書新規 + `pbt-strategy.md` ステータス反映 + ADR 0002
 
 各コミットで CLAUDE.md の CI ゲート（`zig build && zig fmt --check src/ build.zig && zig build test --summary all`）を通す。コミット 4 以降は `python -m pytest tests/pbt/` も通す。
 
@@ -179,7 +179,6 @@ ADR 0001 § D6 のコミット分割パターンを踏襲し、5 コミットで
 - `docs/adr/0002-autofix-phase2-remainder.md` — 決定事項と根拠
 - `docs/adr/0001-autofix-phase2-insertion-rules.md` — Phase 2 前半の ADR（本設計のテンプレート）
 - `docs/design/autofix-phase2-insertion-design.md` — Phase 2 前半の横断設計
-- `docs/design/autofix-implementation-plan.md` — 42 診断 ID 全体の棚卸し
 - `docs/design/pbt-strategy.md` — PBT 戦略・ルールカバレッジ表・既知 xfail 一覧
 - `src/fix/builder.zig`, `src/fix/engine.zig` — 既存 edit 基盤
 - `src/workflow/types.zig:22-41` — `Permissions`（全 14 フィールド）

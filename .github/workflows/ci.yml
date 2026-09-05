@@ -55,6 +55,8 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
+      # ubuntu-24.04 (noble) には kcov パッケージが存在しないため
+      # (`E: Unable to locate package kcov`)、v43 をソースからビルドする。
       - name: Install kcov
         run: |
           sudo apt-get update
