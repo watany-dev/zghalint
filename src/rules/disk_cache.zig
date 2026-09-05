@@ -30,6 +30,7 @@
 const std = @import("std");
 const json_util = @import("json_util.zig");
 const graphql = @import("graphql.zig");
+const impostor = @import("impostor.zig");
 const engine = @import("engine.zig");
 
 const Allocator = std.mem.Allocator;
@@ -46,28 +47,13 @@ pub const cache_format_current: u8 = 2;
 // Public types
 // ============================================================
 
-pub const ShaEntry = struct {
-    sha: []const u8,
-    resolution: graphql.ShaTagResolution,
-};
-
-pub const NamedEntry = struct {
-    ref: []const u8,
-    is_tag: bool,
-    is_branch: bool,
-};
-
-pub const BranchEntry = struct {
-    name: []const u8,
-    oid: []const u8,
-};
-
-/// Mirrors `impostor.ImpostorStatus` but is duplicated here to avoid a
-/// circular import (impostor.zig depends on diagnostics, disk_cache must
-/// stay leaf-level for the persistence pipeline). Translation happens in
-/// the prefetch layer, identical to how `graphql.ShaTagResolution` and
-/// `stale_refs.TagResolution` are kept apart.
-pub const ImpostorStatus = enum { legitimate, impostor, unknown };
+// The cache stores exactly what the fetch layers produce, so the entry types
+// are those layers' types rather than field-compatible copies. Sharing them
+// keeps prefetch free of identity conversions in both directions.
+pub const ShaEntry = graphql.ShaTagResult;
+pub const NamedEntry = graphql.NamedRefResult;
+pub const BranchEntry = graphql.NamedOid;
+pub const ImpostorStatus = impostor.ImpostorStatus;
 
 pub const ImpostorEntry = struct {
     sha: []const u8,
@@ -77,17 +63,17 @@ pub const ImpostorEntry = struct {
 pub const CachedRepo = struct {
     cached_at: i64 = 0,
     archived: ?bool = null,
-    shas: []ShaEntry = &.{},
-    named: []NamedEntry = &.{},
+    shas: []const ShaEntry = &.{},
+    named: []const NamedEntry = &.{},
     /// SC008 step2 inputs: branch names + HEAD oids snapshotted at
     /// fetch time. Empty for v1 entries.
-    branches: []BranchEntry = &.{},
+    branches: []const BranchEntry = &.{},
     /// SC008 step3 input: default branch name + HEAD oid. null for v1
     /// entries or when GraphQL didn't surface it.
     default_branch: ?BranchEntry = null,
     /// SC008 final verdicts. Empty for v1 entries; populated as the
     /// compare phase decides each SHA.
-    impostor: []ImpostorEntry = &.{},
+    impostor: []const ImpostorEntry = &.{},
 };
 
 // ============================================================
