@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **58 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **59 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -38,6 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:` |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
+| SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 
 ### SEC002 / SEC008 vs. SEC006
 
@@ -52,6 +53,21 @@ SEC006 does not report ref-shaped inputs (`github.head_ref`,
 `.head.repo.default_branch`, `github.event.workflow_run.head_branch`) or label
 names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
 — is a common routing idiom. They stay untrusted for SEC002 and SEC008.
+
+### SEC022 vs. SEC006
+
+`github.event.workflow_run.head_branch` is one of those ref-shaped inputs, so
+SEC006 stays quiet on it — but in a `workflow_run` workflow the same comparison
+is not routing. That workflow runs with the base repository's secrets, and a
+fork picks its own branch names, so `if: github.event.workflow_run.head_branch
+== 'main'` is a gate the attacker walks through. SEC022 covers exactly that
+case: `on: workflow_run` only, and only for the attributes the fork authors
+(`head_branch`, `head_commit.*`, `display_title`). A condition that also
+verifies the triggering repository —
+`github.event.workflow_run.head_repository.full_name == github.repository`, or
+`github.event.workflow_run.event == 'push'` — is sound, and is not reported;
+neither is `head_sha`, which names one immutable commit. A trust check on the
+job covers the steps inside it.
 
 ## Supply Chain Security Rules (SC)
 

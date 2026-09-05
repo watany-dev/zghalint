@@ -545,6 +545,67 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
     }
 }
 
+/// Attributes of the triggering run that a fork decides. A `workflow_run` job
+/// runs with the base repository's secrets, so gating it on one of these is a
+/// trust decision made from attacker-authored data: a fork only has to name its
+/// branch `main`, or word its commit message to match, to walk through the gate
+/// (#143). `head_sha` is absent because it names one immutable commit, and the
+/// `head_repository` fields are absent because they are the fix, not the bug.
+const workflow_run_untrusted_gate_contexts = [_][]const u8{
+    "github.event.workflow_run.head_branch",
+    "github.event.workflow_run.head_commit",
+    "github.event.workflow_run.display_title",
+};
+
+/// Identity checks that make the gate sound. `head_repository.*` compares the
+/// triggering repository itself, which a fork cannot forge.
+const workflow_run_trust_anchors = [_][]const u8{
+    "github.event.workflow_run.head_repository",
+};
+
+const workflow_run_event_context = [_][]const u8{
+    "github.event.workflow_run.event",
+};
+
+fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
+    if (!wf.hasEvent(.workflow_run)) return;
+
+    for (wf.jobs) |*job| {
+        const job_cond = job.if_condition;
+        const job_verified = if (job_cond) |c| hasWorkflowRunTrustAnchor(c) else false;
+        if (job_cond) |c| {
+            if (!job_verified) reportWorkflowRunBranchGate(c, ifAnchorJob(job), list);
+        }
+
+        for (job.steps) |*step| {
+            const step_cond = step.if_condition orelse continue;
+            // A step only runs when its job's condition already passed, so a
+            // trust check on the job covers every step inside it.
+            if (job_verified or hasWorkflowRunTrustAnchor(step_cond)) continue;
+            reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), list);
+        }
+    }
+}
+
+fn reportWorkflowRunBranchGate(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+    reportConditionContexts(cond, anchor, &workflow_run_untrusted_gate_contexts, .{
+        .rule_id = "SEC022",
+        .severity = .@"error",
+        .message = "workflow_run gate compares an attribute of the triggering run that a fork controls, so a fork can satisfy it and reach this privileged job",
+        .fix_hint = "gate on the triggering repository instead — `github.event.workflow_run.head_repository.full_name == github.repository` or `github.event.workflow_run.event == 'push'` — and identify the commit with `head_sha`",
+    }, list);
+}
+
+/// `workflow_run.event == 'push'` is an anchor of its own: a fork cannot cause
+/// a push run in the base repository, so the branch name there is the base
+/// repository's. The compared literal is what makes it one, so a condition that
+/// mentions a pull_request event is not treated as verified.
+fn hasWorkflowRunTrustAnchor(cond: []const u8) bool {
+    if (containsAnyContext(cond, &workflow_run_trust_anchors)) return true;
+    if (!containsAnyContext(cond, &workflow_run_event_context)) return false;
+    return std.mem.indexOf(u8, cond, "pull_request") == null;
+}
+
 fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
     if (job.uses == null) return;
     if (job.secrets) |secrets| {
@@ -1440,6 +1501,14 @@ pub const security_rules = [_]Rule{
         .check_workflow = &checkWorkflowRunUntrustedCheckout,
     },
     .{
+        .id = "SEC022",
+        .name = "workflow-run-branch-gate",
+        .description = "workflow_run job is gated on an attribute of the triggering run that a fork controls",
+        .severity = .@"error",
+        .category = .security,
+        .check_workflow = &checkWorkflowRunBranchGate,
+    },
+    .{
         .id = "SEC010",
         .name = "secrets-inherit",
         .description = "Reusable workflow calls should specify secrets explicitly instead of using inherit",
@@ -2086,6 +2155,84 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
     var list = runJobOn(pr_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+fn sec022Severity(job: Job) ?Severity {
+    var list = runJobOn(workflow_run_trigger, job);
+    defer list.deinit();
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC022")) return d.severity;
+    }
+    return null;
+}
+
+fn sec022JobCondition(cond: []const u8) ?Severity {
+    return sec022Severity(.{ .id = "deploy", .if_condition = cond, .permissions = Permissions{} });
+}
+
+test "SEC022: head_branch gate on a workflow_run job is an error" {
+    // #143: `main` is a name a fork gives its own branch, so this gate keeps
+    // nobody out of a job that runs with the base repository's secrets.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_branch == 'main'"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("${{ github.event.workflow_run.head_branch == 'main' }}"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: other fork-authored attributes of the triggering run" {
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("contains(github.event.workflow_run.head_commit.message, '[deploy]')"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.display_title == 'release'"));
+}
+
+test "SEC022: a gate that verifies the triggering repository is not reported" {
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.head_branch == 'main'") == null);
+    try testing.expect(sec022JobCondition("github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'") == null);
+    // The literal is what anchors the event check; comparing it against a
+    // fork-reachable event anchors nothing.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: immutable and unrelated contexts are not reported" {
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_sha == env.EXPECTED_SHA") == null);
+    try testing.expect(sec022JobCondition("github.event.workflow_run.conclusion == 'success'") == null);
+    try testing.expect(sec022JobCondition("github.ref == 'refs/heads/main'") == null);
+}
+
+test "SEC022: only workflow_run workflows are reported" {
+    var list = runJobOn(push_trigger, .{ .id = "deploy", .if_condition = "github.event.workflow_run.head_branch == 'main'", .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC022"));
+}
+
+test "SEC022: step condition inside a workflow_run job" {
+    const steps = [_]Step{
+        .{ .run = "./deploy.sh", .if_condition = "github.event.workflow_run.head_branch == 'main'" },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "deploy", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC022"));
+}
+
+test "SEC022: a job-level trust check covers its steps" {
+    // The step only runs once the job condition passed, so the identity check
+    // on the job already guards it.
+    const steps = [_]Step{
+        .{ .run = "./deploy.sh", .if_condition = "github.event.workflow_run.head_branch == 'main'" },
+    };
+    var list = runJobOn(workflow_run_trigger, .{
+        .id = "deploy",
+        .if_condition = "github.event.workflow_run.head_repository.full_name == github.repository",
+        .steps = &steps,
+        .permissions = Permissions{},
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC022"));
+}
+
+test "SEC022: reported diagnostic carries a fix hint" {
+    var list = runJobOn(workflow_run_trigger, .{ .id = "deploy", .if_condition = "github.event.workflow_run.head_branch == 'main'", .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC022").?;
+    try testing.expect(d.fix_hint != null and d.fix_hint.?.len > 0);
 }
 
 test "SEC006: dangerous context in step if condition" {
