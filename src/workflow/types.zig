@@ -421,6 +421,15 @@ pub const Workflow = struct {
     concurrency_insertion_byte: ?usize = null,
     /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
     yaml_root: ?yaml_types.Node = null,
+
+    /// Whether the workflow is triggered by `ev`. Many rules only apply to a
+    /// single trigger, so they gate on this before walking the jobs.
+    pub fn hasEvent(self: *const Workflow, ev: EventType) bool {
+        for (self.on.events) |event| {
+            if (event.event == ev) return true;
+        }
+        return false;
+    }
 };
 
 const type_validation = @import("type_validation.zig");

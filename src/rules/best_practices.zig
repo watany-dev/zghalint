@@ -275,15 +275,7 @@ pub fn checkPushConcurrencyForTest(wf: *const Workflow, diag_list: *DiagnosticLi
 }
 
 fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
-    var has_push = false;
-    for (wf.on.events) |event| {
-        if (event.event == .push) {
-            has_push = true;
-            break;
-        }
-    }
-
-    if (has_push and wf.concurrency == null) {
+    if (wf.hasEvent(.push) and wf.concurrency == null) {
         diag_list.append(.{
             .rule_id = "BP005",
             .severity = .info,

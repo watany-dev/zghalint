@@ -416,15 +416,7 @@ fn checkWriteAll(list: *DiagnosticList, maybe_perms: ?Permissions, comptime scop
 // ============================================================
 
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
-    // Check if workflow has pull_request_target trigger
-    var has_prt = false;
-    for (wf.on.events) |event| {
-        if (event.event == .pull_request_target) {
-            has_prt = true;
-            break;
-        }
-    }
-    if (!has_prt) return;
+    if (!wf.hasEvent(.pull_request_target)) return;
 
     // Look for checkout actions that check out the PR head
     for (wf.jobs) |*job| {
@@ -616,14 +608,7 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList) void {
-    var has_workflow_run = false;
-    for (wf.on.events) |event| {
-        if (event.event == .workflow_run) {
-            has_workflow_run = true;
-            break;
-        }
-    }
-    if (!has_workflow_run) return;
+    if (!wf.hasEvent(.workflow_run)) return;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
@@ -870,10 +855,7 @@ fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
 }
 
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
-    for (wf.on.events) |event| {
-        if (event.event == .release) return true;
-    }
-    return false;
+    return wf.hasEvent(.release);
 }
 
 fn isDeployJob(job: *const Job) bool {
