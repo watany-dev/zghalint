@@ -2,7 +2,6 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
-const fix_engine = @import("../fix/engine.zig");
 const fix_builder = @import("../fix/builder.zig");
 
 const Rule = engine.Rule;
@@ -391,21 +390,10 @@ test "DEP002: autofix rewrites allow to deny without disturbing other updates" {
         \\    insecure-external-code-execution: deny
     ;
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const node = try parseYamlWithArena(&arena, source);
-    var diags = DiagnosticList.init(std.testing.allocator);
-    defer diags.deinit();
-    lintDependabot(node, &diags);
-
-    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, false);
-    defer std.testing.allocator.free(fixes);
-
-    try std.testing.expectEqual(@as(usize, 2), fixes.len);
-
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .document = &lintDependabot }, false);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 2), result.fix_count);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
     try std.testing.expectEqualStrings(
         \\version: 2
@@ -495,20 +483,10 @@ test "DEP001: autofix inserts cooldown at end of entry (block form)" {
         \\
     ;
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const node = try parseYamlWithArena(&arena, source);
-    var diags = DiagnosticList.init(std.testing.allocator);
-    defer diags.deinit();
-    lintDependabot(node, &diags);
-
-    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
-    defer std.testing.allocator.free(fixes);
-    try std.testing.expectEqual(@as(usize, 1), fixes.len);
-
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .document = &lintDependabot }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 1), result.fix_count);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expectEqualStrings(
         \\version: 2
@@ -553,20 +531,10 @@ test "DEP001 + DEP002: coexist on the same entry" {
         \\
     ;
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const node = try parseYamlWithArena(&arena, source);
-    var diags = DiagnosticList.init(std.testing.allocator);
-    defer diags.deinit();
-    lintDependabot(node, &diags);
-
-    const fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
-    defer std.testing.allocator.free(fixes);
-    try std.testing.expectEqual(@as(usize, 2), fixes.len);
-
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .document = &lintDependabot }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 2), result.fix_count);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
     try std.testing.expectEqualStrings(
         \\version: 2

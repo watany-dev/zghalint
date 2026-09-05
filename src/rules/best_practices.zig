@@ -471,12 +471,6 @@ test "BP001: autofix generated with real span" {
 }
 
 test "BP001: autofix applied to YAML source" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -488,21 +482,10 @@ test "BP001: autofix applied to YAML source" {
         \\
     ;
 
-    // Parse YAML → Workflow
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    // Run rule
-    var diags = DiagnosticList.init(alloc);
-    checkMissingTimeout(&wf.jobs[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    // Apply fix
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkMissingTimeout }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     // Verify the fixed source contains timeout-minutes
     try std.testing.expect(std.mem.indexOf(u8, result.content, "timeout-minutes: 30") != null);
@@ -606,12 +589,6 @@ test "BP002: no fix when `if:` precedes `uses:` in step" {
 }
 
 test "BP002: autofix applied to YAML source" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -623,17 +600,10 @@ test "BP002: autofix applied to YAML source" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkMissingStepName(&wf.jobs[0].steps[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .step = &checkMissingStepName }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "name: Checkout") != null);
@@ -735,12 +705,6 @@ test "BP003: autofix with single-quoted scalar keeps quotes" {
 }
 
 test "BP003: autofix applied to YAML source" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -752,17 +716,10 @@ test "BP003: autofix applied to YAML source" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkDeprecatedAction(&wf.jobs[0].steps[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .step = &checkDeprecatedAction }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "actions/checkout@v4") != null);
@@ -860,12 +817,6 @@ test "BP004: attaches unsafe fix when shell_insertion_byte and span are present"
 }
 
 test "BP004: autofix applied to YAML source inserts shell: bash after run" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -877,18 +828,11 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkCrossPlatformShell(&wf.jobs[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-    try std.testing.expectEqual(FixSafety.unsafe, fix.safety);
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCrossPlatformShell }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try std.testing.expectEqual(FixSafety.unsafe, result.first_safety.?);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "shell: bash") != null);
@@ -982,12 +926,6 @@ test "BP005: fix is null when concurrency_insertion_byte is missing" {
 }
 
 test "BP005: autofix inserts block-form concurrency after on: line" {
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -999,16 +937,10 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkPushConcurrency(&wf, &diags);
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .workflow = &checkPushConcurrency }, true);
     defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expectEqualStrings(

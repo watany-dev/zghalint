@@ -828,12 +828,6 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
     workspace.set(.{ .go_sum_present = true });
     defer workspace.clear();
 
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
     const source =
         \\name: CI
         \\on: push
@@ -848,20 +842,11 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkCacheNotUsed(&wf.jobs[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, fix.safety);
-    try std.testing.expectEqual(@as(usize, 2), fix.edits.len);
-
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCacheNotUsed }, true);
     defer result.deinit(std.testing.allocator);
 
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, result.first_safety.?);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
 
     const cache_count = std.mem.count(u8, result.content, "cache: true");
@@ -872,12 +857,6 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
 test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
     workspace.set(.{ .node_cache = .npm });
     defer workspace.clear();
-
-    const fix_engine = @import("../fix/engine.zig");
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
 
     const source =
         \\name: CI
@@ -890,14 +869,7 @@ test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
         \\
     ;
 
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkCacheNotUsed(&wf.jobs[0], &diags);
-
-    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
-    const fixes = [_]Fix{fix};
-    const result = try fix_engine.applyFixes(std.testing.allocator, source, &fixes);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCacheNotUsed }, true);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.content, "cache: npm") != null);
@@ -1234,8 +1206,6 @@ test "PERF003: no warning without strategy" {
 }
 
 test "PERF001: fixture harness applies expected fix" {
-    const fix_engine = @import("../fix/engine.zig");
-
     const node_ambiguous_lockfiles = [_][]const u8{ "package-lock.json", "yarn.lock" };
 
     const Case = struct {
@@ -1309,29 +1279,23 @@ test "PERF001: fixture harness applies expected fix" {
             return err;
         };
 
-        const wf = try test_support.parseWorkflowSource(alloc, input);
+        const result = try test_support.lintAndFix(std.testing.allocator, input, .{ .job = &checkCacheNotUsed }, true);
+        defer result.deinit(std.testing.allocator);
 
-        var diags = DiagnosticList.init(alloc);
-        checkCacheNotUsed(&wf.jobs[0], &diags);
-
-        try std.testing.expectEqual(@as(usize, 1), diags.len());
+        try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
         if (case.expected_path) |exp_path| {
             const expected = try cwd.readFileAlloc(alloc, exp_path, 64 * 1024);
-            const fix = diags.get(0).fix orelse {
+            if (result.fix_count == 0) {
                 std.debug.print("case '{s}': expected fix, got null\n", .{case.name});
                 return error.TestExpectedFix;
-            };
-            const fixes = [_]Fix{fix};
-            const result = try fix_engine.applyFixes(std.testing.allocator, input, &fixes);
-            defer result.deinit(std.testing.allocator);
-
+            }
             std.testing.expectEqualStrings(expected, result.content) catch |err| {
                 std.debug.print("case '{s}' output mismatch\n", .{case.name});
                 return err;
             };
         } else {
-            try std.testing.expect(diags.get(0).fix == null);
+            try std.testing.expectEqual(@as(usize, 0), result.fix_count);
         }
     }
 }
