@@ -308,11 +308,11 @@ fn parseImpostorCode(code: []const u8) ?ImpostorStatus {
     };
 }
 
-fn impostorCode(status: ImpostorStatus) u8 {
+fn impostorCode(status: ImpostorStatus) []const u8 {
     return switch (status) {
-        .legitimate => 'l',
-        .impostor => 'i',
-        .unknown => 'u',
+        .legitimate => "l",
+        .impostor => "i",
+        .unknown => "u",
     };
 }
 
@@ -326,11 +326,11 @@ fn parseResolutionCode(code: []const u8) ?graphql.ShaTagResolution {
     };
 }
 
-fn resolutionCode(res: graphql.ShaTagResolution) u8 {
+fn resolutionCode(res: graphql.ShaTagResolution) []const u8 {
     return switch (res) {
-        .has_tag => 'h',
-        .no_tag => 'n',
-        .unknown => 'u',
+        .has_tag => "h",
+        .no_tag => "n",
+        .unknown => "u",
     };
 }
 
@@ -367,50 +367,46 @@ pub fn saveToDir(
     const name = try repoFilename(allocator, owner, repo);
     defer allocator.free(name);
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(allocator);
+    var doc: std.Io.Writer.Allocating = .init(allocator);
+    defer doc.deinit();
+    var js: std.json.Stringify = .{ .writer = &doc.writer };
 
-    try buf.writer(allocator).print("{{\"cache_format\":{d}", .{cache_format_current});
-    try buf.writer(allocator).print(",\"cached_at\":{d}", .{entry.cached_at});
+    try js.beginObject();
+    try js.objectField("cache_format");
+    try js.write(cache_format_current);
+    try js.objectField("cached_at");
+    try js.write(entry.cached_at);
+    try js.objectField("archived");
+    try js.write(entry.archived);
 
-    if (entry.archived) |b| {
-        try buf.writer(allocator).print(",\"archived\":{s}", .{if (b) "true" else "false"});
-    } else {
-        try buf.appendSlice(allocator, ",\"archived\":null");
-    }
+    try js.objectField("shas");
+    try js.beginArray();
+    for (entry.shas) |e| try js.write(.{ e.sha, resolutionCode(e.resolution) });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, ",\"shas\":[");
-    for (entry.shas, 0..) |s, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",\"{c}\"]", .{ s.sha, resolutionCode(s.resolution) });
-    }
+    try js.objectField("named");
+    try js.beginArray();
+    for (entry.named) |e| try js.write(.{ e.ref, @intFromBool(e.is_tag), @intFromBool(e.is_branch) });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, "],\"named\":[");
-    for (entry.named, 0..) |n, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",{d},{d}]", .{ n.ref, @intFromBool(n.is_tag), @intFromBool(n.is_branch) });
-    }
+    try js.objectField("branches");
+    try js.beginArray();
+    for (entry.branches) |e| try js.write(.{ e.name, e.oid });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, "],\"branches\":[");
-    for (entry.branches, 0..) |b, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",\"{s}\"]", .{ b.name, b.oid });
-    }
-    try buf.append(allocator, ']');
-
+    try js.objectField("default_branch");
     if (entry.default_branch) |db| {
-        try buf.writer(allocator).print(",\"default_branch\":[\"{s}\",\"{s}\"]", .{ db.name, db.oid });
+        try js.write(.{ db.name, db.oid });
     } else {
-        try buf.appendSlice(allocator, ",\"default_branch\":null");
+        try js.write(null);
     }
 
-    try buf.appendSlice(allocator, ",\"impostor\":[");
-    for (entry.impostor, 0..) |im, i| {
-        if (i != 0) try buf.append(allocator, ',');
-        try buf.writer(allocator).print("[\"{s}\",\"{c}\"]", .{ im.sha, impostorCode(im.status) });
-    }
+    try js.objectField("impostor");
+    try js.beginArray();
+    for (entry.impostor) |e| try js.write(.{ e.sha, impostorCode(e.status) });
+    try js.endArray();
 
-    try buf.appendSlice(allocator, "]}");
+    try js.endObject();
 
     // Refuse to write through a symlink planted in the cache directory.
     // A same-user attacker could otherwise redirect the truncate+write to an
@@ -429,7 +425,7 @@ pub fn saveToDir(
     var write_buf: [4096]u8 = undefined;
     var af = dir.atomicFile(name, .{ .write_buffer = &write_buf }) catch return;
     defer af.deinit();
-    af.file_writer.interface.writeAll(buf.items) catch return;
+    af.file_writer.interface.writeAll(doc.written()) catch return;
     af.finish() catch return;
 }
 
@@ -455,9 +451,9 @@ test "parseResolutionCode round-trips" {
 }
 
 test "resolutionCode maps each enum variant" {
-    try testing.expectEqual(@as(u8, 'h'), resolutionCode(.has_tag));
-    try testing.expectEqual(@as(u8, 'n'), resolutionCode(.no_tag));
-    try testing.expectEqual(@as(u8, 'u'), resolutionCode(.unknown));
+    try testing.expectEqualStrings("h", resolutionCode(.has_tag));
+    try testing.expectEqualStrings("n", resolutionCode(.no_tag));
+    try testing.expectEqualStrings("u", resolutionCode(.unknown));
 }
 
 test "intFieldAsBool decodes JSON variants" {
@@ -744,9 +740,9 @@ test "parseImpostorCode round-trips" {
 }
 
 test "impostorCode maps each enum variant" {
-    try testing.expectEqual(@as(u8, 'l'), impostorCode(.legitimate));
-    try testing.expectEqual(@as(u8, 'i'), impostorCode(.impostor));
-    try testing.expectEqual(@as(u8, 'u'), impostorCode(.unknown));
+    try testing.expectEqualStrings("l", impostorCode(.legitimate));
+    try testing.expectEqualStrings("i", impostorCode(.impostor));
+    try testing.expectEqualStrings("u", impostorCode(.unknown));
 }
 
 test "saveToDir/loadFromDir: v2 round-trips branches/default_branch/impostor" {
