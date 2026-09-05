@@ -15,7 +15,6 @@ const PermissionsMeta = workflow_types.PermissionsMeta;
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Fix = diagnostics.Fix;
-const Edit = diagnostics.Edit;
 const spans = @import("spans.zig");
 
 // ── PERM001: Overly broad permissions ──

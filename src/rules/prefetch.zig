@@ -51,14 +51,8 @@ pub const Options = struct {
 // Driver
 // ============================================================
 
-/// Orchestrate all network-rule prefetch work for `workflows`.
-/// Safe to call with an empty slice, in offline mode, or with any rule
-/// module left uninitialized (each rule self-gates on `isActive()`).
-pub fn prefetchAll(allocator: Allocator, workflows: []const Workflow) !Stats {
-    return prefetchAllWithOptions(allocator, workflows, .{});
-}
-
-/// Like `prefetchAll`, but accepts runtime options such as `no_cache`.
+/// Prefetch every remote fact the SC rules need, honouring runtime
+/// options such as `no_cache`.
 pub fn prefetchAllWithOptions(
     allocator: Allocator,
     workflows: []const Workflow,
@@ -626,11 +620,11 @@ const ActionRef = workflow_types.ActionRef;
 const Step = workflow_types.Step;
 const Job = workflow_types.Job;
 
-test "prefetchAll: offline-only no-op returns empty stats" {
+test "prefetchAllWithOptions: offline-only no-op returns empty stats" {
     // All rule modules left uninitialized (isActive → false).
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &.{} };
     const wfs = [_]Workflow{wf};
-    const stats = try prefetchAll(testing.allocator, &wfs);
+    const stats = try prefetchAllWithOptions(testing.allocator, &wfs, .{});
     try testing.expectEqual(@as(usize, 0), stats.unique_repos);
     try testing.expectEqual(@as(usize, 0), stats.unique_sha_refs);
     try testing.expectEqual(@as(usize, 0), stats.unique_tag_or_branch_refs);
@@ -743,7 +737,7 @@ test "buildRepoInputs: inactive rules leave slices empty" {
 }
 
 test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();
@@ -782,7 +776,7 @@ test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits
 }
 
 test "applyCacheEntry: inactive rules skip corresponding categories" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -867,7 +861,7 @@ test "prefetchAllWithOptions: deadline-expired short-circuits but still counts r
     // Route all network fetches to the deadline-exceeded path so the test
     // never touches the network, yet still exercises the orchestrator's
     // GraphQL-fallback + per-rule REST loops.
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();
@@ -894,7 +888,7 @@ test "prefetchAllWithOptions: deadline-expired short-circuits but still counts r
 }
 
 test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();
@@ -960,7 +954,7 @@ const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) call
 const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
 
 test "applyResults: persists repo state to the provided cache dir" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();

@@ -8,10 +8,8 @@ const http_client = @import("http_client.zig");
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const spans = @import("spans.zig");
-const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
-const Rule = engine.Rule;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // ============================================================

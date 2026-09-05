@@ -22,23 +22,23 @@ pub fn setRepoVisibility(v: Visibility) void {
     sec020_repo_visibility = v;
 }
 
-pub const Diagnostic = diagnostics.Diagnostic;
-pub const DiagnosticList = diagnostics.DiagnosticList;
-pub const Severity = diagnostics.Severity;
-pub const Span = yaml.Span;
-pub const Workflow = workflow_types.Workflow;
-pub const Job = workflow_types.Job;
-pub const Step = workflow_types.Step;
-pub const ActionRef = workflow_types.ActionRef;
-pub const Permissions = workflow_types.Permissions;
-pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
-pub const ScalarValueMetaMap = workflow_types.ScalarValueMetaMap;
-pub const Fix = diagnostics.Fix;
-pub const Edit = diagnostics.Edit;
-pub const SecretsConfig = workflow_types.SecretsConfig;
-pub const EventType = workflow_types.EventType;
-pub const Rule = engine.Rule;
-pub const Anchor = spans.Anchor;
+const Diagnostic = diagnostics.Diagnostic;
+const DiagnosticList = diagnostics.DiagnosticList;
+const Severity = diagnostics.Severity;
+const Span = yaml.Span;
+const Workflow = workflow_types.Workflow;
+const Job = workflow_types.Job;
+const Step = workflow_types.Step;
+const ActionRef = workflow_types.ActionRef;
+const Permissions = workflow_types.Permissions;
+const ScalarValueMeta = workflow_types.ScalarValueMeta;
+const ScalarValueMetaMap = workflow_types.ScalarValueMetaMap;
+const Fix = diagnostics.Fix;
+const Edit = diagnostics.Edit;
+const SecretsConfig = workflow_types.SecretsConfig;
+const EventType = workflow_types.EventType;
+const Rule = engine.Rule;
+const Anchor = spans.Anchor;
 
 // ============================================================
 // Diagnostic anchors
@@ -546,10 +546,6 @@ fn indexOfGithubEnvWrite(s: []const u8) ?usize {
         }
     }
     return null;
-}
-
-fn containsGithubEnvWrite(s: []const u8) bool {
-    return indexOfGithubEnvWrite(s) != null;
 }
 
 /// Return true if `s` contains any `${{ dangerous_context }}` expression.

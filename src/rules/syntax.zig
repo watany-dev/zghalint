@@ -533,14 +533,12 @@ pub const rules = [_]Rule{
 const testing = std.testing;
 const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
-const Trigger = workflow_types.Trigger;
-const yaml_parser_mod = @import("../yaml/parser.zig");
 
 fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
+    var parser = yaml_parser.Parser.init(alloc, source);
     const yaml_node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
     checkUnknownKeys(&wf, list);
@@ -885,7 +883,7 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
+    var parser = yaml_parser.Parser.init(alloc, source);
     const node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, node);
 
@@ -1359,7 +1357,7 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    var yp = yaml_parser.Parser.init(alloc, source);
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -1996,7 +1994,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
 }
 
 fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    var yp = yaml_parser.Parser.init(alloc, source);
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

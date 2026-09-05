@@ -16,7 +16,6 @@ const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
-const Edit = diagnostics_mod.Edit;
 const FixSafety = diagnostics_mod.FixSafety;
 
 // ── BP001: Missing timeout-minutes ──

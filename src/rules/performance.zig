@@ -10,7 +10,6 @@ const workspace = @import("../workspace.zig");
 const Rule = engine.Rule;
 const Job = engine.Job;
 const Step = engine.Step;
-const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const spans = @import("spans.zig");
 const Span = yaml_types.Span;

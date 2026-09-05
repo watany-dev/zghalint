@@ -9,7 +9,6 @@ const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
 const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
-const Span = yaml_types.Span;
 const Fix = diagnostics_mod.Fix;
 
 // ── DEP001: dependabot-cooldown ──

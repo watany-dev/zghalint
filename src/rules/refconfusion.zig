@@ -11,7 +11,6 @@ const spans = @import("spans.zig");
 const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
-const Rule = engine.Rule;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 const isValidGitRef = engine.isValidGitRef;
 
@@ -74,12 +73,6 @@ pub fn setCachedRefResult(
     const alloc = if (ref_arena) |*arena| arena.allocator() else return;
     const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, ref }) catch return;
     ref_cache.?.put(key, status) catch return;
-}
-
-/// Return the arena allocator used for cache keys, so the prefetch
-/// orchestrator can stage allocations that live for the rule's lifetime.
-pub fn getArenaAllocator() ?Allocator {
-    return if (ref_arena) |*arena| arena.allocator() else null;
 }
 
 /// Rule check function for SC006.

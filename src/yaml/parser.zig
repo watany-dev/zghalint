@@ -14,7 +14,6 @@ const ScalarStyle = types.ScalarStyle;
 pub const ParseError = error{
     UnexpectedToken,
     OutOfMemory,
-    InvalidYaml,
     MaxDepthExceeded,
 };
 
@@ -68,7 +67,7 @@ pub const Parser = struct {
 
         // Sequence entry (- item)
         if (self.current.kind == .sequence_entry) {
-            return self.parseBlockSequence(min_indent);
+            return self.parseBlockSequence();
         }
 
         // Flow mapping {
@@ -176,10 +175,9 @@ pub const Parser = struct {
         return Node{ .mapping = .{ .entries = owned_entries, .span = span } };
     }
 
-    fn parseBlockSequence(self: *Parser, min_indent: u32) ParseError!Node {
+    fn parseBlockSequence(self: *Parser) ParseError!Node {
         var items = std.ArrayList(Node){};
         const seq_indent = self.current.column;
-        _ = min_indent;
 
         while (self.current.kind == .sequence_entry and self.current.column == seq_indent) {
             self.advance(); // consume '-'
