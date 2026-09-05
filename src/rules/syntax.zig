@@ -314,6 +314,59 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
     }
 }
 
+// ── SYN007: Invalid environment variable name ──
+
+fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
+    for (env_keys) |key| {
+        if (key.name.len == 0) {
+            list.append(.{
+                .rule_id = "SYN007",
+                .severity = .@"error",
+                .message = "environment variable name must not be empty",
+                .span = key.span,
+                .fix_hint = "give the environment variable a name, or remove the entry",
+            }) catch return;
+            continue;
+        }
+
+        // An expression is substituted before the runner ever sees the name,
+        // so the literal text here says nothing about the final name.
+        if (std.mem.indexOf(u8, key.name, "${{") != null) continue;
+
+        // `=` and `&` break the `NAME=value` form written to the environment
+        // file, and a space cannot appear in a shell variable name.
+        if (std.mem.indexOfAny(u8, key.name, "&= ") == null) continue;
+
+        const message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "environment variable name \"{s}\" is invalid. '&', '=' and spaces must not be contained",
+            .{key.name},
+        ) catch return;
+
+        list.append(.{
+            .rule_id = "SYN007",
+            .severity = .@"error",
+            .message = message,
+            .span = key.span,
+            .fix_hint = "rename the environment variable so it contains no '&', '=', or space",
+        }) catch return;
+    }
+}
+
+fn checkWorkflowEnvNames(wf: *const Workflow, list: *DiagnosticList) void {
+    checkEnvNames(wf.env_keys, list);
+}
+
+fn checkJobEnvNames(job: *const Job, list: *DiagnosticList) void {
+    checkEnvNames(job.env_keys, list);
+    if (job.container) |container| checkEnvNames(container.env_keys, list);
+    for (job.services) |service| checkEnvNames(service.env_keys, list);
+}
+
+fn checkStepEnvNames(step: *const Step, list: *DiagnosticList) void {
+    checkEnvNames(step.env_keys, list);
+}
+
 // ── SYN008: Duplicated job ID in `needs` ──
 
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
@@ -444,6 +497,16 @@ pub const rules = [_]Rule{
         .category = .syntax,
         .check_job = &checkInvalidJobId,
         .check_step = &checkInvalidStepId,
+    },
+    .{
+        .id = "SYN007",
+        .name = "invalid-env-var-name",
+        .description = "environment variable name must not be empty or contain '&', '=', or spaces",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkWorkflowEnvNames,
+        .check_job = &checkJobEnvNames,
+        .check_step = &checkStepEnvNames,
     },
     .{
         .id = "SYN008",
@@ -832,7 +895,9 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     var list = rule_engine.run(testing.allocator, &wf);
     defer list.deinit();
     for (list.items.items) |diag| {
-        diags.append(diag) catch return;
+        // `appendOwning`, not `append`: allocPrint-ed messages live in
+        // `list`'s arena, which dies with this function.
+        diags.appendOwning(diag) catch return;
     }
 }
 
@@ -1935,6 +2000,188 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
     try testing.expect(step_case);
     try testing.expect(job_exact);
     try testing.expect(job_case);
+}
+
+fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const yaml_node = try yp.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+
+    checkWorkflowEnvNames(&wf, list);
+    for (wf.jobs) |*job| {
+        checkJobEnvNames(job, list);
+        for (job.steps) |*step| checkStepEnvNames(step, list);
+    }
+}
+
+test "SYN007: invalid env var names are reported at every level" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\env:
+        \\  "TOP LEVEL": 1
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      FOO=BAR: 1
+        \\      FOO&BAR: 3
+        \\    steps:
+        \\      - run: echo hi
+        \\        env:
+        \\          "A B": 2
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 4), diags.len());
+    for (diags.items.items) |d| {
+        try testing.expectEqualStrings("SYN007", d.rule_id);
+        try testing.expect(d.severity == .@"error");
+    }
+    try testing.expectEqualStrings(
+        "environment variable name \"TOP LEVEL\" is invalid. '&', '=' and spaces must not be contained",
+        diags.get(0).message,
+    );
+    try testing.expectEqual(@as(u32, 3), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"FOO=BAR\"") != null);
+    try testing.expectEqual(@as(u32, 8), diags.get(1).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(2).message, "\"FOO&BAR\"") != null);
+    try testing.expectEqual(@as(u32, 9), diags.get(2).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(3).message, "\"A B\"") != null);
+    try testing.expectEqual(@as(u32, 13), diags.get(3).span.start_line);
+}
+
+test "SYN007: valid env var names produce no diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\env:
+        \\  MY_VAR: 1
+        \\  PATH_2: 2
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      lower-case.dotted: ok
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN007: empty env var name is reported" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    const keys = [_]workflow_types.EnvKey{
+        .{ .name = "", .span = dummySpan(0, 0) },
+    };
+    checkEnvNames(&keys, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("SYN007", diags.get(0).rule_id);
+    try testing.expectEqualStrings(
+        "environment variable name must not be empty",
+        diags.get(0).message,
+    );
+}
+
+test "SYN007: container and service env keys are validated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: node:20
+        \\      env:
+        \\        "BAD KEY": 1
+        \\        GOOD_KEY: 2
+        \\    services:
+        \\      redis:
+        \\        image: redis
+        \\        env:
+        \\          X=Y: 1
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"BAD KEY\"") != null);
+    try testing.expectEqual(@as(u32, 8), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"X=Y\"") != null);
+    try testing.expectEqual(@as(u32, 14), diags.get(1).span.start_line);
+}
+
+test "SYN007: an env key containing an expression is skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      "${{ matrix.env_name }}": 1
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN007: a non-scalar env value still has its key validated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: push
+        \\env:
+        \\  "A B":
+        \\    - 1
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn007(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"A B\"") != null);
 }
 
 test "SYN008: duplicated job ID is reported" {

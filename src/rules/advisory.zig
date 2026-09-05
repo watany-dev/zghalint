@@ -7,6 +7,7 @@ const http_client = @import("http_client.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
+const spans = @import("spans.zig");
 const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
@@ -115,7 +116,7 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
             .rule_id = "SC003",
             .severity = .warning,
             .message = adv.diagnostic_message,
-            .span = Span.point(0, 0, 0),
+            .span = spans.usesSpan(step),
             .fix_hint = adv.diagnostic_hint,
         }) catch return;
         return; // One diagnostic per step

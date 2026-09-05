@@ -5,6 +5,7 @@ const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const fix_builder = @import("../fix/builder.zig");
 const util = @import("../util.zig");
+const spans = @import("spans.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -298,7 +299,9 @@ fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
             .rule_id = "BP005",
             .severity = .info,
             .message = "Workflow has 'push' trigger but no 'concurrency' setting. Rapid pushes may queue redundant runs.",
-            .span = Span.point(0, 0, 0),
+            // A missing top-level key has no token of its own; point at the
+            // head of the workflow file.
+            .span = Span.point(1, 1, 0),
             .fix_hint = "Add a 'concurrency' group to cancel or queue redundant workflow runs.",
             .fix = buildPushConcurrencyFix(diag_list, wf),
         }) catch return;
@@ -363,7 +366,7 @@ fn checkDeprecatedWorkflowCommand(step: *const Step, diag_list: *DiagnosticList)
                 .rule_id = "BP008",
                 .severity = .@"error",
                 .message = "Deprecated workflow command '" ++ cmd.marker ++ "' in 'run:'. GitHub disabled it" ++ cmd.reason ++ ", so " ++ cmd.effect ++ ".",
-                .span = step.run_value_span orelse step.span,
+                .span = spans.runAnchor(step).whole(),
                 .fix_hint = "Replace '" ++ cmd.marker ++ cmd.args ++ "' with '" ++ cmd.replacement ++ "'.",
             }) catch return;
         }
@@ -1181,12 +1184,12 @@ test "BP008: repeated occurrences of one command report once" {
     try std.testing.expectEqual(@as(usize, 1), diags.len());
 }
 
-test "BP008: diagnostic span follows run_value_span" {
+test "BP008: diagnostic span follows the run: scalar span" {
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     const step = Step{
         .run = "echo \"::set-output name=a::1\"",
-        .run_value_span = Span.point(7, 15, 120),
+        .run_meta = .{ .value_span = Span.point(7, 15, 120), .style = .plain },
     };
     checkDeprecatedWorkflowCommand(&step, &diags);
 

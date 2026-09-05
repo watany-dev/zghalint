@@ -1,0 +1,15 @@
+# zghalint:expect SEC001 SC001 SEC004 PERM001 PERF001
+name: supply chain
+on: [push]
+permissions: write-all
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: node:20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@main

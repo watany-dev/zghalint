@@ -126,6 +126,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
             const parsed = try parseStringMapWithMeta(allocator, n);
             workflow.env = parsed.values;
             workflow.env_meta = parsed.meta;
+            workflow.env_keys = try parseEnvKeys(allocator, n);
         }
     }
 
@@ -452,6 +453,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
             const parsed = try parseStringMapWithMeta(ctx.allocator, n);
             job.env = parsed.values;
             job.env_meta = parsed.meta;
+            job.env_keys = try parseEnvKeys(ctx.allocator, n);
         }
     }
     if (m.get("concurrency")) |n| {
@@ -486,7 +488,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     if (m.get("container")) |n| {
         try recordEmpty(&empty, ctx.allocator, "container", n);
         if (!isEmptyContainer(n)) {
-            job.container = try parseContainer(n);
+            job.container = try parseContainer(ctx.allocator, n);
         }
     }
     if (m.get("services")) |n| {
@@ -564,7 +566,9 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
         switch (entry.value) {
-            .scalar => |s| step.run_value_span = s.span,
+            .scalar => |s| {
+                step.run_meta = .{ .value_span = s.span, .style = s.style };
+            },
             else => {},
         }
         if (entry.full_span) |fs| {
@@ -586,6 +590,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         switch (uses_node) {
             .scalar => |s| {
                 step.uses = types.ActionRef.parse(s.value);
+                step.uses_value_span = s.span;
                 step.uses_value_end_byte = s.span.end_byte;
                 step.uses_value_style = s.style;
             },
@@ -626,7 +631,9 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     if (m.get("with")) |with_node| {
         try recordEmpty(&empty, ctx.allocator, "with", with_node);
         if (!isEmptyContainer(with_node)) {
-            step.with = try parseStringMap(ctx.allocator, with_node);
+            const parsed_with = try parseStringMapWithMeta(ctx.allocator, with_node);
+            step.with = parsed_with.values;
+            step.with_meta = parsed_with.meta;
             switch (with_node) {
                 .mapping => |with_mapping| {
                     if (with_mapping.entries.len > 0) {
@@ -644,6 +651,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             const parsed = try parseStringMapWithMeta(ctx.allocator, n);
             step.env = parsed.values;
             step.env_meta = parsed.meta;
+            step.env_keys = try parseEnvKeys(ctx.allocator, n);
         }
     }
     step.empty_sections = try empty.toOwnedSlice(ctx.allocator);
@@ -833,7 +841,7 @@ fn parseCredentials(node: Node) ParseError!types.Credentials {
     };
 }
 
-fn parseContainer(node: Node) ParseError!types.Container {
+fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
             return .{ .image = s.value };
@@ -842,6 +850,7 @@ fn parseContainer(node: Node) ParseError!types.Container {
             return .{
                 .image = m.getScalar("image"),
                 .credentials = if (m.get("credentials")) |n| try parseCredentials(n) else null,
+                .env_keys = if (m.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
             };
         },
         else => return error.InvalidValue,
@@ -862,6 +871,7 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                     .name = entry.key.value,
                     .image = vm.getScalar("image"),
                     .credentials = if (vm.get("credentials")) |n| try parseCredentials(n) else null,
+                    .env_keys = if (vm.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
                 };
             },
             .scalar => |s| {
@@ -913,6 +923,22 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
         }
     }
     return .{ .values = values, .meta = meta };
+}
+
+/// Collect every key of an `env:` mapping with the span of its key token.
+/// Unlike `parseStringMapWithMeta`, no entry is dropped: SYN007 must see keys
+/// whose value is not a scalar, and duplicated keys, to validate their names.
+fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.EnvKey {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const keys = try allocator.alloc(types.EnvKey, m.entries.len);
+    for (m.entries, keys) |entry, *key| {
+        key.* = .{ .name = entry.key.value, .span = entry.key.span };
+    }
+    return keys;
 }
 
 const ParsedStringArray = struct {
@@ -2005,4 +2031,46 @@ test "parseServices with scalar image" {
     try testing.expectEqualStrings("redis", services[0].name);
     try testing.expectEqualStrings("redis:6", services[0].image.?);
     try testing.expect(services[0].credentials == null);
+}
+
+test "parseStep captures run/uses/with source metadata" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\          ref: main
+        \\      - run: |
+        \\          echo hello
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    defer yp.deinit();
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const checkout = wf.jobs[0].steps[0];
+    const uses_span = checkout.uses_value_span.?;
+    try testing.expectEqual(@as(u32, 7), uses_span.start_line);
+    try testing.expectEqualStrings(
+        "actions/checkout@v4",
+        source[uses_span.start_byte..uses_span.end_byte],
+    );
+    try testing.expectEqual(yaml.ScalarStyle.plain, checkout.with_meta.?.get("ref").?.style);
+    try testing.expectEqual(@as(u32, 9), checkout.with_meta.?.get("ref").?.value_span.start_line);
+
+    const run_step = wf.jobs[0].steps[1];
+    try testing.expectEqual(yaml.ScalarStyle.literal, run_step.run_meta.?.style);
+    // The `run:` span starts at the `|` indicator, one line above the content.
+    try testing.expectEqual(@as(u32, 10), run_step.run_meta.?.value_span.start_line);
 }

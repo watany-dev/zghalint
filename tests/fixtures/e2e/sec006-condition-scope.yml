@@ -1,0 +1,22 @@
+# zghalint:forbid SEC006
+# #138 repro: routing an `if:` on a ref or label name is a mainstream idiom and
+# the value never reaches a shell, so SEC006 must stay quiet. The free-text gate
+# that SEC006 does report lives in `security-misc.yml`.
+name: sec006 condition scope
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Release branch routing
+        if: startsWith(github.event.pull_request.head.ref, 'release/')
+        run: echo release
+      - name: Head ref comparison
+        if: github.head_ref == 'main'
+        run: echo main
+      - name: Label routing
+        if: contains(github.event.pull_request.labels.*.name, 'deploy')
+        run: echo deploy

@@ -8,6 +8,7 @@ const rest_fallback = @import("rest_fallback.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
+const spans = @import("spans.zig");
 const Span = yaml.Span;
 const Step = workflow_types.Step;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
@@ -118,7 +119,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
             .rule_id = "SC005",
             .severity = .info,
             .message = "SHA-pinned action does not correspond to any known Git tag",
-            .span = Span.point(0, 0, 0),
+            .span = spans.usesSpan(step),
             .fix_hint = "verify the SHA corresponds to a tagged release",
         }) catch return;
     }

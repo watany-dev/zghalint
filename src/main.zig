@@ -12,15 +12,7 @@ const FixMode = enum {
     all,
 };
 
-/// All lint rules used by the engine and SARIF output.
-const all_rules = zghalint.rules.security.security_rules ++
-    zghalint.rules.best_practices.rules ++
-    zghalint.rules.performance.rules ++
-    zghalint.rules.permissions.rules ++
-    [_]zghalint.rules.Rule{zghalint.rules.expressions.expression_rule} ++
-    zghalint.rules.dependabot.rules ++
-    zghalint.rules.runner.rules ++
-    zghalint.rules.syntax.rules;
+const all_rules = zghalint.rules.registry.all_rules;
 
 const CliArgs = struct {
     files: std.ArrayList([]const u8),

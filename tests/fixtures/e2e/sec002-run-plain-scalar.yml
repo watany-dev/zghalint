@@ -1,0 +1,19 @@
+# zghalint:expect SEC002@19
+# Regression fixture for #131: an unquoted (plain) `run:` scalar.
+# The parser used to truncate plain scalars at `#`-less boundaries, which made
+# SEC002 miss the injection entirely while every inline test stayed green.
+name: sec002 plain scalar
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Echo the issue title
+        run: echo "${{ github.event.issue.title }}"

@@ -12,6 +12,7 @@ const Job = engine.Job;
 const Step = engine.Step;
 const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
+const spans = @import("spans.zig");
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Fix = diagnostics_mod.Fix;
@@ -244,15 +245,17 @@ fn checkWithCacheInput(
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
-    var uses_setup = false;
+    // Span of the first uncached setup step, so the diagnostic points at the
+    // action that is missing the cache rather than at the job.
+    var setup_span: ?Span = null;
     var has_cache = false;
 
-    for (job.steps) |step| {
+    for (job.steps) |*step| {
         if (step.uses) |action_ref| {
             const action_name = util.actionBaseName(action_ref.raw);
 
             if (std.mem.eql(u8, action_name, ca.setup_action)) {
-                uses_setup = true;
+                if (setup_span == null) setup_span = spans.usesSpan(step);
                 if (step.with) |with| {
                     if (with.get(ca.cache_key)) |val| {
                         if (val.len > 0) has_cache = true;
@@ -266,7 +269,8 @@ fn checkWithCacheInput(
         }
     }
 
-    if (!uses_setup or has_cache) return;
+    const span = setup_span orelse return;
+    if (has_cache) return;
 
     const dispatched = dispatchCacheFix(diag_list, job, ca.setup_action);
     const base_hint = ca.fix_hint_base;
@@ -283,7 +287,7 @@ fn checkWithCacheInput(
         .rule_id = "PERF001",
         .severity = .warning,
         .message = "Job uses " ++ ca.setup_action ++ " without caching. Add actions/cache or set 'cache' input.",
-        .span = Span.point(0, 0, 0),
+        .span = span,
         .fix_hint = hint,
         .fix = dispatched.fix,
     }) catch return;
@@ -294,17 +298,18 @@ fn checkBunCache(
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
-    var uses_setup = false;
+    var setup_span: ?Span = null;
     var has_cache_step = false;
 
-    for (job.steps) |step| {
+    for (job.steps) |*step| {
         const action_ref = step.uses orelse continue;
         const action_name = util.actionBaseName(action_ref.raw);
-        if (std.mem.eql(u8, action_name, ca.setup_action)) uses_setup = true;
+        if (std.mem.eql(u8, action_name, ca.setup_action) and setup_span == null) setup_span = spans.usesSpan(step);
         if (std.mem.eql(u8, action_name, "actions/cache")) has_cache_step = true;
     }
 
-    if (!uses_setup or has_cache_step) return;
+    const span = setup_span orelse return;
+    if (has_cache_step) return;
 
     const base_hint = ca.fix_hint_base;
     const hint: []const u8 = if (!workspace.current.bun_lockfile_present) blk: {
@@ -320,7 +325,7 @@ fn checkBunCache(
         .rule_id = "PERF001",
         .severity = .warning,
         .message = "Job uses oven-sh/setup-bun without caching. Add an actions/cache step keyed by your bun lockfile.",
-        .span = Span.point(0, 0, 0),
+        .span = span,
         .fix_hint = hint,
     }) catch return;
 }
@@ -330,10 +335,10 @@ fn checkUvCache(
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
-    var uv_cache_disabled = false;
+    var uv_cache_disabled_span: ?Span = null;
     var has_cache_step = false;
 
-    for (job.steps) |step| {
+    for (job.steps) |*step| {
         const action_ref = step.uses orelse continue;
         const action_name = util.actionBaseName(action_ref.raw);
 
@@ -346,16 +351,19 @@ fn checkUvCache(
 
         const with = step.with orelse continue;
         const enable_cache_val = with.get(ca.cache_key) orelse continue;
-        if (std.mem.eql(u8, enable_cache_val, "false")) uv_cache_disabled = true;
+        if (std.mem.eql(u8, enable_cache_val, "false") and uv_cache_disabled_span == null) {
+            uv_cache_disabled_span = spans.usesSpan(step);
+        }
     }
 
-    if (!uv_cache_disabled or has_cache_step) return;
+    const span = uv_cache_disabled_span orelse return;
+    if (has_cache_step) return;
 
     diag_list.append(.{
         .rule_id = "PERF001",
         .severity = .warning,
         .message = "Job uses astral-sh/setup-uv with 'enable-cache: false' and no actions/cache step. Remove the input, set it to 'true', or add an actions/cache step.",
-        .span = Span.point(0, 0, 0),
+        .span = span,
         .fix_hint = ca.fix_hint_base,
     }) catch return;
 }
@@ -364,25 +372,29 @@ fn checkUvCache(
 
 fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
     var checkout_without_path_count: u32 = 0;
+    // Report on the first redundant checkout — the second one, since a single
+    // path-less checkout is fine.
+    var redundant_span: ?Span = null;
 
-    for (job.steps) |step| {
+    for (job.steps) |*step| {
         if (step.uses) |action_ref| {
             const action_name = util.actionBaseName(action_ref.raw);
             if (std.mem.eql(u8, action_name, "actions/checkout")) {
                 const has_path = if (step.with) |with| with.get("path") != null else false;
                 if (!has_path) {
                     checkout_without_path_count += 1;
+                    if (checkout_without_path_count == 2) redundant_span = spans.usesSpan(step);
                 }
             }
         }
     }
 
-    if (checkout_without_path_count > 1) {
+    if (redundant_span) |span| {
         diag_list.append(.{
             .rule_id = "PERF002",
             .severity = .warning,
             .message = "Multiple actions/checkout steps without 'path' in the same job. This checks out to the same directory repeatedly.",
-            .span = Span.point(0, 0, 0),
+            .span = span,
             .fix_hint = "Remove redundant checkout steps or specify different 'path' values.",
         }) catch return;
     }
@@ -413,7 +425,7 @@ fn checkFailFastDisabled(job: *const Job, diag_list: *DiagnosticList) void {
         .rule_id = "PERF003",
         .severity = .warning,
         .message = "Strategy has fail-fast: false. Failed matrix jobs will continue running, wasting CI resources.",
-        .span = strategy.fail_fast_value_span orelse Span.point(0, 0, 0),
+        .span = strategy.fail_fast_value_span orelse strategy.fail_fast_entry_span orelse job.span,
         .fix_hint = "Consider removing 'fail-fast: false' to cancel remaining jobs on first failure.",
     };
     if (strategy.fail_fast_entry_span) |entry_span| {

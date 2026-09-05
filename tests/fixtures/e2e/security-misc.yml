@@ -1,0 +1,24 @@
+# zghalint:expect SEC003 SEC005 SEC006 SEC007 SEC008 SC002
+name: security misc
+on:
+  pull_request_target:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the PR head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Hardcoded token
+        env:
+          API_TOKEN: "ghp_1234567890abcdefghijklmnopqrstuvwxyzA"
+        run: echo done
+      - name: Spoofable condition
+        if: github.event.pull_request.title == 'release'
+        run: echo release
+      - name: Env injection
+        run: echo "TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
+      - name: Compromised action
+        uses: tj-actions/changed-files@v35

@@ -7,6 +7,7 @@ const engine = @import("engine.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
+const spans = @import("spans.zig");
 const Span = yaml.Span;
 const Step = workflow_types.Step;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
@@ -145,7 +146,7 @@ pub fn checkImpostorCommit(step: *const Step, list: *DiagnosticList) void {
         .rule_id = "SC008",
         .severity = .warning,
         .message = message,
-        .span = Span.point(0, 0, 0),
+        .span = spans.usesSpan(step),
         .fix_hint = hint,
     }) catch return;
 }
