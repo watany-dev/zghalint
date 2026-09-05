@@ -103,6 +103,14 @@ _dangerous_contexts = [
     "github.event.head_commit.message",
 ]
 
+# SEC006 keeps its own, narrower table than the injection rules: an `if:`
+# condition only yields a boolean, so ref-shaped inputs such as
+# `github.head_ref` are a routing idiom there rather than an injection
+# vector (#138).  They stay untrusted for SEC002 / SEC008.
+_condition_dangerous_contexts = [
+    c for c in _dangerous_contexts if c != "github.head_ref"
+]
+
 # Prefixes that SEC003 detects as hardcoded secrets
 _secret_values = [
     "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12",
@@ -501,7 +509,7 @@ def workflow_with_plain_scalar_if(draw: st.DrawFn) -> str:
     The condition parses only when the plain scalar keeps its comma, so a
     truncated value shows up as a bogus EXPR001 (missing closing paren).
     """
-    context = draw(st.sampled_from(_dangerous_contexts))
+    context = draw(st.sampled_from(_condition_dangerous_contexts))
     func = draw(st.sampled_from(["contains", "startsWith", "endsWith"]))
     needle = draw(st.sampled_from(["fix", "release/", "wip"]))
     return (

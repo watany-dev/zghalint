@@ -23,7 +23,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
 | SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout of PR head is dangerous |
-| SEC006 | untrusted-input-condition | error | Untrusted context in `if:` condition expression |
+| SEC006 | untrusted-input-condition | warning | Attacker-authored text used as a gate in an `if:` condition expression |
 | SEC007 | missing-permissions | info | Workflow should define top-level permissions |
 | SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection |
 | SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks |
@@ -38,6 +38,20 @@ Detect security vulnerabilities in workflow definitions.
 | SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:` |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
+
+### SEC002 / SEC008 vs. SEC006
+
+SEC002 and SEC008 report **injection** — an untrusted value reaches a shell —
+while SEC006 reports a **weak gate**: an `if:` condition only yields a boolean,
+but an attacker who authors the text being tested decides whether the branch is
+taken. The two rules therefore keep separate context lists, and SEC006 warns
+instead of erroring.
+
+SEC006 does not report ref-shaped inputs (`github.head_ref`,
+`github.event.pull_request.head.ref` / `.head.label` /
+`.head.repo.default_branch`, `github.event.workflow_run.head_branch`) or label
+names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
+— is a common routing idiom. They stay untrusted for SEC002 and SEC008.
 
 ## Supply Chain Security Rules (SC)
 
