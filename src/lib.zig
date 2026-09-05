@@ -20,8 +20,6 @@ pub const workflow = struct {
     pub const Permissions = types.Permissions;
     pub const parser = @import("workflow/parser.zig");
     pub const parseWorkflow = parser.parseWorkflow;
-    pub const validator = @import("workflow/validator.zig");
-    pub const validate = validator.validate;
 };
 
 pub const diagnostics = @import("diagnostics.zig");
@@ -94,7 +92,6 @@ test {
     _ = @import("workflow/parser.zig");
     _ = @import("workflow/schema.zig");
     _ = @import("workflow/type_validation.zig");
-    _ = @import("workflow/validator.zig");
     _ = @import("diagnostics.zig");
     _ = @import("rules/engine.zig");
     _ = @import("rules/registry.zig");

@@ -108,43 +108,6 @@ pub const EventFilter = struct {
     spans: EventFilterSpans = .{},
 };
 
-/// Schedule entry (cron expression)
-pub const ScheduleEntry = struct {
-    cron: []const u8,
-};
-
-/// Input definition for workflow_dispatch / workflow_call
-pub const InputDef = struct {
-    description: ?[]const u8 = null,
-    required: bool = false,
-    default: ?[]const u8 = null,
-    input_type: ?[]const u8 = null,
-};
-
-/// Output definition for workflow_call
-pub const OutputDef = struct {
-    description: ?[]const u8 = null,
-    value: ?[]const u8 = null,
-};
-
-/// Secret definition for workflow_call
-pub const SecretDef = struct {
-    description: ?[]const u8 = null,
-    required: bool = false,
-};
-
-/// Workflow dispatch trigger configuration
-pub const WorkflowDispatch = struct {
-    inputs: ?std.StringArrayHashMap(InputDef) = null,
-};
-
-/// Workflow call trigger configuration
-pub const WorkflowCall = struct {
-    inputs: ?std.StringArrayHashMap(InputDef) = null,
-    outputs: ?std.StringArrayHashMap(OutputDef) = null,
-    secrets: ?std.StringArrayHashMap(SecretDef) = null,
-};
-
 /// Known event types
 pub const EventType = enum {
     push,
@@ -191,9 +154,6 @@ pub const EventConfig = struct {
     event: EventType,
     name: []const u8,
     filter: ?EventFilter = null,
-    schedule: []const ScheduleEntry = &.{},
-    workflow_dispatch: ?WorkflowDispatch = null,
-    workflow_call: ?WorkflowCall = null,
 };
 
 /// Trigger configuration (the `on:` field)

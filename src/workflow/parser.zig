@@ -210,40 +210,14 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
         },
         .mapping => |m| {
             switch (event_type) {
-                .schedule => {
-                    // schedule is handled via the parent — schedule entries come as a sequence
-                },
-                .workflow_dispatch => {
-                    var wd = types.WorkflowDispatch{};
-                    if (m.get("inputs")) |inputs_node| {
-                        wd.inputs = try parseInputDefs(allocator, inputs_node);
-                    }
-                    config.workflow_dispatch = wd;
-                },
-                .workflow_call => {
-                    var wc = types.WorkflowCall{};
-                    if (m.get("inputs")) |n| {
-                        wc.inputs = try parseInputDefs(allocator, n);
-                    }
-                    if (m.get("outputs")) |n| {
-                        wc.outputs = try parseOutputDefs(allocator, n);
-                    }
-                    if (m.get("secrets")) |n| {
-                        wc.secrets = try parseSecretDefs(allocator, n);
-                    }
-                    config.workflow_call = wc;
-                },
+                // schedule / workflow_dispatch / workflow_call carry no filters
+                .schedule, .workflow_dispatch, .workflow_call => {},
                 else => {
                     config.filter = try parseEventFilter(allocator, m);
                 },
             }
         },
-        .sequence => |seq| {
-            if (event_type == .schedule) {
-                config.schedule = try parseScheduleEntries(allocator, seq);
-            }
-        },
-        .scalar => {},
+        .sequence, .scalar => {},
     }
 
     return config;
@@ -267,90 +241,6 @@ fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.E
             .paths_ignore = m.getKeySpan("paths-ignore"),
         },
     };
-}
-
-fn parseScheduleEntries(allocator: std.mem.Allocator, seq: yaml.Sequence) ParseError![]const types.ScheduleEntry {
-    const entries = try allocator.alloc(types.ScheduleEntry, seq.items.len);
-    for (seq.items, 0..) |item, i| {
-        switch (item) {
-            .mapping => |m| {
-                entries[i] = .{
-                    .cron = m.getScalar("cron") orelse return error.InvalidValue,
-                };
-            },
-            else => return error.InvalidValue,
-        }
-    }
-    return entries;
-}
-
-fn parseInputDefs(allocator: std.mem.Allocator, node: Node) ParseError!std.StringArrayHashMap(types.InputDef) {
-    var map = std.StringArrayHashMap(types.InputDef).init(allocator);
-    switch (node) {
-        .mapping => |m| {
-            for (m.entries) |entry| {
-                var def = types.InputDef{};
-                switch (entry.value) {
-                    .mapping => |vm| {
-                        def.description = vm.getScalar("description");
-                        def.default = vm.getScalar("default");
-                        def.input_type = vm.getScalar("type");
-                        if (vm.getScalar("required")) |r| {
-                            def.required = std.mem.eql(u8, r, "true");
-                        }
-                    },
-                    else => {},
-                }
-                try map.put(entry.key.value, def);
-            }
-        },
-        else => return error.InvalidValue,
-    }
-    return map;
-}
-
-fn parseOutputDefs(allocator: std.mem.Allocator, node: Node) ParseError!std.StringArrayHashMap(types.OutputDef) {
-    var map = std.StringArrayHashMap(types.OutputDef).init(allocator);
-    switch (node) {
-        .mapping => |m| {
-            for (m.entries) |entry| {
-                var def = types.OutputDef{};
-                switch (entry.value) {
-                    .mapping => |vm| {
-                        def.description = vm.getScalar("description");
-                        def.value = vm.getScalar("value");
-                    },
-                    else => {},
-                }
-                try map.put(entry.key.value, def);
-            }
-        },
-        else => return error.InvalidValue,
-    }
-    return map;
-}
-
-fn parseSecretDefs(allocator: std.mem.Allocator, node: Node) ParseError!std.StringArrayHashMap(types.SecretDef) {
-    var map = std.StringArrayHashMap(types.SecretDef).init(allocator);
-    switch (node) {
-        .mapping => |m| {
-            for (m.entries) |entry| {
-                var def = types.SecretDef{};
-                switch (entry.value) {
-                    .mapping => |vm| {
-                        def.description = vm.getScalar("description");
-                        if (vm.getScalar("required")) |r| {
-                            def.required = std.mem.eql(u8, r, "true");
-                        }
-                    },
-                    else => {},
-                }
-                try map.put(entry.key.value, def);
-            }
-        },
-        else => return error.InvalidValue,
-    }
-    return map;
 }
 
 fn parseJobs(ctx: *ParseContext, node: Node) ParseError![]const types.Job {
@@ -1159,24 +1049,6 @@ test "parseTrigger records key spans for empty filter values" {
     try testing.expect(spans.paths == null);
 }
 
-test "parseTrigger schedule" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    var cron_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("cron"), .value = mkScalar("0 0 * * *"), .span = mkSpan() },
-    };
-    var sched_items = [_]Node{mkMapping(&cron_entries)};
-    var trigger_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("schedule"), .value = mkSequence(&sched_items), .span = mkSpan() },
-    };
-
-    const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
-    try testing.expectEqual(@as(usize, 1), trigger.events.len);
-    try testing.expectEqual(@as(usize, 1), trigger.events[0].schedule.len);
-    try testing.expectEqualStrings("0 0 * * *", trigger.events[0].schedule[0].cron);
-}
-
 test "parsePermissions read-all" {
     const parsed = try parsePermissions(mkScalar("read-all"));
     try testing.expect(parsed.permissions.read_all);
@@ -1685,76 +1557,6 @@ test "parseJob with service credentials" {
     try testing.expectEqualStrings("redis", job.services[0].image.?);
     try testing.expectEqualStrings("${{ secrets.REDIS_USER }}", job.services[0].credentials.?.username.?);
     try testing.expectEqualStrings("${{ secrets.REDIS_PASS }}", job.services[0].credentials.?.password.?);
-}
-
-test "parseEventConfig with workflow_dispatch inputs" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var input_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("description"), .value = mkScalar("The name"), .span = mkSpan() },
-        .{ .key = mkScalarS("required"), .value = mkScalar("true"), .span = mkSpan() },
-        .{ .key = mkScalarS("default"), .value = mkScalar("hello"), .span = mkSpan() },
-        .{ .key = mkScalarS("type"), .value = mkScalar("string"), .span = mkSpan() },
-    };
-    var inputs_map_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("name"), .value = mkMapping(&input_entries), .span = mkSpan() },
-    };
-    var wd_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("inputs"), .value = mkMapping(&inputs_map_entries), .span = mkSpan() },
-    };
-
-    const config = try parseEventConfig(alloc, "workflow_dispatch", mkMapping(&wd_entries));
-    try testing.expectEqual(types.EventType.workflow_dispatch, config.event);
-    try testing.expect(config.workflow_dispatch != null);
-    try testing.expectEqual(@as(usize, 1), config.workflow_dispatch.?.inputs.?.count());
-    const input_def = config.workflow_dispatch.?.inputs.?.get("name").?;
-    try testing.expect(input_def.required);
-    try testing.expectEqualStrings("The name", input_def.description.?);
-    try testing.expectEqualStrings("hello", input_def.default.?);
-    try testing.expectEqualStrings("string", input_def.input_type.?);
-}
-
-test "parseEventConfig with workflow_call" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var input_def_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("description"), .value = mkScalar("An input"), .span = mkSpan() },
-    };
-    var inputs_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("my-input"), .value = mkMapping(&input_def_entries), .span = mkSpan() },
-    };
-    var output_def_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("description"), .value = mkScalar("An output"), .span = mkSpan() },
-        .{ .key = mkScalarS("value"), .value = mkScalar("${{ jobs.build.outputs.result }}"), .span = mkSpan() },
-    };
-    var outputs_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("my-output"), .value = mkMapping(&output_def_entries), .span = mkSpan() },
-    };
-    var secret_def_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("description"), .value = mkScalar("A secret"), .span = mkSpan() },
-        .{ .key = mkScalarS("required"), .value = mkScalar("true"), .span = mkSpan() },
-    };
-    var secrets_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("my-secret"), .value = mkMapping(&secret_def_entries), .span = mkSpan() },
-    };
-    var wc_entries = [_]yaml.MappingEntry{
-        .{ .key = mkScalarS("inputs"), .value = mkMapping(&inputs_entries), .span = mkSpan() },
-        .{ .key = mkScalarS("outputs"), .value = mkMapping(&outputs_entries), .span = mkSpan() },
-        .{ .key = mkScalarS("secrets"), .value = mkMapping(&secrets_entries), .span = mkSpan() },
-    };
-
-    const config = try parseEventConfig(alloc, "workflow_call", mkMapping(&wc_entries));
-    try testing.expect(config.workflow_call != null);
-    const wc = config.workflow_call.?;
-    try testing.expectEqual(@as(usize, 1), wc.inputs.?.count());
-    try testing.expectEqual(@as(usize, 1), wc.outputs.?.count());
-    try testing.expectEqual(@as(usize, 1), wc.secrets.?.count());
-    try testing.expectEqualStrings("An output", wc.outputs.?.get("my-output").?.description.?);
-    try testing.expect(wc.secrets.?.get("my-secret").?.required);
 }
 
 test "parseEventConfig with null value (empty event)" {
