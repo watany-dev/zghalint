@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const fix_builder = @import("../fix/builder.zig");
 const diagnostics = @import("../diagnostics.zig");
@@ -204,13 +205,9 @@ pub const rules = [_]Rule{
 
 // ── Tests ──
 
-fn makeEmptyTrigger() workflow_types.Trigger {
-    return .{ .events = &.{} };
-}
-
 test "PERM001: detect write-all scope" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .write_all = true },
         .jobs = &.{},
     };
@@ -223,7 +220,7 @@ test "PERM001: detect write-all scope" {
 
 test "PERM001: detect contents write" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .contents = .write },
         .jobs = &.{},
     };
@@ -235,7 +232,7 @@ test "PERM001: detect contents write" {
 
 test "PERM001: no warning for read-only" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .contents = .read },
         .jobs = &.{},
     };
@@ -247,7 +244,7 @@ test "PERM001: no warning for read-only" {
 
 test "PERM001: no warning for read-all scope" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .read_all = true },
         .jobs = &.{},
     };
@@ -265,7 +262,7 @@ test "PERM001: detect broad permissions at job level" {
         },
     };
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .jobs = &jobs,
     };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -276,7 +273,7 @@ test "PERM001: detect broad permissions at job level" {
 
 test "PERM001: detect multiple write permissions" {
     const wf = Workflow{
-        .on = makeEmptyTrigger(),
+        .on = test_support.empty_trigger,
         .permissions = .{ .contents = .write, .packages = .write },
         .jobs = &.{},
     };

@@ -531,6 +531,7 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
@@ -1173,16 +1174,7 @@ fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *Diagnos
     checkMappingValueTypes(&wf, list);
 }
 
-fn dummySpan(start_byte: usize, end_byte: usize) Span {
-    return .{
-        .start_line = 1,
-        .start_col = 1,
-        .end_line = 1,
-        .end_col = 1,
-        .start_byte = start_byte,
-        .end_byte = end_byte,
-    };
-}
+const dummySpan = test_support.dummySpan;
 
 test "SYN006: job ID starting with a digit is reported" {
     const job = Job{

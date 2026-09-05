@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
@@ -425,10 +426,6 @@ pub const rules = [_]Rule{
 };
 
 // ── Tests ──
-
-fn makeEmptyTrigger() workflow_types.Trigger {
-    return .{ .events = &.{} };
-}
 
 test "BP001: detect missing timeout-minutes" {
     const job = Job{ .id = "build" };

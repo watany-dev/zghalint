@@ -197,18 +197,14 @@ fn oidShort(oid: []const u8) []const u8 {
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 const ActionRef = workflow_types.ActionRef;
 const Workflow = workflow_types.Workflow;
 const Job = workflow_types.Job;
 const Rule = engine.Rule;
 const Engine = engine.Engine;
 
-fn hasDiagnostic(list: *DiagnosticList, rule_id: []const u8) bool {
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, rule_id)) return true;
-    }
-    return false;
-}
+const hasDiagnostic = test_support.hasDiagnostic;
 
 fn runWithImpostorCache(
     entries: []const struct { key: []const u8, result: CachedResult },

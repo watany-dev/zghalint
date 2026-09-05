@@ -130,6 +130,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 const ActionRef = workflow_types.ActionRef;
 const Workflow = workflow_types.Workflow;
 const Job = workflow_types.Job;
@@ -138,12 +139,7 @@ const Rule = engine.Rule;
 const Engine = engine.Engine;
 const security = @import("security.zig");
 
-fn hasDiagnostic(list: *DiagnosticList, rule_id: []const u8) bool {
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, rule_id)) return true;
-    }
-    return false;
-}
+const hasDiagnostic = test_support.hasDiagnostic;
 
 // -- Check function tests (using mock cache) --
 

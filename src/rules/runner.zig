@@ -125,17 +125,9 @@ pub const rules = [_]Rule{
 // ============================================================
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
-fn dummySpan(start_byte: usize, end_byte: usize) Span {
-    return .{
-        .start_line = 1,
-        .start_col = 1,
-        .end_line = 1,
-        .end_col = 1,
-        .start_byte = start_byte,
-        .end_byte = end_byte,
-    };
-}
+const dummySpan = test_support.dummySpan;
 
 test "RUNNER001: retired ubuntu-20.04 emits error with unsafe fix" {
     const job = Job{
