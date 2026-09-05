@@ -205,10 +205,38 @@ const Engine = engine.Engine;
 
 const hasDiagnostic = test_support.hasDiagnostic;
 
-fn runWithImpostorCache(
-    entries: []const struct { key: []const u8, result: CachedResult },
-    uses_ref: ?[]const u8,
-) !DiagnosticList {
+const ImpostorCacheEntry = struct { key: []const u8, result: CachedResult };
+
+/// Run SC008 over a one-step workflow whose step `uses` the given ref, or runs a
+/// shell command when it is null, with `entries` preloaded into the impostor
+/// cache. A null `entries` reproduces offline mode, where there is no cache at
+/// all. Module state is saved and restored so tests stay independent of each
+/// other. Diagnostic strings come from the list's own arena, so the impostor
+/// arena can go away here.
+fn runWithImpostorCache(entries: ?[]const ImpostorCacheEntry, uses_ref: ?[]const u8) !DiagnosticList {
+    const prev_cache = impostor_cache;
+    const prev_arena = impostor_arena;
+    defer {
+        impostor_cache = prev_cache;
+        impostor_arena = prev_arena;
+    }
+
+    if (entries != null) {
+        initImpostor(testing.allocator, false);
+    } else {
+        impostor_cache = null;
+        impostor_arena = null;
+    }
+    defer if (entries != null) deinitImpostor();
+
+    if (entries) |es| {
+        for (es) |entry| {
+            const alloc = getArenaAllocator() orelse return error.NotInitialized;
+            const key = try alloc.dupe(u8, entry.key);
+            try impostor_cache.?.put(key, entry.result);
+        }
+    }
+
     var steps = [_]Step{.{
         .uses = if (uses_ref) |r| ActionRef.parse(r) else null,
         .run = if (uses_ref == null) "echo hello" else null,
@@ -218,12 +246,6 @@ fn runWithImpostorCache(
         .jobs = &jobs,
         .on = .{ .events = &.{} },
     };
-
-    for (entries) |entry| {
-        const alloc = getArenaAllocator() orelse return error.NotInitialized;
-        const key = try alloc.dupe(u8, entry.key);
-        try impostor_cache.?.put(key, entry.result);
-    }
 
     const rules_arr = [_]Rule{.{
         .id = "SC008",
@@ -240,15 +262,6 @@ fn runWithImpostorCache(
 // -- C-1: impostor status produces warning --
 
 test "SC008: impostor status produces warning diagnostic" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    initImpostor(testing.allocator, false);
-    defer deinitImpostor();
-
     var list = try runWithImpostorCache(
         &.{
             .{
@@ -268,15 +281,6 @@ test "SC008: impostor status produces warning diagnostic" {
 // -- C-2: legitimate status emits nothing --
 
 test "SC008: legitimate status produces no diagnostic" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    initImpostor(testing.allocator, false);
-    defer deinitImpostor();
-
     var list = try runWithImpostorCache(
         &.{
             .{
@@ -294,15 +298,6 @@ test "SC008: legitimate status produces no diagnostic" {
 // -- C-3: unknown status is silent (fail-closed) --
 
 test "SC008: unknown status produces no diagnostic" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    initImpostor(testing.allocator, false);
-    defer deinitImpostor();
-
     var list = try runWithImpostorCache(
         &.{
             .{
@@ -320,32 +315,8 @@ test "SC008: unknown status produces no diagnostic" {
 // -- C-4: offline mode (null cache) skips entirely --
 
 test "SC008: offline mode produces no diagnostic" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    // Explicit offline: no init call, so isActive() == false.
-    impostor_cache = null;
-    impostor_arena = null;
-
-    var steps = [_]Step{.{
-        .uses = ActionRef.parse("evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
-    }};
-    var jobs = [_]Job{.{ .id = "test", .steps = &steps }};
-    const wf = Workflow{ .jobs = &jobs, .on = .{ .events = &.{} } };
-
-    const rules_arr = [_]Rule{.{
-        .id = "SC008",
-        .name = "impostor-commit",
-        .description = "test",
-        .severity = .warning,
-        .category = .dependency,
-        .check_step = &checkImpostorCommit,
-    }};
-    const eng = Engine.init(&rules_arr);
-    var list = eng.run(testing.allocator, &wf);
+    // Null entries mean no cache at all, so isActive() == false.
+    var list = try runWithImpostorCache(null, "evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC008"));
@@ -354,15 +325,6 @@ test "SC008: offline mode produces no diagnostic" {
 // -- C-5: non-SHA ref (tag pin) is skipped --
 
 test "SC008: non-pinned action (tag ref) is skipped" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    initImpostor(testing.allocator, false);
-    defer deinitImpostor();
-
     var list = try runWithImpostorCache(&.{}, "actions/checkout@v4");
     defer list.deinit();
 
@@ -372,15 +334,6 @@ test "SC008: non-pinned action (tag ref) is skipped" {
 // -- C-6a: local action skipped --
 
 test "SC008: local action is skipped" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    initImpostor(testing.allocator, false);
-    defer deinitImpostor();
-
     var list = try runWithImpostorCache(&.{}, "./local-action");
     defer list.deinit();
 
@@ -390,15 +343,6 @@ test "SC008: local action is skipped" {
 // -- C-6b: docker action skipped --
 
 test "SC008: docker action is skipped" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    initImpostor(testing.allocator, false);
-    defer deinitImpostor();
-
     var list = try runWithImpostorCache(&.{}, "docker://alpine:3.18");
     defer list.deinit();
 
@@ -408,15 +352,6 @@ test "SC008: docker action is skipped" {
 // -- C-5b: truly invalid sha (not 40-char hex) rejected --
 
 test "SC008: non-hex SHA-like ref is rejected" {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    defer {
-        impostor_cache = prev_cache;
-        impostor_arena = prev_arena;
-    }
-    initImpostor(testing.allocator, false);
-    defer deinitImpostor();
-
     // ref starts with 'z' which is non-hex -> is_pinned=false, but also isValidSha=false.
     var list = try runWithImpostorCache(&.{}, "evil/action@zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
     defer list.deinit();
