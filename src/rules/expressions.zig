@@ -485,11 +485,6 @@ pub const ExprParser = struct {
 // Expression Validator
 // ============================================================
 
-/// Empty type environment. Contextual overlays (steps / matrix / needs /
-/// inputs / secrets) are wired in a later iteration; until then every context
-/// resolves through the builtin catalog.
-const base_env = expr_check.TypeEnv{};
-
 /// Validate an expression.
 ///
 /// `expr_base_byte` is the absolute byte offset in the source file at which
@@ -549,7 +544,7 @@ fn validateNode(
 }
 
 fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: Span, list: *DiagnosticList) void {
-    const result = expr_check.walkPath(path, &base_env);
+    const result = expr_check.walkPath(path);
     const problem = result.problem orelse return;
 
     var buf: [96]u8 = undefined;
@@ -594,8 +589,8 @@ fn checkComparison(allocator: std.mem.Allocator, node: *const ExprNode, span: Sp
     const op = node.value;
     if (!expr_check.isCompareOp(op)) return;
 
-    const lhs = expr_check.typeOf(&node.children[0], &base_env);
-    const rhs = expr_check.typeOf(&node.children[1], &base_env);
+    const lhs = expr_check.typeOf(&node.children[0]);
+    const rhs = expr_check.typeOf(&node.children[1]);
     if (expr_check.checkCompare(op, lhs, rhs)) return;
 
     var lhs_buf: [96]u8 = undefined;
@@ -2576,7 +2571,6 @@ test "EXPR017: comparison inside a logical expression" {
 }
 
 test "typeOf: function return types" {
-    const env = expr_check.TypeEnv{};
     const cases = [_]struct { expr: []const u8, kind: expr_type.TypeKind }{
         .{ .expr = "startsWith(github.sha, 'a')", .kind = .bool },
         .{ .expr = "startsWith(github.event, 'a')", .kind = .bool },
@@ -2596,15 +2590,14 @@ test "typeOf: function return types" {
         defer arena.deinit();
         var parser = ExprParser.init(arena.allocator(), c.expr);
         const node = try parser.parse();
-        try std.testing.expectEqual(c.kind, expr_check.typeOf(&node, &env).kind);
+        try std.testing.expectEqual(c.kind, expr_check.typeOf(&node).kind);
     }
 }
 
 test "typeOf: logical operators merge operand types" {
-    const env = expr_check.TypeEnv{};
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = ExprParser.init(arena.allocator(), "github.sha || github.ref");
     const node = try parser.parse();
-    try std.testing.expectEqual(expr_type.TypeKind.string, expr_check.typeOf(&node, &env).kind);
+    try std.testing.expectEqual(expr_type.TypeKind.string, expr_check.typeOf(&node).kind);
 }
