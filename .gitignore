@@ -12,3 +12,8 @@ coverage/
 __pycache__/
 *.egg-info/
 .hypothesis/
+
+# Claude Code / autopilot local state (track skills + project config)
+.claude/*
+!.claude/skills/
+!.claude/*.md

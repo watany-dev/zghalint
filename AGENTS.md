@@ -133,3 +133,9 @@ and Claude Code reads `.claude/skills/`.
 `ponytail-review` (diff review for over-engineering) and `ponytail-audit`
 (whole-repo audit) are installed for all three hosts. They are vendored from
 [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (MIT).
+
+[autopilot](https://github.com/cookys/autopilot) (MIT) development-workflow skills
+(`dev-flow`, `quality-pipeline`, `ceo-agent`, `/l3`-`/l6`, etc.) are vendored under
+`.agents/skills/` (Codex / Cursor) and `.claude/skills/` (Claude Code). Project-specific
+autopilot config lives in `.claude/*-config.md` (quality gates use `zig build`, `zig fmt
+--check`, and `zig build test`).
