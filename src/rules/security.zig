@@ -725,41 +725,50 @@ fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
 fn exprIsWholeSecretsRef(expr: []const u8) bool {
     const trimmed = std.mem.trim(u8, expr, " \t\n\r");
     if (trimmed.len == 0) return false;
-
-    // Check for bare "secrets" reference
     if (std.mem.eql(u8, trimmed, "secrets")) return true;
+    return hasJsonCallArg(trimmed, isWholeSecretsArg);
+}
 
-    // Check for toJSON(secrets) / fromJSON(secrets) patterns
-    const patterns = [_][]const u8{ "toJSON", "tojson", "toJson", "TOJSON", "fromJSON", "fromjson", "fromJson", "FROMJSON" };
-    for (patterns) |func_name| {
+const json_funcs = [_][]const u8{ "toJSON", "fromJSON" };
+
+/// Scan `expr` for `toJSON(...)` / `fromJSON(...)` calls — GitHub matches
+/// function names case-insensitively and tolerates blanks before the paren —
+/// and report whether `pred` accepts the argument text of any of them.
+fn hasJsonCallArg(expr: []const u8, comptime pred: fn ([]const u8) bool) bool {
+    for (json_funcs) |func_name| {
         var i: usize = 0;
-        while (i + func_name.len <= trimmed.len) : (i += 1) {
-            if (std.mem.eql(u8, trimmed[i .. i + func_name.len], func_name)) {
-                // Find the opening paren after optional whitespace
-                var k = i + func_name.len;
-                while (k < trimmed.len and (trimmed[k] == ' ' or trimmed[k] == '\t')) : (k += 1) {}
-                if (k < trimmed.len and trimmed[k] == '(') {
-                    // Skip whitespace after '('
-                    var arg_start = k + 1;
-                    while (arg_start < trimmed.len and (trimmed[arg_start] == ' ' or trimmed[arg_start] == '\t')) : (arg_start += 1) {}
-                    if (arg_start + 7 <= trimmed.len and std.mem.eql(u8, trimmed[arg_start .. arg_start + 7], "secrets")) {
-                        // Must be followed by ')' or whitespace then ')' — NOT '.' (individual secret)
-                        const after = arg_start + 7;
-                        if (after >= trimmed.len) return true;
-                        if (trimmed[after] == ')') return true;
-                        if (trimmed[after] == ' ' or trimmed[after] == '\t') {
-                            // Skip whitespace, expect ')'
-                            var m = after;
-                            while (m < trimmed.len and (trimmed[m] == ' ' or trimmed[m] == '\t')) : (m += 1) {}
-                            if (m < trimmed.len and trimmed[m] == ')') return true;
-                        }
-                        // '.' means individual secret — not a match
-                    }
-                }
-            }
+        while (std.ascii.indexOfIgnoreCasePos(expr, i, func_name)) |hit| : (i = hit + 1) {
+            const paren = std.mem.indexOfNonePos(u8, expr, hit + func_name.len, " \t") orelse continue;
+            if (expr[paren] != '(') continue;
+            const arg = std.mem.indexOfNonePos(u8, expr, paren + 1, " \t") orelse continue;
+            if (pred(expr[arg..])) return true;
         }
     }
     return false;
+}
+
+/// The text after a leading `secrets` reference, or null if `arg` does not
+/// start with one.
+fn afterSecrets(arg: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, arg, "secrets")) return null;
+    return arg["secrets".len..];
+}
+
+/// The whole `secrets` context passed as the argument: `secrets.X` names a
+/// single secret and is not over-provisioned.
+fn isWholeSecretsArg(arg: []const u8) bool {
+    const rest = afterSecrets(arg) orelse return false;
+    if (rest.len == 0 or rest[0] == ')') return true;
+    if (rest[0] != ' ' and rest[0] != '\t') return false;
+    const tail = std.mem.trimLeft(u8, rest, " \t");
+    return tail.len > 0 and tail[0] == ')';
+}
+
+/// Any `secrets` reference as the argument, whole or a single secret: both
+/// bypass masking once serialized.
+fn isSecretsArg(arg: []const u8) bool {
+    const rest = afterSecrets(arg) orelse return false;
+    return rest.len == 0 or rest[0] == ')' or rest[0] == '.' or rest[0] == ' ' or rest[0] == '\t';
 }
 
 // ============================================================
@@ -934,30 +943,7 @@ fn isSetupActionWithCache(step: *const Step) bool {
 
 /// Check if an expression contains toJSON(secrets...) or fromJSON(secrets...).
 fn exprHasSecretJsonCall(expr: []const u8) bool {
-    const patterns = [_][]const u8{ "toJSON", "tojson", "toJson", "TOJSON", "fromJSON", "fromjson", "fromJson", "FROMJSON" };
-    for (patterns) |func_name| {
-        var i: usize = 0;
-        while (i + func_name.len < expr.len) : (i += 1) {
-            if (std.mem.eql(u8, expr[i .. i + func_name.len], func_name)) {
-                // Find the opening paren after optional whitespace
-                var k = i + func_name.len;
-                while (k < expr.len and (expr[k] == ' ' or expr[k] == '\t')) : (k += 1) {}
-                if (k < expr.len and expr[k] == '(') {
-                    // Check if argument starts with "secrets"
-                    var arg_start = k + 1;
-                    while (arg_start < expr.len and (expr[arg_start] == ' ' or expr[arg_start] == '\t')) : (arg_start += 1) {}
-                    if (arg_start + 7 <= expr.len and std.mem.eql(u8, expr[arg_start .. arg_start + 7], "secrets")) {
-                        // Must be followed by ), ., whitespace or end — not part of a longer word
-                        const after = arg_start + 7;
-                        if (after >= expr.len or expr[after] == ')' or expr[after] == '.' or expr[after] == ' ' or expr[after] == '\t') {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return false;
+    return hasJsonCallArg(expr, isSecretsArg);
 }
 
 // ============================================================
@@ -1529,78 +1515,75 @@ fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
 const exec_targets = [_][]const u8{ "bash", "sh", "zsh", "eval", "source" };
 const shell_targets = [_][]const u8{ "bash", "sh", "zsh" };
 
-fn containsBase64PipeExec(s: []const u8) bool {
-    const needle = "base64";
-    var i: usize = 0;
-    while (i + needle.len <= s.len) : (i += 1) {
-        if (!std.mem.eql(u8, s[i .. i + needle.len], needle)) continue;
-        const before_ok = i == 0 or !isIdentChar(s[i - 1]);
-        const after_ok = (i + needle.len >= s.len) or !isIdentChar(s[i + needle.len]);
-        if (!before_ok or !after_ok) continue;
+/// True when `token` occurs at `i` and is not glued to a following identifier
+/// character. Used for flags, whose leading `-` is already a word break.
+fn isTokenAt(s: []const u8, i: usize, token: []const u8) bool {
+    if (!std.mem.startsWith(u8, s[i..], token)) return false;
+    const after = i + token.len;
+    return after >= s.len or !isIdentChar(s[after]);
+}
 
-        // Scan for decode flag and pipe
-        var j = i + needle.len;
+/// True when `word` occurs at `i` as a whole shell word — no identifier
+/// character on either side.
+fn isWordAt(s: []const u8, i: usize, word: []const u8) bool {
+    if (i > 0 and isIdentChar(s[i - 1])) return false;
+    return isTokenAt(s, i, word);
+}
+
+/// True when any of `words` starts at `i`. Callers position `i` right after a
+/// pipe and whitespace, so the left-hand boundary is implicit.
+fn startsAnyWordAt(s: []const u8, i: usize, words: []const []const u8) bool {
+    for (words) |word| {
+        if (isTokenAt(s, i, word)) return true;
+    }
+    return false;
+}
+
+/// Index of the first byte at or after `i` that is not shell whitespace.
+fn skipBlanks(s: []const u8, i: usize) usize {
+    return std.mem.indexOfNonePos(u8, s, i, " \t\n") orelse s.len;
+}
+
+/// Length of the leading run of identifier characters in `s`.
+fn identRunLen(s: []const u8) usize {
+    for (s, 0..) |c, i| {
+        if (!isIdentChar(c)) return i;
+    }
+    return s.len;
+}
+
+fn containsBase64PipeExec(s: []const u8) bool {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (!isWordAt(s, i, "base64")) continue;
+
+        // A decode flag anywhere before the next pipe makes this a decode.
+        var j = i + "base64".len;
         var has_decode = false;
         while (j < s.len and s[j] != '|') : (j += 1) {
-            if (s[j] == '-') {
-                // Check -d
-                if (j + 1 < s.len and s[j + 1] == 'd' and
-                    (j + 2 >= s.len or !isIdentChar(s[j + 2])))
-                {
-                    has_decode = true;
-                }
-                // Check --decode
-                if (j + 1 < s.len and s[j + 1] == '-') {
-                    const decode_str = "--decode";
-                    if (j + decode_str.len <= s.len and
-                        std.mem.eql(u8, s[j .. j + decode_str.len], decode_str) and
-                        (j + decode_str.len >= s.len or !isIdentChar(s[j + decode_str.len])))
-                    {
-                        has_decode = true;
-                    }
-                }
-            }
+            if (isTokenAt(s, j, "-d") or isTokenAt(s, j, "--decode")) has_decode = true;
         }
-        if (!has_decode or j >= s.len or s[j] != '|') continue;
+        if (!has_decode or j >= s.len) continue;
 
-        // Skip whitespace after pipe
-        var k = j + 1;
-        while (k < s.len and (s[k] == ' ' or s[k] == '\t' or s[k] == '\n')) : (k += 1) {}
-        // Check for exec target
-        for (exec_targets) |target| {
-            if (k + target.len <= s.len and
-                std.mem.eql(u8, s[k .. k + target.len], target) and
-                (k + target.len >= s.len or !isIdentChar(s[k + target.len])))
-            {
-                return true;
-            }
-        }
+        if (startsAnyWordAt(s, skipBlanks(s, j + 1), &exec_targets)) return true;
     }
     return false;
 }
 
 fn containsEvalVarExpansion(s: []const u8) bool {
-    const needle = "eval";
     var i: usize = 0;
-    while (i + needle.len <= s.len) : (i += 1) {
-        if (!std.mem.eql(u8, s[i .. i + needle.len], needle)) continue;
-        const before_ok = i == 0 or !isIdentChar(s[i - 1]);
-        if (!before_ok) continue;
-        var j = i + needle.len;
-        // Must be followed by whitespace
+    while (i < s.len) : (i += 1) {
+        if (!isWordAt(s, i, "eval")) continue;
+
+        var j = i + "eval".len;
         if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
-        // Skip whitespace
-        while (j < s.len and (s[j] == ' ' or s[j] == '\t')) : (j += 1) {}
-        if (j >= s.len) continue;
-        // Skip optional quote
+        j = std.mem.indexOfNonePos(u8, s, j, " \t") orelse continue;
+        // A quoted argument still expands, so look past the opening quote.
         if (s[j] == '"' or s[j] == '\'') j += 1;
-        if (j >= s.len) continue;
-        // Check for $ (variable expansion)
-        if (s[j] == '$') {
-            // Exclude ${{ (GitHub Actions expression)
-            if (j + 2 < s.len and s[j + 1] == '{' and s[j + 2] == '{') continue;
-            return true;
-        }
+        if (j >= s.len or s[j] != '$') continue;
+        // `${{ }}` is a GitHub expression, not a shell expansion.
+        if (std.mem.startsWith(u8, s[j..], "${{")) continue;
+        return true;
     }
     return false;
 }
@@ -1609,29 +1592,12 @@ fn containsCurlWgetPipeShell(s: []const u8) bool {
     const downloaders = [_][]const u8{ "curl", "wget" };
     for (downloaders) |downloader| {
         var i: usize = 0;
-        while (i + downloader.len <= s.len) : (i += 1) {
-            if (!std.mem.eql(u8, s[i .. i + downloader.len], downloader)) continue;
-            const before_ok = i == 0 or !isIdentChar(s[i - 1]);
-            const after_ok = (i + downloader.len >= s.len) or !isIdentChar(s[i + downloader.len]);
-            if (!before_ok or !after_ok) continue;
+        while (i < s.len) : (i += 1) {
+            if (!isWordAt(s, i, downloader)) continue;
 
-            // Scan forward for | followed by shell
             var j = i + downloader.len;
-            while (j < s.len) : (j += 1) {
-                if (s[j] == '|') {
-                    // Skip whitespace after pipe
-                    var k = j + 1;
-                    while (k < s.len and (s[k] == ' ' or s[k] == '\t' or s[k] == '\n')) : (k += 1) {}
-                    // Check for shell target
-                    for (shell_targets) |shell| {
-                        if (k + shell.len <= s.len and
-                            std.mem.eql(u8, s[k .. k + shell.len], shell) and
-                            (k + shell.len >= s.len or !isIdentChar(s[k + shell.len])))
-                        {
-                            return true;
-                        }
-                    }
-                }
+            while (std.mem.indexOfScalarPos(u8, s, j, '|')) |pipe| : (j = pipe + 1) {
+                if (startsAnyWordAt(s, skipBlanks(s, pipe + 1), &shell_targets)) return true;
             }
         }
     }
@@ -1647,40 +1613,23 @@ fn isAllUppercase(s: []const u8) bool {
 }
 
 fn containsVarAsCommand(s: []const u8) bool {
-    var line_start: usize = 0;
-    while (line_start < s.len) {
-        // Find end of current line
-        var line_end = line_start;
-        while (line_end < s.len and s[line_end] != '\n') : (line_end += 1) {}
+    var lines = std.mem.splitScalar(u8, s, '\n');
+    while (lines.next()) |line| {
+        const start = std.mem.indexOfNone(u8, line, " \t") orelse continue;
+        const rest = line[start..];
+        if (rest.len < 2 or rest[0] != '$') continue;
+        // `${{ }}` is a GitHub expression and `$(...)` a command substitution.
+        if (std.mem.startsWith(u8, rest, "${{") or rest[1] == '(') continue;
 
-        // Skip leading whitespace
-        var pos = line_start;
-        while (pos < line_end and (s[pos] == ' ' or s[pos] == '\t')) : (pos += 1) {}
-
-        if (pos < line_end and s[pos] == '$') {
-            // Exclude ${{ (GitHub Actions expression)
-            if (pos + 2 < line_end and s[pos + 1] == '{' and s[pos + 2] == '{') {
-                // skip
-            } else if (pos + 1 < line_end and s[pos + 1] == '(') {
-                // $(...) command substitution, skip
-            } else if (pos + 1 < line_end and s[pos + 1] == '{') {
-                // ${VAR} form
-                var k = pos + 2;
-                const var_start = k;
-                while (k < line_end and (std.ascii.isAlphabetic(s[k]) or s[k] == '_' or std.ascii.isDigit(s[k]))) : (k += 1) {}
-                if (k < line_end and s[k] == '}' and k > var_start) {
-                    if (isAllUppercase(s[var_start..k])) return true;
-                }
-            } else if (pos + 1 < line_end and (std.ascii.isAlphabetic(s[pos + 1]) or s[pos + 1] == '_')) {
-                // $VAR form
-                var k = pos + 1;
-                const var_start = k;
-                while (k < line_end and (std.ascii.isAlphanumeric(s[k]) or s[k] == '_')) : (k += 1) {}
-                if (k > var_start and isAllUppercase(s[var_start..k])) return true;
-            }
-        }
-
-        line_start = if (line_end < s.len) line_end + 1 else s.len;
+        const name = if (rest[1] == '{') blk: {
+            const end = 2 + identRunLen(rest[2..]);
+            if (end >= rest.len or rest[end] != '}') break :blk "";
+            break :blk rest[2..end];
+        } else blk: {
+            if (!isIdentStart(rest[1])) break :blk "";
+            break :blk rest[1 .. 1 + identRunLen(rest[1..])];
+        };
+        if (isAllUppercase(name)) return true;
     }
     return false;
 }
