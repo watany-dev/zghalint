@@ -81,7 +81,6 @@ fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
 
     const result = rest_fallback.fetchArchiveStatus(alloc, owner, repo) catch return null;
 
-    // Store with arena-allocated permanent key
     const permanent_key = std.fmt.allocPrint(alloc, "{s}/{s}", .{ owner, repo }) catch return null;
     archived_cache.put(alloc, permanent_key, result) catch return null;
 
