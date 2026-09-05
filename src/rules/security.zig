@@ -2069,14 +2069,14 @@ fn makeEmptyTrigger() Trigger {
 
 fn makeReleaseTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .release, .name = "release" },
+        .{ .event = .release },
     };
     return .{ .events = events };
 }
 
 fn makePRTargetTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .pull_request_target, .name = "pull_request_target" },
+        .{ .event = .pull_request_target },
     };
     return .{ .events = events };
 }
@@ -5722,35 +5722,35 @@ test "BP007: no false positive on GitHub Actions expression" {
 
 fn makePRTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .pull_request, .name = "pull_request" },
+        .{ .event = .pull_request },
     };
     return .{ .events = events };
 }
 
 fn makeIssueCommentTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .issue_comment, .name = "issue_comment" },
+        .{ .event = .issue_comment },
     };
     return .{ .events = events };
 }
 
 fn makeWorkflowRunTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .workflow_run, .name = "workflow_run" },
+        .{ .event = .workflow_run },
     };
     return .{ .events = events };
 }
 
 fn makePushTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     return .{ .events = events };
 }
 
 fn makeWorkflowDispatchTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .workflow_dispatch, .name = "workflow_dispatch" },
+        .{ .event = .workflow_dispatch },
     };
     return .{ .events = events };
 }

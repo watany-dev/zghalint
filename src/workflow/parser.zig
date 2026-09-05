@@ -164,7 +164,6 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
             const events = try allocator.alloc(types.EventConfig, 1);
             events[0] = .{
                 .event = types.EventType.fromString(s.value),
-                .name = s.value,
             };
             return .{ .events = events };
         },
@@ -176,7 +175,6 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
                     .scalar => |s| {
                         events[i] = .{
                             .event = types.EventType.fromString(s.value),
-                            .name = s.value,
                         };
                     },
                     else => return error.InvalidValue,
@@ -198,10 +196,7 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
 
 fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) ParseError!types.EventConfig {
     const event_type = types.EventType.fromString(name);
-    var config = types.EventConfig{
-        .event = event_type,
-        .name = name,
-    };
+    var config = types.EventConfig{ .event = event_type };
 
     switch (node) {
         .null_value => {
@@ -231,7 +226,6 @@ fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.E
         .tags_ignore = if (m.get("tags-ignore")) |n| try parseStringArray(allocator, n) else &.{},
         .paths = if (m.get("paths")) |n| try parseStringArray(allocator, n) else &.{},
         .paths_ignore = if (m.get("paths-ignore")) |n| try parseStringArray(allocator, n) else &.{},
-        .types = if (m.get("types")) |n| try parseStringArray(allocator, n) else &.{},
         .spans = .{
             .branches = m.getKeySpan("branches"),
             .branches_ignore = m.getKeySpan("branches-ignore"),
@@ -311,7 +305,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         );
     }
     if (m.get("continue-on-error")) |n| {
-        job.continue_on_error = type_validation.checkBool(
+        _ = type_validation.checkBool(
             n,
             "continue-on-error",
             ctx.type_mismatches,
@@ -450,8 +444,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             else => {},
         }
     }
-    step.working_directory = m.getScalar("working-directory");
-
     // Capture `run:` value span and the insertion anchor for a sibling `shell:`.
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
@@ -465,14 +457,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             step.shell_insertion_byte = fs.end_byte;
         }
         break;
-    }
-
-    // Insertion anchor for a new entry at the end of the step mapping.
-    if (m.entries.len > 0) {
-        const last = m.entries[m.entries.len - 1];
-        if (last.full_span) |fs| {
-            step.env_insertion_byte = fs.end_byte;
-        }
     }
 
     // Parse uses: and capture span info for autofix
@@ -500,7 +484,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         }
     }
     if (m.get("timeout-minutes")) |n| {
-        step.timeout_minutes = type_validation.checkNumber(
+        _ = type_validation.checkNumber(
             n,
             "timeout-minutes",
             ctx.type_mismatches,
@@ -508,12 +492,12 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         );
     }
     if (m.get("continue-on-error")) |n| {
-        step.continue_on_error = type_validation.checkBool(
+        _ = type_validation.checkBool(
             n,
             "continue-on-error",
             ctx.type_mismatches,
             ctx.allocator,
-        ) orelse false;
+        );
     }
     // Parse with: and capture last entry's value end byte for autofix
     var empty = std.ArrayList(types.EmptySection){};
@@ -648,16 +632,16 @@ fn parseConcurrency(ctx: *ParseContext, node: Node) ParseError!types.Concurrency
             return .{ .group = s.value };
         },
         .mapping => |m| {
-            var concurrency = types.Concurrency{
+            const concurrency = types.Concurrency{
                 .group = m.getScalar("group") orelse return error.MissingField,
             };
             if (m.get("cancel-in-progress")) |n| {
-                concurrency.cancel_in_progress = type_validation.checkBool(
+                _ = type_validation.checkBool(
                     n,
                     "cancel-in-progress",
                     ctx.type_mismatches,
                     ctx.allocator,
-                ) orelse false;
+                );
             }
             return concurrency;
         },
@@ -687,7 +671,7 @@ fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
                 strategy.fail_fast_entry_span = entry.full_span;
             }
         } else if (std.mem.eql(u8, entry.key.value, "max-parallel")) {
-            strategy.max_parallel = type_validation.checkNumber(
+            _ = type_validation.checkNumber(
                 entry.value,
                 "max-parallel",
                 ctx.type_mismatches,
@@ -1086,7 +1070,6 @@ test "parseConcurrency scalar" {
     var ctx = testCtx(testing.allocator);
     const c = try parseConcurrency(&ctx, mkScalar("ci-group"));
     try testing.expectEqualStrings("ci-group", c.group);
-    try testing.expect(!c.cancel_in_progress);
 }
 
 test "parseConcurrency mapping" {
@@ -1098,7 +1081,6 @@ test "parseConcurrency mapping" {
     var ctx = testCtx(testing.allocator);
     const c = try parseConcurrency(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("ci", c.group);
-    try testing.expect(c.cancel_in_progress);
 }
 
 test "parseStep with uses" {
@@ -1233,7 +1215,6 @@ test "parseStrategy with fail-fast and max-parallel" {
     var ctx = testCtx(testing.allocator);
     const strategy = try parseStrategy(&ctx, mkMapping(&entries));
     try testing.expect(!strategy.fail_fast);
-    try testing.expectEqual(@as(?u32, 2), strategy.max_parallel);
 }
 
 test "parseWorkflow captures removable span for fail-fast entry" {
@@ -1340,13 +1321,10 @@ test "parseStep with timeout and continue-on-error" {
 
     var ctx = testCtx(arena.allocator());
     const step = try parseStep(&ctx, mkMapping(&entries));
-    try testing.expectEqual(@as(?u32, 10), step.timeout_minutes);
-    try testing.expect(step.continue_on_error);
     try testing.expectEqualStrings("always()", step.if_condition.?);
     try testing.expectEqualStrings("step1", step.id.?);
     try testing.expectEqual(@as(usize, 50), step.id_value_span.?.start_byte);
     try testing.expectEqual(@as(usize, 55), step.id_value_span.?.end_byte);
-    try testing.expectEqualStrings("./src", step.working_directory.?);
     try testing.expectEqualStrings("value", step.with.?.get("key").?);
     try testing.expectEqualStrings("bar", step.env.?.get("FOO").?);
     try testing.expect(step.env_meta != null);
@@ -1378,7 +1356,6 @@ test "parseJob with timeout and strategy" {
     var ctx = testCtx(arena.allocator());
     const job = try parseJob(&ctx, "test", mkSpan(), mkMapping(&entries));
     try testing.expectEqual(@as(?u32, 30), job.timeout_minutes);
-    try testing.expect(job.continue_on_error);
     try testing.expectEqualStrings("success()", job.if_condition.?);
     try testing.expect(job.strategy.?.fail_fast);
 }
@@ -1562,7 +1539,6 @@ test "parseEventConfig with null value (empty event)" {
 
     const config = try parseEventConfig(arena.allocator(), "push", .{ .null_value = mkSpan() });
     try testing.expectEqual(types.EventType.push, config.event);
-    try testing.expectEqualStrings("push", config.name);
 }
 
 test "parseSecretsConfig with mapping" {

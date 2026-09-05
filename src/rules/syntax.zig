@@ -2216,7 +2216,6 @@ test "SYN008: distinct job IDs produce no diagnostic" {
 test "SYN012: branches with branches-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2238,7 +2237,6 @@ test "SYN012: branches with branches-ignore is an error" {
 test "SYN012: tags with tags-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .tags = Span.point(1, 1, 10), .tags_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2256,7 +2254,6 @@ test "SYN012: tags with tags-ignore is an error" {
 test "SYN012: paths with paths-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .paths = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2274,7 +2271,6 @@ test "SYN012: paths with paths-ignore is an error" {
 test "SYN012: all three conflicting pairs are reported separately" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{
             .branches = Span.point(1, 1, 10),
             .branches_ignore = Span.point(1, 1, 20),
@@ -2295,7 +2291,6 @@ test "SYN012: all three conflicting pairs are reported separately" {
 test "SYN012: filters from different pairs may coexist" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2311,7 +2306,6 @@ test "SYN012: an empty filter value still counts as present" {
     // conflict with `branches-ignore` must still be reported.
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{
             .branches = &.{},
             .branches_ignore = &.{"wip/**"},
@@ -2330,12 +2324,10 @@ test "SYN012: separate events using opposite halves are fine" {
     const events = [_]EventConfig{
         .{
             .event = .push,
-            .name = "push",
             .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10) } },
         },
         .{
             .event = .pull_request,
-            .name = "pull_request",
             .filter = .{ .spans = .{ .branches_ignore = Span.point(1, 1, 40) } },
         },
     };
@@ -2348,7 +2340,7 @@ test "SYN012: separate events using opposite halves are fine" {
 }
 
 test "SYN012: event without a filter is ignored" {
-    const events = [_]EventConfig{.{ .event = .push, .name = "push" }};
+    const events = [_]EventConfig{.{ .event = .push }};
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
 
@@ -2360,7 +2352,6 @@ test "SYN012: event without a filter is ignored" {
 test "SYN012: diagnostic points at the first key when the ignore form comes first" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 40), .branches_ignore = Span.point(1, 1, 10) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);

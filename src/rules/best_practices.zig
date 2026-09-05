@@ -953,7 +953,7 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
 
 test "BP005: detect push without concurrency" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -968,11 +968,11 @@ test "BP005: detect push without concurrency" {
 
 test "BP005: no warning when concurrency is set" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
-        .concurrency = .{ .group = "ci-${{ github.ref }}", .cancel_in_progress = true },
+        .concurrency = .{ .group = "ci-${{ github.ref }}" },
         .jobs = &.{},
     };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -983,7 +983,7 @@ test "BP005: no warning when concurrency is set" {
 
 test "BP005: no warning without push trigger" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .pull_request, .name = "pull_request" },
+        .{ .event = .pull_request },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -997,7 +997,7 @@ test "BP005: no warning without push trigger" {
 
 test "BP005: fix metadata is attached with .unsafe" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -1018,7 +1018,7 @@ test "BP005: fix metadata is attached with .unsafe" {
 
 test "BP005: fix is null when concurrency_insertion_byte is missing" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
