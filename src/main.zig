@@ -4,7 +4,7 @@ const Config = zghalint.Config;
 const OutputFormat = zghalint.OutputFormat;
 const ColorMode = zghalint.ColorMode;
 
-const version = "0.0.1-rc.1";
+const version = @import("build_options").version;
 
 const FixMode = enum {
     off,

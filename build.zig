@@ -1,12 +1,14 @@
 const std = @import("std");
 
-fn addFixtureEmbedPath(b: *std.Build, mod: *std.Build.Module) void {
-    mod.addEmbedPath(b.path("tests/fixtures"));
-}
+/// Single source of truth for the CLI version: build.zig.zon.
+const version = @import("build.zig.zon").version;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", version);
 
     // Strip debug info from Release-mode distribution binaries.
     // Debug keeps symbols for local development; tests retain debug info for stack traces / kcov.
@@ -20,13 +22,6 @@ pub fn build(b: *std.Build) void {
         .strip = strip_release,
     });
 
-    // --- Library artifact ---
-    const lib = b.addLibrary(.{
-        .name = "zghalint",
-        .root_module = lib_mod,
-    });
-    b.installArtifact(lib);
-
     // --- CLI executable ---
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -35,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .strip = strip_release,
         .imports = &.{
             .{ .name = "zghalint", .module = lib_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 
@@ -61,20 +57,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    addFixtureEmbedPath(b, lib_test_mod);
     const lib_unit_tests = b.addTest(.{ .root_module = lib_test_mod });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     // --- Coverage support: install test binary (LLVM backend for kcov compatibility) ---
-    const cov_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/lib.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    addFixtureEmbedPath(b, cov_test_mod);
     const cov_unit_tests = b.addTest(.{
-        .root_module = cov_test_mod,
+        .root_module = lib_test_mod,
         .use_llvm = true,
     });
     const install_cov_tests = b.addInstallArtifact(cov_unit_tests, .{});
@@ -93,6 +81,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "zghalint", .module = lib_mod },
+                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });
@@ -101,12 +90,4 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
-
-    // --- Format check step ---
-    const fmt_step = b.step("fmt", "Check source formatting");
-    const fmt = b.addFmt(.{
-        .paths = &.{ "src", "build.zig" },
-        .check = true,
-    });
-    fmt_step.dependOn(&fmt.step);
 }
