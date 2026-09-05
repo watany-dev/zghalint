@@ -2217,7 +2217,6 @@ test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" 
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2264,7 +2263,6 @@ test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2309,7 +2307,6 @@ test "EXPR006 autofix: --fix (safe only) does not apply EXPR006 fixes" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2353,7 +2350,6 @@ test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2418,7 +2414,6 @@ test "EXPR006 autofix: suppressed for `with:` values" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2455,7 +2450,6 @@ test "EXPR006 autofix: suppressed for `run:` values" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2495,7 +2489,6 @@ test "EXPR006 autofix: suppressed for block-scalar `if:` value" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2744,7 +2737,6 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

@@ -47,7 +47,7 @@ fn writeSanitized(writer: anytype, s: []const u8) !void {
 /// source line and caret indicators will be displayed.
 pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !void {
     const file_str = diag.file orelse "<unknown>";
-    const sev_str = diag.severity.toString();
+    const sev_str = @tagName(diag.severity);
     const sev_color = if (use_color) severityColor(diag.severity) else "";
     const bold = if (use_color) Color.bold else "";
     const reset = if (use_color) Color.reset else "";

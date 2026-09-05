@@ -188,7 +188,6 @@ fn lintDependabotFile(
     const arena_alloc = arena.allocator();
 
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
@@ -235,7 +234,6 @@ fn prefetchNetworkData(
         const source = file.readToEndAlloc(scratch, 10 * 1024 * 1024) catch continue;
 
         var yaml_parser = zghalint.yaml.Parser.init(scratch, source);
-        defer yaml_parser.deinit();
 
         const yaml_node = yaml_parser.parse() catch continue;
         const workflow = zghalint.workflow.parseWorkflow(scratch, yaml_node) catch continue;
@@ -290,7 +288,6 @@ fn lintFile(
 
     // YAML parse
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};

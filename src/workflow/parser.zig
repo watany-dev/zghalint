@@ -1256,7 +1256,6 @@ test "parseWorkflow captures removable span for fail-fast entry" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try parseWorkflow(alloc, yaml_node);
 
@@ -1289,7 +1288,6 @@ test "parseJob captures runs_on_value_span for scalar runs-on" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try parseWorkflow(alloc, yaml_node);
 
@@ -1312,7 +1310,6 @@ test "parseJob leaves runs_on_value_span null for missing runs-on" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try parseWorkflow(alloc, yaml_node);
 
@@ -1702,7 +1699,6 @@ test "parseWorkflow records empty sections for SYN003" {
     ;
 
     var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try parseWorkflow(arena.allocator(), node);
 
@@ -1729,7 +1725,6 @@ test "parseWorkflow does not record empty permissions" {
     ;
 
     var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try parseWorkflow(arena.allocator(), node);
 
@@ -1748,7 +1743,6 @@ test "parseWorkflow records implicit-null empty sections" {
     ;
 
     var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try parseWorkflow(arena.allocator(), node);
 
@@ -1774,7 +1768,6 @@ test "parseWorkflow records implicit-null strategy and with" {
     ;
 
     var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try parseWorkflow(arena.allocator(), node);
 
@@ -1799,7 +1792,6 @@ test "parseWorkflow records empty workflow_dispatch inputs" {
     ;
 
     var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try parseWorkflow(arena.allocator(), node);
 
@@ -1858,7 +1850,6 @@ test "parseStep captures run/uses/with source metadata" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const wf = try parseWorkflow(alloc, try yp.parse());
 
     const checkout = wf.jobs[0].steps[0];

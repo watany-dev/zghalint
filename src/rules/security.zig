@@ -2904,7 +2904,6 @@ test "SEC007: autofix generated on single-line on:" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -2946,7 +2945,6 @@ test "SEC007: autofix on multi-line on: block inserts after last child" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -2999,7 +2997,6 @@ test "SEC007: no diagnostic when permissions already defined (parser path)" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -3029,7 +3026,6 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -3074,7 +3070,6 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -3114,7 +3109,6 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
 
     // 再 parse で ParseError が出ないことを確認する。
     var reparse = yaml_parser.Parser.init(alloc, result.content);
-    defer reparse.deinit();
     _ = try reparse.parse();
 }
 
@@ -4707,7 +4701,6 @@ test "SEC015: integration - YAML parse to fix apply" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -4768,7 +4761,6 @@ test "SEC015: integration ignores checkout after upload-artifact" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -5410,7 +5402,6 @@ test "SEC017: integration applies fix to workflow env" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -5449,7 +5440,6 @@ test "SEC017: integration applies fix to job env and preserves single quote/comm
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -5488,7 +5478,6 @@ test "SEC017: integration applies fix to step env and preserves double quote/com
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -6118,7 +6107,6 @@ test "SEC002: each untrusted reference in a run: block is reported at its own po
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -6154,7 +6142,6 @@ test "SEC001: unpinned action is reported at the uses: value" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 

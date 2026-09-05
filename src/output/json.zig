@@ -57,7 +57,7 @@ fn writeDiagnosticJson(writer: anytype, diag: Diagnostic) !void {
     });
 
     try writer.writeAll(",\"severity\":");
-    try writeJsonString(writer, diag.severity.toString());
+    try writeJsonString(writer, @tagName(diag.severity));
 
     try writer.writeAll(",\"rule_id\":");
     try writeJsonString(writer, diag.rule_id);

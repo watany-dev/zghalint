@@ -242,7 +242,6 @@ test "RUNNER001: autofix end-to-end replaces label in YAML source" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

@@ -913,7 +913,6 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -960,7 +959,6 @@ test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -1250,7 +1248,6 @@ test "PERF003: autofix removes fail-fast line from workflow source" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -1389,7 +1386,6 @@ test "PERF001: fixture harness applies expected fix" {
         };
 
         var yp = yaml_parser_mod.Parser.init(alloc, input);
-        defer yp.deinit();
         const yaml_node = try yp.parse();
         const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

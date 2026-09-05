@@ -524,7 +524,6 @@ test "BP001: autofix applied to YAML source" {
 
     // Parse YAML → Workflow
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -637,7 +636,6 @@ test "BP002: no fix when `if:` precedes `uses:` in step" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -669,7 +667,6 @@ test "BP002: autofix applied to YAML source" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -803,7 +800,6 @@ test "BP003: autofix applied to YAML source" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -933,7 +929,6 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -1060,7 +1055,6 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

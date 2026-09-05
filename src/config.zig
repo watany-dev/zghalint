@@ -120,7 +120,6 @@ pub fn parseConfig(allocator: std.mem.Allocator, source: []const u8) ConfigError
     defer yaml_arena.deinit();
 
     var parser = yaml_parser.Parser.init(yaml_arena.allocator(), source);
-    defer parser.deinit();
 
     const node = parser.parse() catch return ConfigError.InvalidYaml;
 

@@ -541,7 +541,6 @@ fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
     var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
     checkUnknownKeys(&wf, list);
@@ -887,7 +886,6 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     const alloc = arena.allocator();
 
     var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, node);
 
@@ -1167,7 +1165,6 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
 fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
     const alloc = arena.allocator();
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
     checkMappingValueTypes(&wf, list);
@@ -1363,7 +1360,6 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -1399,7 +1395,6 @@ fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !v
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     walkDuplicateKeys(node, "workflow", null, diags);
 }
@@ -1600,7 +1595,6 @@ test "SYN002: engine.run emits via yaml_root" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(arena.allocator(), node);
 
@@ -1962,7 +1956,6 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
     ;
 
     var yp = yaml_parser.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2004,7 +1997,6 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
 
 fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

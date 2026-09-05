@@ -429,7 +429,6 @@ test "PERM002: autofix inserts permissions block after runs-on" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -483,7 +482,6 @@ test "PERM002: multiple jobs get fixes applied in back-to-front order" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -698,7 +696,6 @@ test "PERM001: id-token mixed with other writes produces per-field fixes except 
     , .{source});
 
     var yp = yaml_parser_mod.Parser.init(alloc, wrapped);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

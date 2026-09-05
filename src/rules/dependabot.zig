@@ -171,7 +171,6 @@ const yaml_parser_mod = @import("../yaml/parser.zig");
 fn parseYamlWithArena(arena: *std.heap.ArenaAllocator, source: []const u8) !Node {
     const alloc = arena.allocator();
     var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
     return parser.parse();
 }
 

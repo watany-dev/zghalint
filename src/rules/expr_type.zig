@@ -44,8 +44,6 @@ pub const Type = struct {
     /// Known properties of an object, sorted by name (binary search).
     props: []const Prop = &.{},
     shape: ObjectShape = .loose,
-    /// True when the array came from an object filter `.*` (actionlint ArrayType.Deref).
-    deref: bool = false,
 };
 
 pub const TypeRef = *const Type;
