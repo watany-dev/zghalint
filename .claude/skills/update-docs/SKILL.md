@@ -9,29 +9,9 @@ description: Update zghalint documentation (docs/design/*.md, docs/adr/*.md, REA
 ## Phase 1: ソースコードの現状把握
 
 1. `src/` 配下のZigソースコードを読み込む
-   - `src/main.zig` — CLIエントリポイントと引数パース
-   - `src/lib.zig` — ライブラリ公開APIとテストオーケストレーション
-   - `src/config.zig` — 設定パース・ルールオーバーライド
-   - `src/diagnostics.zig` — 診断型・重要度・カテゴリ
-   - `src/rules/` — リントルール実装
-     - `engine.zig` — ルール実行フレームワーク
-     - `security.zig` — セキュリティチェック
-     - `expressions.zig` — `${{ }}` 式バリデーション
-     - `performance.zig` — パフォーマンス最適化ルール
-     - `best_practices.zig` — ベストプラクティスチェック
-     - `permissions.zig` — パーミッションモデル検証
-   - `src/workflow/` — ワークフローデータ構造・パース
-     - `types.zig` — Workflow, Job, Step, Trigger型
-     - `parser.zig` — ワークフロー構造パーサ
-     - `validator.zig` — ワークフローバリデーション
-   - `src/yaml/` — YAMLパース（外部依存なし自前実装）
-     - `tokenizer.zig` — YAMLトークナイゼーション
-     - `parser.zig` — YAML ASTパース
-     - `types.zig` — YAMLノード・スパン型
-   - `src/output/` — 出力フォーマッタ
-     - `terminal.zig` — カラーターミナル出力
-     - `json.zig` — JSON出力形式
-     - `sarif.zig` — SARIF 2.1.0形式（GitHub Code Scanning用）
+   - モジュール構成は `AGENTS.md` の「Architecture」節が唯一の一覧。
+     ここに写経せず、そちらを参照してから対象ファイルを開く
+     （写しを置くと実装追加のたびに二重更新が要る）
 2. `build.zig` のビルド構成を確認する
 3. `build.zig.zon` の依存パッケージ一覧を確認する
 4. 公開API・構造体・enumの一覧を把握する
