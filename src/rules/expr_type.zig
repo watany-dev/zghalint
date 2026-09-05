@@ -18,7 +18,7 @@ pub const TypeKind = enum {
 pub const ObjectShape = enum {
     /// Unknown key is a type error (EXPR003). github / runner / job.
     strict,
-    /// Unknown key is `any`. github.event, and contexts awaiting overlay.
+    /// Unknown key is `any`. github.event, and contexts awaiting overlay (#129).
     loose,
     /// Every key has the `elem` type. env / vars / secrets.
     map,
@@ -74,8 +74,8 @@ pub fn merge(a: TypeRef, b: TypeRef) TypeRef {
             a
         else
             &type_array_any,
-        // Property unions need an allocator; until overlays exist there is
-        // nothing to union, so differing objects collapse to a loose object.
+        // Property unions need an allocator; until overlays exist (#129) there
+        // is nothing to union, so differing objects collapse to a loose object.
         .object => &type_loose_object,
         else => a,
     };

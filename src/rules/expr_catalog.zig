@@ -131,7 +131,7 @@ pub const strategy: Type = .{
 };
 
 /// `steps` / `matrix` / `needs` / `inputs` / `jobs` stay loose until the
-/// contextual overlay is wired in; strictness before then would be a
+/// contextual overlay is wired in (#129); strictness before then would be a
 /// false positive.
 pub const loose_context: Type = .{ .kind = .object, .shape = .loose };
 
@@ -160,7 +160,7 @@ pub fn lookupContext(name: []const u8) ?TypeRef {
 
 /// One entry per function: every overload of a GitHub Actions function shares
 /// a return type, so only the accepted argument count varies. Argument types
-/// are EXPR018's job and are not modelled here.
+/// are EXPR018's job (#162) and are not modelled here.
 pub const FuncSig = struct {
     name: []const u8,
     min_args: u8,
@@ -169,8 +169,7 @@ pub const FuncSig = struct {
 };
 
 /// Sorted by name. Lookup is case-sensitive, matching the current EXPR004
-/// behaviour (actionlint is case-insensitive; changing that is a separate
-/// compatibility decision).
+/// behaviour (actionlint is case-insensitive; #161 tracks that decision).
 const functions = [_]FuncSig{
     .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },

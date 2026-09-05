@@ -713,7 +713,7 @@ fn checkUnsoundCondition(
 /// Unsafe Edit that expands a bare string literal operand of `||` / `&&`
 /// into a comparison borrowed from its sibling (`a == 'x' || 'y'` →
 /// `a == 'x' || a == 'y'`). Only `==` under `||` and `!=` under `&&` pair
-/// up; a bare number_literal is V2 and not handled yet.
+/// up; a bare number_literal is not handled yet (#158).
 fn buildExpr007Fix(
     list: *DiagnosticList,
     node: *const ExprNode,
@@ -814,7 +814,7 @@ pub fn findAndValidateExpressions(
 
 fn getArenaAllocator() std.mem.Allocator {
     // Leaks on purpose: diagnostic messages must outlive the call and the
-    // engine provides no arena.
+    // engine provides no arena (#159).
     return std.heap.page_allocator;
 }
 

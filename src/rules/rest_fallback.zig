@@ -3,8 +3,8 @@
 //! fall back to single REST calls. Those calls are collected here so each
 //! rule file only contains domain logic, not HTTP plumbing.
 //!
-//! The `compareRest` callsite in `impostor_compare.zig` is left for a
-//! follow-up tidy.
+//! The `compareRest` callsite in `impostor_compare.zig` is still separate
+//! (#160).
 
 const std = @import("std");
 

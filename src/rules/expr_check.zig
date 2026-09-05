@@ -78,7 +78,7 @@ fn stripQuotes(s: []const u8) []const u8 {
 }
 
 /// Every root name resolves against the builtin catalog. Per-workflow overlays
-/// (steps / matrix / needs / inputs / secrets) arrive with T4; see
+/// (steps / matrix / needs / inputs / secrets) arrive with T4 (#129); see
 /// `docs/design/expr-static-typecheck-design.md` §4.
 pub fn walkPath(path: []const u8) WalkResult {
     var iter = SegmentIter{ .path = path };
