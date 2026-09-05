@@ -66,6 +66,61 @@ fn envAnchor(step: *const Step, key: []const u8) Anchor {
     return Anchor.fromMeta(meta, step.span);
 }
 
+/// Which of a step's scalars a scan visits. `run:` and `with:` carry values
+/// into the runner; `env:` is skipped by rules that treat it as the fix.
+const StepScalars = struct {
+    run: bool = true,
+    with: bool = true,
+    env: bool = true,
+};
+
+/// Visit every selected `run:` / `with:` / `env:` scalar of `step` together
+/// with the anchor that locates it in the source. Stops as soon as `cb`
+/// returns true.
+fn forEachStepScalar(
+    step: *const Step,
+    which: StepScalars,
+    ctx: anytype,
+    comptime cb: fn (@TypeOf(ctx), []const u8, Anchor) bool,
+) void {
+    if (which.run) {
+        if (step.run) |run_body| {
+            if (cb(ctx, run_body, spans.runAnchor(step))) return;
+        }
+    }
+    if (which.with) {
+        if (step.with) |with_map| {
+            for (with_map.keys(), with_map.values()) |key, val| {
+                if (cb(ctx, val, withAnchor(step, key))) return;
+            }
+        }
+    }
+    if (which.env) {
+        if (step.env) |env_map| {
+            for (env_map.keys(), env_map.values()) |key, val| {
+                if (cb(ctx, val, envAnchor(step, key))) return;
+            }
+        }
+    }
+}
+
+/// Span of the first `${{ ... }}` expression matching `pred` in any selected
+/// scalar of `step`.
+fn findStepExprSpan(step: *const Step, which: StepScalars, comptime pred: fn ([]const u8) bool) ?Span {
+    const Finder = struct {
+        found: ?Span = null,
+
+        fn visit(self: *@This(), s: []const u8, anchor: Anchor) bool {
+            const m = findExpr(s, pred) orelse return false;
+            self.found = anchor.at(s, m.offset, m.len);
+            return true;
+        }
+    };
+    var finder: Finder = .{};
+    forEachStepScalar(step, which, &finder, Finder.visit);
+    return finder.found;
+}
+
 /// A `${{ ... }}` expression located inside a scanned string, expressed as an
 /// offset and length within that string so an `Anchor` can turn it into a span.
 const ExprMatch = struct {
@@ -302,22 +357,13 @@ fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?struct { 
 // ============================================================
 
 fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        checkStringForSecrets(run_body, spans.runAnchor(step), list);
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            checkStringForSecrets(val, withAnchor(step, key), list);
+    const scan = struct {
+        fn visit(l: *DiagnosticList, s: []const u8, anchor: Anchor) bool {
+            checkStringForSecrets(s, anchor, l);
+            return false;
         }
-    }
-    // Check env: values
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, val| {
-            checkStringForSecrets(val, envAnchor(step, key), list);
-        }
-    }
+    }.visit;
+    forEachStepScalar(step, .{}, list, scan);
 }
 
 fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
@@ -657,34 +703,7 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
 // ============================================================
 
 fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        if (findOverprovisionedSecrets(run_body)) |m| {
-            emitSEC011(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
-            return;
-        }
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            if (findOverprovisionedSecrets(val)) |m| {
-                emitSEC011(withAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-    // Check env: values
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, val| {
-            if (findOverprovisionedSecrets(val)) |m| {
-                emitSEC011(envAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-}
-
-fn emitSEC011(span: Span, list: *DiagnosticList) void {
+    const span = findStepExprSpan(step, .{}, exprIsWholeSecretsRef) orelse return;
     list.append(.{
         .rule_id = "SEC011",
         .severity = .warning,
@@ -748,31 +767,14 @@ fn exprIsWholeSecretsRef(expr: []const u8) bool {
 // ============================================================
 
 fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        if (findUnredactedSecrets(run_body)) |m| {
-            emitSEC012(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
-            return;
-        }
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            if (findUnredactedSecrets(val)) |m| {
-                emitSEC012(withAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-    // Check env: values
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, val| {
-            if (findUnredactedSecrets(val)) |m| {
-                emitSEC012(envAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
+    const span = findStepExprSpan(step, .{}, exprHasSecretJsonCall) orelse return;
+    list.append(.{
+        .rule_id = "SEC012",
+        .severity = .@"error",
+        .message = "secret exposed via toJSON()/fromJSON() bypasses masking",
+        .span = span,
+        .fix_hint = "avoid passing secrets through toJSON()/fromJSON(); assign individual secret values to environment variables instead",
+    }) catch return;
 }
 
 // ============================================================
@@ -843,7 +845,9 @@ fn exprIsNonTokenSecretRef(inner: []const u8) bool {
     return !std.mem.eql(u8, trimmed["secrets.".len..], "GITHUB_TOKEN");
 }
 
-fn emitSEC019(span: Span, list: *DiagnosticList) void {
+fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
+    // env: is the recommended binding, so a secret there is not a finding.
+    const span = findStepExprSpan(step, .{ .env = false }, exprIsNonTokenSecretRef) orelse return;
     list.append(.{
         .rule_id = "SEC019",
         .severity = .info,
@@ -851,26 +855,6 @@ fn emitSEC019(span: Span, list: *DiagnosticList) void {
         .span = span,
         .fix_hint = "bind the secret to an env: variable first, then reference the env var in run:/with:",
     }) catch return;
-}
-
-fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        if (findSecretsOutsideEnv(run_body)) |m| {
-            emitSEC019(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
-            return;
-        }
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            if (findSecretsOutsideEnv(val)) |m| {
-                emitSEC019(withAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-    // NOTE: Do NOT check step.env — that's the correct pattern
 }
 
 // ============================================================
@@ -896,16 +880,6 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
             }
         }
     }
-}
-
-fn emitSEC012(span: Span, list: *DiagnosticList) void {
-    list.append(.{
-        .rule_id = "SEC012",
-        .severity = .@"error",
-        .message = "secret exposed via toJSON()/fromJSON() bypasses masking",
-        .span = span,
-        .fix_hint = "avoid passing secrets through toJSON()/fromJSON(); assign individual secret values to environment variables instead",
-    }) catch return;
 }
 
 /// Find the first `${{ ... }}` expression in `s` with a toJSON(secrets...) or
