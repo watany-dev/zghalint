@@ -137,7 +137,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         switch (rules_node) {
             .mapping => |m| {
                 for (m.entries) |entry| {
-                    const rule_id = strings.dupe(u8, entry.key.value) catch return ConfigError.OutOfMemory;
+                    const rule_id = try strings.dupe(u8, entry.key.value);
                     var override = RuleOverride{};
 
                     switch (entry.value) {
@@ -160,7 +160,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                         else => {},
                     }
 
-                    config.rule_overrides.put(rule_id, override) catch return ConfigError.OutOfMemory;
+                    try config.rule_overrides.put(rule_id, override);
                 }
             },
             else => {},
@@ -174,8 +174,8 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                 for (seq.items) |item| {
                     switch (item) {
                         .scalar => |s| {
-                            const pattern = strings.dupe(u8, s.value) catch return ConfigError.OutOfMemory;
-                            config.ignore_patterns.append(allocator, pattern) catch return ConfigError.OutOfMemory;
+                            const pattern = try strings.dupe(u8, s.value);
+                            try config.ignore_patterns.append(allocator, pattern);
                         },
                         else => {},
                     }

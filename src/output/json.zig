@@ -12,10 +12,7 @@ const DiagnosticList = diagnostics.DiagnosticList;
 ///                "files_checked": N }
 /// }
 pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: usize) !void {
-    var errors: usize = 0;
-    var warnings: usize = 0;
-    var infos: usize = 0;
-    var hints: usize = 0;
+    const counts = list.countBySeverity();
 
     var js: std.json.Stringify = .{ .writer = writer };
 
@@ -24,21 +21,15 @@ pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: u
     try js.beginArray();
     for (list.items.items) |diag| {
         try writeDiagnosticJson(&js, diag);
-        switch (diag.severity) {
-            .@"error" => errors += 1,
-            .warning => warnings += 1,
-            .info => infos += 1,
-            .hint => hints += 1,
-        }
     }
     try js.endArray();
 
     try js.objectField("summary");
     try js.write(.{
-        .errors = errors,
-        .warnings = warnings,
-        .infos = infos,
-        .hints = hints,
+        .errors = counts.@"error",
+        .warnings = counts.warning,
+        .infos = counts.info,
+        .hints = counts.hint,
         .total = list.len(),
         .files_checked = files_checked,
     });
