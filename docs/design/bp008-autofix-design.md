@@ -10,7 +10,6 @@
 検出（issue #80 の第一段階）は実装済みで、autofix は本設計書に基づく後続イテレーションとする。
 
 関連資料:
-- `docs/design/autofix-implementation-plan.md`
 - `docs/design/bp003-autofix-design.md`（scalar style 分岐の先例）
 - `docs/design/autofix-phase2-insertion-design.md`
 

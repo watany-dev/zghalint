@@ -198,6 +198,5 @@ xfail 修正タスク (#1, #2) では、修正後 `XPASS` (strict=False) とし�
 ## 8. 関連ドキュメント
 
 - `AGENTS.md` — プロジェクト基本方針・テスト品質要件
-- `docs/design/autofix-implementation-plan.md` — タスク #1 の修正対象設計
 - `docs/rules.md` — 全ルール一覧（タスク #3 の対象選定根拠）
 - `tests/pbt/requirements.txt` — `pytest` / `hypothesis` 依存定義

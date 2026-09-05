@@ -6,7 +6,7 @@
 
 ## Context
 
-`docs/design/autofix-implementation-plan.md` のうち、Phase 1（置換系 5 件）と Phase 2 前半（挿入系 3 件、ADR 0001）が完全実装済み。残る Phase 2 のうち、`PERM001` 部分実装の完成、`BP004`、`PERF001` の 3 件を本 ADR の対象とする。
+autofix 実装計画のうち、Phase 1（置換系 5 件）と Phase 2 前半（挿入系 3 件、ADR 0001）が完全実装済み。残る Phase 2 のうち、`PERM001` 部分実装の完成、`BP004`、`PERF001` の 3 件を本 ADR の対象とする。
 
 これらは (a) ネットワーク依存でなく、(b) 既存 `fix_builder` helper で実装できる見込みで、(c) パターン変換系（Phase 3: `EXPR006/007`, `SEC014`）に比べて誤爆リスクが読みやすい。本 ADR は grill-me セッションで確定した決定事項と根拠を記録する。
 
@@ -75,7 +75,7 @@
 2. BP004 autofix（rule + Zig インラインテスト、parser 変更なし）
 3. PERF001 autofix（rule + Zig インラインテスト、parser 変更なし）
 4. PBT 強化（strategies 3 個追加、`--fix-unsafe` 冪等 PBT 追加）
-5. ドキュメント更新（本 ADR、`autofix-phase2-remainder-design.md` 新規、`autofix-implementation-plan.md` / `pbt-strategy.md` のステータス更新）
+5. ドキュメント更新（本 ADR、`autofix-phase2-remainder-design.md` 新規、`pbt-strategy.md` のステータス更新）
 
 各コミットで CLAUDE.md の CI ゲート（`zig build && zig fmt --check src/ build.zig && zig build test --summary all`）を通す。コミット 4 以降は `python -m pytest tests/pbt/` も通す。
 
@@ -105,7 +105,6 @@
 ## References
 
 - `/root/.claude/plans/autofix-smooth-gray.md` — 対応する実装プラン
-- `docs/design/autofix-implementation-plan.md` — 42 診断 ID 棚卸し、Phase 1-3 の優先度付け
 - `docs/design/autofix-phase2-insertion-design.md` — Phase 2 前半の横断設計（本 ADR のテンプレート）
 - `docs/adr/0001-autofix-phase2-insertion-rules.md` — Phase 2 前半の ADR
 - `docs/design/pbt-strategy.md` — PBT 戦略、既知 xfail 一覧

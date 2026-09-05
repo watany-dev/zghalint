@@ -7,7 +7,6 @@ public リポジトリの self-hosted runner を fork 起動可能な trigger �
 本設計書は、trigger と `runs-on` を workflow 単位で突き合わせて警告する新ルール `SEC020` を追加する方針を定義する。実装そのものは本設計書承認後の別タスクで行う。
 
 関連資料:
-- `docs/design/sec017-autofix-design.md`（フォーマットの基準）
 
 ## スコープ
 

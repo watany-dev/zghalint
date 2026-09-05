@@ -202,7 +202,6 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 
 - `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D1 / D2 / D4 / D5）
 - `docs/adr/0003-runner001-deprecated-runner.md` — `.unsafe` autofix の先例
-- `docs/design/sec017-autofix-design.md` — 本設計書の節構成テンプレート
 - `src/rules/security.zig:273-277` — `isCheckoutAction`
 - `src/rules/security.zig:1007-1011` — `hasPersistCredentialsFalse`
 - `src/rules/security.zig:1013-1048` — SEC015 (artipacked) の `checkArtipacked`

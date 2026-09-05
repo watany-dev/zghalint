@@ -181,14 +181,13 @@ rules
 3. `PERM002` autofix
 4. `DEP001` autofix
 5. PBT 強化（strategies と `--fix-unsafe` 対応テスト）
-6. ドキュメント更新（`autofix-implementation-plan.md` ステータス反映、`pbt-strategy.md` カバレッジ表追記）
+6. ドキュメント更新（`pbt-strategy.md` カバレッジ表追記）
 
 各コミットで CLAUDE.md の CI ゲート（`zig build && zig fmt --check src/ build.zig && zig build test --summary all`）を通す。
 
 ## 関連ドキュメント
 
 - `docs/adr/0001-autofix-phase2-insertion-rules.md` — 決定事項と根拠
-- `docs/design/autofix-implementation-plan.md` — Phase 1-3 全体の棚卸し
 - `docs/design/bp002-autofix-design.md`, `bp003-autofix-design.md`, `dep002-autofix-design.md` — Phase 1 per-rule 設計書
 - `docs/design/pbt-strategy.md` — PBT 戦略、既知 xfail 一覧
 - `src/fix/builder.zig`, `src/fix/engine.zig` — 既存 edit 基盤

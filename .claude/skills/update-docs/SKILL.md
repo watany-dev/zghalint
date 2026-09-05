@@ -27,6 +27,8 @@ description: Update zghalint documentation (docs/design/*.md, docs/adr/*.md, REA
    - 関数シグネチャの変更
    - ビルドオプションの変更
 3. 設計書が存在しない新機能がある場合、設計書の新規作成を提案する
+4. 実装が完了して陳腐化した「実装計画書」（Phase 分けや優先度表のみで、
+   現行実装の説明価値がないもの）は削除を提案する。判断の記録は ADR に残す
 
 ### 2-2. README.md
 
@@ -67,7 +69,8 @@ description: Update zghalint documentation (docs/design/*.md, docs/adr/*.md, REA
 ### 更新したドキュメント
 | ファイル | 更新内容 |
 |---------|---------|
-| docs/design/xxx.md | [変更概要] |
+| docs/design/&lt;feature&gt;-design.md | [変更概要] |
+| docs/adr/NNNN-&lt;decision&gt;.md | [変更概要] |
 | README.md | [変更概要] |
 | ... | ... |
 
