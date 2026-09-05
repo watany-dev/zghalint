@@ -255,28 +255,27 @@ fn parseResponse(
     }
     if (root_obj.get("data") == null) return error.ParseFailed;
 
-    const data = switch (root_obj.get("data").?) {
+    const data: ?std.json.ObjectMap = switch (root_obj.get("data").?) {
         .object => |o| o,
-        .null => return try defaultMissingResults(allocator, repos),
+        .null => null,
         else => return error.ParseFailed,
     };
 
     var results = try allocator.alloc(RepoResult, repos.len);
 
     for (repos, 0..) |repo, idx| {
+        // Anything we cannot resolve to a repository object — `data: null`, a
+        // missing alias, an aliased null — stays "missing".
+        results[idx] = .{ .owner = repo.owner, .repo = repo.repo, .missing = true };
+
         var alias_buf: [16]u8 = undefined;
         const alias = std.fmt.bufPrint(&alias_buf, "r{d}", .{idx}) catch unreachable;
 
-        const entry = data.get(alias) orelse {
-            results[idx] = .{ .owner = repo.owner, .repo = repo.repo, .missing = true };
-            continue;
-        };
-
-        results[idx] = switch (entry) {
-            .null => .{ .owner = repo.owner, .repo = repo.repo, .missing = true },
-            .object => |obj| try parseRepoObject(allocator, repo, obj),
-            else => .{ .owner = repo.owner, .repo = repo.repo, .missing = true },
-        };
+        const entry = (data orelse continue).get(alias) orelse continue;
+        switch (entry) {
+            .object => |obj| results[idx] = try parseRepoObject(allocator, repo, obj),
+            else => continue,
+        }
     }
 
     return results;
@@ -300,14 +299,6 @@ fn isRateLimitedErrors(value: std.json.Value) bool {
         if (std.mem.eql(u8, type_str, "RATE_LIMITED")) return true;
     }
     return false;
-}
-
-fn defaultMissingResults(allocator: Allocator, repos: []const RepoInput) ![]const RepoResult {
-    var results = try allocator.alloc(RepoResult, repos.len);
-    for (repos, 0..) |repo, idx| {
-        results[idx] = .{ .owner = repo.owner, .repo = repo.repo, .missing = true };
-    }
-    return results;
 }
 
 fn parseRepoObject(
@@ -345,7 +336,7 @@ fn parseRepoObject(
     if (repo.sha_refs.len > 0) {
         // Collect all (name, commit oid) pairs reachable from tag refs.
         // Names are kept so SC008 fix_hint can list candidate tag pins.
-        const tag_oids = collectTagOids(allocator, obj) catch &[_]NamedOid{};
+        const tag_oids = collectRefOids(allocator, obj, "tagNodes", true) catch &[_]NamedOid{};
         result.tag_oids = tag_oids;
 
         var resolutions = try allocator.alloc(ShaTagResult, repo.sha_refs.len);
@@ -365,7 +356,7 @@ fn parseRepoObject(
 
     if (repo.needs_impostor) {
         result.branch_oids_complete = refsListingComplete(obj, "branchNodes");
-        result.branch_oids = collectBranchOids(allocator, obj) catch &[_]NamedOid{};
+        result.branch_oids = collectRefOids(allocator, obj, "branchNodes", false) catch &[_]NamedOid{};
         result.default_branch = parseDefaultBranchRef(obj);
     }
 
@@ -409,26 +400,13 @@ fn refAliasExists(obj: std.json.ObjectMap, alias: []const u8) bool {
     };
 }
 
-/// Collect (tag name, commit oid) pairs from tagNodes. For lightweight
-/// tags, oid == target.oid (the commit). For annotated tags, oid ==
-/// target.target.oid (the dereferenced commit). When both are present
-/// (annotated tag schema), only the inner commit oid is recorded so a
-/// SHA-pin matched against the tag object oid is correctly detected as
-/// an impostor on the *commit*.
-fn collectTagOids(
-    allocator: Allocator,
-    obj: std.json.ObjectMap,
-) ![]const NamedOid {
-    return collectRefOids(allocator, obj, "tagNodes", true);
-}
-
-fn collectBranchOids(
-    allocator: Allocator,
-    obj: std.json.ObjectMap,
-) ![]const NamedOid {
-    return collectRefOids(allocator, obj, "branchNodes", false);
-}
-
+/// Collect (ref name, commit oid) pairs from the named refs listing.
+///
+/// With `follow_inner_target` (tags): for lightweight tags, oid == target.oid
+/// (the commit); for annotated tags, oid == target.target.oid (the
+/// dereferenced commit). When both are present (annotated tag schema), only
+/// the inner commit oid is recorded so a SHA-pin matched against the tag
+/// object oid is correctly detected as an impostor on the *commit*.
 fn collectRefOids(
     allocator: Allocator,
     obj: std.json.ObjectMap,
