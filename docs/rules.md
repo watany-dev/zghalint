@@ -41,21 +41,17 @@ Detect security vulnerabilities in workflow definitions.
 
 ### SEC002 / SEC008 vs. SEC006
 
-SEC002 and SEC008 are about **injection**: an untrusted value is interpolated
-into a shell script or written to `GITHUB_ENV`/`GITHUB_PATH`, where it is
-executed. SEC006 is about a **weak gate**: an `if:` condition is evaluated by
-the Actions expression engine and only yields a boolean, so nothing is
-executed, but an attacker who authors the text being tested can decide whether
-the branch is taken.
+SEC002 and SEC008 report **injection** — an untrusted value reaches a shell —
+while SEC006 reports a **weak gate**: an `if:` condition only yields a boolean,
+but an attacker who authors the text being tested decides whether the branch is
+taken. The two rules therefore keep separate context lists, and SEC006 warns
+instead of erroring.
 
-Because of that difference the two rules keep separate context lists, and
-SEC006 is a `warning` rather than an `error`. In particular, SEC006 does not
-report ref-shaped inputs (`github.head_ref`,
+SEC006 does not report ref-shaped inputs (`github.head_ref`,
 `github.event.pull_request.head.ref` / `.head.label` /
 `.head.repo.default_branch`, `github.event.workflow_run.head_branch`) or label
-names: branching on them, as in
-`if: startsWith(github.head_ref, 'release/')`, is a common routing idiom. Those
-contexts are still untrusted for SEC002 and SEC008.
+names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
+— is a common routing idiom. They stay untrusted for SEC002 and SEC008.
 
 ## Supply Chain Security Rules (SC)
 

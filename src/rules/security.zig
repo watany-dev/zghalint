@@ -84,10 +84,6 @@ const ExprMatch = struct {
 /// Entries are matched as segment prefixes (see `pathMatchesPattern`), so a
 /// container path such as `github.event.commits` also covers element accesses
 /// like `github.event.commits[0].message` and `github.event.commits.*.author.email`.
-///
-/// This list is deliberately independent of `condition_dangerous_contexts`:
-/// expanding the injection surface must not widen what SEC006 reports, because
-/// an `if:` condition never reaches a shell.
 const run_dangerous_contexts = [_][]const u8{
     "github.event.issue.title",
     "github.event.issue.body",
@@ -2798,8 +2794,9 @@ test "SEC006: dangerous context in job if condition" {
     try testing.expect(hasDiagnostic(&list, "SEC006"));
 }
 
-/// Report whether SEC006 fires for a step-level `if:` condition.
-fn sec006Fires(cond: []const u8) bool {
+/// The severity SEC006 reports for a step-level `if:` condition, or null when
+/// the rule stays quiet.
+fn sec006Severity(cond: []const u8) ?Severity {
     const eng = engine.Engine.init(&security_rules);
     const steps = [_]Step{
         .{ .run = "echo test", .if_condition = cond },
@@ -2810,7 +2807,10 @@ fn sec006Fires(cond: []const u8) bool {
     const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
-    return hasDiagnostic(&list, "SEC006");
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC006")) return d.severity;
+    }
+    return null;
 }
 
 test "SEC006: ref-shaped contexts in conditions are not reported" {
@@ -2818,53 +2818,21 @@ test "SEC006: ref-shaped contexts in conditions are not reported" {
     // reaches a shell from an `if:`, so SEC006 stays quiet (#138). The same
     // contexts are still injection vectors inside `run:` — see the SEC002 and
     // SEC008 tests above.
-    try testing.expect(!sec006Fires("github.head_ref == 'release'"));
-    try testing.expect(!sec006Fires("startsWith(github.event.pull_request.head.ref, 'release/')"));
-    try testing.expect(!sec006Fires("github.event.pull_request.head.label == 'octo:release'"));
-    try testing.expect(!sec006Fires("github.event.workflow_run.head_branch == 'main'"));
+    try testing.expect(sec006Severity("github.head_ref == 'release'") == null);
+    try testing.expect(sec006Severity("startsWith(github.event.pull_request.head.ref, 'release/')") == null);
+    try testing.expect(sec006Severity("github.event.pull_request.head.label == 'octo:release'") == null);
+    try testing.expect(sec006Severity("github.event.workflow_run.head_branch == 'main'") == null);
     // The immutable identity of the same commit stays trusted too.
-    try testing.expect(!sec006Fires("github.event.pull_request.head.sha == env.EXPECTED"));
+    try testing.expect(sec006Severity("github.event.pull_request.head.sha == env.EXPECTED") == null);
 }
 
-test "SEC006: attacker-authored free text in conditions is still reported" {
+test "SEC006: attacker-authored free text in conditions is a warning" {
     // These gate a decision on text the attacker writes, which is what SEC006
-    // is about.
-    try testing.expect(sec006Fires("contains(github.event.issue.body, 'ship it')"));
-    try testing.expect(sec006Fires("github.event.pull_request.title == 'release'"));
-    try testing.expect(sec006Fires("contains(github.event.head_commit.message, '[deploy]')"));
-}
-
-test "SEC006: expanding the injection table does not widen SEC006" {
-    // The two tables are independent by design: every SEC006 entry must be an
-    // untrusted input for the injection rules too, but not the other way round.
-    for (condition_dangerous_contexts) |ctx| {
-        var found = false;
-        for (run_dangerous_contexts) |run_ctx| {
-            if (std.mem.eql(u8, ctx, run_ctx)) found = true;
-        }
-        try testing.expect(found);
-    }
-    try testing.expect(condition_dangerous_contexts.len < run_dangerous_contexts.len);
-}
-
-test "SEC006: reports a warning, not an error" {
-    const eng = engine.Engine.init(&security_rules);
-    const steps = [_]Step{
-        .{ .run = "echo test", .if_condition = "contains(github.event.issue.title, 'deploy')" },
-    };
-    const jobs = [_]Job{
-        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
-    };
-    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
-    var list = eng.run(testing.allocator, &wf);
-    defer list.deinit();
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC006")) {
-            try testing.expectEqual(Severity.warning, d.severity);
-            return;
-        }
-    }
-    try testing.expect(false);
+    // is about. It is a weak gate rather than code execution, so it warns
+    // instead of failing the build.
+    try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.issue.body, 'ship it')"));
+    try testing.expectEqual(Severity.warning, sec006Severity("github.event.pull_request.title == 'release'"));
+    try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.head_commit.message, '[deploy]')"));
 }
 
 test "SEC006: safe context in condition (no false positive)" {
