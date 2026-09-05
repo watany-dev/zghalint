@@ -33,6 +33,7 @@ const SetupKind = enum { with_cache_input, bun_independent, uv_independent };
 const CacheableSetup = struct {
     setup_action: []const u8,
     cache_key: []const u8,
+    message: []const u8,
     fix_hint_base: []const u8,
     kind: SetupKind = .with_cache_input,
 };
@@ -41,27 +42,32 @@ const cacheable_setups = [_]CacheableSetup{
     .{
         .setup_action = "actions/setup-node",
         .cache_key = "cache",
+        .message = "Job uses actions/setup-node without caching. Add actions/cache or set 'cache' input.",
         .fix_hint_base = "Set 'cache' to the package manager ('npm', 'yarn', or 'pnpm') in the action's 'with' inputs, or add a separate actions/cache step.",
     },
     .{
         .setup_action = "actions/setup-python",
         .cache_key = "cache",
+        .message = "Job uses actions/setup-python without caching. Add actions/cache or set 'cache' input.",
         .fix_hint_base = "Set 'cache' to the package manager ('pip', 'pipenv', or 'poetry') in the action's 'with' inputs, or add a separate actions/cache step.",
     },
     .{
         .setup_action = "actions/setup-go",
         .cache_key = "cache",
+        .message = "Job uses actions/setup-go without caching. Add actions/cache or set 'cache' input.",
         .fix_hint_base = "Add 'cache: true' to the setup action's 'with' inputs (requires go.sum), or add a separate actions/cache step.",
     },
     .{
         .setup_action = "oven-sh/setup-bun",
         .cache_key = "",
+        .message = "Job uses oven-sh/setup-bun without caching. Add an actions/cache step keyed by your bun lockfile.",
         .fix_hint_base = "Add an actions/cache step after setup-bun with path '~/.bun/install/cache' keyed by your bun lockfile (bun.lock or bun.lockb).",
         .kind = .bun_independent,
     },
     .{
         .setup_action = "astral-sh/setup-uv",
         .cache_key = "enable-cache",
+        .message = "Job uses astral-sh/setup-uv with 'enable-cache: false' and no actions/cache step. Remove the input, set it to 'true', or add an actions/cache step.",
         .fix_hint_base = "Remove the 'enable-cache: false' input or set it to 'true' to restore astral-sh/setup-uv's built-in caching.",
         .kind = .uv_independent,
     },
@@ -231,139 +237,84 @@ fn formatAmbiguity(
 
 fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
     inline for (cacheable_setups) |ca| {
-        switch (comptime ca.kind) {
-            .with_cache_input => checkWithCacheInput(ca, job, diag_list),
-            .bun_independent => checkBunCache(ca, job, diag_list),
-            .uv_independent => checkUvCache(ca, job, diag_list),
-        }
+        checkCacheableSetup(ca, job, diag_list);
     }
 }
 
-fn checkWithCacheInput(
+/// PERF001 for one setup action. The step scan and the diagnostic are shared;
+/// `ca.kind` only decides what counts as "already cached" and how the fix hint
+/// is enriched.
+fn checkCacheableSetup(
     comptime ca: CacheableSetup,
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
-    // Span of the first uncached setup step, so the diagnostic points at the
-    // action that is missing the cache rather than at the job.
+    // Span of the first setup step that warrants a warning, so the diagnostic
+    // points at the action rather than at the job.
     var setup_span: ?Span = null;
     var has_cache = false;
-
-    for (job.steps) |*step| {
-        if (step.uses) |action_ref| {
-            const action_name = util.actionBaseName(action_ref.raw);
-
-            if (std.mem.eql(u8, action_name, ca.setup_action)) {
-                if (setup_span == null) setup_span = spans.usesSpan(step);
-                if (step.with) |with| {
-                    if (with.get(ca.cache_key)) |val| {
-                        if (val.len > 0) has_cache = true;
-                    }
-                }
-            }
-
-            if (std.mem.eql(u8, action_name, "actions/cache")) {
-                has_cache = true;
-            }
-        }
-    }
-
-    const span = setup_span orelse return;
-    if (has_cache) return;
-
-    const dispatched = dispatchCacheFix(diag_list, job, ca.setup_action);
-    const base_hint = ca.fix_hint_base;
-    const hint: []const u8 = if (dispatched.hint_extra) |extra| blk: {
-        const combined = std.fmt.allocPrint(
-            diag_list.fixAllocator(),
-            "{s}{s}",
-            .{ base_hint, extra },
-        ) catch break :blk base_hint;
-        break :blk combined;
-    } else base_hint;
-
-    diag_list.append(.{
-        .rule_id = "PERF001",
-        .severity = .warning,
-        .message = "Job uses " ++ ca.setup_action ++ " without caching. Add actions/cache or set 'cache' input.",
-        .span = span,
-        .fix_hint = hint,
-        .fix = dispatched.fix,
-    }) catch return;
-}
-
-fn checkBunCache(
-    comptime ca: CacheableSetup,
-    job: *const Job,
-    diag_list: *DiagnosticList,
-) void {
-    var setup_span: ?Span = null;
-    var has_cache_step = false;
-
-    for (job.steps) |*step| {
-        const action_ref = step.uses orelse continue;
-        const action_name = util.actionBaseName(action_ref.raw);
-        if (std.mem.eql(u8, action_name, ca.setup_action) and setup_span == null) setup_span = spans.usesSpan(step);
-        if (std.mem.eql(u8, action_name, "actions/cache")) has_cache_step = true;
-    }
-
-    const span = setup_span orelse return;
-    if (has_cache_step) return;
-
-    const base_hint = ca.fix_hint_base;
-    const hint: []const u8 = if (!workspace.current.bun_lockfile_present) blk: {
-        const combined = std.fmt.allocPrint(
-            diag_list.fixAllocator(),
-            "{s} Note: no bun.lock or bun.lockb detected at the workspace root.",
-            .{base_hint},
-        ) catch break :blk base_hint;
-        break :blk combined;
-    } else base_hint;
-
-    diag_list.append(.{
-        .rule_id = "PERF001",
-        .severity = .warning,
-        .message = "Job uses oven-sh/setup-bun without caching. Add an actions/cache step keyed by your bun lockfile.",
-        .span = span,
-        .fix_hint = hint,
-    }) catch return;
-}
-
-fn checkUvCache(
-    comptime ca: CacheableSetup,
-    job: *const Job,
-    diag_list: *DiagnosticList,
-) void {
-    var uv_cache_disabled_span: ?Span = null;
-    var has_cache_step = false;
 
     for (job.steps) |*step| {
         const action_ref = step.uses orelse continue;
         const action_name = util.actionBaseName(action_ref.raw);
 
         if (std.mem.eql(u8, action_name, "actions/cache")) {
-            has_cache_step = true;
+            has_cache = true;
             continue;
         }
-
         if (!std.mem.eql(u8, action_name, ca.setup_action)) continue;
 
-        const with = step.with orelse continue;
-        const enable_cache_val = with.get(ca.cache_key) orelse continue;
-        if (std.mem.eql(u8, enable_cache_val, "false") and uv_cache_disabled_span == null) {
-            uv_cache_disabled_span = spans.usesSpan(step);
+        switch (comptime ca.kind) {
+            .with_cache_input => {
+                if (setup_span == null) setup_span = spans.usesSpan(step);
+                const with = step.with orelse continue;
+                const val = with.get(ca.cache_key) orelse continue;
+                if (val.len > 0) has_cache = true;
+            },
+            .bun_independent => {
+                if (setup_span == null) setup_span = spans.usesSpan(step);
+            },
+            .uv_independent => {
+                const with = step.with orelse continue;
+                const val = with.get(ca.cache_key) orelse continue;
+                if (std.mem.eql(u8, val, "false") and setup_span == null) {
+                    setup_span = spans.usesSpan(step);
+                }
+            },
         }
     }
 
-    const span = uv_cache_disabled_span orelse return;
-    if (has_cache_step) return;
+    const span = setup_span orelse return;
+    if (has_cache) return;
+
+    const dispatched: DispatchResult = switch (comptime ca.kind) {
+        .with_cache_input => dispatchCacheFix(diag_list, job, ca.setup_action),
+        .bun_independent => .{
+            .fix = null,
+            .hint_extra = if (workspace.current.bun_lockfile_present)
+                null
+            else
+                " Note: no bun.lock or bun.lockb detected at the workspace root.",
+        },
+        .uv_independent => .{ .fix = null, .hint_extra = null },
+    };
+
+    const hint: []const u8 = if (dispatched.hint_extra) |extra| blk: {
+        const combined = std.fmt.allocPrint(
+            diag_list.fixAllocator(),
+            "{s}{s}",
+            .{ ca.fix_hint_base, extra },
+        ) catch break :blk ca.fix_hint_base;
+        break :blk combined;
+    } else ca.fix_hint_base;
 
     diag_list.append(.{
         .rule_id = "PERF001",
         .severity = .warning,
-        .message = "Job uses astral-sh/setup-uv with 'enable-cache: false' and no actions/cache step. Remove the input, set it to 'true', or add an actions/cache step.",
+        .message = ca.message,
         .span = span,
-        .fix_hint = ca.fix_hint_base,
+        .fix_hint = hint,
+        .fix = dispatched.fix,
     }) catch return;
 }
 
