@@ -73,6 +73,47 @@ const ExprMatch = struct {
     len: usize,
 };
 
+/// One `${{ ... }}` expression found while scanning a scalar.
+const ExprSpan = struct {
+    /// Text between `${{` and `}}`, untrimmed.
+    inner: []const u8,
+    /// Offset and length of the whole `${{ ... }}` run in the source string.
+    match: ExprMatch,
+};
+
+/// Iterates the `${{ ... }}` expressions of a string. An opener with no
+/// closing `}}` is skipped and the scan resumes just after it, so a stray
+/// `${{` never swallows the rest of the scalar.
+const ExprIter = struct {
+    s: []const u8,
+    pos: usize = 0,
+
+    fn next(self: *ExprIter) ?ExprSpan {
+        while (std.mem.indexOfPos(u8, self.s, self.pos, "${{")) |open| {
+            const inner_start = open + 3;
+            const close = std.mem.indexOfPos(u8, self.s, inner_start, "}}") orelse {
+                self.pos = open + 1;
+                continue;
+            };
+            self.pos = close + 2;
+            return .{
+                .inner = self.s[inner_start..close],
+                .match = .{ .offset = open, .len = close + 2 - open },
+            };
+        }
+        return null;
+    }
+};
+
+/// First `${{ ... }}` expression whose inner text satisfies `pred`.
+fn findExpr(s: []const u8, comptime pred: fn ([]const u8) bool) ?ExprMatch {
+    var it: ExprIter = .{ .s = s };
+    while (it.next()) |e| {
+        if (pred(e.inner)) return e.match;
+    }
+    return null;
+}
+
 // ============================================================
 // Dangerous GitHub contexts that can be controlled by users
 // ============================================================
@@ -421,14 +462,7 @@ fn checkUntrustedInConditionJob(job: *const Job, list: *DiagnosticList) void {
 /// so they may contain dangerous contexts either directly or inside `${{ }}`.
 fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     // First check for ${{ expr }} wrapped patterns
-    var has_expr = false;
-    var pos: usize = 0;
-    while (pos + 4 < cond.len) : (pos += 1) {
-        if (cond[pos] == '$' and pos + 1 < cond.len and cond[pos + 1] == '{' and pos + 2 < cond.len and cond[pos + 2] == '{') {
-            has_expr = true;
-            break;
-        }
-    }
+    const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
     if (has_expr) {
         checkContextsInString(cond, anchor, &condition_dangerous_contexts, "SEC006", sec006_severity, "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
     } else {
@@ -539,28 +573,11 @@ fn containsGithubEnvWrite(s: []const u8) bool {
 /// Return true if `s` contains any `${{ dangerous_context }}` expression.
 /// `s` is always a `run:` body here, so it uses the same list as SEC002.
 fn hasDangerousContextExpression(s: []const u8) bool {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (containsAnyContext(expr, &run_dangerous_contexts)) {
-                    return true;
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return false;
+    return findExpr(s, isRunDangerousExpr) != null;
+}
+
+fn isRunDangerousExpr(inner: []const u8) bool {
+    return containsAnyContext(std.mem.trim(u8, inner, " \t\n\r"), &run_dangerous_contexts);
 }
 
 fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
@@ -680,29 +697,7 @@ fn emitSEC011(span: Span, list: *DiagnosticList) void {
 /// Find the first `${{ ... }}` expression in `s` that references the entire
 /// secrets context. Returns its offset and length within `s`.
 fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = s[expr_start..j];
-                if (exprIsWholeSecretsRef(expr)) {
-                    return .{ .offset = pos, .len = j + 2 - pos };
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return null;
+    return findExpr(s, exprIsWholeSecretsRef);
 }
 
 /// Check if an expression references the entire secrets context (not an individual secret).
@@ -837,32 +832,15 @@ fn isSecretsExpression(value: []const u8) bool {
 /// Find the first `${{ secrets.* }}` expression in `s` (excluding
 /// secrets.GITHUB_TOKEN). Returns its offset and length within `s`.
 fn findSecretsOutsideEnv(s: []const u8) ?ExprMatch {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const inner = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (std.mem.startsWith(u8, inner, "secrets.")) {
-                    const secret_name = inner["secrets.".len..];
-                    if (!std.mem.eql(u8, secret_name, "GITHUB_TOKEN")) {
-                        return .{ .offset = pos, .len = j + 2 - pos };
-                    }
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return null;
+    return findExpr(s, exprIsNonTokenSecretRef);
+}
+
+/// `secrets.X` for any secret other than the automatically-redacted
+/// `secrets.GITHUB_TOKEN`.
+fn exprIsNonTokenSecretRef(inner: []const u8) bool {
+    const trimmed = std.mem.trim(u8, inner, " \t\n\r");
+    if (!std.mem.startsWith(u8, trimmed, "secrets.")) return false;
+    return !std.mem.eql(u8, trimmed["secrets.".len..], "GITHUB_TOKEN");
 }
 
 fn emitSEC019(span: Span, list: *DiagnosticList) void {
@@ -933,29 +911,7 @@ fn emitSEC012(span: Span, list: *DiagnosticList) void {
 /// Find the first `${{ ... }}` expression in `s` with a toJSON(secrets...) or
 /// fromJSON(secrets...) pattern. Returns its offset and length within `s`.
 fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = s[expr_start..j];
-                if (exprHasSecretJsonCall(expr)) {
-                    return .{ .offset = pos, .len = j + 2 - pos };
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return null;
+    return findExpr(s, exprHasSecretJsonCall);
 }
 
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
@@ -1048,14 +1004,7 @@ fn checkBotConditionJob(job: *const Job, list: *DiagnosticList) void {
 /// against a bot account name (containing "[bot]"). This is spoofable.
 fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     // Check for ${{ expr }} wrapped patterns
-    var has_expr = false;
-    var pos: usize = 0;
-    while (pos + 4 < cond.len) : (pos += 1) {
-        if (cond[pos] == '$' and pos + 1 < cond.len and cond[pos + 1] == '{' and pos + 2 < cond.len and cond[pos + 2] == '{') {
-            has_expr = true;
-            break;
-        }
-    }
+    const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
 
     if (has_expr) {
         checkBotActorInString(cond, anchor, list);
@@ -1075,35 +1024,18 @@ fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *Diagn
 
 /// Scan a string for ${{ expr }} patterns that contain actor + [bot] checks.
 fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (containsActorBotCheck(expr)) {
-                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
-                    list.append(.{
-                        .rule_id = "SEC014",
-                        .severity = .warning,
-                        .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
-                        .span = anchor.at(s, match.offset, match.len),
-                        .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
-                    }) catch return;
-                    return;
-                }
-                pos = j + 1;
-            }
-        }
-    }
+    const match = findExpr(s, isActorBotExpr) orelse return;
+    list.append(.{
+        .rule_id = "SEC014",
+        .severity = .warning,
+        .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
+        .span = anchor.at(s, match.offset, match.len),
+        .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
+    }) catch return;
+}
+
+fn isActorBotExpr(inner: []const u8) bool {
+    return containsActorBotCheck(std.mem.trim(u8, inner, " \t\n\r"));
 }
 
 /// Returns true if the expression contains both an actor context reference
@@ -1312,35 +1244,16 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
 fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []const u8, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
-    // Find all ${{ ... }} expressions
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (containsAnyContext(expr, contexts)) {
-                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
-                    list.append(.{
-                        .rule_id = rule_id,
-                        .severity = severity,
-                        .message = message,
-                        .span = anchor.at(s, match.offset, match.len),
-                        .fix_hint = fix_hint,
-                    }) catch return;
-                }
-                pos = j + 1;
-            }
-        }
+    var it: ExprIter = .{ .s = s };
+    while (it.next()) |e| {
+        if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
+        list.append(.{
+            .rule_id = rule_id,
+            .severity = severity,
+            .message = message,
+            .span = anchor.at(s, e.match.offset, e.match.len),
+            .fix_hint = fix_hint,
+        }) catch return;
     }
 }
 
