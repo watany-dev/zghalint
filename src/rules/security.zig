@@ -22,23 +22,23 @@ pub fn setRepoVisibility(v: Visibility) void {
     sec020_repo_visibility = v;
 }
 
-pub const Diagnostic = diagnostics.Diagnostic;
-pub const DiagnosticList = diagnostics.DiagnosticList;
-pub const Severity = diagnostics.Severity;
-pub const Span = yaml.Span;
-pub const Workflow = workflow_types.Workflow;
-pub const Job = workflow_types.Job;
-pub const Step = workflow_types.Step;
-pub const ActionRef = workflow_types.ActionRef;
-pub const Permissions = workflow_types.Permissions;
-pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
-pub const ScalarValueMetaMap = workflow_types.ScalarValueMetaMap;
-pub const Fix = diagnostics.Fix;
-pub const Edit = diagnostics.Edit;
-pub const SecretsConfig = workflow_types.SecretsConfig;
-pub const EventType = workflow_types.EventType;
-pub const Rule = engine.Rule;
-pub const Anchor = spans.Anchor;
+const Diagnostic = diagnostics.Diagnostic;
+const DiagnosticList = diagnostics.DiagnosticList;
+const Severity = diagnostics.Severity;
+const Span = yaml.Span;
+const Workflow = workflow_types.Workflow;
+const Job = workflow_types.Job;
+const Step = workflow_types.Step;
+const ActionRef = workflow_types.ActionRef;
+const Permissions = workflow_types.Permissions;
+const ScalarValueMeta = workflow_types.ScalarValueMeta;
+const ScalarValueMetaMap = workflow_types.ScalarValueMetaMap;
+const Fix = diagnostics.Fix;
+const Edit = diagnostics.Edit;
+const SecretsConfig = workflow_types.SecretsConfig;
+const EventType = workflow_types.EventType;
+const Rule = engine.Rule;
+const Anchor = spans.Anchor;
 
 // ============================================================
 // Diagnostic anchors
@@ -546,10 +546,6 @@ fn indexOfGithubEnvWrite(s: []const u8) ?usize {
         }
     }
     return null;
-}
-
-fn containsGithubEnvWrite(s: []const u8) bool {
-    return indexOfGithubEnvWrite(s) != null;
 }
 
 /// Return true if `s` contains any `${{ dangerous_context }}` expression.
@@ -2073,14 +2069,14 @@ fn makeEmptyTrigger() Trigger {
 
 fn makeReleaseTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .release, .name = "release" },
+        .{ .event = .release },
     };
     return .{ .events = events };
 }
 
 fn makePRTargetTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .pull_request_target, .name = "pull_request_target" },
+        .{ .event = .pull_request_target },
     };
     return .{ .events = events };
 }
@@ -2904,7 +2900,6 @@ test "SEC007: autofix generated on single-line on:" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -2946,7 +2941,6 @@ test "SEC007: autofix on multi-line on: block inserts after last child" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -2999,7 +2993,6 @@ test "SEC007: no diagnostic when permissions already defined (parser path)" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -3029,7 +3022,6 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -3074,7 +3066,6 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -3114,7 +3105,6 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
 
     // 再 parse で ParseError が出ないことを確認する。
     var reparse = yaml_parser.Parser.init(alloc, result.content);
-    defer reparse.deinit();
     _ = try reparse.parse();
 }
 
@@ -4707,7 +4697,6 @@ test "SEC015: integration - YAML parse to fix apply" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -4768,7 +4757,6 @@ test "SEC015: integration ignores checkout after upload-artifact" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -5410,7 +5398,6 @@ test "SEC017: integration applies fix to workflow env" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -5449,7 +5436,6 @@ test "SEC017: integration applies fix to job env and preserves single quote/comm
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -5488,7 +5474,6 @@ test "SEC017: integration applies fix to step env and preserves double quote/com
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -5737,35 +5722,35 @@ test "BP007: no false positive on GitHub Actions expression" {
 
 fn makePRTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .pull_request, .name = "pull_request" },
+        .{ .event = .pull_request },
     };
     return .{ .events = events };
 }
 
 fn makeIssueCommentTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .issue_comment, .name = "issue_comment" },
+        .{ .event = .issue_comment },
     };
     return .{ .events = events };
 }
 
 fn makeWorkflowRunTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .workflow_run, .name = "workflow_run" },
+        .{ .event = .workflow_run },
     };
     return .{ .events = events };
 }
 
 fn makePushTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     return .{ .events = events };
 }
 
 fn makeWorkflowDispatchTrigger() Trigger {
     const events = &[_]EventConfig{
-        .{ .event = .workflow_dispatch, .name = "workflow_dispatch" },
+        .{ .event = .workflow_dispatch },
     };
     return .{ .events = events };
 }
@@ -6118,7 +6103,6 @@ test "SEC002: each untrusted reference in a run: block is reported at its own po
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 
@@ -6154,7 +6138,6 @@ test "SEC001: unpinned action is reported at the uses: value" {
     ;
 
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_ast = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
 

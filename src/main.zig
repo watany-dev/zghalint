@@ -188,7 +188,6 @@ fn lintDependabotFile(
     const arena_alloc = arena.allocator();
 
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
@@ -235,14 +234,13 @@ fn prefetchNetworkData(
         const source = file.readToEndAlloc(scratch, 10 * 1024 * 1024) catch continue;
 
         var yaml_parser = zghalint.yaml.Parser.init(scratch, source);
-        defer yaml_parser.deinit();
 
         const yaml_node = yaml_parser.parse() catch continue;
         const workflow = zghalint.workflow.parseWorkflow(scratch, yaml_node) catch continue;
         try workflows.append(scratch, workflow);
     }
 
-    _ = zghalint.rules.prefetch.prefetchAllWithOptions(
+    zghalint.rules.prefetch.prefetchAllWithOptions(
         scratch,
         workflows.items,
         .{ .no_cache = no_cache },
@@ -250,7 +248,7 @@ fn prefetchNetworkData(
 }
 
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
-    const path = config_path orelse zghalint.config.findConfigFile(".") orelse return Config.init(allocator);
+    const path = config_path orelse zghalint.config.defaultConfigPath() orelse return Config.init(allocator);
 
     const file = std.fs.cwd().openFile(path, .{}) catch return Config.init(allocator);
     defer file.close();
@@ -290,7 +288,6 @@ fn lintFile(
 
     // YAML parse
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
@@ -332,7 +329,7 @@ fn lintFile(
 }
 
 fn outputTerminal(diag_list: *zghalint.DiagnosticList, writer: anytype, use_color: bool) !void {
-    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, null, use_color);
+    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, use_color);
 }
 
 fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checked: usize) !void {

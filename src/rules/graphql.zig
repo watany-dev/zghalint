@@ -39,12 +39,6 @@ pub const RepoInput = struct {
     /// is allowed but only yields `defaultBranchRef`; `branchNodes` is
     /// skipped because it has no caller.
     needs_impostor: bool = false,
-    /// Continuation cursor for tagNodes pagination (per-repo). When set,
-    /// emitted as `after:"<cursor>"` in the refs(refPrefix:"refs/tags/")
-    /// argument list. null on the first page.
-    tags_cursor: ?[]const u8 = null,
-    /// Continuation cursor for branchNodes pagination. Same semantics.
-    branches_cursor: ?[]const u8 = null,
 };
 
 pub const ShaTagResolution = enum { has_tag, no_tag, unknown };
@@ -91,12 +85,6 @@ pub const RepoResult = struct {
     branch_oids_complete: bool = true,
     /// Default branch (name + head oid). Populated when `needs_impostor`.
     default_branch: ?NamedOid = null,
-    /// pageInfo.endCursor for tagNodes when more pages exist; null when
-    /// the fetch is complete.
-    tags_next_cursor: ?[]const u8 = null,
-    /// pageInfo.endCursor for branchNodes when more pages exist; null when
-    /// the fetch is complete.
-    branches_next_cursor: ?[]const u8 = null,
 };
 
 // ============================================================
@@ -121,20 +109,6 @@ pub fn maxReposPerBatch(repos: []const RepoInput) usize {
         if (r.needs_impostor) return max_repos_per_batch_with_impostor;
     }
     return max_repos_per_batch;
-}
-
-/// Append the `, first:100[, after:"<cursor>"]` argument tail to a
-/// `refs(refPrefix:"...")` call. Cursor strings come from GitHub's
-/// pageInfo.endCursor and are opaque base64 — we trust them as-is.
-fn writePagedRefArgs(
-    allocator: Allocator,
-    buf: *std.ArrayList(u8),
-    cursor: ?[]const u8,
-) !void {
-    try buf.appendSlice(allocator, ", first:100");
-    if (cursor) |c| {
-        try buf.writer(allocator).print(", after:\"{s}\"", .{c});
-    }
 }
 
 /// Build a GraphQL query body for the given repo inputs. Caller owns the
@@ -172,11 +146,9 @@ pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
             // see the underlying commit oid in a single round trip. pageInfo
             // lets the caller detect when more pages exist and mark affected
             // SHA lookups as unknown rather than falsely claiming no_tag.
-            try buf.appendSlice(allocator, " tagNodes: refs(refPrefix:\"refs/tags/\"");
-            try writePagedRefArgs(allocator, &buf, repo.tags_cursor);
             try buf.appendSlice(
                 allocator,
-                ") { pageInfo { hasNextPage endCursor } nodes { name target { oid ... on Tag { target { oid } } } } }",
+                " tagNodes: refs(refPrefix:\"refs/tags/\", first:100) { pageInfo { hasNextPage } nodes { name target { oid ... on Tag { target { oid } } } } }",
             );
         }
 
@@ -184,11 +156,9 @@ pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
             // SC008 step2: enumerate branch HEAD oids. Each branch's
             // target.oid is the head commit; no annotated-ref dereferencing
             // is needed because branches always point at commits.
-            try buf.appendSlice(allocator, " branchNodes: refs(refPrefix:\"refs/heads/\"");
-            try writePagedRefArgs(allocator, &buf, repo.branches_cursor);
             try buf.appendSlice(
                 allocator,
-                ") { pageInfo { hasNextPage endCursor } nodes { name target { oid } } }",
+                " branchNodes: refs(refPrefix:\"refs/heads/\", first:100) { pageInfo { hasNextPage } nodes { name target { oid } } }",
             );
         }
 
@@ -388,7 +358,6 @@ fn parseRepoObject(
     // heuristic that treats a full 100-node page as "could have more"
     // so pre-pageInfo test fixtures keep the same unknown/no_tag split.
     result.tag_oids_complete = refsListingComplete(obj, "tagNodes");
-    result.tags_next_cursor = refsListingNextCursor(obj, "tagNodes");
 
     if (repo.sha_refs.len > 0) {
         // Collect all (name, commit oid) pairs reachable from tag refs.
@@ -413,7 +382,6 @@ fn parseRepoObject(
 
     if (repo.needs_impostor) {
         result.branch_oids_complete = refsListingComplete(obj, "branchNodes");
-        result.branches_next_cursor = refsListingNextCursor(obj, "branchNodes");
         result.branch_oids = collectBranchOids(allocator, obj) catch &[_]NamedOid{};
         result.default_branch = parseDefaultBranchRef(obj);
     }
@@ -468,32 +436,6 @@ fn refsListingComplete(obj: std.json.ObjectMap, listing_name: []const u8) bool {
         else => return true,
     };
     return count < 100;
-}
-
-/// Return pageInfo.endCursor when `hasNextPage` is true; null otherwise.
-/// Caller owns nothing — the slice points into the parsed JSON arena.
-fn refsListingNextCursor(obj: std.json.ObjectMap, listing_name: []const u8) ?[]const u8 {
-    const listing_val = obj.get(listing_name) orelse return null;
-    const listing_obj = switch (listing_val) {
-        .object => |o| o,
-        else => return null,
-    };
-    const pi_val = listing_obj.get("pageInfo") orelse return null;
-    const pi = switch (pi_val) {
-        .object => |o| o,
-        else => return null,
-    };
-    const hnp_val = pi.get("hasNextPage") orelse return null;
-    const has_next = switch (hnp_val) {
-        .bool => |b| b,
-        else => return null,
-    };
-    if (!has_next) return null;
-    const cursor_val = pi.get("endCursor") orelse return null;
-    return switch (cursor_val) {
-        .string => |s| s,
-        else => null,
-    };
 }
 
 fn refAliasExists(obj: std.json.ObjectMap, alias: []const u8) bool {
@@ -620,7 +562,7 @@ test "buildQuery: sha refs pull in tagNodes subquery with pageInfo" {
     const q = try buildQuery(testing.allocator, &repos);
     defer testing.allocator.free(q);
     try testing.expect(std.mem.indexOf(u8, q, "tagNodes: refs(refPrefix:\"refs/tags/\", first:100)") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "pageInfo { hasNextPage endCursor }") != null);
+    try testing.expect(std.mem.indexOf(u8, q, "pageInfo { hasNextPage }") != null);
     try testing.expect(std.mem.indexOf(u8, q, "... on Tag { target { oid } }") != null);
 }
 
@@ -970,22 +912,6 @@ test "buildQuery: needs_impostor without sha_refs still skips branchNodes" {
     try testing.expect(std.mem.indexOf(u8, q, "defaultBranchRef") != null);
 }
 
-test "buildQuery: tags_cursor and branches_cursor emit after: arguments" {
-    const shas = [_][]const u8{"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"};
-    const repos = [_]RepoInput{.{
-        .owner = "o",
-        .repo = "r",
-        .sha_refs = &shas,
-        .needs_impostor = true,
-        .tags_cursor = "TAGCURSOR==",
-        .branches_cursor = "BRANCHCURSOR==",
-    }};
-    const q = try buildQuery(testing.allocator, &repos);
-    defer testing.allocator.free(q);
-    try testing.expect(std.mem.indexOf(u8, q, "tagNodes: refs(refPrefix:\"refs/tags/\", first:100, after:\"TAGCURSOR==\")") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "branchNodes: refs(refPrefix:\"refs/heads/\", first:100, after:\"BRANCHCURSOR==\")") != null);
-}
-
 test "maxReposPerBatch: impostor-free batches keep the larger limit" {
     // Deliberate constant assertion: SC004/SC005/SC006-only queries stay
     // cheap, so they shouldn't pay the SC008 batch-size penalty.
@@ -1029,10 +955,9 @@ test "parseResponse: branchNodes populates branch_oids" {
     try testing.expectEqualStrings("dev", results[0].branch_oids[1].name);
     try testing.expectEqualStrings("devoid", results[0].branch_oids[1].oid);
     try testing.expect(results[0].branch_oids_complete);
-    try testing.expect(results[0].branches_next_cursor == null);
 }
 
-test "parseResponse: branchNodes hasNextPage=true sets branch_oids_complete=false and surfaces cursor" {
+test "parseResponse: branchNodes hasNextPage=true sets branch_oids_complete=false" {
     const body =
         \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"branchNodes":{"pageInfo":{"hasNextPage":true,"endCursor":"BCUR=="},"nodes":[{"name":"main","target":{"oid":"mainoid"}}]}}}}
     ;
@@ -1048,23 +973,6 @@ test "parseResponse: branchNodes hasNextPage=true sets branch_oids_complete=fals
 
     const results = try parseResponse(arena.allocator(), body, &repos);
     try testing.expect(!results[0].branch_oids_complete);
-    try testing.expect(results[0].branches_next_cursor != null);
-    try testing.expectEqualStrings("BCUR==", results[0].branches_next_cursor.?);
-}
-
-test "parseResponse: tagNodes hasNextPage=true also surfaces tags_next_cursor" {
-    const body =
-        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"pageInfo":{"hasNextPage":true,"endCursor":"TCUR=="},"nodes":[{"name":"v1","target":{"oid":"aa"}}]}}}}
-    ;
-    const shas = [_][]const u8{"aa"};
-    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expect(!results[0].tag_oids_complete);
-    try testing.expect(results[0].tags_next_cursor != null);
-    try testing.expectEqualStrings("TCUR==", results[0].tags_next_cursor.?);
 }
 
 test "parseResponse: defaultBranchRef populates default_branch" {

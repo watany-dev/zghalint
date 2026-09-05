@@ -109,7 +109,7 @@ pub fn walkPath(path: []const u8, env: *const TypeEnv) WalkResult {
 
     while (iter.next()) |seg| {
         const receiver_path = path[0..receiver_end];
-        const step = applySegment(current, seg, receiver_path, env);
+        const step = applySegment(current, seg, receiver_path);
         if (step.problem) |p| return .{ .ty = any, .problem = p };
         current = step.ty;
         receiver_end = iter.prev_end;
@@ -117,16 +117,16 @@ pub fn walkPath(path: []const u8, env: *const TypeEnv) WalkResult {
     return .{ .ty = current };
 }
 
-fn applySegment(recv: TypeRef, seg: Segment, receiver_path: []const u8, env: *const TypeEnv) WalkResult {
+fn applySegment(recv: TypeRef, seg: Segment, receiver_path: []const u8) WalkResult {
     if (recv.kind == .any) return .{ .ty = any };
     return switch (seg) {
-        .ident => |name| derefProp(recv, name, receiver_path, env),
+        .ident => |name| derefProp(recv, name, receiver_path),
         .star => objectFilter(recv, receiver_path),
-        .index_string => |key| indexString(recv, key, receiver_path, env),
+        .index_string => |key| indexString(recv, key, receiver_path),
     };
 }
 
-fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8, env: *const TypeEnv) WalkResult {
+fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8) WalkResult {
     switch (recv.kind) {
         .object => {
             if (t.findProp(recv, name)) |ty| return .{ .ty = ty };
@@ -138,16 +138,6 @@ fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8, env: *c
                     .name = name,
                 } } },
             };
-        },
-        // `arr.*.prop` keeps filtering element-wise.
-        .array => {
-            if (!recv.deref) return notAnObject(recv, name, receiver_path);
-            const elem = recv.elem orelse any;
-            if (elem.kind == .any) return .{ .ty = any };
-            const inner = derefProp(elem, name, receiver_path, env);
-            if (inner.problem) |p| return .{ .ty = any, .problem = p };
-            if (inner.ty.kind == .any) return .{ .ty = &t.type_array_any };
-            return .{ .ty = any };
         },
         else => return notAnObject(recv, name, receiver_path),
     }
@@ -186,9 +176,9 @@ fn objectFilter(recv: TypeRef, receiver_path: []const u8) WalkResult {
     }
 }
 
-fn indexString(recv: TypeRef, key: []const u8, receiver_path: []const u8, env: *const TypeEnv) WalkResult {
+fn indexString(recv: TypeRef, key: []const u8, receiver_path: []const u8) WalkResult {
     return switch (recv.kind) {
-        .object => derefProp(recv, key, receiver_path, env),
+        .object => derefProp(recv, key, receiver_path),
         // String subscripts on arrays are not meaningful but are not worth a
         // false positive either.
         .array => .{ .ty = any },

@@ -9,17 +9,6 @@ pub const Span = struct {
     start_byte: usize,
     end_byte: usize,
 
-    pub fn merge(a: Span, b: Span) Span {
-        return .{
-            .start_line = @min(a.start_line, b.start_line),
-            .start_col = if (a.start_line <= b.start_line) a.start_col else b.start_col,
-            .end_line = @max(a.end_line, b.end_line),
-            .end_col = if (a.end_line >= b.end_line) a.end_col else b.end_col,
-            .start_byte = @min(a.start_byte, b.start_byte),
-            .end_byte = @max(a.end_byte, b.end_byte),
-        };
-    }
-
     pub fn point(line: u32, col: u32, byte_offset: usize) Span {
         return .{
             .start_line = line,
@@ -123,16 +112,6 @@ test "span point" {
     const span = Span.point(1, 1, 0);
     try std.testing.expectEqual(@as(u32, 1), span.start_line);
     try std.testing.expectEqual(@as(u32, 1), span.end_line);
-}
-
-test "span merge" {
-    const a = Span{ .start_line = 1, .start_col = 1, .end_line = 1, .end_col = 5, .start_byte = 0, .end_byte = 4 };
-    const b = Span{ .start_line = 2, .start_col = 3, .end_line = 3, .end_col = 10, .start_byte = 10, .end_byte = 30 };
-    const merged = Span.merge(a, b);
-    try std.testing.expectEqual(@as(u32, 1), merged.start_line);
-    try std.testing.expectEqual(@as(u32, 3), merged.end_line);
-    try std.testing.expectEqual(@as(usize, 0), merged.start_byte);
-    try std.testing.expectEqual(@as(usize, 30), merged.end_byte);
 }
 
 test "node getSpan scalar" {

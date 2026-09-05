@@ -2,7 +2,6 @@ const std = @import("std");
 
 pub const TokenKind = enum {
     stream_start,
-    stream_end,
     document_start,
     document_end,
     mapping_key,
@@ -154,7 +153,7 @@ pub const Tokenizer = struct {
 
         // Block scalar indicators
         if (c == '|' or c == '>') {
-            return self.scanBlockScalar(c);
+            return self.scanBlockScalar();
         }
 
         // Plain scalar
@@ -233,12 +232,11 @@ pub const Tokenizer = struct {
         };
     }
 
-    fn scanBlockScalar(self: *Tokenizer, indicator: u8) Token {
+    fn scanBlockScalar(self: *Tokenizer) Token {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
         self.advance(); // skip | or >
-        _ = indicator;
 
         // Skip chomping/indent indicators and rest of line
         while (self.pos < self.source.len and self.source[self.pos] != '\n') {

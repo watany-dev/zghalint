@@ -16,7 +16,6 @@ const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
-const Edit = diagnostics_mod.Edit;
 const FixSafety = diagnostics_mod.FixSafety;
 
 // ── BP001: Missing timeout-minutes ──
@@ -524,7 +523,6 @@ test "BP001: autofix applied to YAML source" {
 
     // Parse YAML → Workflow
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -637,7 +635,6 @@ test "BP002: no fix when `if:` precedes `uses:` in step" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -669,7 +666,6 @@ test "BP002: autofix applied to YAML source" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -803,7 +799,6 @@ test "BP003: autofix applied to YAML source" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -933,7 +928,6 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -959,7 +953,7 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
 
 test "BP005: detect push without concurrency" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -974,11 +968,11 @@ test "BP005: detect push without concurrency" {
 
 test "BP005: no warning when concurrency is set" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
-        .concurrency = .{ .group = "ci-${{ github.ref }}", .cancel_in_progress = true },
+        .concurrency = .{ .group = "ci-${{ github.ref }}" },
         .jobs = &.{},
     };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -989,7 +983,7 @@ test "BP005: no warning when concurrency is set" {
 
 test "BP005: no warning without push trigger" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .pull_request, .name = "pull_request" },
+        .{ .event = .pull_request },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -1003,7 +997,7 @@ test "BP005: no warning without push trigger" {
 
 test "BP005: fix metadata is attached with .unsafe" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -1024,7 +1018,7 @@ test "BP005: fix metadata is attached with .unsafe" {
 
 test "BP005: fix is null when concurrency_insertion_byte is missing" {
     const events = [_]workflow_types.EventConfig{
-        .{ .event = .push, .name = "push" },
+        .{ .event = .push },
     };
     const wf = Workflow{
         .on = .{ .events = &events },
@@ -1060,7 +1054,6 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 

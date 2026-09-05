@@ -9,7 +9,6 @@ const rest_fallback = @import("rest_fallback.zig");
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const spans = @import("spans.zig");
-const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const Job = workflow_types.Job;
@@ -54,12 +53,6 @@ pub fn isActive() bool {
     return !is_offline and archived_arena != null;
 }
 
-/// Return the arena allocator used for cache keys, so the prefetch
-/// orchestrator can stage allocations that live for the rule's lifetime.
-pub fn getArenaAllocator() ?Allocator {
-    return if (archived_arena) |*arena| arena.allocator() else null;
-}
-
 /// SC004 rule check: detect archived repository actions.
 pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
     if (is_offline) return;
@@ -89,12 +82,6 @@ pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 // Testing helpers
 // ============================================================
-
-/// For unit tests: initialize cache without network.
-pub fn initForTesting(allocator: Allocator) void {
-    archived_arena = std.heap.ArenaAllocator.init(allocator);
-    is_offline = false;
-}
 
 /// For unit tests: pre-populate a cache entry.
 pub fn setCachedResult(owner: []const u8, repo: []const u8, is_archived: bool) void {
@@ -158,7 +145,7 @@ test "SC004: offline mode produces no diagnostics" {
 }
 
 test "SC004: detects archived action" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     setCachedResult("archived-org", "archived-repo", true);
@@ -176,7 +163,7 @@ test "SC004: detects archived action" {
 }
 
 test "SC004: active repo not flagged" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     setCachedResult("active-org", "active-repo", false);
@@ -193,7 +180,7 @@ test "SC004: active repo not flagged" {
 }
 
 test "SC004: local action skipped" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     const steps = [_]Step{.{ .uses = ActionRef.parse("./local-action") }};
@@ -208,7 +195,7 @@ test "SC004: local action skipped" {
 }
 
 test "SC004: docker action skipped" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     const steps = [_]Step{.{ .uses = ActionRef.parse("docker://alpine:3.18") }};
@@ -223,7 +210,7 @@ test "SC004: docker action skipped" {
 }
 
 test "SC004: step without uses skipped" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     const steps = [_]Step{.{ .run = "echo hello" }};
@@ -238,7 +225,7 @@ test "SC004: step without uses skipped" {
 }
 
 test "SC004: same repo flagged in multiple steps (cache hit)" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     setCachedResult("archived-org", "archived-repo", true);
@@ -258,7 +245,7 @@ test "SC004: same repo flagged in multiple steps (cache hit)" {
 }
 
 test "SC004: SHA-pinned archived action still detected" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     setCachedResult("archived-org", "archived-repo", true);
@@ -277,7 +264,7 @@ test "SC004: SHA-pinned archived action still detected" {
 }
 
 test "SC004: invalid owner characters rejected" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     setCachedResult("archived-org", "archived-repo", true);
@@ -295,7 +282,7 @@ test "SC004: invalid owner characters rejected" {
 }
 
 test "SC004: invalid repo characters rejected" {
-    initForTesting(testing.allocator);
+    initArchived(testing.allocator, false);
     defer deinitArchived();
 
     setCachedResult("archived-org", "archived-repo", true);

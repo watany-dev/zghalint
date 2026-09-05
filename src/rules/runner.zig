@@ -10,7 +10,6 @@ const DiagnosticList = engine.DiagnosticList;
 const Severity = engine.Severity;
 const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
-const Edit = diagnostics_mod.Edit;
 const Span = yaml_types.Span;
 
 // ── RUNNER001: Deprecated or retired runner label ──
@@ -21,7 +20,6 @@ const DeprecatedLabel = struct {
     label: []const u8,
     status: LabelStatus,
     replacement: []const u8,
-    note: []const u8,
 };
 
 const deprecated_labels = [_]DeprecatedLabel{
@@ -29,31 +27,26 @@ const deprecated_labels = [_]DeprecatedLabel{
         .label = "ubuntu-18.04",
         .status = .retired,
         .replacement = "ubuntu-22.04",
-        .note = "removed 2023-04",
     },
     .{
         .label = "ubuntu-20.04",
         .status = .retired,
         .replacement = "ubuntu-22.04",
-        .note = "removed 2025-04-15",
     },
     .{
         .label = "macos-11",
         .status = .retired,
         .replacement = "macos-13",
-        .note = "removed 2024-06",
     },
     .{
         .label = "macos-12",
         .status = .retired,
         .replacement = "macos-13",
-        .note = "removed 2024-12",
     },
     .{
         .label = "windows-2019",
         .status = .deprecated,
         .replacement = "windows-2022",
-        .note = "scheduled for retirement",
     },
 };
 
@@ -242,7 +235,6 @@ test "RUNNER001: autofix end-to-end replaces label in YAML source" {
     ;
 
     var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
