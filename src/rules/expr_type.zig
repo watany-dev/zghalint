@@ -16,10 +16,6 @@ pub const TypeKind = enum {
     string,
     array,
     object,
-
-    pub fn toString(self: TypeKind) []const u8 {
-        return @tagName(self);
-    }
 };
 
 /// How unknown keys of an object are treated.
@@ -101,54 +97,46 @@ pub fn merge(a: TypeRef, b: TypeRef) TypeRef {
 /// map objects `{string => string}`. Falls back to the bare kind name when the
 /// buffer is too small.
 pub fn display(ty: TypeRef, buf: []u8) []const u8 {
-    var len: usize = 0;
-    write(ty, buf, &len, 0) catch return ty.kind.toString();
-    return buf[0..len];
+    var w = std.Io.Writer.fixed(buf);
+    write(ty, &w, 0) catch return @tagName(ty.kind);
+    return w.buffered();
 }
 
-const WriteError = error{NoSpace};
-
-fn writeStr(buf: []u8, len: *usize, s: []const u8) WriteError!void {
-    if (len.* + s.len > buf.len) return WriteError.NoSpace;
-    @memcpy(buf[len.* .. len.* + s.len], s);
-    len.* += s.len;
-}
-
-fn write(ty: TypeRef, buf: []u8, len: *usize, depth: u8) WriteError!void {
+fn write(ty: TypeRef, w: *std.Io.Writer, depth: u8) std.Io.Writer.Error!void {
     switch (ty.kind) {
         .array => {
-            try writeStr(buf, len, "array<");
+            try w.writeAll("array<");
             if (depth >= 4) {
-                try writeStr(buf, len, "...");
+                try w.writeAll("...");
             } else {
-                try write(ty.elem orelse &type_any, buf, len, depth + 1);
+                try write(ty.elem orelse &type_any, w, depth + 1);
             }
-            try writeStr(buf, len, ">");
+            try w.writeAll(">");
         },
         .object => switch (ty.shape) {
             .map => {
-                try writeStr(buf, len, "{string => ");
+                try w.writeAll("{string => ");
                 if (depth >= 4) {
-                    try writeStr(buf, len, "...");
+                    try w.writeAll("...");
                 } else {
-                    try write(ty.elem orelse &type_any, buf, len, depth + 1);
+                    try write(ty.elem orelse &type_any, w, depth + 1);
                 }
-                try writeStr(buf, len, "}");
+                try w.writeAll("}");
             },
-            .loose => try writeStr(buf, len, "object"),
+            .loose => try w.writeAll("object"),
             .strict => {
-                if (depth >= 2) return writeStr(buf, len, "object");
-                try writeStr(buf, len, "{");
+                if (depth >= 2) return w.writeAll("object");
+                try w.writeAll("{");
                 for (ty.props, 0..) |p, i| {
-                    if (i > 0) try writeStr(buf, len, "; ");
-                    try writeStr(buf, len, p.name);
-                    try writeStr(buf, len, ": ");
-                    try write(p.ty, buf, len, depth + 1);
+                    if (i > 0) try w.writeAll("; ");
+                    try w.writeAll(p.name);
+                    try w.writeAll(": ");
+                    try write(p.ty, w, depth + 1);
                 }
-                try writeStr(buf, len, "}");
+                try w.writeAll("}");
             },
         },
-        else => try writeStr(buf, len, ty.kind.toString()),
+        else => try w.writeAll(@tagName(ty.kind)),
     }
 }
 

@@ -281,7 +281,7 @@ fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
 
 fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     for (secret_prefixes) |prefix| {
-        if (indexOfSecretPrefix(s, prefix)) |offset| {
+        if (std.mem.indexOf(u8, s, prefix)) |offset| {
             list.append(.{
                 .rule_id = "SEC003",
                 .severity = .@"error",
@@ -292,22 +292,6 @@ fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
             return; // One diagnostic per string is enough
         }
     }
-}
-
-/// Offset of `prefix` inside `s`, or null when it does not occur.
-fn indexOfSecretPrefix(s: []const u8, prefix: []const u8) ?usize {
-    if (s.len < prefix.len) return null;
-    var i: usize = 0;
-    while (i + prefix.len <= s.len) : (i += 1) {
-        if (std.mem.eql(u8, s[i .. i + prefix.len], prefix)) {
-            return i;
-        }
-    }
-    return null;
-}
-
-fn containsSecretPrefix(s: []const u8, prefix: []const u8) bool {
-    return indexOfSecretPrefix(s, prefix) != null;
 }
 
 // ============================================================
@@ -991,16 +975,7 @@ fn isDeployJob(job: *const Job) bool {
 
 fn containsAnyKeyword(s: []const u8) bool {
     for (deploy_keywords) |keyword| {
-        if (containsIgnoreCase(s, keyword)) return true;
-    }
-    return false;
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (haystack.len < needle.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+        if (std.ascii.indexOfIgnoreCase(s, keyword) != null) return true;
     }
     return false;
 }
@@ -3454,16 +3429,16 @@ test "containsConditionDangerousContext rejects safe actor" {
     try testing.expect(!containsConditionDangerousContext("github.actor"));
 }
 
-test "containsSecretPrefix finds ghp_ token" {
-    try testing.expect(containsSecretPrefix("token ghp_abc123def456", "ghp_"));
+test "hardcoded secret prefixes are located by offset" {
+    try testing.expect(std.mem.indexOf(u8, "token ghp_abc123def456", "ghp_") != null);
 }
 
-test "containsSecretPrefix finds AKIA key" {
-    try testing.expect(containsSecretPrefix("AKIAIOSFODNN7EXAMPLE", "AKIA"));
+test "hardcoded secret prefixes match at offset zero" {
+    try testing.expect(std.mem.indexOf(u8, "AKIAIOSFODNN7EXAMPLE", "AKIA") != null);
 }
 
-test "containsSecretPrefix no false positive" {
-    try testing.expect(!containsSecretPrefix("echo hello world", "ghp_"));
+test "hardcoded secret prefixes do not match unrelated text" {
+    try testing.expect(std.mem.indexOf(u8, "echo hello world", "ghp_") == null);
 }
 
 test "isCheckoutAction true" {

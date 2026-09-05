@@ -241,19 +241,8 @@ fn checkCrossPlatformShell(job: *const Job, diag_list: *DiagnosticList) void {
 }
 
 fn hasWindowsTarget(job: *const Job) bool {
-    if (job.runs_on) |runs_on| {
-        if (containsWindows(runs_on)) return true;
-    }
-    return false;
-}
-
-fn containsWindows(s: []const u8) bool {
-    if (s.len < 7) return false;
-    var i: usize = 0;
-    while (i + 7 <= s.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(s[i .. i + 7], "windows")) return true;
-    }
-    return false;
+    const runs_on = job.runs_on orelse return false;
+    return std.ascii.indexOfIgnoreCase(runs_on, "windows") != null;
 }
 
 // ── BP005: Push trigger without concurrency ──

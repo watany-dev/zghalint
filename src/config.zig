@@ -13,10 +13,7 @@ pub const OutputFormat = enum {
     sarif,
 
     pub fn fromString(s: []const u8) ?OutputFormat {
-        if (std.mem.eql(u8, s, "terminal")) return .terminal;
-        if (std.mem.eql(u8, s, "json")) return .json;
-        if (std.mem.eql(u8, s, "sarif")) return .sarif;
-        return null;
+        return std.meta.stringToEnum(OutputFormat, s);
     }
 };
 
@@ -26,10 +23,7 @@ pub const ColorMode = enum {
     never,
 
     pub fn fromString(s: []const u8) ?ColorMode {
-        if (std.mem.eql(u8, s, "auto")) return .auto;
-        if (std.mem.eql(u8, s, "always")) return .always;
-        if (std.mem.eql(u8, s, "never")) return .never;
-        return null;
+        return std.meta.stringToEnum(ColorMode, s);
     }
 };
 
@@ -39,10 +33,7 @@ pub const Visibility = enum {
     unknown,
 
     pub fn fromString(s: []const u8) ?Visibility {
-        if (std.mem.eql(u8, s, "public")) return .public;
-        if (std.mem.eql(u8, s, "private")) return .private;
-        if (std.mem.eql(u8, s, "unknown")) return .unknown;
-        return null;
+        return std.meta.stringToEnum(Visibility, s);
     }
 };
 
@@ -224,11 +215,7 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
 }
 
 fn parseSeverity(s: []const u8) ?Severity {
-    if (std.mem.eql(u8, s, "error")) return .@"error";
-    if (std.mem.eql(u8, s, "warning")) return .warning;
-    if (std.mem.eql(u8, s, "info")) return .info;
-    if (std.mem.eql(u8, s, "hint")) return .hint;
-    return null;
+    return std.meta.stringToEnum(Severity, s);
 }
 
 fn parseBool(s: []const u8) bool {

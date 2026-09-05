@@ -141,60 +141,66 @@ const DispatchResult = struct {
     hint_extra: ?[]const u8,
 };
 
+/// setup actions whose cache manager is inferred from a lockfile probe.
+/// `manager` / `ambiguous` name the `workspace.Context` fields to read.
+const InferredCacheSetup = struct {
+    action: []const u8,
+    manager: []const u8,
+    ambiguous: []const u8,
+    override_key: []const u8,
+};
+
+const inferred_cache_setups = [_]InferredCacheSetup{
+    .{
+        .action = "actions/setup-node",
+        .manager = "node_cache",
+        .ambiguous = "ambiguous_node_lockfiles",
+        .override_key = "node_cache_manager",
+    },
+    .{
+        .action = "actions/setup-python",
+        .manager = "python_cache",
+        .ambiguous = "ambiguous_python_lockfiles",
+        .override_key = "python_cache_manager",
+    },
+};
+
 fn dispatchCacheFix(
     diag_list: *DiagnosticList,
     job: *const Job,
     setup_action: []const u8,
 ) DispatchResult {
+    const none = DispatchResult{ .fix = null, .hint_extra = null };
     const alloc = diag_list.fixAllocator();
     const ctx = workspace.current;
 
-    if (std.mem.eql(u8, setup_action, "actions/setup-node")) {
-        if (ctx.node_cache) |mgr| {
-            const mgr_str = mgr.toString();
-            const description = std.fmt.allocPrint(
-                alloc,
-                "add \"cache: {s}\" to actions/setup-node step(s)",
-                .{mgr_str},
-            ) catch return .{ .fix = null, .hint_extra = null };
-            return .{
-                .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
-                .hint_extra = null,
-            };
+    inline for (inferred_cache_setups) |setup| {
+        if (std.mem.eql(u8, setup_action, setup.action)) {
+            if (@field(ctx, setup.manager)) |mgr| {
+                const mgr_str = mgr.toString();
+                const description = std.fmt.allocPrint(
+                    alloc,
+                    "add \"cache: {s}\" to {s} step(s)",
+                    .{ mgr_str, setup.action },
+                ) catch return none;
+                return .{
+                    .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
+                    .hint_extra = null,
+                };
+            }
+            const ambiguous = @field(ctx, setup.ambiguous);
+            if (ambiguous.len > 0) {
+                return .{
+                    .fix = null,
+                    .hint_extra = formatAmbiguity(alloc, ambiguous, setup.override_key),
+                };
+            }
+            return none;
         }
-        if (ctx.ambiguous_node_lockfiles.len > 0) {
-            return .{
-                .fix = null,
-                .hint_extra = formatAmbiguity(alloc, ctx.ambiguous_node_lockfiles, "node_cache_manager"),
-            };
-        }
-        return .{ .fix = null, .hint_extra = null };
-    }
-
-    if (std.mem.eql(u8, setup_action, "actions/setup-python")) {
-        if (ctx.python_cache) |mgr| {
-            const mgr_str = mgr.toString();
-            const description = std.fmt.allocPrint(
-                alloc,
-                "add \"cache: {s}\" to actions/setup-python step(s)",
-                .{mgr_str},
-            ) catch return .{ .fix = null, .hint_extra = null };
-            return .{
-                .fix = buildCacheFix(diag_list, job, setup_action, mgr_str, description),
-                .hint_extra = null,
-            };
-        }
-        if (ctx.ambiguous_python_lockfiles.len > 0) {
-            return .{
-                .fix = null,
-                .hint_extra = formatAmbiguity(alloc, ctx.ambiguous_python_lockfiles, "python_cache_manager"),
-            };
-        }
-        return .{ .fix = null, .hint_extra = null };
     }
 
     if (std.mem.eql(u8, setup_action, "actions/setup-go")) {
-        if (!ctx.go_sum_present) return .{ .fix = null, .hint_extra = null };
+        if (!ctx.go_sum_present) return none;
         return .{
             .fix = buildCacheFix(
                 diag_list,
@@ -207,7 +213,7 @@ fn dispatchCacheFix(
         };
     }
 
-    return .{ .fix = null, .hint_extra = null };
+    return none;
 }
 
 fn formatAmbiguity(
@@ -215,14 +221,7 @@ fn formatAmbiguity(
     lockfiles: []const []const u8,
     override_key: []const u8,
 ) ?[]const u8 {
-    var joined = std.ArrayList(u8){};
-    var first = true;
-    for (lockfiles) |name| {
-        if (!first) joined.appendSlice(alloc, ", ") catch return null;
-        joined.appendSlice(alloc, name) catch return null;
-        first = false;
-    }
-    const list = joined.toOwnedSlice(alloc) catch return null;
+    const list = std.mem.join(alloc, ", ", lockfiles) catch return null;
     return std.fmt.allocPrint(
         alloc,
         " Detected lockfiles: {s} — specify via .zghalint.yml rules.PERF001.{s}.",
