@@ -1,27 +1,6 @@
-//! Per-repository disk cache for GraphQL/REST prefetch results.
-//!
-//! Stores results under `${XDG_CACHE_HOME:-${HOME}/.cache}/zghalint/repos/`
-//! as one `<owner>_<repo>.json` file per repository, with a 24-hour TTL
-//! measured from `cached_at`. Warm runs (re-lint without code changes) can
-//! skip GraphQL entirely when every queried SHA / named ref is already
-//! present in a fresh cache file.
-//!
-//! The on-disk format is a minimal JSON document. Two schema versions
-//! are supported:
-//!
-//! ```json
-//! // v2 (current; cache_format=2)
-//! {
-//!   "cache_format": 2,
-//!   "cached_at": 1713400000,
-//!   "archived": true,
-//!   "shas":  [["<sha>", "h"|"n"|"u"], ...],
-//!   "named": [["<ref>", 0|1, 0|1], ...],
-//!   "branches": [["<name>", "<oid>"], ...],
-//!   "default_branch": ["<name>", "<oid>"],
-//!   "impostor": [["<sha>", "l"|"i"|"u"], ...]
-//! }
-//! ```
+//! Per-repository disk cache for GraphQL/REST prefetch results, so warm runs
+//! (re-lint without code changes) can skip GraphQL entirely when every
+//! queried SHA / named ref is already present in a fresh cache file.
 //!
 //! v1 entries (no `cache_format` field, or `cache_format=1`) are loaded
 //! with empty branches/impostor/default_branch. The next save promotes
@@ -43,10 +22,6 @@ const cache_subdir = "zghalint/repos";
 /// are tolerated and migrated on the next save.
 pub const cache_format_current: u8 = 2;
 
-// ============================================================
-// Public types
-// ============================================================
-
 // The cache stores exactly what the fetch layers produce, so the entry types
 // are those layers' types rather than field-compatible copies. Sharing them
 // keeps prefetch free of identity conversions in both directions.
@@ -65,20 +40,10 @@ pub const CachedRepo = struct {
     archived: ?bool = null,
     shas: []const ShaEntry = &.{},
     named: []const NamedEntry = &.{},
-    /// SC008 step2 inputs: branch names + HEAD oids snapshotted at
-    /// fetch time. Empty for v1 entries.
     branches: []const BranchEntry = &.{},
-    /// SC008 step3 input: default branch name + HEAD oid. null for v1
-    /// entries or when GraphQL didn't surface it.
     default_branch: ?BranchEntry = null,
-    /// SC008 final verdicts. Empty for v1 entries; populated as the
-    /// compare phase decides each SHA.
     impostor: []const ImpostorEntry = &.{},
 };
-
-// ============================================================
-// Cache directory resolution
-// ============================================================
 
 fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
     if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME")) |xdg| {
@@ -110,10 +75,6 @@ fn repoFilename(allocator: Allocator, owner: []const u8, repo: []const u8) ![]co
     return std.fmt.allocPrint(allocator, "{s}_{s}.json", .{ owner, repo });
 }
 
-// ============================================================
-// Freshness
-// ============================================================
-
 pub fn isFresh(cached_at: i64) bool {
     const now = std.time.timestamp();
     if (cached_at > now) return false;
@@ -122,12 +83,6 @@ pub fn isFresh(cached_at: i64) bool {
     return true;
 }
 
-// ============================================================
-// Load
-// ============================================================
-
-/// Load a fresh cache entry for the given repo, or return `null` if the file
-/// is missing, stale, or malformed. All returned slices live on `allocator`.
 pub fn load(
     allocator: Allocator,
     owner: []const u8,
@@ -138,9 +93,8 @@ pub fn load(
     return loadFromDir(dir, allocator, owner, repo);
 }
 
-/// Variant of `load` that takes an already-opened cache directory. Tests
-/// use this to drive load/save against a `std.testing.tmpDir` instead of
-/// the user's real XDG cache.
+/// Tests use this to drive load/save against a `std.testing.tmpDir` instead
+/// of the user's real XDG cache.
 pub fn loadFromDir(
     dir: std.fs.Dir,
     allocator: Allocator,
@@ -193,10 +147,8 @@ pub fn loadFromDir(
     return result;
 }
 
-/// Decode the `key` array of `obj` into owned `T` entries.
-/// `parseEntry` returns null for a malformed or unvalidatable row, which is
-/// skipped: a partially corrupt cache file degrades to a partial cache hit
-/// rather than a hard failure.
+/// A malformed or unvalidatable row is skipped: a partially corrupt cache
+/// file degrades to a partial cache hit rather than a hard failure.
 fn parseEntryArray(
     comptime T: type,
     allocator: Allocator,
@@ -217,7 +169,6 @@ fn parseEntryArray(
     return list.toOwnedSlice(allocator) catch &.{};
 }
 
-/// The string at `fields[idx]`, or null when absent or not a string.
 fn stringField(fields: []const std.json.Value, idx: usize) ?[]const u8 {
     if (idx >= fields.len) return null;
     if (fields[idx] != .string) return null;
@@ -307,10 +258,6 @@ fn intFieldAsBool(v: std.json.Value) bool {
     };
 }
 
-// ============================================================
-// Save
-// ============================================================
-
 pub fn save(
     allocator: Allocator,
     owner: []const u8,
@@ -394,10 +341,6 @@ pub fn saveToDir(
     af.finish() catch return;
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
@@ -405,7 +348,7 @@ test "isFresh: recent timestamp is fresh" {
     const now = std.time.timestamp();
     try testing.expect(isFresh(now - 60));
     try testing.expect(!isFresh(now - cache_ttl_s - 1));
-    try testing.expect(!isFresh(now + 60)); // future -> not fresh
+    try testing.expect(!isFresh(now + 60));
 }
 
 test "parseResolutionCode round-trips" {
@@ -466,15 +409,11 @@ test "saveToDir/loadFromDir round-trips all fields" {
     try testing.expect(!loaded.named[0].is_tag);
     try testing.expect(loaded.named[0].is_branch);
     try testing.expect(loaded.named[1].is_tag);
-    // v1-style entry (no branches/impostor/default) round-trips with empty
-    // SC008 fields preserved.
     try testing.expectEqual(@as(usize, 0), loaded.branches.len);
     try testing.expectEqual(@as(usize, 0), loaded.impostor.len);
     try testing.expect(loaded.default_branch == null);
 }
 
-/// Free every owned slice inside a loaded CachedRepo. Helper to keep
-/// the per-test cleanup blocks short.
 fn freeLoaded(loaded: CachedRepo) void {
     for (loaded.shas) |s| testing.allocator.free(s.sha);
     testing.allocator.free(loaded.shas);
@@ -547,7 +486,7 @@ test "loadFromDir: non-object JSON root returns null" {
     defer testing.allocator.free(name);
     const file = try tmp.dir.createFile(name, .{});
     defer file.close();
-    try file.writeAll("[1,2,3]"); // array instead of object
+    try file.writeAll("[1,2,3]");
 
     try testing.expect(loadFromDir(tmp.dir, testing.allocator, "o", "r") == null);
 }
@@ -561,9 +500,6 @@ test "loadFromDir: tolerates malformed shas/named entries" {
     const file = try tmp.dir.createFile(name, .{});
     defer file.close();
 
-    // Each shas entry is either non-array, too-short, wrong-type, or has an
-    // unknown resolution code. All must be silently skipped. The final 40-char
-    // hex sha survives.
     const now = std.time.timestamp();
     const body = try std.fmt.allocPrint(
         testing.allocator,
@@ -581,17 +517,13 @@ test "loadFromDir: tolerates malformed shas/named entries" {
         for (loaded.named) |n| testing.allocator.free(n.ref);
         testing.allocator.free(loaded.named);
     }
-    // Only the final 40-char hex shas entry survives (others are dropped by
-    // length, type, or hex-validity checks). Named entries with a string-typed
-    // first field survive — non-string bool/int fields fall through to
-    // intFieldAsBool's else branch.
     try testing.expectEqual(@as(usize, 1), loaded.shas.len);
     try testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", loaded.shas[0].sha);
     try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
     try testing.expectEqual(@as(usize, 2), loaded.named.len);
     try testing.expectEqualStrings("ref", loaded.named[0].ref);
-    try testing.expect(!loaded.named[0].is_tag); // "notnum" -> false
-    try testing.expect(loaded.named[0].is_branch); // 1 -> true
+    try testing.expect(!loaded.named[0].is_tag);
+    try testing.expect(loaded.named[0].is_branch);
     try testing.expectEqualStrings("ok", loaded.named[1].ref);
 }
 
@@ -629,7 +561,6 @@ test "loadFromDir: invalid sha hex is dropped" {
     const file = try tmp.dir.createFile(name, .{});
     defer file.close();
 
-    // "zz..." is not hex; "aaaa" is too short; the 40-char lowercase hex sha survives.
     const now = std.time.timestamp();
     const body = try std.fmt.allocPrint(
         testing.allocator,
@@ -659,7 +590,6 @@ test "loadFromDir: invalid git refs are dropped" {
     const file = try tmp.dir.createFile(name, .{});
     defer file.close();
 
-    // Path-traversal, spaces, and control chars must be rejected. "main" survives.
     const now = std.time.timestamp();
     const body = try std.fmt.allocPrint(
         testing.allocator,
@@ -753,9 +683,6 @@ test "loadFromDir: v1 legacy entry (no cache_format/branches/impostor) loads wit
     const file = try tmp.dir.createFile(name, .{});
     defer file.close();
 
-    // Hand-crafted v1 file: no cache_format, no branches, no impostor,
-    // no default_branch. Reader must tolerate the absent fields and
-    // default them to empty / null without bailing on the load.
     const now = std.time.timestamp();
     const body = try std.fmt.allocPrint(
         testing.allocator,
@@ -785,14 +712,6 @@ test "loadFromDir: tolerates malformed branches/impostor/default_branch entries"
     const file = try tmp.dir.createFile(name, .{});
     defer file.close();
 
-    // Each entry is malformed in one of the validated dimensions:
-    //   * non-array element
-    //   * arity mismatch
-    //   * non-string fields
-    //   * invalid ref name (path traversal)
-    //   * invalid sha (non-hex / wrong length)
-    //   * unknown impostor status code
-    // Only the trailing well-formed entries survive.
     const now = std.time.timestamp();
     const body = try std.fmt.allocPrint(
         testing.allocator,
@@ -816,7 +735,6 @@ test "loadFromDir: tolerates malformed branches/impostor/default_branch entries"
     try testing.expectEqualStrings("main", loaded.branches[0].name);
     try testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", loaded.branches[0].oid);
 
-    // default_branch with an invalid ref name must drop to null, not crash.
     try testing.expect(loaded.default_branch == null);
 
     try testing.expectEqual(@as(usize, 1), loaded.impostor.len);
@@ -831,7 +749,6 @@ test "saveToDir: refuses to write through a pre-existing symlink" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    // Create the file that must NOT be overwritten.
     {
         const victim = try tmp.dir.createFile("victim.txt", .{});
         defer victim.close();
@@ -841,7 +758,6 @@ test "saveToDir: refuses to write through a pre-existing symlink" {
     const cache_name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(cache_name);
 
-    // Plant a symlink at the path saveToDir would write to.
     tmp.dir.symLink("victim.txt", cache_name, .{}) catch |err| switch (err) {
         error.AccessDenied, error.Unexpected => return, // filesystem doesn't support symlinks
         else => return err,
@@ -850,7 +766,6 @@ test "saveToDir: refuses to write through a pre-existing symlink" {
     const now = std.time.timestamp();
     try saveToDir(tmp.dir, testing.allocator, "o", "r", .{ .cached_at = now, .archived = false });
 
-    // Victim must still read "SACRED".
     const f = try tmp.dir.openFile("victim.txt", .{});
     defer f.close();
     var buf: [32]u8 = undefined;

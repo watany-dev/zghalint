@@ -15,10 +15,6 @@ const Job = workflow_types.Job;
 const Workflow = workflow_types.Workflow;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
-// ============================================================
-// Module-level state for lazy caching
-// ============================================================
-
 // Use unmanaged map to avoid storing allocator (pointer stability issue).
 const CacheMap = std.StringArrayHashMapUnmanaged(bool);
 
@@ -26,18 +22,12 @@ var archived_cache: CacheMap = .{};
 var archived_arena: ?std.heap.ArenaAllocator = null;
 var is_offline: bool = true;
 
-// ============================================================
-// Public API
-// ============================================================
-
-/// Initialize archived-repo check.
 pub fn initArchived(backing_allocator: Allocator, offline: bool) void {
     if (offline) return;
     archived_arena = std.heap.ArenaAllocator.init(backing_allocator);
     is_offline = false;
 }
 
-/// Release all archived-check memory.
 pub fn deinitArchived() void {
     if (archived_arena) |*arena| {
         archived_cache = .{};
@@ -47,13 +37,10 @@ pub fn deinitArchived() void {
     is_offline = true;
 }
 
-/// Returns `true` if archived checks are live (non-offline) so a prefetcher
-/// can decide whether to issue network requests for it.
 pub fn isActive() bool {
     return !is_offline and archived_arena != null;
 }
 
-/// SC004 rule check: detect archived repository actions.
 pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
     if (is_offline) return;
 
@@ -79,20 +66,11 @@ pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
-// ============================================================
-// Testing helpers
-// ============================================================
-
-/// For unit tests: pre-populate a cache entry.
 pub fn setCachedResult(owner: []const u8, repo: []const u8, is_archived: bool) void {
     const alloc = if (archived_arena) |*a| a.allocator() else return;
     const key = std.fmt.allocPrint(alloc, "{s}/{s}", .{ owner, repo }) catch return;
     archived_cache.put(alloc, key, is_archived) catch return;
 }
-
-// ============================================================
-// Cache lookup with lazy fetch
-// ============================================================
 
 fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
     // Build lookup key on stack to avoid allocation on cache hit
@@ -101,7 +79,6 @@ fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
 
     if (archived_cache.get(key)) |cached| return cached;
 
-    // Cache miss — fetch from GitHub API
     const result = rest_fallback.fetchArchiveStatus(alloc, owner, repo) catch return null;
 
     // Store with arena-allocated permanent key
@@ -110,10 +87,6 @@ fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
 
     return result;
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 
@@ -269,7 +242,6 @@ test "SC004: invalid owner characters rejected" {
 
     setCachedResult("archived-org", "archived-repo", true);
 
-    // URL-unsafe owner should be silently rejected
     const steps = [_]Step{.{ .uses = ActionRef.parse("archived?org/archived-repo@v1") }};
     const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
     const wf = Workflow{ .name = "CI", .on = .{ .events = &.{} }, .jobs = &jobs };
@@ -287,7 +259,6 @@ test "SC004: invalid repo characters rejected" {
 
     setCachedResult("archived-org", "archived-repo", true);
 
-    // URL-unsafe repo should be silently rejected
     const steps = [_]Step{.{ .uses = ActionRef.parse("archived-org/archived#repo@v1") }};
     const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
     const wf = Workflow{ .name = "CI", .on = .{ .events = &.{} }, .jobs = &jobs };

@@ -4,7 +4,6 @@ const yaml_types = @import("../yaml/types.zig");
 const Node = yaml_types.Node;
 const Span = yaml_types.Span;
 
-/// A value whose YAML node kind does not match the schema for its key.
 pub const TypeMismatch = struct {
     field: []const u8,
     expected: []const u8,
@@ -20,7 +19,6 @@ fn report(
     if (mismatches) |list| list.append(allocator, mismatch) catch {};
 }
 
-/// Return true when `value` contains a GitHub Actions expression.
 /// Expression values are skipped because their runtime type is unknown.
 ///
 /// Unquoted `${{ ... }}` scalars are often truncated to `$` by the YAML parser
@@ -39,8 +37,6 @@ fn nodeKindLabel(node: Node) []const u8 {
     };
 }
 
-/// Validate a scalar field of type `T` (`bool` or `u32`). Returns the parsed
-/// value, or null when the value is an expression or the wrong type.
 fn checkScalar(
     comptime T: type,
     comptime expected: []const u8,
@@ -101,10 +97,6 @@ pub fn checkNumber(
 ) ?u32 {
     return checkScalar(u32, "number", parseU32Value, node, field, mismatches, allocator);
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 const test_support = @import("../test_support.zig");

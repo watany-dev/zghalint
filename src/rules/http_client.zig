@@ -1,29 +1,19 @@
-//! Shared HTTP client for GitHub API access.
-//!
-//! Owns a single `std.http.Client` instance across the process so that
-//! TLS/TCP connections to `api.github.com` are reused between rule fetches.
-//! Each `std.http.Client` maintains an internal connection pool; reusing one
-//! client amortizes the ~200ms TLS handshake to a single occurrence.
+//! A single `std.http.Client` is kept for the whole process so its internal
+//! connection pool reuses TLS/TCP connections to `api.github.com`; this
+//! amortizes the ~200ms TLS handshake to a single occurrence.
 
 const std = @import("std");
 const engine = @import("engine.zig");
 
 const Allocator = std.mem.Allocator;
 
-// ============================================================
-// Singleton state
-// ============================================================
-
 var client_storage: std.http.Client = undefined;
 var client_initialized: bool = false;
 var client_mutex: std.Thread.Mutex = .{};
 
-/// Initialize the shared HTTP client.
-/// No-op if already initialized. `deinit()` must be called to free resources.
-/// The provided `allocator` must remain valid until `deinit()` returns —
-/// `std.http.Client` retains it for connection pool allocations.
-/// Safe to call from multiple threads; init/deinit/fetch share a mutex so
-/// the initialization flag and storage are never observed half-built.
+/// `allocator` must remain valid until `deinit()` returns — `std.http.Client`
+/// retains it for connection pool allocations. init/deinit/fetch share a mutex
+/// so the initialization flag and storage are never observed half-built.
 pub fn init(allocator: Allocator) void {
     client_mutex.lock();
     defer client_mutex.unlock();
@@ -32,9 +22,6 @@ pub fn init(allocator: Allocator) void {
     client_initialized = true;
 }
 
-/// Release the shared HTTP client and any pooled connections.
-/// Safe to call multiple times; safe to call concurrently with `fetch()`
-/// (the mutex serializes with in-flight requests).
 pub fn deinit() void {
     client_mutex.lock();
     defer client_mutex.unlock();
@@ -43,26 +30,16 @@ pub fn deinit() void {
     client_initialized = false;
 }
 
-// ============================================================
-// Header helpers
-// ============================================================
-
 pub const user_agent: []const u8 = "zghalint/0.1.0";
 pub const accept_github_json: []const u8 = "application/vnd.github+json";
 pub const api_version: []const u8 = "2022-11-28";
 
-/// Allocate a "Bearer <token>" string from the `GITHUB_TOKEN` env var.
-/// Returns `null` if the variable is unset or allocation fails. The caller
-/// owns the returned slice and must free it with `allocator`.
 pub fn getAuthHeader(allocator: Allocator) ?[]const u8 {
     const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch return null;
     defer allocator.free(token);
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
 }
 
-/// Fill the provided header buffer with the standard GitHub REST headers:
-/// Accept, X-GitHub-Api-Version, and (optionally) Authorization.
-/// Returns the number of headers written. `buf` must hold at least 3 entries.
 pub fn writeStandardHeaders(buf: []std.http.Header, auth_value: ?[]const u8) usize {
     std.debug.assert(buf.len >= 3);
     buf[0] = .{ .name = "Accept", .value = accept_github_json };
@@ -74,22 +51,14 @@ pub fn writeStandardHeaders(buf: []std.http.Header, auth_value: ?[]const u8) usi
     return 2;
 }
 
-// ============================================================
-// Fetch
-// ============================================================
-
 pub const FetchError = error{
     NotInitialized,
     FetchFailed,
     NetworkDeadlineExceeded,
 };
 
-/// Perform an HTTP fetch through the shared client.
-///
 /// The client mutex is held for the duration of the call so the shared
 /// `std.http.Client` remains safe even if callers are later parallelized.
-/// Callers are responsible for constructing `opts.extra_headers` using
-/// `writeStandardHeaders()` plus any endpoint-specific entries.
 pub fn fetch(
     opts: std.http.Client.FetchOptions,
 ) FetchError!std.http.Client.FetchResult {
@@ -100,14 +69,8 @@ pub fn fetch(
     return client_storage.fetch(opts) catch return error.FetchFailed;
 }
 
-// ============================================================
-// High-level GET helper
-// ============================================================
-
 pub const FetchedError = FetchError || error{OutOfMemory};
 
-/// Owned response body together with the HTTP status returned by GitHub.
-/// Callers must invoke `deinit()` to free the body slice.
 pub const FetchedBody = struct {
     status: std.http.Status,
     body: []u8,
@@ -119,10 +82,8 @@ pub const FetchedBody = struct {
     }
 };
 
-/// Issue a GET against `url` with the standard GitHub REST headers and the
-/// optional `Authorization` header derived from `GITHUB_TOKEN`. The response
-/// body is returned as an owned slice; the status is left untouched so callers
-/// retain their existing branching semantics (e.g. `.ok` vs `.not_found`).
+/// The status is left untouched rather than mapped to errors so callers keep
+/// their existing branching semantics (e.g. `.ok` vs `.not_found`).
 pub fn fetchAuthenticatedJson(
     allocator: Allocator,
     url: []const u8,
@@ -147,10 +108,6 @@ pub fn fetchAuthenticatedJson(
     return .{ .status = result.status, .body = body, .allocator = allocator };
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
@@ -173,25 +130,21 @@ test "writeStandardHeaders with auth yields 3 entries" {
 }
 
 test "fetch returns NotInitialized when client not started" {
-    // Ensure a clean slate for this test even if another test initialized the client
     if (client_initialized) return error.SkipZigTest;
     const result = fetch(.{ .location = .{ .url = "http://localhost/does-not-matter" } });
     try testing.expectError(error.NotInitialized, result);
 }
 
 test "init is idempotent and deinit resets state" {
-    // Work on a clean slate. If a parent test left the client up, we bail.
     if (client_initialized) return error.SkipZigTest;
 
     init(testing.allocator);
     try testing.expect(client_initialized);
-    // Second init must not re-allocate or leak.
     init(testing.allocator);
     try testing.expect(client_initialized);
 
     deinit();
     try testing.expect(!client_initialized);
-    // Second deinit is a no-op and must not crash.
     deinit();
     try testing.expect(!client_initialized);
 }
@@ -213,8 +166,8 @@ test "getAuthHeader: returns null when GITHUB_TOKEN unset" {
 }
 
 test "fetch: returns NetworkDeadlineExceeded when deadline has passed" {
-    // Force an already-expired deadline. This must short-circuit before any
-    // TCP / TLS work is attempted, so the client doesn't even need to be init'd.
+    // The deadline check must short-circuit before any TCP / TLS work is
+    // attempted, so the client is deliberately left uninitialized.
     engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
     defer engine.clearNetworkDeadline();
 

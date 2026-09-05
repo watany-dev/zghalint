@@ -41,14 +41,6 @@ const EventType = workflow_types.EventType;
 const Rule = engine.Rule;
 const Anchor = spans.Anchor;
 
-// ============================================================
-// Diagnostic anchors
-//
-// Every diagnostic points at the narrowest source location the parser
-// preserved: the scalar the finding was read from, falling back to the
-// enclosing step or job when a value carries no span of its own.
-// ============================================================
-
 fn ifAnchorStep(step: *const Step) Anchor {
     return Anchor.fromMeta(step.if_condition_meta, step.span);
 }
@@ -67,17 +59,13 @@ fn envAnchor(step: *const Step, key: []const u8) Anchor {
     return Anchor.fromMeta(meta, step.span);
 }
 
-/// Which of a step's scalars a scan visits. `run:` and `with:` carry values
-/// into the runner; `env:` is skipped by rules that treat it as the fix.
+/// `env:` is skipped by rules that treat moving the value into `env:` as the fix.
 const StepScalars = struct {
     run: bool = true,
     with: bool = true,
     env: bool = true,
 };
 
-/// Visit every selected `run:` / `with:` / `env:` scalar of `step` together
-/// with the anchor that locates it in the source. Stops as soon as `cb`
-/// returns true.
 fn forEachStepScalar(
     step: *const Step,
     which: StepScalars,
@@ -105,8 +93,6 @@ fn forEachStepScalar(
     }
 }
 
-/// Span of the first `${{ ... }}` expression matching `pred` in any selected
-/// scalar of `step`.
 fn findStepExprSpan(step: *const Step, which: StepScalars, comptime pred: fn ([]const u8) bool) ?Span {
     const Finder = struct {
         found: ?Span = null,
@@ -122,24 +108,18 @@ fn findStepExprSpan(step: *const Step, which: StepScalars, comptime pred: fn ([]
     return finder.found;
 }
 
-/// A `${{ ... }}` expression located inside a scanned string, expressed as an
-/// offset and length within that string so an `Anchor` can turn it into a span.
 const ExprMatch = struct {
     offset: usize,
     len: usize,
 };
 
-/// One `${{ ... }}` expression found while scanning a scalar.
 const ExprSpan = struct {
-    /// Text between `${{` and `}}`, untrimmed.
     inner: []const u8,
-    /// Offset and length of the whole `${{ ... }}` run in the source string.
     match: ExprMatch,
 };
 
-/// Iterates the `${{ ... }}` expressions of a string. An opener with no
-/// closing `}}` is skipped and the scan resumes just after it, so a stray
-/// `${{` never swallows the rest of the scalar.
+/// An opener with no closing `}}` is skipped and the scan resumes just after
+/// it, so a stray `${{` never swallows the rest of the scalar.
 const ExprIter = struct {
     s: []const u8,
     pos: usize = 0,
@@ -161,7 +141,6 @@ const ExprIter = struct {
     }
 };
 
-/// First `${{ ... }}` expression whose inner text satisfies `pred`.
 fn findExpr(s: []const u8, comptime pred: fn ([]const u8) bool) ?ExprMatch {
     var it: ExprIter = .{ .s = s };
     while (it.next()) |e| {
@@ -170,14 +149,6 @@ fn findExpr(s: []const u8, comptime pred: fn ([]const u8) bool) ?ExprMatch {
     return null;
 }
 
-// ============================================================
-// Dangerous GitHub contexts that can be controlled by users
-// ============================================================
-
-/// Untrusted inputs that an attacker can control freely, reported by the
-/// injection rules (SEC002 / SEC008) when they are interpolated into a shell
-/// script or written to `GITHUB_ENV` / `GITHUB_PATH`.
-///
 /// Entries are matched as segment prefixes (see `pathMatchesPattern`), so a
 /// container path such as `github.event.commits` also covers element accesses
 /// like `github.event.commits[0].message` and `github.event.commits.*.author.email`.
@@ -210,8 +181,6 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.pull_request.labels",
 };
 
-/// Untrusted inputs reported by SEC006 inside `if:` conditions.
-///
 /// An `if:` condition is evaluated by the Actions expression engine and yields
 /// a boolean; the value never reaches a shell, so this is not injection. What
 /// SEC006 flags is a *gate* an attacker can satisfy on purpose by authoring the
@@ -244,18 +213,10 @@ const condition_dangerous_contexts = [_][]const u8{
     "github.event.pages",
 };
 
-// ============================================================
-// Actor contexts that are spoofable identity checks
-// ============================================================
-
 const actor_contexts = [_][]const u8{
     "github.actor",
     "github.triggering_actor",
 };
-
-// ============================================================
-// Secret patterns (prefixes that indicate hardcoded secrets)
-// ============================================================
 
 const secret_prefixes = [_][]const u8{
     "ghp_",
@@ -270,10 +231,6 @@ const secret_prefixes = [_][]const u8{
     "xoxp-",
 };
 
-// ============================================================
-// Cache-related setup actions (for SEC016 cache poisoning check)
-// ============================================================
-
 const cache_setup_actions = [_][]const u8{
     "actions/setup-node",
     "actions/setup-python",
@@ -282,17 +239,12 @@ const cache_setup_actions = [_][]const u8{
     "actions/setup-dotnet",
 };
 
-/// Keywords that suggest a deploy/release/publish job.
 const deploy_keywords = [_][]const u8{
     "deploy",
     "release",
     "publish",
     "prod",
 };
-
-// ============================================================
-// SEC001 - Unpinned action references
-// ============================================================
 
 fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
     if (step.uses) |action_ref| {
@@ -307,10 +259,6 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
         }
     }
 }
-
-// ============================================================
-// SEC002 - Script injection via untrusted context in run:
-// ============================================================
 
 const script_injection_fix_hint = "assign the context to an environment variable and use the env var instead";
 
@@ -355,10 +303,6 @@ fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?struct { 
     return null;
 }
 
-// ============================================================
-// SEC003 - Hardcoded secrets
-// ============================================================
-
 fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
     const scan = struct {
         fn visit(l: *DiagnosticList, s: []const u8, anchor: Anchor) bool {
@@ -384,10 +328,6 @@ fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
     }
 }
 
-// ============================================================
-// SEC004 - Excessive permissions (write-all)
-// ============================================================
-
 fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
     checkWriteAll(list, wf.permissions, "workflow", spans.workflow_head);
 }
@@ -396,8 +336,6 @@ fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
     checkWriteAll(list, job.permissions, "job", job.span);
 }
 
-/// SEC004 for either scope. `scope` only names the level in the message, and
-/// `fallback` locates the diagnostic when the parser recorded no value span.
 fn checkWriteAll(list: *DiagnosticList, maybe_perms: ?Permissions, comptime scope: []const u8, fallback: Span) void {
     const perms = maybe_perms orelse return;
     if (!perms.write_all) return;
@@ -411,19 +349,13 @@ fn checkWriteAll(list: *DiagnosticList, maybe_perms: ?Permissions, comptime scop
     }) catch return;
 }
 
-// ============================================================
-// SEC005 - Dangerous pull_request_target + checkout
-// ============================================================
-
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
     if (!wf.hasEvent(.pull_request_target)) return;
 
-    // Look for checkout actions that check out the PR head
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             if (step.uses) |action_ref| {
                 if (isAction(action_ref, "actions/checkout")) {
-                    // Check if it checks out the PR head ref
                     if (step.with) |with_map| {
                         if (with_map.get("ref")) |ref_val| {
                             // github.event.pull_request.head.{sha,ref} and github.head_ref
@@ -447,10 +379,6 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-// ============================================================
-// SEC006 - Untrusted input in if: conditions
-// ============================================================
-
 /// SEC006 reports a weak gate, not code execution: the expression engine only
 /// compares the value. It is a warning so a noisy but non-exploitable condition
 /// does not fail a build the way SEC002 / SEC008 do (#138).
@@ -469,12 +397,10 @@ fn checkUntrustedInConditionJob(job: *const Job, list: *DiagnosticList) void {
 /// In GitHub Actions, `if:` conditions are implicitly wrapped in `${{ }}`,
 /// so they may contain dangerous contexts either directly or inside `${{ }}`.
 fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
-    // First check for ${{ expr }} wrapped patterns
     const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
     if (has_expr) {
         checkContextsInString(cond, anchor, &condition_dangerous_contexts, "SEC006", sec006_severity, "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
     } else {
-        // Bare expression (no ${{ }}), check directly
         if (containsConditionDangerousContext(cond)) {
             list.append(.{
                 .rule_id = "SEC006",
@@ -486,10 +412,6 @@ fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *Di
         }
     }
 }
-
-// ============================================================
-// SEC007 - Missing permissions block
-// ============================================================
 
 fn makeMissingPermissionsFix(wf: *const Workflow, list: *DiagnosticList) ?Fix {
     const insert_byte = wf.permissions_insertion_byte orelse return null;
@@ -519,34 +441,24 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-// ============================================================
-// SEC008 - Dangerous writes to GITHUB_ENV / GITHUB_PATH
-// ============================================================
-
 const github_env_targets = [_][]const u8{
     "GITHUB_ENV",
     "GITHUB_PATH",
 };
 
-/// Offset of a `>> $GITHUB_ENV` / `>> $GITHUB_PATH` write in `s` (with
-/// optional quotes or braces around the variable), or null when there is none.
 fn indexOfGithubEnvWrite(s: []const u8) ?usize {
     var i: usize = 0;
     while (i + 1 < s.len) : (i += 1) {
         if (s[i] == '>' and s[i + 1] == '>') {
             var j = i + 2;
-            // skip whitespace after >>
             while (j < s.len and (s[j] == ' ' or s[j] == '\t')) : (j += 1) {}
             if (j >= s.len) continue;
-            // optional leading quote
             const has_quote = s[j] == '"';
             if (has_quote) j += 1;
             if (j >= s.len) continue;
-            // expect '$'
             if (s[j] != '$') continue;
             j += 1;
             if (j >= s.len) continue;
-            // optional brace: ${GITHUB_ENV}
             const has_brace = s[j] == '{';
             if (has_brace) j += 1;
             if (j >= s.len) continue;
@@ -563,7 +475,6 @@ fn indexOfGithubEnvWrite(s: []const u8) ?usize {
                             k += 1;
                         } else continue;
                     }
-                    // ensure end-of-string or non-identifier char
                     if (k >= s.len or !isIdentChar(s[k])) {
                         return i;
                     }
@@ -574,7 +485,6 @@ fn indexOfGithubEnvWrite(s: []const u8) ?usize {
     return null;
 }
 
-/// Return true if `s` contains any `${{ dangerous_context }}` expression.
 /// `s` is always a `run:` body here, so it uses the same list as SEC002.
 fn hasDangerousContextExpression(s: []const u8) bool {
     return findExpr(s, isRunDangerousExpr) != null;
@@ -597,10 +507,6 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
     }) catch return;
 }
 
-// ============================================================
-// SEC009 - workflow_run triggered workflow checking out untrusted ref
-// ============================================================
-
 fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList) void {
     if (!wf.hasEvent(.workflow_run)) return;
 
@@ -622,12 +528,7 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
     }
 }
 
-// ============================================================
-// SEC010 - secrets: inherit in reusable workflow calls
-// ============================================================
-
 fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
-    // Only applies to reusable workflow calls (jobs with uses:)
     if (job.uses == null) return;
     if (job.secrets) |secrets| {
         switch (secrets) {
@@ -645,10 +546,6 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
     }
 }
 
-// ============================================================
-// SEC011 - Overprovisioned secrets (entire secrets context exposed)
-// ============================================================
-
 fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
     const span = findStepExprSpan(step, .{}, exprIsWholeSecretsRef) orelse return;
     list.append(.{
@@ -660,15 +557,10 @@ fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
     }) catch return;
 }
 
-/// Find the first `${{ ... }}` expression in `s` that references the entire
-/// secrets context. Returns its offset and length within `s`.
 fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
     return findExpr(s, exprIsWholeSecretsRef);
 }
 
-/// Check if an expression references the entire secrets context (not an individual secret).
-/// Returns true for: "secrets", "toJSON(secrets)", "fromJSON(secrets)" etc.
-/// Returns false for: "secrets.TOKEN", "toJSON(secrets.X)", "env.secrets", etc.
 fn exprIsWholeSecretsRef(expr: []const u8) bool {
     const trimmed = std.mem.trim(u8, expr, " \t\n\r");
     if (trimmed.len == 0) return false;
@@ -678,9 +570,8 @@ fn exprIsWholeSecretsRef(expr: []const u8) bool {
 
 const json_funcs = [_][]const u8{ "toJSON", "fromJSON" };
 
-/// Scan `expr` for `toJSON(...)` / `fromJSON(...)` calls — GitHub matches
-/// function names case-insensitively and tolerates blanks before the paren —
-/// and report whether `pred` accepts the argument text of any of them.
+/// GitHub matches `toJSON` / `fromJSON` case-insensitively and tolerates
+/// blanks before the paren, so the scan does too.
 fn hasJsonCallArg(expr: []const u8, comptime pred: fn ([]const u8) bool) bool {
     for (json_funcs) |func_name| {
         var i: usize = 0;
@@ -694,15 +585,12 @@ fn hasJsonCallArg(expr: []const u8, comptime pred: fn ([]const u8) bool) bool {
     return false;
 }
 
-/// The text after a leading `secrets` reference, or null if `arg` does not
-/// start with one.
 fn afterSecrets(arg: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, arg, "secrets")) return null;
     return arg["secrets".len..];
 }
 
-/// The whole `secrets` context passed as the argument: `secrets.X` names a
-/// single secret and is not over-provisioned.
+/// `secrets.X` names a single secret and is not over-provisioned.
 fn isWholeSecretsArg(arg: []const u8) bool {
     const rest = afterSecrets(arg) orelse return false;
     if (rest.len == 0 or rest[0] == ')') return true;
@@ -711,16 +599,11 @@ fn isWholeSecretsArg(arg: []const u8) bool {
     return tail.len > 0 and tail[0] == ')';
 }
 
-/// Any `secrets` reference as the argument, whole or a single secret: both
-/// bypass masking once serialized.
+/// Whole context or a single secret: both bypass masking once serialized.
 fn isSecretsArg(arg: []const u8) bool {
     const rest = afterSecrets(arg) orelse return false;
     return rest.len == 0 or rest[0] == ')' or rest[0] == '.' or rest[0] == ' ' or rest[0] == '\t';
 }
-
-// ============================================================
-// SEC012 - Unredacted secrets via toJSON/fromJSON
-// ============================================================
 
 fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
     const span = findStepExprSpan(step, .{}, exprHasSecretJsonCall) orelse return;
@@ -732,10 +615,6 @@ fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
         .fix_hint = "avoid passing secrets through toJSON()/fromJSON(); assign individual secret values to environment variables instead",
     }) catch return;
 }
-
-// ============================================================
-// SEC013 - Hardcoded container credentials
-// ============================================================
 
 fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) void {
     if (job.container) |container| {
@@ -783,18 +662,11 @@ fn isSecretsExpression(value: []const u8) bool {
     return std.mem.startsWith(u8, inner, "secrets.");
 }
 
-// ============================================================
-// SEC019 - Secrets used outside env: block
-// ============================================================
-
-/// Find the first `${{ secrets.* }}` expression in `s` (excluding
-/// secrets.GITHUB_TOKEN). Returns its offset and length within `s`.
 fn findSecretsOutsideEnv(s: []const u8) ?ExprMatch {
     return findExpr(s, exprIsNonTokenSecretRef);
 }
 
-/// `secrets.X` for any secret other than the automatically-redacted
-/// `secrets.GITHUB_TOKEN`.
+/// `secrets.GITHUB_TOKEN` is automatically redacted, so it is exempt.
 fn exprIsNonTokenSecretRef(inner: []const u8) bool {
     const trimmed = std.mem.trim(u8, inner, " \t\n\r");
     if (!std.mem.startsWith(u8, trimmed, "secrets.")) return false;
@@ -812,10 +684,6 @@ fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
         .fix_hint = "bind the secret to an env: variable first, then reference the env var in run:/with:",
     }) catch return;
 }
-
-// ============================================================
-// SEC016 - Cache poisoning in release/deploy workflows
-// ============================================================
 
 fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
     const has_release_trigger = isReleaseOrDeployTrigger(wf);
@@ -838,8 +706,6 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-/// Find the first `${{ ... }}` expression in `s` with a toJSON(secrets...) or
-/// fromJSON(secrets...) pattern. Returns its offset and length within `s`.
 fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
     return findExpr(s, exprHasSecretJsonCall);
 }
@@ -885,14 +751,9 @@ fn isSetupActionWithCache(step: *const Step) bool {
     return false;
 }
 
-/// Check if an expression contains toJSON(secrets...) or fromJSON(secrets...).
 fn exprHasSecretJsonCall(expr: []const u8) bool {
     return hasJsonCallArg(expr, isSecretsArg);
 }
-
-// ============================================================
-// SEC014 - Spoofable bot actor check in conditions
-// ============================================================
 
 fn checkBotConditionStep(step: *const Step, list: *DiagnosticList) void {
     const cond = step.if_condition orelse return;
@@ -904,16 +765,12 @@ fn checkBotConditionJob(job: *const Job, list: *DiagnosticList) void {
     checkConditionForBotActorCheck(cond, ifAnchorJob(job), list);
 }
 
-/// Check if an if-condition compares github.actor / github.triggering_actor
-/// against a bot account name (containing "[bot]"). This is spoofable.
 fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
-    // Check for ${{ expr }} wrapped patterns
     const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
 
     if (has_expr) {
         checkBotActorInString(cond, anchor, list);
     } else {
-        // Bare expression
         if (containsActorBotCheck(cond)) {
             list.append(.{
                 .rule_id = "SEC014",
@@ -926,7 +783,6 @@ fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *Diagn
     }
 }
 
-/// Scan a string for ${{ expr }} patterns that contain actor + [bot] checks.
 fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     const match = findExpr(s, isActorBotExpr) orelse return;
     list.append(.{
@@ -942,17 +798,11 @@ fn isActorBotExpr(inner: []const u8) bool {
     return containsActorBotCheck(std.mem.trim(u8, inner, " \t\n\r"));
 }
 
-/// Returns true if the expression contains both an actor context reference
-/// AND a string literal with "[bot]".
 fn containsActorBotCheck(expr: []const u8) bool {
     if (!containsAnyContext(expr, &actor_contexts)) return false;
 
     return std.mem.indexOf(u8, expr, "[bot]") != null;
 }
-
-// ============================================================
-// SEC015 - Artipacked: credential leak via upload-artifact
-// ============================================================
 
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
     var has_upload_after = false;
@@ -977,7 +827,6 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
                     .fix_hint = "add 'persist-credentials: false' to the checkout step's 'with:' block",
                 };
 
-                // Attach autofix when span info is available
                 if (step.uses_value_end_byte != null) {
                     diag.fix = buildPersistCredentialsFalseFix(list, step, .safe);
                 }
@@ -996,8 +845,6 @@ fn buildPersistCredentialsFalseFix(
     const alloc = list.fixAllocator();
     const col = step.uses_key_col orelse 7;
 
-    // Only generate Fix when persist-credentials is absent.
-    // When persist-credentials: true, fall back to fix_hint only.
     const has_persist = if (step.with) |w| w.get("persist-credentials") != null else false;
     if (has_persist) return null;
 
@@ -1013,8 +860,6 @@ fn buildPersistCredentialsFalseFix(
         .edits = edits orelse return null,
     };
 }
-
-// --- SEC018: checkout-persist-credentials ---
 
 const PersistCredentialsState = enum { not_set, explicit_true, explicit_false };
 
@@ -1053,8 +898,6 @@ fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) voi
 
     list.append(diag) catch return;
 }
-
-// ── SC002: Compromised action SHA / tag ──
 
 fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
@@ -1102,12 +945,6 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
-// ============================================================
-// Shared helpers
-// ============================================================
-
-/// Scan a string for `${{ dangerous_context }}` patterns.
-///
 /// Every offending expression is reported separately: a single `run:` block can
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
@@ -1129,26 +966,19 @@ fn containsConditionDangerousContext(expr: []const u8) bool {
     return containsAnyContext(expr, &condition_dangerous_contexts);
 }
 
-// ------------------------------------------------------------
-// Context path matching
-//
 // A context reference is compared segment by segment rather than as a raw
 // substring, so that object filters (`github.event.commits.*.message`) and
 // index accesses (`github.event.commits[0].message`) are understood instead of
 // accidentally matched. Both are normalized to the wildcard segment `*`, which
 // matches any single segment on either side of the comparison.
-// ------------------------------------------------------------
 
 const max_path_segments = 16;
 
 const wildcard_segment = "*";
 
-/// A context reference split into segments, e.g. `github.event.commits.*.message`
-/// becomes `{ "github", "event", "commits", "*", "message" }`.
 const ContextPath = struct {
     segments: [max_path_segments][]const u8 = undefined,
     len: usize = 0,
-    /// Index just past the last character the reference consumed.
     end: usize = 0,
 
     fn append(self: *ContextPath, segment: []const u8) void {
@@ -1158,9 +988,8 @@ const ContextPath = struct {
     }
 };
 
-/// Scan `expr` for context references and report whether any of them is covered
-/// by one of `contexts`. Function calls need no special handling: `join(...)` and
-/// `toJSON(...)` arguments are themselves references and are visited the same way.
+/// Function calls need no special handling: `join(...)` and `toJSON(...)`
+/// arguments are themselves references and are visited the same way.
 fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
     var i: usize = 0;
     while (i < expr.len) {
@@ -1184,7 +1013,6 @@ fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
     return false;
 }
 
-/// Skip a single-quoted expression literal, honouring the `''` escape.
 fn skipStringLiteral(expr: []const u8, start: usize) usize {
     var i = start + 1;
     while (i < expr.len) : (i += 1) {
@@ -1198,7 +1026,6 @@ fn skipStringLiteral(expr: []const u8, start: usize) usize {
     return expr.len;
 }
 
-/// Parse the context reference that begins at `start`.
 fn parseContextPath(expr: []const u8, start: usize) ContextPath {
     var path = ContextPath{};
     var i = start;
@@ -1209,7 +1036,6 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
         if (expr[i] == '.') {
             const seg_start = i + 1;
             if (seg_start < expr.len and expr[seg_start] == '*') {
-                // Object filter: collects the property from every element.
                 path.append(wildcard_segment);
                 i = seg_start + 1;
                 continue;
@@ -1235,13 +1061,13 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
     return path;
 }
 
-/// True when `pattern` covers `path`. The pattern only needs to be a prefix of
-/// the reference, because everything below an untrusted node is untrusted too.
+/// The pattern only needs to be a prefix of the reference, because everything
+/// below an untrusted node is untrusted too.
 fn pathMatchesPattern(path: ContextPath, pattern: []const u8) bool {
     var it = std.mem.splitScalar(u8, pattern, '.');
     var idx: usize = 0;
     while (it.next()) |pat_seg| : (idx += 1) {
-        if (idx >= path.len) return false; // Reference is shorter than the pattern.
+        if (idx >= path.len) return false;
         if (!segmentMatches(path.segments[idx], pat_seg)) return false;
     }
     return true;
@@ -1261,10 +1087,6 @@ fn isIdentChar(c: u8) bool {
 fn isIdentStart(c: u8) bool {
     return std.ascii.isAlphabetic(c) or c == '_';
 }
-
-// ============================================================
-// SC001 - Unpinned container images (supply chain)
-// ============================================================
 
 fn isImagePinned(image: []const u8) bool {
     return std.mem.indexOf(u8, image, "@sha256:") != null;
@@ -1302,10 +1124,6 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
         }
     }
 }
-
-// ============================================================
-// SEC017 - Insecure workflow commands
-// ============================================================
 
 fn buildInsecureCommandsFix(list: *DiagnosticList, meta: ScalarValueMeta) ?Fix {
     const edits = fix_builder.replaceScalar(
@@ -1361,10 +1179,6 @@ fn checkInsecureCommandsWorkflow(wf: *const Workflow, list: *DiagnosticList) voi
     }
 }
 
-// ============================================================
-// SEC020 - Self-hosted runner on fork-accessible trigger
-// ============================================================
-
 fn hasForkAccessibleTrigger(wf: *const Workflow) bool {
     for (wf.on.events) |event| {
         switch (event.event) {
@@ -1399,10 +1213,6 @@ fn checkSelfHostedRunnerForkTriggeredWorkflow(wf: *const Workflow, list: *Diagno
     }
 }
 
-// ============================================================
-// BP007 - Obfuscated command execution
-// ============================================================
-
 fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
     const run_body = step.run orelse return;
     if (containsBase64PipeExec(run_body) or
@@ -1423,23 +1233,21 @@ fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
 const exec_targets = [_][]const u8{ "bash", "sh", "zsh", "eval", "source" };
 const shell_targets = [_][]const u8{ "bash", "sh", "zsh" };
 
-/// True when `token` occurs at `i` and is not glued to a following identifier
-/// character. Used for flags, whose leading `-` is already a word break.
+/// Unlike `isWordAt`, the left side is unchecked: used for flags, whose
+/// leading `-` is already a word break.
 fn isTokenAt(s: []const u8, i: usize, token: []const u8) bool {
     if (!std.mem.startsWith(u8, s[i..], token)) return false;
     const after = i + token.len;
     return after >= s.len or !isIdentChar(s[after]);
 }
 
-/// True when `word` occurs at `i` as a whole shell word — no identifier
-/// character on either side.
 fn isWordAt(s: []const u8, i: usize, word: []const u8) bool {
     if (i > 0 and isIdentChar(s[i - 1])) return false;
     return isTokenAt(s, i, word);
 }
 
-/// True when any of `words` starts at `i`. Callers position `i` right after a
-/// pipe and whitespace, so the left-hand boundary is implicit.
+/// Callers position `i` right after a pipe and whitespace, so the left-hand
+/// boundary is implicit.
 fn startsAnyWordAt(s: []const u8, i: usize, words: []const []const u8) bool {
     for (words) |word| {
         if (isTokenAt(s, i, word)) return true;
@@ -1447,12 +1255,10 @@ fn startsAnyWordAt(s: []const u8, i: usize, words: []const []const u8) bool {
     return false;
 }
 
-/// Index of the first byte at or after `i` that is not shell whitespace.
 fn skipBlanks(s: []const u8, i: usize) usize {
     return std.mem.indexOfNonePos(u8, s, i, " \t\n") orelse s.len;
 }
 
-/// Length of the leading run of identifier characters in `s`.
 fn identRunLen(s: []const u8) usize {
     for (s, 0..) |c, i| {
         if (!isIdentChar(c)) return i;
@@ -1465,7 +1271,6 @@ fn containsBase64PipeExec(s: []const u8) bool {
     while (i < s.len) : (i += 1) {
         if (!isWordAt(s, i, "base64")) continue;
 
-        // A decode flag anywhere before the next pipe makes this a decode.
         var j = i + "base64".len;
         var has_decode = false;
         while (j < s.len and s[j] != '|') : (j += 1) {
@@ -1541,10 +1346,6 @@ fn containsVarAsCommand(s: []const u8) bool {
     }
     return false;
 }
-
-// ============================================================
-// Public: All security rules
-// ============================================================
 
 pub const security_rules = [_]Rule{
     .{
@@ -1778,10 +1579,6 @@ pub const security_rules = [_]Rule{
     },
 };
 
-// ============================================================
-// Tests
-// ============================================================
-
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
 const EventConfig = workflow_types.EventConfig;
@@ -1800,28 +1597,23 @@ const hasDiagnostic = test_support.hasDiagnostic;
 const countDiagnostics = test_support.countDiagnostics;
 const findDiagnostic = test_support.findDiagnostic;
 
-/// Run the security rules over `wf`. The caller owns the returned list.
 fn runWorkflow(wf: Workflow) DiagnosticList {
     return engine.Engine.init(&security_rules).run(testing.allocator, &wf);
 }
 
-/// Run the security rules over a workflow triggered by `on` whose only job is `job`.
 fn runJobOn(on: Trigger, job: Job) DiagnosticList {
     const jobs = [_]Job{job};
     return runWorkflow(.{ .name = "CI", .on = on, .jobs = &jobs, .permissions = Permissions{} });
 }
 
-/// Run the security rules over a workflow with no `on:` whose only job is `job`.
 fn runJob(job: Job) DiagnosticList {
     return runJobOn(empty_trigger, job);
 }
 
-/// Run the security rules over a workflow whose only job runs `steps`.
 fn runSteps(steps: []const Step) DiagnosticList {
     return runJob(.{ .id = "build", .steps = steps, .permissions = Permissions{} });
 }
 
-/// Run the security rules over a workflow whose only job runs `step`.
 fn runStep(step: Step) DiagnosticList {
     const steps = [_]Step{step};
     return runSteps(&steps);
@@ -1839,8 +1631,6 @@ fn makeSec017EnvMeta(
     });
     return meta;
 }
-
-// --- SEC001: Unpinned action ---
 
 test "SEC001: unpinned action tag ref" {
     var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@v4") });
@@ -1872,10 +1662,6 @@ test "SEC001: docker action (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC001"));
 }
 
-// --- SEC002: Script injection ---
-
-/// Build a single-step workflow with `run: body` (plus optional step `env`) and
-/// report whether SEC002 fires for it.
 fn sec002Fires(body: []const u8, env: ?workflow_types.StringMap) bool {
     var list = runStep(.{ .run = body, .env = env });
     defer list.deinit();
@@ -1907,8 +1693,6 @@ test "SEC002: element access under a container context" {
     try testing.expect(sec002Fires("echo \"${{ join(github.event.pages.*.page_name, ' ') }}\"", null));
 }
 
-/// Build a single-step workflow whose step is `uses: <ref>` with one `with:`
-/// entry (plus optional step `env`) and report whether SEC002 fires for it.
 fn sec002UsesFires(uses: []const u8, with_key: []const u8, with_value: []const u8, env: ?workflow_types.StringMap) bool {
     var with = workflow_types.StringMap.init(testing.allocator);
     defer with.deinit();
@@ -1964,8 +1748,6 @@ test "SEC002: untrusted input passed through env is not reported" {
     try env.put("BRANCH", "${{ github.event.pull_request.head.ref }}");
     try testing.expect(!sec002Fires("echo \"Branch $BRANCH\"", env));
 }
-
-// --- SEC002: object filter (.*) references ---
 
 test "SEC002: object filter inside join()" {
     try testing.expectEqual(true, sec002Fires("echo \"${{ join(github.event.commits.*.message, ' ') }}\"", null));
@@ -2025,8 +1807,6 @@ test "SEC006: object filter over untrusted context in if:" {
     try testing.expect(hasDiagnostic(&list, "SEC006"));
 }
 
-// --- SEC003: Hardcoded secrets ---
-
 test "SEC003: GitHub PAT in run block" {
     var list = runStep(.{ .run = "curl -H 'Authorization: token ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'" });
     defer list.deinit();
@@ -2068,8 +1848,6 @@ test "SEC003: sk-test_ pattern detected" {
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
 }
-
-// --- SEC004: Excessive permissions ---
 
 test "SEC004: write-all at workflow level" {
     const jobs = [_]Job{
@@ -2181,8 +1959,6 @@ test "SEC004: no fix when value_span is null" {
     try testing.expect(diags.get(0).fix == null);
 }
 
-// --- SEC005: Dangerous pull_request_target ---
-
 test "SEC005: PR target with checkout of head" {
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
@@ -2233,8 +2009,6 @@ test "SEC005: non-PR-target with checkout (no false positive)" {
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
-
-// --- SEC009: workflow_run untrusted checkout ---
 
 test "SEC009: workflow_run with checkout of workflow_run head_sha" {
     var with = workflow_types.StringMap.init(testing.allocator);
@@ -2297,8 +2071,6 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
-// --- SEC006: Untrusted input in conditions ---
-
 test "SEC006: dangerous context in step if condition" {
     var list = runStep(.{ .run = "echo test", .if_condition = "contains(github.event.issue.title, 'deploy')" });
     defer list.deinit();
@@ -2311,8 +2083,6 @@ test "SEC006: dangerous context in job if condition" {
     try testing.expect(hasDiagnostic(&list, "SEC006"));
 }
 
-/// The severity SEC006 reports for a step-level `if:` condition, or null when
-/// the rule stays quiet.
 fn sec006Severity(cond: []const u8) ?Severity {
     var list = runStep(.{ .run = "echo test", .if_condition = cond });
     defer list.deinit();
@@ -2349,8 +2119,6 @@ test "SEC006: safe context in condition (no false positive)" {
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC006"));
 }
-
-// --- SEC007: Missing permissions ---
 
 test "SEC007: no permissions defined" {
     const jobs = [_]Job{
@@ -2407,7 +2175,6 @@ test "SEC007: autofix generated on single-line on:" {
     try testing.expectEqual(@as(usize, 1), fix.edits.len);
     try testing.expectEqualStrings("permissions: {contents: read}\n", fix.edits[0].replacement);
     try testing.expectEqual(fix.edits[0].start_byte, fix.edits[0].end_byte);
-    // Insertion sits at the byte just after the `on: push\n` line.
     const on_line_end = (std.mem.indexOf(u8, source, "on: push\n") orelse unreachable) + "on: push\n".len;
     try testing.expectEqual(on_line_end, fix.edits[0].start_byte);
 }
@@ -2437,8 +2204,6 @@ test "SEC007: autofix on multi-line on: block inserts after last child" {
 
     const diag = list.get(0);
     const fix = diag.fix orelse return error.TestUnexpectedResult;
-    // Insertion should land at the byte just after `pull_request:\n`,
-    // i.e. immediately before `jobs:`.
     const jobs_pos = std.mem.indexOf(u8, source, "jobs:") orelse unreachable;
     try testing.expectEqual(jobs_pos, fix.edits[0].start_byte);
     try testing.expectEqualStrings("permissions: {contents: read}\n", fix.edits[0].replacement);
@@ -2449,7 +2214,6 @@ test "SEC007: no fix when permissions_insertion_byte missing" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Hand-built Workflow without permissions_insertion_byte set.
     const jobs = [_]Job{.{ .id = "build" }};
     const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs };
 
@@ -2521,7 +2285,8 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
 
 test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
     // SEC007 と BP005 はいずれも `on:` 行末の同一 byte を anchor にしたゼロ幅挿入を発行する
-    // (src/workflow/parser.zig:59-60)。fix/engine.zig:flattenAndSort の tie-break は
+    // (parser が permissions_insertion_byte と concurrency_insertion_byte に同じ end_byte を
+    // 入れるため)。fix/engine.zig:flattenAndSort の tie-break は
     // (start_byte, end_byte) 昇順 → reverse なので、両 edit が隣接挿入されても
     // 構文上 valid な YAML になる。このテストは順序と再 parse 可能性をピン止めする。
     const yaml_parser = @import("../yaml/parser.zig");
@@ -2579,12 +2344,9 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
         result.content,
     );
 
-    // 再 parse で ParseError が出ないことを確認する。
     var reparse = yaml_parser.Parser.init(alloc, result.content);
     _ = try reparse.parse();
 }
-
-// --- SEC008: github-env injection ---
 
 test "SEC008: dangerous context written to GITHUB_ENV" {
     var list = runStep(.{ .run = "echo \"VAR=${{ github.event.issue.title }}\" >> $GITHUB_ENV" });
@@ -2634,8 +2396,6 @@ test "SEC008: safe context to GITHUB_ENV (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
-// --- SEC010: secrets: inherit ---
-
 test "SEC010: secrets inherit in reusable workflow call" {
     var list = runJob(.{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .inherit = {} }, .permissions = Permissions{} });
     defer list.deinit();
@@ -2662,8 +2422,6 @@ test "SEC010: non-reusable job with no uses (no false positive)" {
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
 }
-
-// --- SEC012: Unredacted secrets via toJSON/fromJSON ---
 
 test "SEC012: toJSON(secrets) in run block" {
     var list = runStep(.{ .run = "echo '${{ toJSON(secrets) }}'" });
@@ -2735,8 +2493,6 @@ test "SEC012: only one diagnostic per step" {
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC012"));
 }
 
-// --- Helper function tests ---
-
 test "containsConditionDangerousContext recognizes issue title" {
     try testing.expect(containsConditionDangerousContext("github.event.issue.title"));
 }
@@ -2773,8 +2529,6 @@ test "isAction checkout false for other action" {
     try testing.expect(!isAction(ActionRef.parse("actions/setup-node@v3"), "actions/checkout"));
 }
 
-// --- Integration: multiple rules fire on same workflow ---
-
 test "multiple security rules fire together" {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") }, // SEC001
@@ -2783,7 +2537,6 @@ test "multiple security rules fire together" {
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps },
     };
-    // No permissions => SEC007
     const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs };
     var list = runWorkflow(wf);
     defer list.deinit();
@@ -2791,8 +2544,6 @@ test "multiple security rules fire together" {
     try testing.expect(hasDiagnostic(&list, "SEC002"));
     try testing.expect(hasDiagnostic(&list, "SEC007"));
 }
-
-// --- SEC014: Bot conditions ---
 
 test "SEC014: github.actor == dependabot[bot] in step condition" {
     var list = runStep(.{ .run = "echo skip", .if_condition = "github.actor == 'dependabot[bot]'" });
@@ -2864,8 +2615,6 @@ test "containsActorBotCheck rejects bot without actor" {
     try testing.expect(!containsActorBotCheck("some_var == 'dependabot[bot]'"));
 }
 
-// --- Integration tests ---
-
 test "clean workflow passes all security rules" {
     var checkout_with = workflow_types.StringMap.init(testing.allocator);
     checkout_with.put("persist-credentials", "false") catch unreachable;
@@ -2885,8 +2634,6 @@ test "clean workflow passes all security rules" {
     defer list.deinit();
     try testing.expectEqual(@as(usize, 0), list.len());
 }
-
-// --- SEC016: Cache poisoning ---
 
 test "SEC016: release trigger + actions/cache" {
     const steps = [_]Step{
@@ -3011,10 +2758,6 @@ test "SEC016: emits one diagnostic per offending step" {
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC016"));
 }
 
-// ============================================================
-// SEC013 tests
-// ============================================================
-
 test "SEC013: plaintext credentials in container" {
     const container = workflow_types.Container{
         .image = "node:14",
@@ -3112,10 +2855,6 @@ test "isSecretsExpression: non-secrets expression" {
     try testing.expect(!isSecretsExpression("${{ github.actor }}"));
 }
 
-// ============================================================
-// SC001 tests
-// ============================================================
-
 test "SC001: unpinned container image with tag" {
     const container = workflow_types.Container{ .image = "node:14" };
     var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
@@ -3208,10 +2947,6 @@ test "isImagePinned: sha256 in name but not digest format" {
 test "isImagePinned: registry with digest" {
     try testing.expect(isImagePinned("ghcr.io/owner/image@sha256:abc123"));
 }
-
-// ============================================================
-// SEC011 tests
-// ============================================================
 
 test "SEC011: bare secrets in run block" {
     var list = runStep(.{ .run = "echo ${{ secrets }}" });
@@ -3319,10 +3054,6 @@ test "exprIsWholeSecretsRef: toJSON(secrets.X)" {
 test "exprIsWholeSecretsRef: empty string" {
     try testing.expect(!exprIsWholeSecretsRef(""));
 }
-
-// ============================================================
-// SEC015 tests - Artipacked
-// ============================================================
 
 test "SEC015: checkout + upload-artifact triggers rule" {
     const steps = [_]Step{
@@ -3485,7 +3216,6 @@ test "SEC015: fix is safe and attached when span info present" {
     var list = runSteps(&steps);
     defer list.deinit();
 
-    // Find the SEC015 diagnostic and verify fix
     var found_fix = false;
     for (list.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "SEC015")) {
@@ -3495,7 +3225,6 @@ test "SEC015: fix is safe and attached when span info present" {
             try testing.expect(fix.edits.len == 1);
             try testing.expectEqual(@as(usize, 50), fix.edits[0].start_byte);
             try testing.expectEqual(@as(usize, 50), fix.edits[0].end_byte);
-            // Verify replacement contains with: and persist-credentials: false
             try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") != null);
             try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
             found_fix = true;
@@ -3527,7 +3256,6 @@ test "SEC015: fix inserts into existing with: block" {
             try testing.expect(d.fix != null);
             const fix = d.fix.?;
             try testing.expectEqual(@as(usize, 80), fix.edits[0].start_byte);
-            // Should NOT contain "with:" since with already exists
             try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") == null);
             try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
             break;
@@ -3587,25 +3315,21 @@ test "SEC015: isAction upload-artifact helper" {
 }
 
 test "classifyPersistCredentials helper" {
-    // No with: map
     const step_no_with = Step{};
     try testing.expectEqual(PersistCredentialsState.not_set, classifyPersistCredentials(&step_no_with));
 
-    // with: map without persist-credentials
     var with1 = workflow_types.StringMap.init(testing.allocator);
     with1.put("fetch-depth", "0") catch unreachable;
     defer with1.deinit();
     const step_no_pc = Step{ .with = with1 };
     try testing.expectEqual(PersistCredentialsState.not_set, classifyPersistCredentials(&step_no_pc));
 
-    // persist-credentials: false
     var with2 = workflow_types.StringMap.init(testing.allocator);
     with2.put("persist-credentials", "false") catch unreachable;
     defer with2.deinit();
     const step_false = Step{ .with = with2 };
     try testing.expectEqual(PersistCredentialsState.explicit_false, classifyPersistCredentials(&step_false));
 
-    // persist-credentials: true
     var with3 = workflow_types.StringMap.init(testing.allocator);
     with3.put("persist-credentials", "true") catch unreachable;
     defer with3.deinit();
@@ -3616,7 +3340,6 @@ test "classifyPersistCredentials helper" {
 test "SEC015: integration - YAML parse to fix apply" {
     const fix_engine = @import("../fix/engine.zig");
 
-    // Use arena for parser allocations (jobs, steps, etc.)
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -3642,10 +3365,8 @@ test "SEC015: integration - YAML parse to fix apply" {
     var list = eng.run(testing.allocator, &wf);
     defer list.deinit();
 
-    // Should detect SEC015
     try testing.expect(hasDiagnostic(&list, "SEC015"));
 
-    // Should have a fix attached
     var fix_found = false;
     for (list.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "SEC015")) {
@@ -3654,14 +3375,11 @@ test "SEC015: integration - YAML parse to fix apply" {
             try testing.expect(fix.safety == .safe);
             try testing.expect(fix.edits.len == 1);
 
-            // Apply the fix
             const fixes = [_]diagnostics.Fix{fix};
             const result = try fix_engine.applyFixes(testing.allocator, source, &fixes);
             defer result.deinit(testing.allocator);
 
-            // Verify the output contains persist-credentials: false
             try testing.expect(std.mem.indexOf(u8, result.content, "persist-credentials: false") != null);
-            // Verify with: was inserted
             try testing.expect(std.mem.indexOf(u8, result.content, "with:\n") != null);
             try testing.expectEqual(@as(usize, 1), result.edits_applied);
 
@@ -3699,8 +3417,6 @@ test "SEC015: integration ignores checkout after upload-artifact" {
 
     try testing.expect(!hasDiagnostic(&list, "SEC015"));
 }
-
-// --- SEC018: checkout-persist-credentials ---
 
 test "SEC018: with == null triggers with unsafe fix" {
     var list = runStep(.{
@@ -3883,8 +3599,6 @@ test "SEC018: both SEC015 and SEC018 fire for same checkout + upload-artifact" {
     try testing.expect(sec018.fix.?.safety == .unsafe);
 }
 
-// --- SEC019: Secrets outside env ---
-
 test "SEC019: secret in run block" {
     var list = runStep(.{ .run = "echo ${{ secrets.MY_TOKEN }}" });
     defer list.deinit();
@@ -3941,8 +3655,6 @@ test "SEC019: one diagnostic per step" {
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC019"));
 }
-
-// --- SEC017: Insecure commands ---
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
     var env_map = workflow_types.StringMap.init(testing.allocator);
@@ -4224,10 +3936,6 @@ test "SEC017: integration applies fix to step env and preserves double quote/com
     try testing.expect(std.mem.indexOf(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: \"false\" # deprecated") != null);
 }
 
-// ============================================================
-// BP007 tests
-// ============================================================
-
 test "BP007: base64 -d piped to bash" {
     var list = runStep(.{ .run = "echo payload | base64 -d | bash" });
     defer list.deinit();
@@ -4323,8 +4031,6 @@ test "BP007: no false positive on GitHub Actions expression" {
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
-
-// --- SEC020: Self-hosted runner on fork-accessible trigger ---
 
 test "SEC020: self-hosted + pull_request + public -> fires" {
     setRepoVisibility(.public);
@@ -4476,8 +4182,6 @@ test "SEC020: disabled via config suppresses after engine run" {
     }
     try testing.expectEqual(@as(usize, 0), remaining);
 }
-
-// ── SC002: compromised-action-sha ──
 
 test "SC002: compromised SHA fires error" {
     var list = runStep(.{ .uses = ActionRef.parse("tj-actions/changed-files@0e58ed8671d6b60d0890c21b07f8835ace038e67") });

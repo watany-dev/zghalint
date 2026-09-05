@@ -30,9 +30,6 @@ pub const PythonCache = enum {
     }
 };
 
-/// Detected workspace information used by PERF001 autofix to pick a concrete
-/// `cache` value for setup-node / setup-python / setup-go.
-///
 /// Strings (ambiguous lockfile names) are borrowed from a caller-owned arena;
 /// the Context itself is POD.
 pub const Context = struct {
@@ -44,8 +41,6 @@ pub const Context = struct {
     ambiguous_python_lockfiles: []const []const u8 = &.{},
 };
 
-/// Process-wide context populated once at startup and read by PERF001.
-///
 /// Mirrors the `engine.network_deadline_ns` pattern: a module-scope variable
 /// kept simple because tests set/clear it directly and production runs
 /// initialize it before any rule executes.
@@ -78,10 +73,6 @@ const python_lockfiles = [_]struct {
     .{ .name = "requirements.txt", .manager = .pip },
 };
 
-/// Walk upward from `hint_path` looking for a `.git` entry to identify the
-/// workspace root. Falls back to the cwd when no `.git` is found.
-///
-/// Returned path is allocated in `allocator`; the caller owns it.
 pub fn findWorkspaceRoot(allocator: std.mem.Allocator, hint_path: []const u8) ![]const u8 {
     // Resolve to an absolute path so walking parent directories terminates.
     const abs = std.fs.cwd().realpathAlloc(allocator, hint_path) catch |err| switch (err) {
@@ -115,21 +106,17 @@ fn fallbackCwd(allocator: std.mem.Allocator) ![]const u8 {
     };
 }
 
-/// Probe lockfiles within `root` to populate a `Context`.
-///
 /// FS access errors are treated uniformly as "absent"; errno distinctions are
 /// intentionally ignored to keep probe behavior deterministic.
 ///
-/// Strings referenced by the returned Context's `ambiguous_*_lockfiles`
-/// slices are allocated in `allocator`; callers typically pair this with a
-/// long-lived arena for the duration of the lint run.
+/// Strings in the returned Context's `ambiguous_*_lockfiles` are allocated in
+/// `allocator`, so callers pair this with an arena that lives for the lint run.
 pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     var dir = std.fs.openDirAbsolute(root, .{}) catch {
         return Context{};
     };
     defer dir.close();
 
-    // --- Node ---
     var node_found = std.ArrayList([]const u8){};
     defer node_found.deinit(allocator);
     var node_manager_set = std.EnumSet(NodeCache).initEmpty();
@@ -140,7 +127,6 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
         node_manager_set.insert(entry.manager);
     }
 
-    // --- Python ---
     var python_found = std.ArrayList([]const u8){};
     defer python_found.deinit(allocator);
     var python_manager_set = std.EnumSet(PythonCache).initEmpty();
@@ -151,13 +137,11 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
         python_manager_set.insert(entry.manager);
     }
 
-    // --- Go ---
     const go_sum_present = blk: {
         dir.access("go.sum", .{}) catch break :blk false;
         break :blk true;
     };
 
-    // --- Bun ---
     const bun_lockfile_present = blk: {
         if (dir.access("bun.lock", .{})) |_| break :blk true else |_| {}
         if (dir.access("bun.lockb", .{})) |_| break :blk true else |_| {}
@@ -195,8 +179,6 @@ fn dupeLockfiles(allocator: std.mem.Allocator, names: []const []const u8) ![]con
     }
     return out;
 }
-
-// ── Tests ──
 
 const testing = std.testing;
 

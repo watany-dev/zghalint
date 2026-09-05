@@ -10,8 +10,6 @@ const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
 const Fix = diagnostics_mod.Fix;
 
-// ── DEP001: dependabot-cooldown ──
-
 fn buildCooldownFix(list: *DiagnosticList, entry: yaml_types.Mapping) ?Fix {
     if (entry.entries.len == 0) return null;
 
@@ -47,8 +45,6 @@ fn buildCooldownFix(list: *DiagnosticList, entry: yaml_types.Mapping) ?Fix {
     };
 }
 
-/// Walk the mappings under `updates:`, skipping anything that is not a mapping.
-/// Both DEP001 and DEP002 are per-update-entry checks.
 fn updateEntries(root: Mapping) UpdateEntryIterator {
     const node = root.get("updates") orelse return .{ .items = &.{} };
     return .{ .items = switch (node) {
@@ -91,8 +87,6 @@ fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
     }
 }
 
-// ── DEP002: dependabot-execution ──
-
 fn buildInsecureExecutionFix(
     list: *DiagnosticList,
     value: yaml_types.Scalar,
@@ -114,8 +108,6 @@ fn buildInsecureExecutionFix(
 fn checkInsecureExecution(root: Mapping, diag_list: *DiagnosticList) void {
     var it = updateEntries(root);
     while (it.next()) |entry| {
-
-        // Find the entry to get the value's span
         for (entry.entries) |map_entry| {
             if (std.mem.eql(u8, map_entry.key.value, "insecure-external-code-execution")) {
                 switch (map_entry.value) {
@@ -139,8 +131,6 @@ fn checkInsecureExecution(root: Mapping, diag_list: *DiagnosticList) void {
         }
     }
 }
-
-// ── Public API ──
 
 pub fn lintDependabot(root: Node, diag_list: *DiagnosticList) void {
     const mapping = switch (root) {
@@ -167,10 +157,6 @@ pub const rules = [_]Rule{
         .category = .dependency,
     },
 };
-
-// ============================================================
-// Tests
-// ============================================================
 
 const yaml_parser_mod = @import("../yaml/parser.zig");
 const test_support = @import("../test_support.zig");

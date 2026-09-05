@@ -3,7 +3,7 @@ const yaml = @import("yaml/types.zig");
 
 pub const Span = yaml.Span;
 
-/// Severity levels for diagnostics, ordered from most to least severe.
+/// Ordered from most to least severe.
 pub const Severity = enum {
     @"error",
     warning,
@@ -11,7 +11,6 @@ pub const Severity = enum {
     hint,
 };
 
-/// Category of lint rule.
 pub const Category = enum {
     syntax,
     security,
@@ -24,7 +23,6 @@ pub const Category = enum {
     reusable_workflow,
 };
 
-/// Safety classification for automatic fixes.
 pub const FixSafety = enum {
     /// Semantics-preserving mechanical fix (e.g. SHA pinning, quote style).
     safe,
@@ -32,23 +30,19 @@ pub const FixSafety = enum {
     unsafe,
 };
 
-/// A single text edit: replace bytes [start_byte..end_byte) with replacement.
-/// - start_byte == end_byte → insertion
-/// - replacement.len == 0  → deletion
+/// Replaces the half-open byte range `[start_byte..end_byte)` with `replacement`.
 pub const Edit = struct {
     start_byte: usize,
     end_byte: usize,
     replacement: []const u8,
 };
 
-/// An automatic fix composed of one or more edits.
 pub const Fix = struct {
     description: []const u8,
     safety: FixSafety,
     edits: []const Edit,
 };
 
-/// A single diagnostic message produced by a lint rule.
 pub const Diagnostic = struct {
     rule_id: []const u8,
     severity: Severity,
@@ -59,11 +53,9 @@ pub const Diagnostic = struct {
     fix: ?Fix = null,
 };
 
-/// Collects diagnostics and provides sorting/access.
 pub const DiagnosticList = struct {
     items: std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
-    /// Arena for Fix-related heap allocations (Edit slices, replacement strings).
     fix_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticList {
@@ -79,7 +71,6 @@ pub const DiagnosticList = struct {
         self.items.deinit(self.allocator);
     }
 
-    /// Returns an allocator for Fix edits/strings. Lifetime matches DiagnosticList.
     pub fn fixAllocator(self: *DiagnosticList) std.mem.Allocator {
         return self.fix_arena.allocator();
     }
@@ -88,11 +79,9 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, diag);
     }
 
-    /// Append a Diagnostic, deep-cloning any embedded Fix and any
-    /// heap-allocated `message` / `fix_hint` into this list's fix_arena. Use
-    /// this when bringing diagnostics across DiagnosticList boundaries; plain
-    /// `append` keeps those strings borrowed from the source list's arena,
-    /// which dangles once that list is deinitialized.
+    /// Use this when bringing diagnostics across DiagnosticList boundaries;
+    /// plain `append` keeps `message` / `fix_hint` / `Fix` borrowed from the
+    /// source list's arena, which dangles once that list is deinitialized.
     pub fn appendOwning(self: *DiagnosticList, diag: Diagnostic) !void {
         const alloc = self.fix_arena.allocator();
         var d = diag;
@@ -102,8 +91,6 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, d);
     }
 
-    /// Allocate a single Edit on the heap, tracked for cleanup on deinit.
-    /// Returns a slice suitable for use in Fix.edits, or null on OOM.
     pub fn allocEdit(self: *DiagnosticList, edit: Edit) ?[]const Edit {
         const alloc = self.fix_arena.allocator();
         const edits = alloc.alloc(Edit, 1) catch return null;
@@ -111,7 +98,6 @@ pub const DiagnosticList = struct {
         return edits;
     }
 
-    /// Sort diagnostics by file, then line, then column.
     pub fn sort(self: *DiagnosticList) void {
         std.mem.sort(Diagnostic, self.items.items, {}, lessThan);
     }
@@ -120,7 +106,6 @@ pub const DiagnosticList = struct {
         return self.items.items.len;
     }
 
-    /// Number of diagnostics per severity, indexed by the `Severity` tag.
     pub const SeverityCounts = std.enums.EnumFieldStruct(Severity, usize, 0);
 
     pub fn countBySeverity(self: DiagnosticList) SeverityCounts {
@@ -138,18 +123,15 @@ pub const DiagnosticList = struct {
     }
 
     fn lessThan(_: void, a: Diagnostic, b: Diagnostic) bool {
-        // Sort by file name first
         const file_a = a.file orelse "";
         const file_b = b.file orelse "";
         const file_cmp = std.mem.order(u8, file_a, file_b);
         if (file_cmp == .lt) return true;
         if (file_cmp == .gt) return false;
 
-        // Then by line
         if (a.span.start_line < b.span.start_line) return true;
         if (a.span.start_line > b.span.start_line) return false;
 
-        // Then by column
         return a.span.start_col < b.span.start_col;
     }
 };
@@ -167,10 +149,6 @@ fn cloneFix(alloc: std.mem.Allocator, src: Fix) !Fix {
         .edits = edits,
     };
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 test "diagnostic list append and len" {
     var list = DiagnosticList.init(std.testing.allocator);
@@ -197,7 +175,6 @@ test "diagnostic list sort by file then line then col" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    // Add in unsorted order
     try list.append(.{
         .rule_id = "R3",
         .severity = .info,
@@ -229,7 +206,6 @@ test "diagnostic list sort by file then line then col" {
 
     list.sort();
 
-    // a.yml:2:1, a.yml:5:1, a.yml:5:3, b.yml:1:1
     try std.testing.expectEqualStrings("R0", list.get(0).rule_id);
     try std.testing.expectEqualStrings("R2", list.get(1).rule_id);
     try std.testing.expectEqualStrings("R1", list.get(2).rule_id);
@@ -257,7 +233,6 @@ test "fixAllocator returns valid allocator" {
     defer list.deinit();
 
     const alloc = list.fixAllocator();
-    // Allocate something to verify it works
     const mem = try alloc.alloc(u8, 16);
     defer alloc.free(mem);
     try std.testing.expectEqual(@as(usize, 16), mem.len);

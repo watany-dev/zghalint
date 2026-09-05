@@ -1,7 +1,6 @@
 const std = @import("std");
 const yaml = @import("../yaml/types.zig");
 
-/// A key in a workflow mapping that is not defined by the GitHub Actions schema.
 pub const UnknownKey = struct {
     key: []const u8,
     section: []const u8,

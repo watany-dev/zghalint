@@ -3,14 +3,6 @@ const diagnostics = @import("../diagnostics.zig");
 const Diagnostic = diagnostics.Diagnostic;
 const DiagnosticList = diagnostics.DiagnosticList;
 
-/// Render diagnostics as a JSON object to the writer.
-/// Output format:
-/// {
-///   "diagnostics": [ { "file", "line", "column", "end_line", "end_column",
-///                       "severity", "rule_id", "message", "fix_hint" }, ... ],
-///   "summary": { "errors": N, "warnings": N, "infos": N, "hints": N, "total": N,
-///                "files_checked": N }
-/// }
 pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: usize) !void {
     const counts = list.countBySeverity();
 
@@ -50,10 +42,6 @@ fn writeDiagnosticJson(js: *std.json.Stringify, diag: Diagnostic) !void {
     });
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const Span = @import("../yaml/types.zig").Span;
 
 test "renderJson empty diagnostics" {
@@ -66,7 +54,6 @@ test "renderJson empty diagnostics" {
     try renderJson(&out.writer, list, 3);
     const output = out.written();
 
-    // Valid JSON structure
     try std.testing.expect(std.mem.indexOf(u8, output, "\"diagnostics\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"total\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"files_checked\":3") != null);
@@ -120,7 +107,6 @@ test "renderJson multiple diagnostics" {
     try renderJson(&out.writer, list, 1);
     const output = out.written();
 
-    // Should have two entries separated by comma
     try std.testing.expect(std.mem.indexOf(u8, output, "\"errors\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"warnings\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"total\":2") != null);
@@ -154,7 +140,6 @@ test "renderJson is valid JSON structure" {
     try renderJson(&out.writer, list, 1);
     const output = out.written();
 
-    // Starts with { ends with }
     try std.testing.expect(output[0] == '{');
     try std.testing.expect(output[output.len - 1] == '}');
 }

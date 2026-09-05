@@ -4,13 +4,11 @@ const schema = @import("schema.zig");
 
 pub const UnknownKey = schema.UnknownKey;
 
-/// A workflow section that was present in the source but empty.
 pub const EmptySection = struct {
     name: []const u8,
     span: yaml_types.Span,
 };
 
-/// String map backed by an allocator
 pub const StringMap = std.StringArrayHashMap([]const u8);
 pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
 
@@ -23,20 +21,17 @@ pub const EnvKey = struct {
     span: yaml_types.Span,
 };
 
-/// Source metadata for a scalar value preserved for autofix generation.
 pub const ScalarValueMeta = struct {
     value_span: yaml_types.Span,
     style: yaml_types.ScalarStyle,
 };
 
-/// Permission level for a scope
 pub const PermissionLevel = enum {
     read,
     write,
     none,
 };
 
-/// GitHub Actions permissions for GITHUB_TOKEN
 pub const Permissions = struct {
     actions: ?PermissionLevel = null,
     attestations: ?PermissionLevel = null,
@@ -95,7 +90,6 @@ pub fn permissionScopeKey(comptime field_name: []const u8) []const u8 {
     }
 }
 
-/// Concurrency configuration
 pub const Concurrency = struct {
     group: []const u8,
 };
@@ -112,7 +106,6 @@ pub const EventFilterSpans = struct {
     paths_ignore: ?yaml_types.Span = null,
 };
 
-/// Event filter configuration for branches/tags/paths
 pub const EventFilter = struct {
     branches: []const []const u8 = &.{},
     branches_ignore: []const []const u8 = &.{},
@@ -123,7 +116,6 @@ pub const EventFilter = struct {
     spans: EventFilterSpans = .{},
 };
 
-/// Known event types
 pub const EventType = enum {
     push,
     pull_request,
@@ -164,18 +156,15 @@ pub const EventType = enum {
     }
 };
 
-/// A single event configuration within a trigger
 pub const EventConfig = struct {
     event: EventType,
     filter: ?EventFilter = null,
 };
 
-/// Trigger configuration (the `on:` field)
 pub const Trigger = struct {
     events: []const EventConfig,
 };
 
-/// Action reference parsed from `uses:` field
 pub const ActionRef = struct {
     raw: []const u8,
     owner: ?[]const u8 = null,
@@ -186,34 +175,27 @@ pub const ActionRef = struct {
     is_docker: bool = false,
     is_pinned: bool = false,
 
-    /// Parse a uses string like "actions/checkout@v4" or "./local-action"
     pub fn parse(raw: []const u8) ActionRef {
-        // Local action
         if (raw.len >= 2 and raw[0] == '.' and (raw[1] == '/' or (raw.len >= 3 and raw[1] == '.' and raw[2] == '/'))) {
             return .{ .raw = raw, .is_local = true, .path = raw };
         }
 
-        // Docker action
         if (std.mem.startsWith(u8, raw, "docker://")) {
             return .{ .raw = raw, .is_docker = true };
         }
 
-        // owner/repo/path@ref or owner/repo@ref
         var result = ActionRef{ .raw = raw };
         var remaining = raw;
 
-        // Split on @
         if (std.mem.indexOf(u8, remaining, "@")) |at_idx| {
             result.ref = remaining[at_idx + 1 ..];
             remaining = remaining[0..at_idx];
 
-            // Check if pinned (40-char hex SHA)
             if (result.ref) |ref| {
                 result.is_pinned = isShaRef(ref);
             }
         }
 
-        // Split owner/repo[/path]
         if (std.mem.indexOf(u8, remaining, "/")) |first_slash| {
             result.owner = remaining[0..first_slash];
             const after_owner = remaining[first_slash + 1 ..];
@@ -238,16 +220,12 @@ pub const ActionRef = struct {
     }
 };
 
-/// Matrix strategy configuration
 pub const Strategy = struct {
     fail_fast: bool = true,
-    /// Span of the `fail-fast` scalar value in the source YAML.
     fail_fast_value_span: ?yaml_types.Span = null,
-    /// Span of the removable `fail-fast` entry in block-style YAML.
     fail_fast_entry_span: ?yaml_types.Span = null,
 };
 
-/// A single workflow step
 pub const Step = struct {
     id: ?[]const u8 = null,
     /// Span of the `id:` scalar value (for SYN005/SYN006 diagnostics).
@@ -290,19 +268,16 @@ pub const Step = struct {
     shell_insertion_byte: ?usize = null,
 };
 
-/// Secrets configuration for reusable workflow jobs
 pub const SecretsConfig = union(enum) {
     inherit,
     map: StringMap,
 };
 
-/// Docker registry credentials for container/service images
 pub const Credentials = struct {
     username: ?[]const u8 = null,
     password: ?[]const u8 = null,
 };
 
-/// Container configuration for a job
 pub const Container = struct {
     image: ?[]const u8 = null,
     credentials: ?Credentials = null,
@@ -310,7 +285,6 @@ pub const Container = struct {
     env_keys: []const EnvKey = &.{},
 };
 
-/// Service container configuration
 pub const Service = struct {
     name: []const u8,
     image: ?[]const u8 = null,
@@ -319,7 +293,6 @@ pub const Service = struct {
     env_keys: []const EnvKey = &.{},
 };
 
-/// A workflow job
 pub const Job = struct {
     id: []const u8,
     /// Span of the job key in the top-level `jobs:` mapping (for SYN005/SYN006 diagnostics).
@@ -356,14 +329,12 @@ pub const Job = struct {
     job_indent: u32 = 0,
     /// Byte position to insert a new `permissions:` entry (after `runs-on:` line).
     permissions_insertion_byte: ?usize = null,
-    /// Byte position to insert a new `concurrency:` entry at job level.
     concurrency_insertion_byte: ?usize = null,
     /// Span of the `runs-on:` scalar value (for RUNNER001 autofix).
     /// Null when `runs-on` is absent or given as a sequence.
     runs_on_value_span: ?yaml_types.Span = null,
 };
 
-/// Top-level workflow definition
 pub const Workflow = struct {
     name: ?[]const u8 = null,
     on: Trigger,
@@ -376,7 +347,6 @@ pub const Workflow = struct {
     concurrency: ?Concurrency = null,
     jobs: []const Job,
     empty_sections: []const EmptySection = &.{},
-    /// Keys present in workflow mappings but not defined by the GitHub Actions schema.
     unknown_keys: []const schema.UnknownKey = &.{},
     /// Mapping value type mismatches collected during parsing (SYN004).
     type_mismatches: []const type_validation.TypeMismatch = &.{},
@@ -389,8 +359,8 @@ pub const Workflow = struct {
     /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
     yaml_root: ?yaml_types.Node = null,
 
-    /// Whether the workflow is triggered by `ev`. Many rules only apply to a
-    /// single trigger, so they gate on this before walking the jobs.
+    /// Many rules only apply to a single trigger, so they gate on this before
+    /// walking the jobs.
     pub fn hasEvent(self: *const Workflow, ev: EventType) bool {
         for (self.on.events) |event| {
             if (event.event == ev) return true;
@@ -400,10 +370,6 @@ pub const Workflow = struct {
 };
 
 const type_validation = @import("type_validation.zig");
-
-// ============================================================
-// Tests
-// ============================================================
 
 test "EventType.fromString known events" {
     try std.testing.expectEqual(EventType.push, EventType.fromString("push"));

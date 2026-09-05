@@ -14,7 +14,6 @@ pub fn build(b: *std.Build) void {
     // Debug keeps symbols for local development; tests retain debug info for stack traces / kcov.
     const strip_release: ?bool = if (optimize == .Debug) null else true;
 
-    // --- Library module ---
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
@@ -28,7 +27,6 @@ pub fn build(b: *std.Build) void {
         .{ .name = "build_options", .module = build_options.createModule() },
     };
 
-    // --- CLI executable ---
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -43,7 +41,6 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
-    // --- Run step ---
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
@@ -52,7 +49,6 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the zghalint linter");
     run_step.dependOn(&run_cmd.step);
 
-    // --- Library tests ---
     // Tests link libc so env-mutating helpers (setenv/unsetenv) are resolved.
     const lib_test_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
@@ -63,7 +59,7 @@ pub fn build(b: *std.Build) void {
     const lib_unit_tests = b.addTest(.{ .root_module = lib_test_mod });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    // --- Coverage support: install test binary (LLVM backend for kcov compatibility) ---
+    // LLVM backend for kcov compatibility.
     const cov_unit_tests = b.addTest(.{
         .root_module = lib_test_mod,
         .use_llvm = true,
@@ -72,7 +68,6 @@ pub fn build(b: *std.Build) void {
     const test_bin_step = b.step("test-bin", "Install test binary for coverage measurement");
     test_bin_step.dependOn(&install_cov_tests.step);
 
-    // --- Executable tests ---
     // link_libc is required because the imported lib_mod includes tests that
     // call setenv/unsetenv via @extern; those symbols must resolve when the
     // exe test binary is linked.

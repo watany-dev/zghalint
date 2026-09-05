@@ -38,7 +38,7 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
     var iter = try std.process.argsWithAllocator(allocator);
     defer iter.deinit();
 
-    _ = iter.next(); // skip program name
+    _ = iter.next();
     while (iter.next()) |arg| {
         try raw_args.append(allocator, arg);
     }
@@ -145,7 +145,6 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
         }
     }
 
-    // Also check for .github/dependabot.yml and .github/dependabot.yaml
     inline for ([_][]const u8{ ".github/dependabot.yml", ".github/dependabot.yaml" }) |dep_path| {
         if (std.fs.cwd().access(dep_path, .{})) |_| {
             const path_copy = try allocator.dupe(u8, dep_path);
@@ -161,9 +160,6 @@ fn isDependabotFile(path: []const u8) bool {
         std.mem.endsWith(u8, path, "dependabot.yaml");
 }
 
-/// Read a whole workflow / config file, reporting open and read failures on
-/// `stderr`. Null means the file was skipped; the caller owns the returned
-/// bytes.
 fn readSourceFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -181,9 +177,6 @@ fn readSourceFile(
     };
 }
 
-/// Move the diagnostics the config keeps into `all_diags`, applying the
-/// severity override and stamping the file path.
-///
 /// `appendOwning` is required because `diag_list`'s fix arena dies with the
 /// caller's frame; `Fix.edits` would otherwise dangle.
 fn appendFiltered(
@@ -233,9 +226,8 @@ fn lintDependabotFile(
     appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
-/// Pre-parse every workflow file and pre-fetch network-dependent rule data
-/// in one shot before the lint phase. Runs on a throwaway arena so the cost
-/// of parsing twice (once here, once in lintFile) is bounded.
+/// Runs on a throwaway arena so the cost of parsing twice (once here, once
+/// in lintFile) is bounded.
 fn prefetchNetworkData(
     allocator: std.mem.Allocator,
     files: []const []const u8,
@@ -297,12 +289,10 @@ fn lintFile(
     const source = readSourceFile(allocator, file_path, stderr) orelse return;
     defer allocator.free(source);
 
-    // Arena for YAML/workflow parsing (freed after diagnostics are collected)
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // YAML parse
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
 
     const yaml_node = yaml_parser.parse() catch {
@@ -310,16 +300,13 @@ fn lintFile(
         return;
     };
 
-    // Workflow conversion
     const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
         stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
         return;
     };
 
-    // Propagate config to security rules that need it (SEC020)
     zghalint.rules.security.setRepoVisibility(config.repo_visibility);
 
-    // Run engine
     const engine = zghalint.rules.Engine.init(&all_rules);
     var diag_list = engine.run(allocator, &workflow);
     defer diag_list.deinit();
@@ -341,7 +328,6 @@ fn applyFixesForFile(
     all_diags: *zghalint.DiagnosticList,
     include_unsafe: bool,
 ) !usize {
-    // Collect diagnostics for this file that have fixes
     var file_diags = std.ArrayList(zghalint.Diagnostic){};
     defer file_diags.deinit(allocator);
 
@@ -356,7 +342,6 @@ fn applyFixesForFile(
 
     if (file_diags.items.len == 0) return 0;
 
-    // Collect applicable fixes
     const fixes = try zghalint.fix.collectFixes(allocator, file_diags.items, include_unsafe);
     defer allocator.free(fixes);
 
@@ -373,13 +358,11 @@ fn applyFixesForFile(
         else => return err,
     }
 
-    // Read file content
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
     const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
     defer allocator.free(source);
 
-    // Apply fixes
     const result = try zghalint.fix.applyFixes(allocator, source, fixes);
     defer result.deinit(allocator);
 
@@ -405,8 +388,7 @@ fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
     return false;
 }
 
-/// Populate `workspace.current` from the repository containing `files[0]`.
-/// Errors are swallowed; PERF001 simply emits diagnostics without fix when
+/// Errors are swallowed: PERF001 simply emits diagnostics without a fix when
 /// probing fails. Config overrides take precedence over probe results.
 fn initWorkspaceContext(
     arena: std.mem.Allocator,
@@ -460,18 +442,15 @@ pub fn main() !u8 {
         return 0;
     }
 
-    // Load config
     var config = loadConfig(allocator, cli_args.config_path) catch {
         stderr.writeAll("error: failed to load config\n") catch {};
         return 2;
     };
     defer config.deinit();
 
-    // CLI args override config
     if (cli_args.format) |fmt| config.output_format = fmt;
     if (cli_args.color) |color| config.color_mode = color;
 
-    // Collect files
     var owned_files: ?std.ArrayList([]const u8) = null;
     defer if (owned_files) |*of| {
         for (of.items) |p| allocator.free(p);
@@ -508,7 +487,6 @@ pub fn main() !u8 {
     zghalint.rules.http_client.init(allocator);
     defer zghalint.rules.http_client.deinit();
 
-    // Initialize network-dependent rule databases (graceful offline skip)
     zghalint.rules.advisory.initAdvisories(allocator, cli_args.offline);
     defer zghalint.rules.advisory.deinitAdvisories();
     zghalint.rules.archived.initArchived(allocator, cli_args.offline);
@@ -516,11 +494,9 @@ pub fn main() !u8 {
     zghalint.rules.stale_refs.initStaleRefs(allocator, cli_args.offline);
     defer zghalint.rules.stale_refs.deinitStaleRefs();
 
-    // Initialize ref-confusion checker (network call, graceful offline skip)
     zghalint.rules.refconfusion.initRefConfusion(allocator, cli_args.offline);
     defer zghalint.rules.refconfusion.deinitRefConfusion();
 
-    // SC008: impostor-commit. Shares the GraphQL+REST batch with SC005/SC006.
     zghalint.rules.impostor.initImpostor(allocator, cli_args.offline);
     defer zghalint.rules.impostor.deinitImpostor();
 
@@ -530,7 +506,6 @@ pub fn main() !u8 {
         prefetchNetworkData(allocator, files, &config, cli_args.no_cache) catch {};
     }
 
-    // Lint each file
     var all_diags = zghalint.DiagnosticList.init(allocator);
     defer all_diags.deinit();
 
@@ -547,7 +522,6 @@ pub fn main() !u8 {
         }
     }
 
-    // Apply fixes if requested
     if (cli_args.fix_mode != .off) {
         const include_unsafe = cli_args.fix_mode == .all;
         var total_fixed: usize = 0;
@@ -566,7 +540,6 @@ pub fn main() !u8 {
 
     all_diags.sort();
 
-    // Determine color usage
     const use_color = switch (config.color_mode) {
         .always => true,
         .never => false,
@@ -584,7 +557,6 @@ pub fn main() !u8 {
     if (config.output_format != .terminal) stdout.writeAll("\n") catch return 2;
     try stdout.flush();
 
-    // Exit code
     if (hasErrors(&all_diags)) return 1;
     return 0;
 }
@@ -605,10 +577,8 @@ test "hasErrors detects error severity" {
     var list = zghalint.DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    // No errors
     try std.testing.expect(!hasErrors(&list));
 
-    // Warning only
     try list.append(.{
         .rule_id = "W1",
         .severity = .warning,
@@ -617,7 +587,6 @@ test "hasErrors detects error severity" {
     });
     try std.testing.expect(!hasErrors(&list));
 
-    // Add error
     try list.append(.{
         .rule_id = "E1",
         .severity = .@"error",

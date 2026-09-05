@@ -1,14 +1,9 @@
 const std = @import("std");
 
-/// Return the action base name (part before `@`) from a raw action ref.
-/// Example: "actions/checkout@v4" -> "actions/checkout".
 pub fn actionBaseName(raw: []const u8) []const u8 {
     return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
 }
 
-/// Build a step name from an action repo name by capitalizing the first ASCII letter.
-/// Returns null on empty input or when the first character is not an ASCII letter.
-/// The result is allocated on the provided allocator.
 pub fn stepNameFromRepo(allocator: std.mem.Allocator, repo: []const u8) ?[]const u8 {
     if (repo.len == 0) return null;
     if (!std.ascii.isAlphabetic(repo[0])) return null;
@@ -19,18 +14,14 @@ pub fn stepNameFromRepo(allocator: std.mem.Allocator, repo: []const u8) ?[]const
     return buf;
 }
 
-/// Build a step name from a `run:` command.
-/// Trims the first line, caps length at 40 ASCII chars.
-/// Returns null when the first line is empty or contains YAML-unsafe characters.
 pub fn stepNameFromRun(allocator: std.mem.Allocator, run: []const u8) ?[]const u8 {
-    // Find first newline or end of string
     const first_line_end = std.mem.indexOfScalar(u8, run, '\n') orelse run.len;
     const first_line = std.mem.trim(u8, run[0..first_line_end], " \t\r");
     if (first_line.len == 0) return null;
 
     // Reject characters that would require escaping in a YAML plain scalar
     for (first_line) |c| {
-        if (c < 0x20) return null; // control chars
+        if (c < 0x20) return null;
         switch (c) {
             '"', '\'', ':', '#', '&', '*', '!', '|', '>', '%', '@', '`' => return null,
             else => {},
@@ -41,8 +32,8 @@ pub fn stepNameFromRun(allocator: std.mem.Allocator, run: []const u8) ?[]const u
     return allocator.dupe(u8, first_line[0..max_len]) catch null;
 }
 
-/// ASCII-only Levenshtein distance. Returns `std.math.maxInt(usize)` for inputs
-/// longer than MAX_LEN to avoid pathological allocations.
+/// ASCII-only. Inputs longer than MAX_LEN yield `std.math.maxInt(usize)` to
+/// avoid pathological allocations.
 pub fn levenshteinDistance(a: []const u8, b: []const u8) usize {
     const MAX_LEN: usize = 64;
     if (a.len > MAX_LEN or b.len > MAX_LEN) return std.math.maxInt(usize);
@@ -112,9 +103,9 @@ test "stepNameFromRun trims and caps length" {
     try std.testing.expectEqualStrings("echo hello", stepNameFromRun(alloc, "  echo hello  \n").?);
     try std.testing.expect(stepNameFromRun(alloc, "") == null);
     try std.testing.expect(stepNameFromRun(alloc, "\n") == null);
-    try std.testing.expect(stepNameFromRun(alloc, "echo 'hello'") == null); // contains quote
-    try std.testing.expect(stepNameFromRun(alloc, "echo # comment") == null); // contains #
-    try std.testing.expect(stepNameFromRun(alloc, "foo: bar") == null); // contains :
+    try std.testing.expect(stepNameFromRun(alloc, "echo 'hello'") == null);
+    try std.testing.expect(stepNameFromRun(alloc, "echo # comment") == null);
+    try std.testing.expect(stepNameFromRun(alloc, "foo: bar") == null);
 
     const long = "a" ** 50;
     const result = stepNameFromRun(alloc, long).?;

@@ -1,14 +1,8 @@
-//! Pre-fetch network-dependent rule data before the engine runs.
-//!
-//! Walks every parsed workflow, collects unique `(owner, repo)`,
-//! `(owner, repo, sha)`, and `(owner, repo, ref)` triples, then issues
-//! sequential REST fetches through the shared HTTP client to populate each
-//! rule's cache. Sharing the client keeps the TLS handshake cost to one
-//! occurrence even when many actions are referenced.
-//!
-//! GraphQL batching (`graphql.zig`) and ETag disk cache (`disk_cache.zig`)
-//! sit on top of this orchestrator as future layers; the REST path stays
-//! available as a fallback for unauthenticated users.
+//! Collects the unique `(owner, repo)`, `(owner, repo, sha)` and
+//! `(owner, repo, ref)` triples across all workflows and fetches them up front
+//! through the shared HTTP client, so the TLS handshake cost is paid once
+//! even when many actions are referenced. The REST path stays available as a
+//! fallback for unauthenticated users.
 
 const std = @import("std");
 const workflow_types = @import("../workflow/types.zig");
@@ -31,16 +25,11 @@ const Allocator = std.mem.Allocator;
 const Workflow = workflow_types.Workflow;
 
 pub const Options = struct {
-    /// When true, ignore existing disk cache entries and refetch everything.
     no_cache: bool = false,
 };
 
-// ============================================================
-// Driver
-// ============================================================
-
-/// Which network-backed rules are enabled for this run. Threaded through the
-/// prefetch pipeline so every stage can skip the work no rule asked for.
+/// Threaded through the prefetch pipeline so every stage can skip the work
+/// no rule asked for.
 const ActiveRules = struct {
     archived: bool,
     stale: bool,
@@ -61,20 +50,16 @@ const ActiveRules = struct {
     }
 };
 
-/// Prefetch every remote fact the SC rules need, honouring runtime
-/// options such as `no_cache`.
 pub fn prefetchAllWithOptions(
     allocator: Allocator,
     workflows: []const Workflow,
     opts: Options,
 ) !void {
-    // Advisory is a single batched fetch regardless of workflow content.
     advisory.prefetch();
 
     const active = ActiveRules.detect();
     if (!active.any()) return;
 
-    // Scratch arena keyed off of the caller's allocator; freed on return.
     var scratch_arena = std.heap.ArenaAllocator.init(allocator);
     defer scratch_arena.deinit();
     const scratch = scratch_arena.allocator();
@@ -85,10 +70,9 @@ pub fn prefetchAllWithOptions(
         _ = applyDiskCache(scratch, &ref_sets, active);
     }
 
-    // Try the GraphQL batch path first (folds archived + SHA + named ref
-    // lookups into 1-2 POSTs). Falls back to REST on no-token, parse
-    // failure, or rate-limit. SC008's REST compare phase rides on top of
-    // the same GraphQL data so it shares whatever batches succeeded.
+    // GraphQL first; falls back to REST on no-token, parse failure, or
+    // rate-limit. SC008's REST compare phase rides on top of the same
+    // GraphQL data so it shares whatever batches succeeded.
     var pending_compares = std.ArrayList(PendingCompare){};
     defer pending_compares.deinit(scratch);
 
@@ -112,22 +96,16 @@ pub fn prefetchAllWithOptions(
         if (active.refconf) fetchNamedRefs(scratch, ref_sets.named_refs);
     }
 
-    // SC008 step3/4: compare REST against default branch and remaining refs
-    // for any SHAs the GraphQL data couldn't classify directly.
     if (active.impostor and pending_compares.items.len > 0) {
         impostor_compare.runImpostorCompares(scratch, pending_compares.items);
     }
 
-    // Persist all GraphQL repo results now that the impostor cache is
-    // fully populated. Failures are non-fatal (best-effort warm-run hint).
+    // Persisted only now that the impostor cache is fully populated.
+    // Failures are non-fatal (best-effort warm-run hint).
     for (pending_persist.items) |res| {
         persistRepoResult(scratch, res);
     }
 }
-
-// ============================================================
-// Ref collection
-// ============================================================
 
 const RepoKey = struct {
     owner: []const u8,
@@ -160,9 +138,8 @@ const RefSets = struct {
     named_refs: NamedSet,
 };
 
-/// Insert `value` under the `owner/repo@ref` key when the set does not already
-/// hold it. `allocator` is the prefetch scratch arena, so the key allocated for
-/// an already-present ref is simply dropped.
+/// `allocator` is the prefetch scratch arena, so the key allocated for an
+/// already-present ref is simply dropped.
 fn putRefKey(
     allocator: Allocator,
     set: anytype,
@@ -198,10 +175,8 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
 
                 const ref = action_ref.ref orelse continue;
                 if (action_ref.is_pinned) {
-                    // SHA-pinned → SC005 candidate.
                     try putRefKey(allocator, &sha_refs, owner, repo, ref, ShaKey{ .owner = owner, .repo = repo, .sha = ref });
                 } else {
-                    // Tag/branch ref → SC006 candidate.
                     if (!engine.isValidGitRef(ref)) continue;
                     try putRefKey(allocator, &named_refs, owner, repo, ref, NamedKey{ .owner = owner, .repo = repo, .ref = ref });
                 }
@@ -212,15 +187,8 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
     return .{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
 }
 
-// ============================================================
-// Disk cache path (front of the pipeline)
-// ============================================================
-
-/// For each unique repo, load any fresh cache entry and populate the rule
-/// caches directly. Remove satisfied entries from `sets` so the GraphQL /
-/// REST phase only fetches what the disk cache could not supply.
-///
-/// Returns the number of cache entries applied (for diagnostics).
+/// Satisfied refs are removed from `sets` so the GraphQL / REST phase only
+/// fetches what the disk cache could not supply.
 fn applyDiskCache(
     scratch: Allocator,
     sets: *RefSets,
@@ -228,8 +196,7 @@ fn applyDiskCache(
 ) usize {
     var hits: usize = 0;
 
-    // Collect the repos we want to consult, then iterate over a stable
-    // snapshot (we mutate `sets` while iterating).
+    // Iterate over a stable snapshot because `sets` is mutated while iterating.
     var repo_keys = std.ArrayList([]const u8){};
     defer repo_keys.deinit(scratch);
     var rk_it = sets.repos.keyIterator();
@@ -247,9 +214,8 @@ fn applyDiskCache(
     return hits;
 }
 
-/// Apply a single cached repo entry to the shared rule caches and drop any
-/// refs it covered from `sets`. Factored out of `applyDiskCache` so tests
-/// can drive the mutation logic without staging files on disk.
+/// Factored out of `applyDiskCache` so tests can drive the mutation logic
+/// without staging files on disk.
 fn applyCacheEntry(
     sets: *RefSets,
     repo_key: []const u8,
@@ -315,15 +281,12 @@ fn applyCacheEntry(
     return hits;
 }
 
-/// Persist freshly-fetched results for a single repo. Non-fatal: failures
-/// are ignored so that a missing cache dir or permission error never
-/// blocks the lint run. The write is routed through the XDG-resolved
-/// cache dir.
+/// Non-fatal: failures are ignored so that a missing cache dir or permission
+/// error never blocks the lint run.
 ///
-/// SC008's branch listing, default branch, and per-SHA verdicts are also
-/// captured here when `impostor.isActive()`. The verdicts are read back
-/// out of the impostor module's module-level cache, so callers must run
-/// `runImpostorCompares` first if step3/4 results are expected on disk.
+/// SC008 verdicts are read back out of the impostor module's cache, so
+/// callers must run `runImpostorCompares` first if step3/4 results are
+/// expected on disk.
 fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult) void {
     if (res.missing) return;
     const entry: disk_cache.CachedRepo = .{
@@ -347,17 +310,6 @@ fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult) void {
     disk_cache.save(scratch, res.owner, res.repo, entry) catch return;
 }
 
-// ============================================================
-// GraphQL batch path
-// ============================================================
-
-/// Group refs per repo and issue GraphQL batches. Returns `true` if the
-/// batch completed and caches were populated; `false` if the caller
-/// should fall back to REST.
-///
-/// `pending` collects SC008 SHAs that need a follow-up REST compare phase
-/// because the GraphQL data alone couldn't classify them as legitimate.
-/// When impostor checking is off the slot is unused.
 fn tryGraphQlBatch(
     scratch: Allocator,
     sets: RefSets,
@@ -372,9 +324,8 @@ fn tryGraphQlBatch(
     var idx: usize = 0;
     while (idx < inputs.len) {
         if (engine.isNetworkDeadlineExceeded()) return idx > 0;
-        // Use the impostor-aware batch size only when this tail of inputs
-        // actually contains an SC008 request. Purely SC004/5/6 batches
-        // keep the larger per-post throughput.
+        // Recomputed per tail so purely SC004/5/6 batches keep the larger
+        // per-post throughput.
         const batch_limit = graphql.maxReposPerBatch(inputs[idx..]);
         const end = @min(idx + batch_limit, inputs.len);
         const chunk = inputs[idx..end];
@@ -400,7 +351,6 @@ fn tryGraphQlBatch(
 
 const RefsByRepo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8));
 
-/// Append `value` to the `owner/repo` bucket, creating the list on first use.
 fn appendByRepo(
     scratch: Allocator,
     map: *RefsByRepo,
@@ -516,10 +466,6 @@ fn applyResults(
     }
 }
 
-// ============================================================
-// Per-rule fetchers
-// ============================================================
-
 fn fetchRepos(scratch: Allocator, set: RepoSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
@@ -547,10 +493,6 @@ fn fetchNamedRefs(scratch: Allocator, set: NamedSet) void {
     }
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const test_support = @import("../test_support.zig");
 const testing = std.testing;
 const ActionRef = workflow_types.ActionRef;
@@ -558,7 +500,6 @@ const Step = workflow_types.Step;
 const Job = workflow_types.Job;
 
 test "prefetchAllWithOptions: offline-only is a no-op" {
-    // All rule modules left uninitialized (isActive → false).
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &.{} };
     const wfs = [_]Workflow{wf};
     try prefetchAllWithOptions(testing.allocator, &wfs, .{});
@@ -576,9 +517,9 @@ test "collectRefs: deduplicates repeated action refs" {
     defer arena.deinit();
     const sets = try collectRefs(arena.allocator(), &[_]Workflow{wf});
 
-    try testing.expectEqual(@as(usize, 2), sets.repos.count()); // checkout + setup-node
-    try testing.expectEqual(@as(usize, 1), sets.sha_refs.count()); // setup-node@SHA
-    try testing.expectEqual(@as(usize, 1), sets.named_refs.count()); // checkout@v4
+    try testing.expectEqual(@as(usize, 2), sets.repos.count());
+    try testing.expectEqual(@as(usize, 1), sets.sha_refs.count());
+    try testing.expectEqual(@as(usize, 1), sets.named_refs.count());
 }
 
 test "collectRefs: skips local and docker actions" {
@@ -734,12 +675,11 @@ test "applyCacheEntry: inactive rules skip corresponding categories" {
         .named = @constCast(&named),
     };
 
-    // archived only
     const hits = applyCacheEntry(&sets, "o/r", "o", "r", entry, .{ .archived = true, .stale = false, .refconf = false, .impostor = false });
     try testing.expectEqual(@as(usize, 1), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
-    try testing.expectEqual(@as(usize, 1), sets.sha_refs.count()); // untouched
-    try testing.expectEqual(@as(usize, 1), sets.named_refs.count()); // untouched
+    try testing.expectEqual(@as(usize, 1), sets.sha_refs.count());
+    try testing.expectEqual(@as(usize, 1), sets.named_refs.count());
 }
 
 test "applyCacheEntry: impostor hydrates SC008 verdicts from disk" {
@@ -896,7 +836,6 @@ test "applyResults: persists repo state to the provided cache dir" {
 
     applyResults(alloc, &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null);
 
-    // The cache file should exist and reload cleanly.
     const loaded = disk_cache.load(testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
     defer {
@@ -979,10 +918,6 @@ test "persistRepoResult: writes branches/default_branch/impostor (v2)" {
     try testing.expectEqual(disk_cache.ImpostorStatus.impostor, loaded.impostor[0].status);
 }
 
-// ============================================================
-// SC008 prefetch tests
-// ============================================================
-
 test "buildRepoInputs: impostor sets needs_impostor only when SHAs exist" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1025,7 +960,6 @@ test "buildRepoInputs: impostor populates sha slice even when stale_refs is off"
     const named_refs: NamedSet = .{};
 
     const sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
-    // stale=false, refconf=false, impostor=true.
     const inputs = try buildRepoInputs(alloc, sets, .{ .archived = true, .stale = false, .refconf = false, .impostor = true });
 
     try testing.expectEqual(@as(usize, 1), inputs.len);
