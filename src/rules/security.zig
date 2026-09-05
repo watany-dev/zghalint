@@ -394,23 +394,40 @@ fn checkUntrustedInConditionJob(job: *const Job, list: *DiagnosticList) void {
     checkConditionForDangerousContext(cond, ifAnchorJob(job), list);
 }
 
+fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+    reportConditionContexts(cond, anchor, &condition_dangerous_contexts, .{
+        .rule_id = "SEC006",
+        .severity = sec006_severity,
+        .message = "untrusted context used in if: condition expression",
+        .fix_hint = "validate the input before using it in a condition",
+    }, list);
+}
+
+const ConditionReport = struct {
+    rule_id: []const u8,
+    severity: Severity,
+    message: []const u8,
+    fix_hint: []const u8,
+};
+
 /// In GitHub Actions, `if:` conditions are implicitly wrapped in `${{ }}`,
 /// so they may contain dangerous contexts either directly or inside `${{ }}`.
-fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+/// Only the explicit form carries per-expression offsets, so a bare condition
+/// is anchored to the whole value.
+fn reportConditionContexts(cond: []const u8, anchor: Anchor, contexts: []const []const u8, report: ConditionReport, list: *DiagnosticList) void {
     const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
     if (has_expr) {
-        checkContextsInString(cond, anchor, &condition_dangerous_contexts, "SEC006", sec006_severity, "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
-    } else {
-        if (containsConditionDangerousContext(cond)) {
-            list.append(.{
-                .rule_id = "SEC006",
-                .severity = sec006_severity,
-                .message = "untrusted context used in if: condition expression",
-                .span = anchor.whole(),
-                .fix_hint = "validate the input before using it in a condition",
-            }) catch return;
-        }
+        checkContextsInString(cond, anchor, contexts, report.rule_id, report.severity, report.message, report.fix_hint, list);
+        return;
     }
+    if (!containsAnyContext(cond, contexts)) return;
+    list.append(.{
+        .rule_id = report.rule_id,
+        .severity = report.severity,
+        .message = report.message,
+        .span = anchor.whole(),
+        .fix_hint = report.fix_hint,
+    }) catch return;
 }
 
 fn makeMissingPermissionsFix(wf: *const Workflow, list: *DiagnosticList) ?Fix {
