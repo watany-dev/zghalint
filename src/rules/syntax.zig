@@ -1355,14 +1355,20 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
     try testing.expect(std.mem.startsWith(u8, diags.get(2).message, "invalid job ID \"1-build\""));
 }
 
-fn runOn(events: []const EventConfig, list: *DiagnosticList) void {
+/// Run SYN012's exclusive-filter check over a workflow with just these events.
+fn runOn(events: []const EventConfig) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };
-    checkExclusiveFilters(&wf, list);
+    var list = DiagnosticList.init(testing.allocator);
+    checkExclusiveFilters(&wf, &list);
+    return list;
 }
 
-fn runOnNeeds(needs: []const []const u8, diags: *DiagnosticList) void {
+/// Run SYN008's duplicate-needs check over a job with just this `needs` list.
+fn runOnNeeds(needs: []const []const u8) DiagnosticList {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
-    checkDuplicateNeeds(&job, diags);
+    var diags = DiagnosticList.init(testing.allocator);
+    checkDuplicateNeeds(&job, &diags);
+    return diags;
 }
 
 fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !void {
@@ -1716,14 +1722,20 @@ test "SYN004: mapping value type validation" {
     }
 }
 
-fn runOnDuplicateJobIds(jobs: []const Job, diags: *DiagnosticList) void {
+/// Run SYN005's duplicate-job-ID check over a workflow with just these jobs.
+fn runOnDuplicateJobIds(jobs: []const Job) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = jobs };
-    checkDuplicateJobIds(&wf, diags);
+    var diags = DiagnosticList.init(testing.allocator);
+    checkDuplicateJobIds(&wf, &diags);
+    return diags;
 }
 
-fn runOnDuplicateStepIds(steps: []const Step, diags: *DiagnosticList) void {
+/// Run SYN006's duplicate-step-ID check over a job with just these steps.
+fn runOnDuplicateStepIds(steps: []const Step) DiagnosticList {
     const job = Job{ .id = "build", .runs_on = "ubuntu-latest", .steps = steps };
-    checkDuplicateStepIds(&job, diags);
+    var diags = DiagnosticList.init(testing.allocator);
+    checkDuplicateStepIds(&job, &diags);
+    return diags;
 }
 
 test "SYN005: duplicate job IDs" {
@@ -1751,10 +1763,8 @@ test "SYN005: duplicate job IDs" {
     };
 
     for (cases) |c| {
-        var diags = DiagnosticList.init(testing.allocator);
+        var diags = runOnDuplicateJobIds(&c.jobs);
         defer diags.deinit();
-
-        runOnDuplicateJobIds(&c.jobs, &diags);
 
         try testing.expectEqual(@as(usize, 1), diags.len());
         const diag = diags.get(0);
@@ -1766,15 +1776,13 @@ test "SYN005: duplicate job IDs" {
 }
 
 test "SYN005: job ID repeated three times reports on each subsequent occurrence" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const jobs = [_]Job{
         .{ .id = "build", .id_span = Span.point(3, 3, 20) },
         .{ .id = "Build", .id_span = Span.point(6, 3, 50) },
         .{ .id = "BUILD", .id_span = Span.point(9, 3, 80) },
     };
-    runOnDuplicateJobIds(&jobs, &diags);
+    var diags = runOnDuplicateJobIds(&jobs);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 2), diags.len());
     try testing.expectEqualStrings(
@@ -1788,14 +1796,12 @@ test "SYN005: job ID repeated three times reports on each subsequent occurrence"
 }
 
 test "SYN005: distinct job IDs produce no diagnostic" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const jobs = [_]Job{
         .{ .id = "build", .id_span = Span.point(3, 3, 20) },
         .{ .id = "test", .id_span = Span.point(6, 3, 50) },
     };
-    runOnDuplicateJobIds(&jobs, &diags);
+    var diags = runOnDuplicateJobIds(&jobs);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -1825,10 +1831,8 @@ test "SYN005: duplicate step IDs within a job" {
     };
 
     for (cases) |c| {
-        var diags = DiagnosticList.init(testing.allocator);
+        var diags = runOnDuplicateStepIds(&c.steps);
         defer diags.deinit();
-
-        runOnDuplicateStepIds(&c.steps, &diags);
 
         try testing.expectEqual(@as(usize, 1), diags.len());
         const diag = diags.get(0);
@@ -1840,15 +1844,13 @@ test "SYN005: duplicate step IDs within a job" {
 }
 
 test "SYN005: step ID repeated three times reports on each subsequent occurrence" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const steps = [_]Step{
         .{ .id = "setup", .id_value_span = Span.point(7, 11, 100), .run = "echo hi" },
         .{ .id = "Setup", .id_value_span = Span.point(9, 11, 140), .run = "echo hi" },
         .{ .id = "SETUP", .id_value_span = Span.point(11, 11, 180), .run = "echo hi" },
     };
-    runOnDuplicateStepIds(&steps, &diags);
+    var diags = runOnDuplicateStepIds(&steps);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 2), diags.len());
     try testing.expectEqualStrings(
@@ -1885,14 +1887,12 @@ test "SYN005: same step ID in different jobs is allowed" {
 }
 
 test "SYN005: steps without id are ignored" {
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     const steps = [_]Step{
         .{ .run = "echo hi" },
         .{ .run = "echo bye" },
     };
-    runOnDuplicateStepIds(&steps, &diags);
+    var diags = runOnDuplicateStepIds(&steps);
+    defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -2143,10 +2143,8 @@ test "SYN007: a non-scalar env value still has its key validated" {
 }
 
 test "SYN008: duplicated job ID is reported" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "build", "build" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "build", "build" }, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -2155,28 +2153,22 @@ test "SYN008: duplicated job ID is reported" {
 }
 
 test "SYN008: duplicate detection is case-insensitive" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "Build", "bUILD" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "Build", "bUILD" }, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "SYN008: a job ID repeated three times reports once" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "build", "build", "build" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "build", "build", "build" }, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "SYN008: distinct job IDs produce no diagnostic" {
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOnNeeds(&.{ "build", "lint" });
     defer diags.deinit();
-
-    runOnNeeds(&.{ "build", "lint" }, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -2186,10 +2178,8 @@ test "SYN012: branches with branches-ignore is an error" {
         .event = .push,
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -2207,10 +2197,8 @@ test "SYN012: tags with tags-ignore is an error" {
         .event = .push,
         .filter = .{ .spans = .{ .tags = Span.point(1, 1, 10), .tags_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings(
@@ -2224,10 +2212,8 @@ test "SYN012: paths with paths-ignore is an error" {
         .event = .push,
         .filter = .{ .spans = .{ .paths = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings(
@@ -2248,10 +2234,8 @@ test "SYN012: all three conflicting pairs are reported separately" {
             .paths_ignore = Span.point(1, 1, 60),
         } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 3), diags.len());
 }
@@ -2261,10 +2245,8 @@ test "SYN012: filters from different pairs may coexist" {
         .event = .push,
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -2280,10 +2262,8 @@ test "SYN012: an empty filter value still counts as present" {
             .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) },
         },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
 }
@@ -2299,20 +2279,16 @@ test "SYN012: separate events using opposite halves are fine" {
             .filter = .{ .spans = .{ .branches_ignore = Span.point(1, 1, 40) } },
         },
     };
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
 test "SYN012: event without a filter is ignored" {
     const events = [_]EventConfig{.{ .event = .push }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
@@ -2322,10 +2298,8 @@ test "SYN012: diagnostic points at the first key when the ignore form comes firs
         .event = .push,
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 40), .branches_ignore = Span.point(1, 1, 10) } },
     }};
-    var diags = DiagnosticList.init(testing.allocator);
+    var diags = runOn(&events);
     defer diags.deinit();
-
-    runOn(&events, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqual(@as(usize, 40), diags.get(0).span.start_byte);
