@@ -325,19 +325,21 @@ fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
 /// as JavaScript, so it carries the same injection risk as `run:`.
 fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
-    if (!isGithubScriptAction(ref)) return;
+    if (!isAction(ref, "actions/github-script")) return;
     const with_map = step.with orelse return;
     const input = getWithInput(with_map, "script") orelse return;
     checkContextsInString(input.value, withAnchor(step, input.key), &run_dangerous_contexts, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
 }
 
-fn isGithubScriptAction(ref: ActionRef) bool {
+/// Match `owner/repo` against a marketplace action reference. A nested path is a
+/// different action, and GitHub resolves owner/repo case-insensitively.
+fn isAction(ref: ActionRef, comptime owner_repo: []const u8) bool {
+    const slash = comptime std.mem.indexOfScalar(u8, owner_repo, '/').?;
     const owner = ref.owner orelse return false;
     const repo = ref.repo orelse return false;
-    // A nested path is a different action; owner/repo are case-insensitive on GitHub.
     return ref.path == null and
-        std.ascii.eqlIgnoreCase(owner, "actions") and
-        std.ascii.eqlIgnoreCase(repo, "github-script");
+        std.ascii.eqlIgnoreCase(owner, owner_repo[0..slash]) and
+        std.ascii.eqlIgnoreCase(repo, owner_repo[slash + 1 ..]);
 }
 
 /// Look up a `with:` input by name. The runner exposes inputs as `INPUT_<UPPERCASE>`,
@@ -428,7 +430,7 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             if (step.uses) |action_ref| {
-                if (isCheckoutAction(action_ref)) {
+                if (isAction(action_ref, "actions/checkout")) {
                     // Check if it checks out the PR head ref
                     if (step.with) |with_map| {
                         if (with_map.get("ref")) |ref_val| {
@@ -447,12 +449,6 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             }
         }
     }
-}
-
-fn isCheckoutAction(ref: ActionRef) bool {
-    const owner = ref.owner orelse return false;
-    const repo = ref.repo orelse return false;
-    return std.mem.eql(u8, owner, "actions") and std.mem.eql(u8, repo, "checkout");
 }
 
 fn containsDangerousPRRef(ref_val: []const u8) bool {
@@ -632,7 +628,7 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             const action_ref = step.uses orelse continue;
-            if (!isCheckoutAction(action_ref)) continue;
+            if (!isAction(action_ref, "actions/checkout")) continue;
             const with_map = step.with orelse continue;
             const ref_val = with_map.get("ref") orelse continue;
             if (!containsDangerousWorkflowRunRef(ref_val)) continue;
@@ -986,12 +982,6 @@ fn containsActorBotCheck(expr: []const u8) bool {
 // SEC015 - Artipacked: credential leak via upload-artifact
 // ============================================================
 
-fn isUploadArtifactAction(ref: ActionRef) bool {
-    const owner = ref.owner orelse return false;
-    const repo = ref.repo orelse return false;
-    return std.mem.eql(u8, owner, "actions") and std.mem.eql(u8, repo, "upload-artifact");
-}
-
 fn hasPersistCredentialsFalse(step: *const Step) bool {
     const with_map = step.with orelse return false;
     const val = with_map.get("persist-credentials") orelse return false;
@@ -1005,12 +995,12 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
         i -= 1;
         const step = &job.steps[i];
         if (step.uses) |ref| {
-            if (isUploadArtifactAction(ref)) {
+            if (isAction(ref, "actions/upload-artifact")) {
                 has_upload_after = true;
                 continue;
             }
 
-            if (has_upload_after and isCheckoutAction(ref) and !hasPersistCredentialsFalse(step)) {
+            if (has_upload_after and isAction(ref, "actions/checkout") and !hasPersistCredentialsFalse(step)) {
                 var diag = Diagnostic{
                     .rule_id = "SEC015",
                     .severity = .warning,
@@ -1091,7 +1081,7 @@ fn classifyPersistCredentials(step: *const Step) PersistCredentialsState {
 
 fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
-    if (!isCheckoutAction(ref)) return;
+    if (!isAction(ref, "actions/checkout")) return;
 
     const state = classifyPersistCredentials(step);
     if (state == .explicit_false) return;
@@ -3253,12 +3243,12 @@ test "hardcoded secret prefixes do not match unrelated text" {
     try testing.expect(std.mem.indexOf(u8, "echo hello world", "ghp_") == null);
 }
 
-test "isCheckoutAction true" {
-    try testing.expect(isCheckoutAction(ActionRef.parse("actions/checkout@v4")));
+test "isAction checkout true" {
+    try testing.expect(isAction(ActionRef.parse("actions/checkout@v4"), "actions/checkout"));
 }
 
-test "isCheckoutAction false for other action" {
-    try testing.expect(!isCheckoutAction(ActionRef.parse("actions/setup-node@v3")));
+test "isAction checkout false for other action" {
+    try testing.expect(!isAction(ActionRef.parse("actions/setup-node@v3"), "actions/checkout"));
 }
 
 test "containsDangerousPRRef with head.sha" {
@@ -4433,12 +4423,12 @@ test "SEC015: no fix when span info absent (manually constructed step)" {
     }
 }
 
-test "SEC015: isUploadArtifactAction helper" {
-    try testing.expect(isUploadArtifactAction(ActionRef.parse("actions/upload-artifact@v4")));
-    try testing.expect(isUploadArtifactAction(ActionRef.parse("actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808")));
-    try testing.expect(!isUploadArtifactAction(ActionRef.parse("actions/checkout@v4")));
-    try testing.expect(!isUploadArtifactAction(ActionRef.parse("actions/download-artifact@v4")));
-    try testing.expect(!isUploadArtifactAction(ActionRef.parse("./actions/upload-artifact")));
+test "SEC015: isAction upload-artifact helper" {
+    try testing.expect(isAction(ActionRef.parse("actions/upload-artifact@v4"), "actions/upload-artifact"));
+    try testing.expect(isAction(ActionRef.parse("actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808"), "actions/upload-artifact"));
+    try testing.expect(!isAction(ActionRef.parse("actions/checkout@v4"), "actions/upload-artifact"));
+    try testing.expect(!isAction(ActionRef.parse("actions/download-artifact@v4"), "actions/upload-artifact"));
+    try testing.expect(!isAction(ActionRef.parse("./actions/upload-artifact"), "actions/upload-artifact"));
 }
 
 test "SEC015: hasPersistCredentialsFalse helper" {
