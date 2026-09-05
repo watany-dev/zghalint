@@ -16,17 +16,22 @@ const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Fix = diagnostics.Fix;
 const Edit = diagnostics.Edit;
+const spans = @import("spans.zig");
+
+/// Workflow-level findings have no single offending token; they point at the
+/// head of the file.
+const workflow_head_span = Span.point(1, 1, 0);
 
 // ── PERM001: Overly broad permissions ──
 
 fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
-        checkPermissionsScope(perms, wf.permissions_meta, diag_list);
+        checkPermissionsScope(perms, wf.permissions_meta, workflow_head_span, diag_list);
     }
 
     for (wf.jobs) |job| {
         if (job.permissions) |perms| {
-            checkPermissionsScope(perms, job.permissions_meta, diag_list);
+            checkPermissionsScope(perms, job.permissions_meta, job.span, diag_list);
         }
     }
 }
@@ -66,9 +71,11 @@ fn makeDowngradeToReadFix(diag_list: *DiagnosticList, yaml_key: []const u8, valu
     };
 }
 
-fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, diag_list: *DiagnosticList) void {
+/// `fallback` is the span reported when the parser captured no span for the
+/// offending permissions entry (e.g. a flow-style `permissions:` mapping).
+fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: Span, diag_list: *DiagnosticList) void {
     if (perms.write_all) {
-        const span = perms.value_span orelse Span.point(0, 0, 0);
+        const span = perms.value_span orelse fallback;
         diag_list.append(.{
             .rule_id = "PERM001",
             .severity = .warning,
@@ -107,7 +114,7 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, diag_list: 
         if (level) |lvl| {
             if (lvl == .write) {
                 const is_id_token = comptime std.mem.eql(u8, key, "id-token");
-                const span = value_span orelse Span.point(0, 0, 0);
+                const span = value_span orelse fallback;
                 if (is_id_token) {
                     diag_list.append(.{
                         .rule_id = "PERM001",
@@ -160,7 +167,7 @@ fn buildJobPermissionsFix(list: *DiagnosticList, job: *const Job) ?Fix {
 fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.permissions != null) return;
 
-    for (job.steps) |step| {
+    for (job.steps) |*step| {
         if (step.uses) |action_ref| {
             if (action_ref.is_local or action_ref.is_docker) continue;
 
@@ -171,7 +178,7 @@ fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
                 .rule_id = "PERM002",
                 .severity = .warning,
                 .message = "Job uses third-party actions without job-level 'permissions'. Define explicit permissions to limit token scope.",
-                .span = Span.point(0, 0, 0),
+                .span = spans.usesSpan(step),
                 .fix_hint = "Add a 'permissions' block to this job to restrict the GITHUB_TOKEN scope.",
                 .fix = buildJobPermissionsFix(diag_list, job),
             }) catch return;
@@ -535,7 +542,7 @@ test "PERM001: autofix replaces write-all with minimal permissions" {
     const perms = Permissions{ .write_all = true, .value_span = value_span };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, &diags);
+    checkPermissionsScope(perms, null, workflow_head_span, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -554,7 +561,7 @@ test "PERM001: no fix when value_span is null" {
     const perms = Permissions{ .write_all = true };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, &diags);
+    checkPermissionsScope(perms, null, workflow_head_span, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
@@ -564,7 +571,7 @@ test "PERM001: no fix for individual write when meta is null" {
     const perms = Permissions{ .contents = .write };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, &diags);
+    checkPermissionsScope(perms, null, workflow_head_span, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
@@ -589,7 +596,7 @@ test "PERM001: per-field autofix downgrades contents: write to read" {
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, &diags);
+    checkPermissionsScope(perms, meta, workflow_head_span, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -617,7 +624,7 @@ test "PERM001: id-token: write emits dedicated hint without autofix" {
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, &diags);
+    checkPermissionsScope(perms, meta, workflow_head_span, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -637,7 +644,7 @@ test "PERM001: detects write on previously uncovered scopes (attestations/discus
     };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, &diags);
+    checkPermissionsScope(perms, null, workflow_head_span, &diags);
 
     try std.testing.expectEqual(@as(usize, 4), diags.len());
 }
@@ -659,7 +666,7 @@ test "PERM001: autofix applies to all 13 non-id-token scopes via the engine" {
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, &diags);
+    checkPermissionsScope(perms, meta, workflow_head_span, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;

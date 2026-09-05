@@ -241,7 +241,7 @@ fn warnMissingJobName(job: *const Job, list: *DiagnosticList) void {
             .rule_id = "BP002",
             .severity = .info,
             .message = "job is missing a display name",
-            .span = Span.point(0, 0, 0),
+            .span = job.span,
         }) catch return;
     }
 }
@@ -253,7 +253,7 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .rule_id = "SEC001",
                 .severity = .warning,
                 .message = "action reference is not pinned to a SHA",
-                .span = Span.point(0, 0, 0),
+                .span = step.uses_value_span orelse step.span,
                 .fix_hint = "pin to a full commit SHA",
             }) catch return;
         }
@@ -601,13 +601,13 @@ test "postProcess: drops SC005 when same step is impostor" {
         .rule_id = "SC005",
         .severity = .info,
         .message = "stale",
-        .span = Span.point(0, 0, 0),
+        .span = Span.point(1, 1, 0),
     });
     try list.append(.{
         .rule_id = "SC008",
         .severity = .warning,
         .message = "impostor",
-        .span = Span.point(0, 0, 0),
+        .span = Span.point(1, 1, 0),
     });
 
     postProcess(std.testing.allocator, &wf, &list);
@@ -638,7 +638,7 @@ test "postProcess: keeps SC005 when impostor is legitimate" {
         .rule_id = "SC005",
         .severity = .info,
         .message = "stale",
-        .span = Span.point(0, 0, 0),
+        .span = Span.point(1, 1, 0),
     });
 
     postProcess(std.testing.allocator, &wf, &list);
@@ -676,19 +676,19 @@ test "postProcess: drops only the matching SC005 entry, not unrelated ones" {
         .rule_id = "SC005",
         .severity = .info,
         .message = "stale-A",
-        .span = Span.point(0, 0, 0),
+        .span = Span.point(1, 1, 0),
     });
     try list.append(.{
         .rule_id = "SC005",
         .severity = .info,
         .message = "stale-B",
-        .span = Span.point(0, 0, 0),
+        .span = Span.point(1, 1, 0),
     });
     try list.append(.{
         .rule_id = "SC008",
         .severity = .warning,
         .message = "impostor-A",
-        .span = Span.point(0, 0, 0),
+        .span = Span.point(1, 1, 0),
     });
 
     postProcess(std.testing.allocator, &wf, &list);
@@ -712,7 +712,7 @@ test "postProcess: no-op when impostor module offline" {
         .rule_id = "SC005",
         .severity = .info,
         .message = "stale",
-        .span = Span.point(0, 0, 0),
+        .span = Span.point(1, 1, 0),
     });
 
     postProcess(std.testing.allocator, &wf, &list);

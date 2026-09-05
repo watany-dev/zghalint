@@ -298,7 +298,9 @@ fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
             .rule_id = "BP005",
             .severity = .info,
             .message = "Workflow has 'push' trigger but no 'concurrency' setting. Rapid pushes may queue redundant runs.",
-            .span = Span.point(0, 0, 0),
+            // A missing top-level key has no token of its own; point at the
+            // head of the workflow file.
+            .span = Span.point(1, 1, 0),
             .fix_hint = "Add a 'concurrency' group to cancel or queue redundant workflow runs.",
             .fix = buildPushConcurrencyFix(diag_list, wf),
         }) catch return;

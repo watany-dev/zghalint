@@ -6,6 +6,13 @@ pub const Span = yaml.Span;
 pub const ScalarStyle = yaml.ScalarStyle;
 pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
 
+/// Span of a step's `uses:` value, or the step itself when the parser did not
+/// capture it (e.g. a non-scalar `uses:`). Shared by every rule that reports a
+/// finding about the referenced action.
+pub fn usesSpan(step: *const workflow_types.Step) Span {
+    return step.uses_value_span orelse step.span;
+}
+
 /// Byte offset of the first character of a scalar's parsed `value` within the
 /// source, derived from the scalar's token span.
 ///

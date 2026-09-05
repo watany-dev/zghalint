@@ -5991,3 +5991,73 @@ test "SC002: uppercase SHA still fires (case-insensitive match)" {
 
     try testing.expect(hasDiagnostic(&list, "SC002"));
 }
+
+test "SEC002: each untrusted reference in a run: block is reported at its own position" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: |
+        \\          echo "${{ github.event.issue.title }}"
+        \\          echo "${{ github.event.comment.body }}"
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkScriptInjection(&wf.jobs[0].steps[0], &list);
+
+    // Both interpolations are injection points, each at its own line, and the
+    // column is the `$` of the expression (10 spaces + `echo "`).
+    try testing.expectEqual(@as(usize, 2), list.len());
+    try testing.expectEqual(@as(u32, 8), list.get(0).span.start_line);
+    try testing.expectEqual(@as(u32, 17), list.get(0).span.start_col);
+    try testing.expectEqual(@as(u32, 9), list.get(1).span.start_line);
+    try testing.expectEqual(@as(u32, 17), list.get(1).span.start_col);
+}
+
+test "SEC001: unpinned action is reported at the uses: value" {
+    const yaml_parser = @import("../yaml/parser.zig");
+    const workflow_parser = @import("../workflow/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\
+    ;
+
+    var parser = yaml_parser.Parser.init(alloc, source);
+    defer parser.deinit();
+    const yaml_ast = try parser.parse();
+    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+
+    var list = DiagnosticList.init(alloc);
+    checkUnpinnedAction(&wf.jobs[0].steps[0], &list);
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(@as(u32, 7), list.get(0).span.start_line);
+    try testing.expectEqual(@as(u32, 15), list.get(0).span.start_col);
+}
