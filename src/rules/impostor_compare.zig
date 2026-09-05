@@ -307,26 +307,13 @@ fn bridgeSingle(src: graphql.NamedOid) impostor.NamedOid {
 /// embed in a single URL path segment. Returns the input unchanged when
 /// nothing needs encoding. Null return signals allocation failure.
 fn percentEncodePathSegment(scratch: Allocator, s: []const u8) ?[]const u8 {
-    var n_encoded: usize = 0;
     for (s) |c| {
-        if (!isUnreserved(c)) n_encoded += 1;
-    }
-    if (n_encoded == 0) return s;
+        if (!isUnreserved(c)) break;
+    } else return s;
 
-    const out = scratch.alloc(u8, s.len + n_encoded * 2) catch return null;
-    var i: usize = 0;
-    for (s) |c| {
-        if (isUnreserved(c)) {
-            out[i] = c;
-            i += 1;
-        } else {
-            out[i] = '%';
-            out[i + 1] = hexDigit(@intCast((c >> 4) & 0xf));
-            out[i + 2] = hexDigit(@intCast(c & 0xf));
-            i += 3;
-        }
-    }
-    return out;
+    var out: std.Io.Writer.Allocating = .init(scratch);
+    std.Uri.Component.percentEncode(&out.writer, s, isUnreserved) catch return null;
+    return out.written();
 }
 
 fn isUnreserved(c: u8) bool {
@@ -334,10 +321,6 @@ fn isUnreserved(c: u8) bool {
         'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
         else => false,
     };
-}
-
-fn hexDigit(v: u4) u8 {
-    return if (v < 10) '0' + @as(u8, v) else 'A' + @as(u8, v) - 10;
 }
 
 // ============================================================

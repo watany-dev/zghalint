@@ -412,37 +412,27 @@ pub fn parseSemver(ref: []const u8) ?Semver {
     }
     if (s.len == 0) return null;
 
-    // Parse major
-    const major_end = std.mem.indexOf(u8, s, ".") orelse {
-        // Just major version (e.g., "4")
-        return .{
-            .major = std.fmt.parseInt(u32, s, 10) catch return null,
-            .minor = 0,
-            .patch = 0,
-        };
-    };
-    const major = std.fmt.parseInt(u32, s[0..major_end], 10) catch return null;
-    s = s[major_end + 1 ..];
+    // "4", "4.1" and "4.1.2" are all accepted; missing components read as 0.
+    var parts = std.mem.splitScalar(u8, s, '.');
+    var out = [_]u32{ 0, 0, 0 };
+    for (&out, 0..) |*slot, i| {
+        const part = parts.next() orelse break;
+        // The patch component stops at the first non-digit so that
+        // pre-release tags like "1.2.3-beta" still parse.
+        const digits = if (i == 2) part[0..digitPrefixLen(part)] else part;
+        if (digits.len == 0) return null;
+        slot.* = std.fmt.parseInt(u32, digits, 10) catch return null;
+    }
 
-    // Parse minor
-    const minor_end = std.mem.indexOf(u8, s, ".") orelse {
-        // major.minor (e.g., "4.1")
-        return .{
-            .major = major,
-            .minor = std.fmt.parseInt(u32, s, 10) catch return null,
-            .patch = 0,
-        };
-    };
-    const minor = std.fmt.parseInt(u32, s[0..minor_end], 10) catch return null;
-    s = s[minor_end + 1 ..];
+    return .{ .major = out[0], .minor = out[1], .patch = out[2] };
+}
 
-    // Parse patch (stop at first non-digit for pre-release tags like "1.2.3-beta")
-    var patch_end: usize = 0;
-    while (patch_end < s.len and std.ascii.isDigit(s[patch_end])) : (patch_end += 1) {}
-    if (patch_end == 0) return null;
-    const patch = std.fmt.parseInt(u32, s[0..patch_end], 10) catch return null;
-
-    return .{ .major = major, .minor = minor, .patch = patch };
+/// Length of the leading run of ASCII digits in `s`.
+fn digitPrefixLen(s: []const u8) usize {
+    for (s, 0..) |c, i| {
+        if (!std.ascii.isDigit(c)) return i;
+    }
+    return s.len;
 }
 
 fn semverCompare(a: Semver, b: Semver) std.math.Order {

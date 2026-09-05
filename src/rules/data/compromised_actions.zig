@@ -88,8 +88,7 @@ pub const compromised_actions = [_]CompromisedAction{
 
 fn isHexLower(s: []const u8) bool {
     for (s) |c| {
-        const ok = (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f');
-        if (!ok) return false;
+        if (!std.ascii.isHex(c) or std.ascii.isUpper(c)) return false;
     }
     return true;
 }
@@ -98,7 +97,7 @@ fn isYyyyMmDd(s: []const u8) bool {
     if (s.len != 10) return false;
     if (s[4] != '-' or s[7] != '-') return false;
     for ([_]usize{ 0, 1, 2, 3, 5, 6, 8, 9 }) |i| {
-        if (s[i] < '0' or s[i] > '9') return false;
+        if (!std.ascii.isDigit(s[i])) return false;
     }
     return true;
 }
