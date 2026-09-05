@@ -187,6 +187,22 @@ const RefSets = struct {
     named_refs: NamedSet,
 };
 
+/// Insert `value` under the `owner/repo@ref` key when the set does not already
+/// hold it. `allocator` is the prefetch scratch arena, so the key allocated for
+/// an already-present ref is simply dropped.
+fn putRefKey(
+    allocator: Allocator,
+    set: anytype,
+    owner: []const u8,
+    repo: []const u8,
+    ref: []const u8,
+    value: anytype,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, ref });
+    if (set.contains(key)) return;
+    try set.put(allocator, key, value);
+}
+
 fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
     var repos: RepoSet = .{};
     var sha_refs: ShaSet = .{};
@@ -210,17 +226,11 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
                 const ref = action_ref.ref orelse continue;
                 if (action_ref.is_pinned) {
                     // SHA-pinned → SC005 candidate.
-                    const sha_key = try std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, ref });
-                    if (!sha_refs.contains(sha_key)) {
-                        try sha_refs.put(allocator, sha_key, .{ .owner = owner, .repo = repo, .sha = ref });
-                    }
+                    try putRefKey(allocator, &sha_refs, owner, repo, ref, ShaKey{ .owner = owner, .repo = repo, .sha = ref });
                 } else {
                     // Tag/branch ref → SC006 candidate.
                     if (!engine.isValidGitRef(ref)) continue;
-                    const named_key = try std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, ref });
-                    if (!named_refs.contains(named_key)) {
-                        try named_refs.put(allocator, named_key, .{ .owner = owner, .repo = repo, .ref = ref });
-                    }
+                    try putRefKey(allocator, &named_refs, owner, repo, ref, NamedKey{ .owner = owner, .repo = repo, .ref = ref });
                 }
             }
         }
@@ -457,14 +467,30 @@ fn tryGraphQlBatch(
     return true;
 }
 
+const RefsByRepo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8));
+
+/// Append `value` to the `owner/repo` bucket, creating the list on first use.
+fn appendByRepo(
+    scratch: Allocator,
+    map: *RefsByRepo,
+    owner: []const u8,
+    repo: []const u8,
+    value: []const u8,
+) !void {
+    const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ owner, repo });
+    const gop = try map.getOrPut(scratch, repo_key);
+    if (!gop.found_existing) gop.value_ptr.* = .{};
+    try gop.value_ptr.append(scratch, value);
+}
+
 fn buildRepoInputs(
     scratch: Allocator,
     sets: RefSets,
     active: ActiveRules,
 ) ![]graphql.RepoInput {
     var inputs = try scratch.alloc(graphql.RepoInput, sets.repos.count());
-    var shas_by_repo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
-    var named_by_repo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+    var shas_by_repo: RefsByRepo = .{};
+    var named_by_repo: RefsByRepo = .{};
 
     // SC008 also needs per-repo SHA lists so it can decide which SHAs to
     // classify against branch/tag oids. Populate the shared map whenever
@@ -473,19 +499,13 @@ fn buildRepoInputs(
     if (active.stale or active.impostor) {
         var it = sets.sha_refs.valueIterator();
         while (it.next()) |sha_key| {
-            const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ sha_key.owner, sha_key.repo });
-            const gop = try shas_by_repo.getOrPut(scratch, repo_key);
-            if (!gop.found_existing) gop.value_ptr.* = .{};
-            try gop.value_ptr.append(scratch, sha_key.sha);
+            try appendByRepo(scratch, &shas_by_repo, sha_key.owner, sha_key.repo, sha_key.sha);
         }
     }
     if (active.refconf) {
         var it = sets.named_refs.valueIterator();
         while (it.next()) |named_key| {
-            const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ named_key.owner, named_key.repo });
-            const gop = try named_by_repo.getOrPut(scratch, repo_key);
-            if (!gop.found_existing) gop.value_ptr.* = .{};
-            try gop.value_ptr.append(scratch, named_key.ref);
+            try appendByRepo(scratch, &named_by_repo, named_key.owner, named_key.repo, named_key.ref);
         }
     }
 
