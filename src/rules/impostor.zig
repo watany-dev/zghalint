@@ -210,11 +210,6 @@ fn runWithImpostorCache(
     entries: []const struct { key: []const u8, result: CachedResult },
     uses_ref: ?[]const u8,
 ) !DiagnosticList {
-    const prev_cache = impostor_cache;
-    const prev_arena = impostor_arena;
-    _ = prev_cache;
-    _ = prev_arena;
-
     var steps = [_]Step{.{
         .uses = if (uses_ref) |r| ActionRef.parse(r) else null,
         .run = if (uses_ref == null) "echo hello" else null,
