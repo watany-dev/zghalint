@@ -30,12 +30,14 @@ const Expectation = struct {
     rule_id: []const u8,
     line: ?u32 = null,
 
-    fn parse(token: []const u8) Expectation {
+    /// A malformed `@line` is an error: silently dropping it would turn the
+    /// expectation into a line-agnostic one and hide line regressions.
+    fn parse(token: []const u8) !Expectation {
         const at = std.mem.indexOfScalar(u8, token, '@') orelse
             return .{ .rule_id = token };
         return .{
             .rule_id = token[0..at],
-            .line = std.fmt.parseInt(u32, token[at + 1 ..], 10) catch null,
+            .line = try std.fmt.parseInt(u32, token[at + 1 ..], 10),
         };
     }
 };
@@ -65,9 +67,9 @@ const Directives = struct {
 
             // Both directive names are the same length, so one slice works.
             const rest = body["zghalint:expect".len..];
-            var tokens = std.mem.tokenizeAny(u8, rest, " \t,");
+            var tokens = std.mem.tokenizeAny(u8, rest, " \t");
             while (tokens.next()) |token| {
-                try target.append(alloc, Expectation.parse(token));
+                try target.append(alloc, try Expectation.parse(token));
             }
         }
         return self;
@@ -101,18 +103,6 @@ fn matches(diag: diagnostics.Diagnostic, exp: Expectation) bool {
     return diag.span.start_line == want_line;
 }
 
-fn describe(alloc: std.mem.Allocator, list: diagnostics.DiagnosticList) ![]const u8 {
-    var out: std.ArrayList(u8) = .{};
-    for (list.items.items) |diag| {
-        try out.print(alloc, "  {s} at line {d}: {s}\n", .{
-            diag.rule_id,
-            diag.span.start_line,
-            diag.message,
-        });
-    }
-    return out.items;
-}
-
 test "E2E: fixtures produce the declared diagnostics" {
     // Fixture paths are relative to the repo root; `zig build test` and the
     // local wrapper both run with cwd = repo root (same assumption as the
@@ -126,13 +116,11 @@ test "E2E: fixtures produce the declared diagnostics" {
 
     // Rule IDs seen across every fixture, for the coverage test below.
     var covered: std.StringHashMapUnmanaged(void) = .{};
-    var fixture_count: usize = 0;
 
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".yml")) continue;
-        fixture_count += 1;
 
         const source = try dir.readFileAlloc(alloc, entry.name, 256 * 1024);
         const directives = try Directives.parse(alloc, source);
@@ -153,9 +141,10 @@ test "E2E: fixtures produce the declared diagnostics" {
                 if (matches(diag, exp)) break true;
             } else false;
             if (!found) {
-                std.debug.print("fixture '{s}': expected {s} to fire, got:\n{s}", .{
-                    entry.name, exp.rule_id, try describe(alloc, list),
-                });
+                std.debug.print("fixture '{s}': expected {s} to fire, got:\n", .{ entry.name, exp.rule_id });
+                for (list.items.items) |diag| {
+                    std.debug.print("  {s} at line {d}: {s}\n", .{ diag.rule_id, diag.span.start_line, diag.message });
+                }
                 return error.ExpectedDiagnosticMissing;
             }
         }
@@ -170,8 +159,6 @@ test "E2E: fixtures produce the declared diagnostics" {
             }
         }
     }
-
-    try std.testing.expect(fixture_count > 0);
 
     // Minimum coverage: every rule family must fire at least once through a
     // real file, so a parser regression cannot silence a whole category.
