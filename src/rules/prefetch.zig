@@ -30,18 +30,6 @@ const PendingCompare = impostor_compare.PendingCompare;
 const Allocator = std.mem.Allocator;
 const Workflow = workflow_types.Workflow;
 
-// ============================================================
-// Stats
-// ============================================================
-
-pub const Stats = struct {
-    unique_repos: usize = 0,
-    unique_sha_refs: usize = 0,
-    unique_tag_or_branch_refs: usize = 0,
-    cache_hits: usize = 0,
-    cache_misses: usize = 0,
-};
-
 pub const Options = struct {
     /// When true, ignore existing disk cache entries and refetch everything.
     no_cache: bool = false,
@@ -51,7 +39,6 @@ pub const Options = struct {
 // Driver
 // ============================================================
 
-/// Orchestrate all network-rule prefetch work for `workflows`.
 /// Which network-backed rules are enabled for this run. Threaded through the
 /// prefetch pipeline so every stage can skip the work no rule asked for.
 const ActiveRules = struct {
@@ -74,23 +61,18 @@ const ActiveRules = struct {
     }
 };
 
-/// Safe to call with an empty slice, in offline mode, or with any rule
-/// module left uninitialized (each rule self-gates on `isActive()`).
-pub fn prefetchAll(allocator: Allocator, workflows: []const Workflow) !Stats {
-    return prefetchAllWithOptions(allocator, workflows, .{});
-}
-
-/// Like `prefetchAll`, but accepts runtime options such as `no_cache`.
+/// Prefetch every remote fact the SC rules need, honouring runtime
+/// options such as `no_cache`.
 pub fn prefetchAllWithOptions(
     allocator: Allocator,
     workflows: []const Workflow,
     opts: Options,
-) !Stats {
+) !void {
     // Advisory is a single batched fetch regardless of workflow content.
     advisory.prefetch();
 
     const active = ActiveRules.detect();
-    if (!active.any()) return .{};
+    if (!active.any()) return;
 
     // Scratch arena keyed off of the caller's allocator; freed on return.
     var scratch_arena = std.heap.ArenaAllocator.init(allocator);
@@ -99,9 +81,8 @@ pub fn prefetchAllWithOptions(
 
     var ref_sets = try collectRefs(scratch, workflows);
 
-    var cache_hits: usize = 0;
     if (!opts.no_cache) {
-        cache_hits = applyDiskCache(scratch, &ref_sets, active);
+        _ = applyDiskCache(scratch, &ref_sets, active);
     }
 
     // Try the GraphQL batch path first (folds archived + SHA + named ref
@@ -140,16 +121,8 @@ pub fn prefetchAllWithOptions(
     // Persist all GraphQL repo results now that the impostor cache is
     // fully populated. Failures are non-fatal (best-effort warm-run hint).
     for (pending_persist.items) |res| {
-        persistRepoResult(scratch, res, null);
+        persistRepoResult(scratch, res);
     }
-
-    return .{
-        .unique_repos = ref_sets.repos.count(),
-        .unique_sha_refs = ref_sets.sha_refs.count(),
-        .unique_tag_or_branch_refs = ref_sets.named_refs.count(),
-        .cache_hits = cache_hits,
-        .cache_misses = ref_sets.repos.count() + ref_sets.sha_refs.count() + ref_sets.named_refs.count(),
-    };
 }
 
 // ============================================================
@@ -349,19 +322,14 @@ fn applyCacheEntry(
 
 /// Persist freshly-fetched results for a single repo. Non-fatal: failures
 /// are ignored so that a missing cache dir or permission error never
-/// blocks the lint run. `dir_override` lets tests redirect the write to a
-/// `std.testing.tmpDir`; in production callers pass null to route through
-/// the XDG-resolved cache dir.
+/// blocks the lint run. The write is routed through the XDG-resolved
+/// cache dir.
 ///
 /// SC008's branch listing, default branch, and per-SHA verdicts are also
 /// captured here when `impostor.isActive()`. The verdicts are read back
 /// out of the impostor module's module-level cache, so callers must run
 /// `runImpostorCompares` first if step3/4 results are expected on disk.
-fn persistRepoResult(
-    scratch: Allocator,
-    res: graphql.RepoResult,
-    dir_override: ?std.fs.Dir,
-) void {
+fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult) void {
     if (res.missing) return;
     const entry: disk_cache.CachedRepo = .{
         .cached_at = std.time.timestamp(),
@@ -408,11 +376,7 @@ fn persistRepoResult(
             break :blk list.toOwnedSlice(scratch) catch &.{};
         },
     };
-    if (dir_override) |dir| {
-        disk_cache.saveToDir(dir, scratch, res.owner, res.repo, entry) catch return;
-    } else {
-        disk_cache.save(scratch, res.owner, res.repo, entry) catch return;
-    }
+    disk_cache.save(scratch, res.owner, res.repo, entry) catch return;
 }
 
 // ============================================================
@@ -459,7 +423,6 @@ fn tryGraphQlBatch(
             active,
             pending,
             persist_buffer,
-            null,
         );
         idx = end;
     }
@@ -545,7 +508,6 @@ fn applyResults(
     active: ActiveRules,
     pending: ?*std.ArrayList(PendingCompare),
     persist_buffer: ?*std.ArrayList(graphql.RepoResult),
-    persist_dir: ?std.fs.Dir,
 ) void {
     for (results) |res| {
         if (res.missing) continue;
@@ -579,9 +541,9 @@ fn applyResults(
         // it into the disk_cache entry. With no buffer (test path) persist
         // immediately so single-test assertions still see the file land.
         if (persist_buffer) |buf| {
-            buf.append(scratch, res) catch persistRepoResult(scratch, res, persist_dir);
+            buf.append(scratch, res) catch persistRepoResult(scratch, res);
         } else {
-            persistRepoResult(scratch, res, persist_dir);
+            persistRepoResult(scratch, res);
         }
     }
 }
@@ -626,14 +588,11 @@ const ActionRef = workflow_types.ActionRef;
 const Step = workflow_types.Step;
 const Job = workflow_types.Job;
 
-test "prefetchAll: offline-only no-op returns empty stats" {
+test "prefetchAllWithOptions: offline-only is a no-op" {
     // All rule modules left uninitialized (isActive → false).
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &.{} };
     const wfs = [_]Workflow{wf};
-    const stats = try prefetchAll(testing.allocator, &wfs);
-    try testing.expectEqual(@as(usize, 0), stats.unique_repos);
-    try testing.expectEqual(@as(usize, 0), stats.unique_sha_refs);
-    try testing.expectEqual(@as(usize, 0), stats.unique_tag_or_branch_refs);
+    try prefetchAllWithOptions(testing.allocator, &wfs, .{});
 }
 
 test "collectRefs: deduplicates repeated action refs" {
@@ -743,7 +702,7 @@ test "buildRepoInputs: inactive rules leave slices empty" {
 }
 
 test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();
@@ -782,7 +741,7 @@ test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits
 }
 
 test "applyCacheEntry: inactive rules skip corresponding categories" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -860,14 +819,14 @@ test "applyResults: missing entries are skipped (no rule init required)" {
     };
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    applyResults(arena.allocator(), &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null, null);
+    applyResults(arena.allocator(), &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null);
 }
 
-test "prefetchAllWithOptions: deadline-expired short-circuits but still counts refs" {
+test "prefetchAllWithOptions: deadline-expired short-circuits" {
     // Route all network fetches to the deadline-exceeded path so the test
     // never touches the network, yet still exercises the orchestrator's
     // GraphQL-fallback + per-rule REST loops.
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();
@@ -886,15 +845,11 @@ test "prefetchAllWithOptions: deadline-expired short-circuits but still counts r
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
     const wfs = [_]Workflow{wf};
 
-    const stats = try prefetchAllWithOptions(testing.allocator, &wfs, .{ .no_cache = true });
-    try testing.expectEqual(@as(usize, 2), stats.unique_repos);
-    try testing.expectEqual(@as(usize, 1), stats.unique_sha_refs);
-    try testing.expectEqual(@as(usize, 1), stats.unique_tag_or_branch_refs);
-    try testing.expectEqual(@as(usize, 0), stats.cache_hits);
+    try prefetchAllWithOptions(testing.allocator, &wfs, .{ .no_cache = true });
 }
 
 test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();
@@ -904,24 +859,8 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
-    defer testing.allocator.free(tmp_path);
-    const tmp_path_z = try testing.allocator.dupeZ(u8, tmp_path);
-    defer testing.allocator.free(tmp_path_z);
-
-    const saved = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
-    defer if (saved) |s| testing.allocator.free(s);
-    const saved_z: ?[:0]u8 = if (saved) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
-    defer if (saved_z) |z| testing.allocator.free(z);
-
-    _ = libc_setenv("XDG_CACHE_HOME", tmp_path_z.ptr, 1);
-    defer {
-        if (saved_z) |z| {
-            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
-        } else {
-            _ = libc_unsetenv("XDG_CACHE_HOME");
-        }
-    }
+    var xdg = try XdgCacheScope.init(tmp.dir);
+    defer xdg.deinit();
 
     // Stage a fresh entry at the real on-disk cache location so that
     // `disk_cache.load` (via XDG resolution) finds it.
@@ -959,8 +898,39 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
 const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
 const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
 
+/// Point `XDG_CACHE_HOME` at `dir` for the lifetime of the scope so that
+/// `disk_cache.save` / `load` resolve into a `std.testing.tmpDir`.
+const XdgCacheScope = struct {
+    path_z: [:0]u8,
+    saved_z: ?[:0]u8,
+
+    fn init(dir: std.fs.Dir) !XdgCacheScope {
+        const path = try dir.realpathAlloc(testing.allocator, ".");
+        defer testing.allocator.free(path);
+        const path_z = try testing.allocator.dupeZ(u8, path);
+        errdefer testing.allocator.free(path_z);
+
+        const saved = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
+        defer if (saved) |v| testing.allocator.free(v);
+        const saved_z: ?[:0]u8 = if (saved) |v| try testing.allocator.dupeZ(u8, v) else null;
+
+        _ = libc_setenv("XDG_CACHE_HOME", path_z.ptr, 1);
+        return .{ .path_z = path_z, .saved_z = saved_z };
+    }
+
+    fn deinit(self: *XdgCacheScope) void {
+        if (self.saved_z) |z| {
+            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
+            testing.allocator.free(z);
+        } else {
+            _ = libc_unsetenv("XDG_CACHE_HOME");
+        }
+        testing.allocator.free(self.path_z);
+    }
+};
+
 test "applyResults: persists repo state to the provided cache dir" {
-    archived.initForTesting(testing.allocator);
+    archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
     defer stale_refs.deinitStaleRefs();
@@ -969,6 +939,8 @@ test "applyResults: persists repo state to the provided cache dir" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
+    var xdg = try XdgCacheScope.init(tmp.dir);
+    defer xdg.deinit();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -987,10 +959,10 @@ test "applyResults: persists repo state to the provided cache dir" {
         },
     };
 
-    applyResults(alloc, &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null, tmp.dir);
+    applyResults(alloc, &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null);
 
     // The cache file should exist and reload cleanly.
-    const loaded = disk_cache.loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+    const loaded = disk_cache.load(testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
     defer {
         for (loaded.shas) |s| testing.allocator.free(s.sha);
@@ -1013,6 +985,8 @@ test "persistRepoResult: writes branches/default_branch/impostor (v2)" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
+    var xdg = try XdgCacheScope.init(tmp.dir);
+    defer xdg.deinit();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1038,9 +1012,9 @@ test "persistRepoResult: writes branches/default_branch/impostor (v2)" {
         .default_branch = default_branch,
     };
 
-    persistRepoResult(alloc, res, tmp.dir);
+    persistRepoResult(alloc, res);
 
-    const loaded = disk_cache.loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+    const loaded = disk_cache.load(testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
     defer {
         for (loaded.shas) |s| testing.allocator.free(s.sha);

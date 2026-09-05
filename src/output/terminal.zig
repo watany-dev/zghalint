@@ -8,11 +8,7 @@ const Severity = diagnostics.Severity;
 const Color = struct {
     const reset = "\x1b[0m";
     const bold = "\x1b[1m";
-    const red = "\x1b[31m";
-    const yellow = "\x1b[33m";
-    const blue = "\x1b[34m";
     const gray = "\x1b[90m";
-    const cyan = "\x1b[36m";
     const bold_red = "\x1b[1;31m";
     const bold_yellow = "\x1b[1;33m";
     const bold_blue = "\x1b[1;34m";
@@ -49,13 +45,12 @@ fn writeSanitized(writer: anytype, s: []const u8) !void {
 /// Render a single diagnostic to the writer with ANSI colors and source context.
 /// `source` is the full file source text (optional). If provided, the offending
 /// source line and caret indicators will be displayed.
-pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, source: ?[]const u8, use_color: bool) !void {
+pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !void {
     const file_str = diag.file orelse "<unknown>";
-    const sev_str = diag.severity.toString();
+    const sev_str = @tagName(diag.severity);
     const sev_color = if (use_color) severityColor(diag.severity) else "";
     const bold = if (use_color) Color.bold else "";
     const reset = if (use_color) Color.reset else "";
-    const cyan = if (use_color) Color.cyan else "";
     const gray = if (use_color) Color.gray else "";
 
     // Header line: file:line:col: severity[RULE]: message
@@ -73,35 +68,6 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, source: ?[]const u8, 
     try writeSanitized(writer, diag.message);
     try writer.writeByte('\n');
 
-    // Source line + caret
-    if (source) |src| {
-        if (diag.span.start_line > 0) {
-            if (getSourceLine(src, diag.span.start_line)) |line| {
-                const line_num = diag.span.start_line;
-                // gutter
-                try writer.print("{s}  |{s}\n", .{ gray, reset });
-                try writer.print("{s}  {d} |{s} ", .{ cyan, line_num, reset });
-                try writeSanitized(writer, line);
-                try writer.writeByte('\n');
-
-                // caret line
-                try writer.print("{s}  |{s} ", .{ gray, reset });
-                const col = if (diag.span.start_col > 0) diag.span.start_col - 1 else 0;
-                // Calculate caret width
-                const end_col = if (diag.span.end_col > diag.span.start_col and diag.span.end_line == diag.span.start_line)
-                    diag.span.end_col - diag.span.start_col
-                else
-                    1;
-                const width = if (end_col > 0) end_col else 1;
-
-                try writeNChars(writer, ' ', col);
-                try writer.print("{s}", .{sev_color});
-                try writeNChars(writer, '^', width);
-                try writer.print("{s}\n", .{reset});
-            }
-        }
-    }
-
     // Fix hint
     if (diag.fix_hint) |hint| {
         try writer.print("  {s}={s} {s}help:{s} ", .{ gray, reset, bold, reset });
@@ -110,20 +76,10 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, source: ?[]const u8, 
     }
 }
 
-/// Render all diagnostics from a list, with optional source content lookup.
-/// `source_lookup` maps file paths to source content. Pass null to skip source display.
-pub fn renderDiagnostics(
-    writer: anytype,
-    list: DiagnosticList,
-    source_lookup: ?*const fn ([]const u8) ?[]const u8,
-    use_color: bool,
-) !void {
+/// Render all diagnostics from a list, followed by the summary line.
+pub fn renderDiagnostics(writer: anytype, list: DiagnosticList, use_color: bool) !void {
     for (list.items.items) |diag| {
-        const source = if (source_lookup) |lookup|
-            if (diag.file) |f| lookup(f) else null
-        else
-            null;
-        try renderDiagnostic(writer, diag, source, use_color);
+        try renderDiagnostic(writer, diag, use_color);
         try writer.writeAll("\n");
     }
 
@@ -156,45 +112,13 @@ pub fn renderSummary(writer: anytype, list: DiagnosticList, use_color: bool) !vo
     }
 }
 
-// ---- Helpers ----
-
-fn getSourceLine(source: []const u8, line_num: u32) ?[]const u8 {
-    if (line_num == 0) return null;
-    var current_line: u32 = 1;
-    var start: usize = 0;
-    for (source, 0..) |c, i| {
-        if (current_line == line_num) {
-            // Find end of this line
-            var end = i;
-            while (end < source.len and source[end] != '\n') : (end += 1) {}
-            return source[start..end];
-        }
-        if (c == '\n') {
-            current_line += 1;
-            start = i + 1;
-        }
-    }
-    // Last line without trailing newline
-    if (current_line == line_num and start <= source.len) {
-        return source[start..];
-    }
-    return null;
-}
-
-fn writeNChars(writer: anytype, char: u8, count: u32) !void {
-    var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        try writer.writeByte(char);
-    }
-}
-
 // ============================================================
 // Tests
 // ============================================================
 
 const Span = @import("../yaml/types.zig").Span;
 
-test "renderDiagnostic with source and color" {
+test "renderDiagnostic with color" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
     const writer = buf.writer(std.testing.allocator);
@@ -215,25 +139,7 @@ test "renderDiagnostic with source and color" {
         .fix_hint = "Use an environment variable instead",
     };
 
-    const source =
-        \\name: CI
-        \\on: push
-        \\jobs:
-        \\  test:
-        \\    runs-on: ubuntu-latest
-        \\    steps:
-        \\      - uses: actions/checkout@v4
-        \\      - name: Echo title
-        \\        run: |
-        \\          echo "Processing"
-        \\          echo "More stuff"
-        \\          echo "Even more"
-        \\          echo "Almost there"
-        \\          echo "One more"
-        \\          echo "${{ github.event.issue.title }}"
-    ;
-
-    try renderDiagnostic(writer, diag, source, true);
+    try renderDiagnostic(writer, diag, true);
     const output = buf.items;
 
     // Verify key parts are present
@@ -241,7 +147,6 @@ test "renderDiagnostic with source and color" {
     try std.testing.expect(std.mem.indexOf(u8, output, "error") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "15:14") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "script injection") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "^^^") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "help:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "environment variable") != null);
     // Verify ANSI codes present
@@ -262,7 +167,7 @@ test "renderDiagnostic without color" {
         .fix_hint = "add timeout-minutes",
     };
 
-    try renderDiagnostic(writer, diag, null, false);
+    try renderDiagnostic(writer, diag, false);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "ci.yml:5:3:") != null);
@@ -278,7 +183,7 @@ test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
     defer buf.deinit(std.testing.allocator);
     const writer = buf.writer(std.testing.allocator);
 
-    // Evil file path, message, source line, and fix hint all carry ESC (0x1b)
+    // Evil file path, message, and fix hint all carry ESC (0x1b)
     // — a malicious workflow or filename must not be able to inject ANSI
     // sequences into the CI operator's terminal.
     const diag = Diagnostic{
@@ -289,9 +194,8 @@ test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
         .fix_hint = "\x1b[Hcursor-home",
         .span = Span.point(1, 1, 0),
     };
-    const src = "name: \"\x1b[32mOK\x1b[0m\"\n";
 
-    try renderDiagnostic(writer, diag, src, false);
+    try renderDiagnostic(writer, diag, false);
     const output = buf.items;
 
     // No raw ESC (0x1b) anywhere in the output — the sanitizer must rewrite
@@ -301,7 +205,7 @@ test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\\x1b") != null);
 }
 
-test "renderDiagnostic no source no hint" {
+test "renderDiagnostic no hint" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
     const writer = buf.writer(std.testing.allocator);
@@ -313,7 +217,7 @@ test "renderDiagnostic no source no hint" {
         .span = Span.point(1, 1, 0),
     };
 
-    try renderDiagnostic(writer, diag, null, false);
+    try renderDiagnostic(writer, diag, false);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "<unknown>:1:1:") != null);
@@ -351,20 +255,6 @@ test "renderSummary no issues" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "No issues found") != null);
 }
 
-test "getSourceLine returns correct line" {
-    const src = "line1\nline2\nline3\n";
-    try std.testing.expectEqualStrings("line1", getSourceLine(src, 1).?);
-    try std.testing.expectEqualStrings("line2", getSourceLine(src, 2).?);
-    try std.testing.expectEqualStrings("line3", getSourceLine(src, 3).?);
-    try std.testing.expect(getSourceLine(src, 0) == null);
-    try std.testing.expect(getSourceLine(src, 5) == null);
-}
-
-test "getSourceLine last line no newline" {
-    const src = "first\nsecond";
-    try std.testing.expectEqualStrings("second", getSourceLine(src, 2).?);
-}
-
 test "renderDiagnostics renders multiple items with summary" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);
@@ -376,7 +266,7 @@ test "renderDiagnostics renders multiple items with summary" {
     try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err msg", .file = "a.yml", .span = Span.point(1, 1, 0) });
     try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn msg", .file = "a.yml", .span = Span.point(2, 1, 0) });
 
-    try renderDiagnostics(writer, list, null, false);
+    try renderDiagnostics(writer, list, false);
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "err msg") != null);
@@ -422,131 +312,11 @@ test "renderSummary with color" {
     try std.testing.expect(std.mem.indexOf(u8, output, "1 error(s)") != null);
 }
 
-test "renderDiagnostic with source but start_line zero" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
-
-    const diag = Diagnostic{
-        .rule_id = "T1",
-        .severity = .warning,
-        .message = "test",
-        .span = Span.point(0, 0, 0),
-    };
-
-    try renderDiagnostic(writer, diag, "some source", false);
-    const output = buf.items;
-    // Should not crash, source context skipped when line is 0
-    try std.testing.expect(std.mem.indexOf(u8, output, "warning[T1]") != null);
-}
-
-test "renderDiagnostic multi-char caret span" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
-
-    const diag = Diagnostic{
-        .rule_id = "T1",
-        .severity = .@"error",
-        .message = "test",
-        .file = "f.yml",
-        .span = .{
-            .start_line = 1,
-            .start_col = 1,
-            .end_line = 1,
-            .end_col = 4,
-            .start_byte = 0,
-            .end_byte = 3,
-        },
-    };
-
-    try renderDiagnostic(writer, diag, "abcdef", true);
-    const output = buf.items;
-    try std.testing.expect(std.mem.indexOf(u8, output, "^^^") != null);
-}
-
 test "severityColor returns correct codes" {
     try std.testing.expectEqualStrings(Color.bold_red, severityColor(.@"error"));
     try std.testing.expectEqualStrings(Color.bold_yellow, severityColor(.warning));
     try std.testing.expectEqualStrings(Color.bold_blue, severityColor(.info));
     try std.testing.expectEqualStrings(Color.bold_gray, severityColor(.hint));
-}
-
-test "getSourceLine empty source" {
-    // Empty source with line 1 returns empty slice (last line without trailing newline)
-    try std.testing.expectEqualStrings("", getSourceLine("", 1).?);
-    try std.testing.expect(getSourceLine("", 0) == null);
-    try std.testing.expect(getSourceLine("", 2) == null);
-}
-
-test "renderDiagnostics with source_lookup callback" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
-
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    try list.append(.{
-        .rule_id = "T1",
-        .severity = .@"error",
-        .message = "test error",
-        .file = "found.yml",
-        .span = .{ .start_line = 1, .start_col = 1, .end_line = 1, .end_col = 5, .start_byte = 0, .end_byte = 4 },
-    });
-    try list.append(.{
-        .rule_id = "T2",
-        .severity = .warning,
-        .message = "test warning",
-        .file = "missing.yml",
-        .span = Span.point(1, 1, 0),
-    });
-
-    const lookup = struct {
-        fn func(path: []const u8) ?[]const u8 {
-            if (std.mem.eql(u8, path, "found.yml")) return "name: CI";
-            return null;
-        }
-    }.func;
-
-    try renderDiagnostics(writer, list, &lookup, false);
-    const output = buf.items;
-
-    // First diagnostic should include source context (file found)
-    try std.testing.expect(std.mem.indexOf(u8, output, "name: CI") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "^^^^") != null);
-    // Second diagnostic should have no source context (file not found)
-    try std.testing.expect(std.mem.indexOf(u8, output, "test warning") != null);
-    // Summary
-    try std.testing.expect(std.mem.indexOf(u8, output, "2 issue(s)") != null);
-}
-
-test "renderDiagnostic multi-line span shows single caret" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
-
-    const diag = Diagnostic{
-        .rule_id = "T1",
-        .severity = .warning,
-        .message = "spans multiple lines",
-        .file = "f.yml",
-        .span = .{
-            .start_line = 1,
-            .start_col = 3,
-            .end_line = 5,
-            .end_col = 1,
-            .start_byte = 2,
-            .end_byte = 40,
-        },
-    };
-
-    try renderDiagnostic(writer, diag, "ab: cd\nef: gh", false);
-    const output = buf.items;
-
-    // end_line != start_line, so width should be 1 => single caret
-    try std.testing.expect(std.mem.indexOf(u8, output, "^") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "spans multiple lines") != null);
 }
 
 test "renderDiagnostic with no file shows unknown" {
@@ -564,13 +334,7 @@ test "renderDiagnostic with no file shows unknown" {
         .span = Span.point(1, 1, 0),
     });
 
-    const lookup = struct {
-        fn func(_: []const u8) ?[]const u8 {
-            return null;
-        }
-    }.func;
-
-    try renderDiagnostics(writer, list, &lookup, false);
+    try renderDiagnostics(writer, list, false);
     const output = buf.items;
     try std.testing.expect(std.mem.indexOf(u8, output, "a hint") != null);
 }

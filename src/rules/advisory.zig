@@ -9,10 +9,8 @@ const json_util = @import("json_util.zig");
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const spans = @import("spans.zig");
-const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
-const Rule = engine.Rule;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // ============================================================
@@ -22,8 +20,6 @@ const isValidGitHubComponent = engine.isValidGitHubComponent;
 pub const Advisory = struct {
     ghsa_id: []const u8,
     action_slug: []const u8,
-    summary: []const u8,
-    severity: []const u8,
     vulnerable_range: ?[]const u8,
     patched_version: ?[]const u8,
     diagnostic_message: []const u8,
@@ -126,7 +122,7 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
 // ============================================================
 
 const cache_subdir = "zghalint";
-const cache_filename = "advisories.json";
+const cache_filename = "advisories-v2.tsv";
 
 fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
     // XDG_CACHE_HOME is already a cache root; HOME needs the conventional
@@ -167,8 +163,8 @@ fn serializeAdvisories(allocator: Allocator, advisories: []const Advisory) ![]co
         try out.writer.print("{s}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
             adv.ghsa_id,
             adv.action_slug,
-            adv.summary,
-            adv.severity,
+            adv.diagnostic_message,
+            adv.diagnostic_hint,
             adv.vulnerable_range orelse "",
             adv.patched_version orelse "",
         });
@@ -184,26 +180,16 @@ fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Adviso
         var fields = std.mem.splitScalar(u8, line, '\t');
         const ghsa_id = fields.next() orelse continue;
         const action_slug = fields.next() orelse continue;
-        const summary = fields.next() orelse continue;
-        const severity = fields.next() orelse continue;
+        const message = fields.next() orelse continue;
+        const hint = fields.next() orelse continue;
         const range_str = fields.next() orelse continue;
         const patched_str = fields.next() orelse continue;
         const range: ?[]const u8 = if (range_str.len > 0) range_str else null;
         const patched: ?[]const u8 = if (patched_str.len > 0) patched_str else null;
 
-        const message = std.fmt.allocPrint(allocator, "action '{s}' has known vulnerability {s}: {s}", .{
-            action_slug, ghsa_id, summary,
-        }) catch continue;
-        const hint = if (patched) |p|
-            std.fmt.allocPrint(allocator, "update to version {s} or later, see https://github.com/advisories/{s}", .{ p, ghsa_id }) catch continue
-        else
-            std.fmt.allocPrint(allocator, "check https://github.com/advisories/{s} for remediation", .{ghsa_id}) catch continue;
-
         result.append(allocator, .{
             .ghsa_id = ghsa_id,
             .action_slug = action_slug,
-            .summary = summary,
-            .severity = severity,
             .vulnerable_range = range,
             .patched_version = patched,
             .diagnostic_message = message,
@@ -289,7 +275,6 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
         const obj = json_util.asObject(item) orelse continue;
         const ghsa_id = json_util.stringField(obj, "ghsa_id") orelse continue;
         const summary = json_util.stringField(obj, "summary") orelse "";
-        const severity = json_util.stringField(obj, "severity") orelse "unknown";
 
         const vulns = json_util.arrayField(obj, "vulnerabilities") orelse continue;
 
@@ -315,8 +300,6 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
             result.append(allocator, .{
                 .ghsa_id = ghsa_id,
                 .action_slug = action_name,
-                .summary = summary,
-                .severity = severity,
                 .vulnerable_range = range,
                 .patched_version = patched,
                 .diagnostic_message = message,
@@ -578,7 +561,6 @@ test "parseAdvisories: valid response" {
     try testing.expectEqual(@as(usize, 1), result.len);
     try testing.expectEqualStrings("evil/action", result[0].action_slug);
     try testing.expectEqualStrings("GHSA-test-1234", result[0].ghsa_id);
-    try testing.expectEqualStrings("high", result[0].severity);
     try testing.expectEqualStrings("< 1.0.0", result[0].vulnerable_range.?);
     try testing.expectEqualStrings("1.0.0", result[0].patched_version.?);
 }
@@ -653,8 +635,6 @@ test "SC003: detects known vulnerable action" {
         .{
             .ghsa_id = "GHSA-test-1234",
             .action_slug = "evil/action",
-            .summary = "RCE vulnerability",
-            .severity = "critical",
             .vulnerable_range = "< 1.0.0",
             .patched_version = "1.0.0",
             .diagnostic_message = "action 'evil/action' has known vulnerability GHSA-test-1234",
@@ -687,8 +667,6 @@ test "SC003: safe action not flagged" {
         .{
             .ghsa_id = "GHSA-test-1234",
             .action_slug = "evil/action",
-            .summary = "RCE vulnerability",
-            .severity = "critical",
             .vulnerable_range = "< 1.0.0",
             .patched_version = "1.0.0",
             .diagnostic_message = "action 'evil/action' has known vulnerability",
@@ -720,8 +698,6 @@ test "SC003: patched version not flagged" {
         .{
             .ghsa_id = "GHSA-test-1234",
             .action_slug = "evil/action",
-            .summary = "RCE vulnerability",
-            .severity = "critical",
             .vulnerable_range = "< 1.0.0",
             .patched_version = "1.0.0",
             .diagnostic_message = "action 'evil/action' has known vulnerability",
@@ -753,8 +729,6 @@ test "SC003: SHA ref with vulnerable action still warns" {
         .{
             .ghsa_id = "GHSA-test-1234",
             .action_slug = "evil/action",
-            .summary = "RCE vulnerability",
-            .severity = "critical",
             .vulnerable_range = "< 1.0.0",
             .patched_version = "1.0.0",
             .diagnostic_message = "action 'evil/action' has known vulnerability",
@@ -788,8 +762,6 @@ test "SC003: local action skipped" {
         .{
             .ghsa_id = "GHSA-test-1234",
             .action_slug = "evil/action",
-            .summary = "RCE vulnerability",
-            .severity = "critical",
             .vulnerable_range = "< 1.0.0",
             .patched_version = "1.0.0",
             .diagnostic_message = "action 'evil/action' has known vulnerability",
@@ -821,8 +793,6 @@ test "SC003: step without uses skipped" {
         .{
             .ghsa_id = "GHSA-test-1234",
             .action_slug = "evil/action",
-            .summary = "RCE vulnerability",
-            .severity = "critical",
             .vulnerable_range = "< 1.0.0",
             .patched_version = "1.0.0",
             .diagnostic_message = "action 'evil/action' has known vulnerability",
@@ -854,8 +824,6 @@ test "SC003: advisory without version range always flags" {
         .{
             .ghsa_id = "GHSA-no-range",
             .action_slug = "evil/action",
-            .summary = "Some vulnerability",
-            .severity = "high",
             .vulnerable_range = null,
             .patched_version = null,
             .diagnostic_message = "action 'evil/action' has known vulnerability",
@@ -887,8 +855,6 @@ test "SC003: invalid owner characters rejected" {
         .{
             .ghsa_id = "GHSA-test-1234",
             .action_slug = "evil/action",
-            .summary = "RCE vulnerability",
-            .severity = "critical",
             .vulnerable_range = "< 1.0.0",
             .patched_version = "1.0.0",
             .diagnostic_message = "action 'evil/action' has known vulnerability",

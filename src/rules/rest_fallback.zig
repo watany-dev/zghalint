@@ -61,10 +61,6 @@ pub fn resetRateLimit() void {
     rate_limited = false;
 }
 
-pub fn isRateLimited() bool {
-    return rate_limited;
-}
-
 // ============================================================
 // SC004: archived repository
 // ============================================================
@@ -304,15 +300,6 @@ test "matchShaInRefs: empty array → unknown" {
     defer arena.deinit();
     const result = matchShaInRefs(arena.allocator(), "[]", "abc", "o", "r");
     try testing.expectEqual(TagResolution.unknown, result);
-}
-
-test "rate_limited flag round-trip" {
-    resetRateLimit();
-    try testing.expect(!isRateLimited());
-    rate_limited = true;
-    try testing.expect(isRateLimited());
-    resetRateLimit();
-    try testing.expect(!isRateLimited());
 }
 
 test "parseArchivedField: non-bool archived returns UnexpectedFormat" {

@@ -14,7 +14,6 @@ const ScalarStyle = types.ScalarStyle;
 pub const ParseError = error{
     UnexpectedToken,
     OutOfMemory,
-    InvalidYaml,
     MaxDepthExceeded,
 };
 
@@ -45,10 +44,6 @@ pub const Parser = struct {
         };
     }
 
-    pub fn deinit(self: *Parser) void {
-        _ = self;
-    }
-
     pub fn parse(self: *Parser) ParseError!Node {
         // Skip document start marker if present
         if (self.current.kind == .document_start) {
@@ -72,7 +67,7 @@ pub const Parser = struct {
 
         // Sequence entry (- item)
         if (self.current.kind == .sequence_entry) {
-            return self.parseBlockSequence(min_indent);
+            return self.parseBlockSequence();
         }
 
         // Flow mapping {
@@ -126,7 +121,6 @@ pub const Parser = struct {
             self.advance(); // consume ':'
 
             // Parse value
-            self.skipNonNewlineWhitespace();
             const value = if (self.current.kind == .newline or self.current.kind == .eof) blk: {
                 self.skipNewlines();
                 if (self.current.kind != .eof and self.current.column > key_indent) {
@@ -181,16 +175,14 @@ pub const Parser = struct {
         return Node{ .mapping = .{ .entries = owned_entries, .span = span } };
     }
 
-    fn parseBlockSequence(self: *Parser, min_indent: u32) ParseError!Node {
+    fn parseBlockSequence(self: *Parser) ParseError!Node {
         var items = std.ArrayList(Node){};
         const seq_indent = self.current.column;
-        _ = min_indent;
 
         while (self.current.kind == .sequence_entry and self.current.column == seq_indent) {
             self.advance(); // consume '-'
 
             // Parse item value
-            self.skipNonNewlineWhitespace();
             if (self.current.kind == .newline or self.current.kind == .eof) {
                 self.skipNewlines();
                 if (self.current.kind != .eof and self.current.column > seq_indent) {
@@ -238,7 +230,6 @@ pub const Parser = struct {
             self.advance();
 
             // Value
-            self.skipNonNewlineWhitespace();
             const value = try self.parseFlowValue();
 
             const key_scalar = self.scalarFromToken(key_token);
@@ -326,11 +317,6 @@ pub const Parser = struct {
         while (self.current.kind == .newline or self.current.kind == .comment) {
             self.advance();
         }
-    }
-
-    fn skipNonNewlineWhitespace(_: *Parser) void {
-        // The tokenizer already skips spaces, so this is a no-op
-        // but kept for clarity in the parse logic
     }
 
     fn spanFromToken(self: *Parser, token: Token) Span {
@@ -462,7 +448,6 @@ test "parse simple mapping" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "name: CI");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .mapping => |m| {
@@ -481,7 +466,6 @@ test "parse multi-key mapping" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "name: CI\non: push");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .mapping => |m| {
@@ -497,7 +481,6 @@ test "parse sequence" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "- item1\n- item2\n- item3");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .sequence => |s| {
@@ -517,7 +500,6 @@ test "parse nested mapping" {
         \\    branches:
         \\      - main
     );
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .mapping => |m| {
@@ -533,7 +515,6 @@ test "parse flow mapping" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "{name: CI, on: push}");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .mapping => |m| {
@@ -549,7 +530,6 @@ test "parse flow sequence" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "[main, dev, release]");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .sequence => |s| {
@@ -563,7 +543,6 @@ test "parse document start marker" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "---\nname: CI");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .mapping => |m| {
@@ -577,7 +556,6 @@ test "parse empty input" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .null_value => {},
@@ -589,7 +567,6 @@ test "parse quoted strings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "name: 'hello world'");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .mapping => |m| {
@@ -610,7 +587,6 @@ test "parse mapping with get helper" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var parser = Parser.init(arena.allocator(), "name: CI\non: push");
-    defer parser.deinit();
     const node = try parser.parse();
     switch (node) {
         .mapping => |m| {
@@ -637,15 +613,7 @@ test "parse rejects input nested past max_parse_depth" {
     }
 
     var parser = Parser.init(arena.allocator(), buf.items);
-    defer parser.deinit();
     try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
-}
-
-test "parser deinit cleans up" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var parser = Parser.init(arena.allocator(), "a: b");
-    parser.deinit();
 }
 
 test "parse terminates on an unclosed flow sequence running into block content" {
@@ -655,6 +623,5 @@ test "parse terminates on an unclosed flow sequence running into block content" 
     // The `:` after `name` starts no flow value, so the flow-sequence loop used
     // to append null nodes forever without consuming it.
     var parser = Parser.init(arena.allocator(), "[\nname: CI");
-    defer parser.deinit();
     _ = try parser.parse();
 }

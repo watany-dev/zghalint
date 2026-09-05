@@ -2,7 +2,6 @@ const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
 
 pub const Fix = diagnostics.Fix;
-pub const FixSafety = diagnostics.FixSafety;
 pub const Edit = diagnostics.Edit;
 pub const Diagnostic = diagnostics.Diagnostic;
 
@@ -331,11 +330,6 @@ test "fix with multiple edits in single fix" {
 
     try std.testing.expectEqualStrings("XXBBZZ", result.content);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
-}
-
-test "fix safety toString" {
-    try std.testing.expectEqualStrings("safe", FixSafety.safe.toString());
-    try std.testing.expectEqualStrings("unsafe", FixSafety.unsafe.toString());
 }
 
 test "invalid edit: end_byte > source.len is skipped" {

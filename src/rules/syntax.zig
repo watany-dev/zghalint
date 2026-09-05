@@ -522,15 +522,12 @@ pub const rules = [_]Rule{
 const testing = std.testing;
 const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
-const Trigger = workflow_types.Trigger;
-const yaml_parser_mod = @import("../yaml/parser.zig");
 
 fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
+    var parser = yaml_parser.Parser.init(alloc, source);
     const yaml_node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
     checkUnknownKeys(&wf, list);
@@ -875,8 +872,7 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
+    var parser = yaml_parser.Parser.init(alloc, source);
     const node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, node);
 
@@ -1156,7 +1152,6 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
 fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
     const alloc = arena.allocator();
     var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
     const yaml_node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
     checkMappingValueTypes(&wf, list);
@@ -1351,8 +1346,7 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
+    var yp = yaml_parser.Parser.init(alloc, source);
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -1388,7 +1382,6 @@ fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !v
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     walkDuplicateKeys(node, "workflow", null, diags);
 }
@@ -1589,7 +1582,6 @@ test "SYN002: engine.run emits via yaml_root" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
     const node = try parser.parse();
     const wf = try workflow_parser.parseWorkflow(arena.allocator(), node);
 
@@ -1951,7 +1943,6 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
     ;
 
     var yp = yaml_parser.Parser.init(alloc, source);
-    defer yp.deinit();
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -1992,8 +1983,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
 }
 
 fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
+    var yp = yaml_parser.Parser.init(alloc, source);
     const yaml_node = try yp.parse();
     const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
 
@@ -2215,7 +2205,6 @@ test "SYN008: distinct job IDs produce no diagnostic" {
 test "SYN012: branches with branches-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2237,7 +2226,6 @@ test "SYN012: branches with branches-ignore is an error" {
 test "SYN012: tags with tags-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .tags = Span.point(1, 1, 10), .tags_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2255,7 +2243,6 @@ test "SYN012: tags with tags-ignore is an error" {
 test "SYN012: paths with paths-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .paths = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2273,7 +2260,6 @@ test "SYN012: paths with paths-ignore is an error" {
 test "SYN012: all three conflicting pairs are reported separately" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{
             .branches = Span.point(1, 1, 10),
             .branches_ignore = Span.point(1, 1, 20),
@@ -2294,7 +2280,6 @@ test "SYN012: all three conflicting pairs are reported separately" {
 test "SYN012: filters from different pairs may coexist" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10), .paths_ignore = Span.point(1, 1, 30) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);
@@ -2310,7 +2295,6 @@ test "SYN012: an empty filter value still counts as present" {
     // conflict with `branches-ignore` must still be reported.
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{
             .branches = &.{},
             .branches_ignore = &.{"wip/**"},
@@ -2329,12 +2313,10 @@ test "SYN012: separate events using opposite halves are fine" {
     const events = [_]EventConfig{
         .{
             .event = .push,
-            .name = "push",
             .filter = .{ .spans = .{ .branches = Span.point(1, 1, 10) } },
         },
         .{
             .event = .pull_request,
-            .name = "pull_request",
             .filter = .{ .spans = .{ .branches_ignore = Span.point(1, 1, 40) } },
         },
     };
@@ -2347,7 +2329,7 @@ test "SYN012: separate events using opposite halves are fine" {
 }
 
 test "SYN012: event without a filter is ignored" {
-    const events = [_]EventConfig{.{ .event = .push, .name = "push" }};
+    const events = [_]EventConfig{.{ .event = .push }};
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
 
@@ -2359,7 +2341,6 @@ test "SYN012: event without a filter is ignored" {
 test "SYN012: diagnostic points at the first key when the ignore form comes first" {
     const events = [_]EventConfig{.{
         .event = .push,
-        .name = "push",
         .filter = .{ .spans = .{ .branches = Span.point(1, 1, 40), .branches_ignore = Span.point(1, 1, 10) } },
     }};
     var diags = DiagnosticList.init(testing.allocator);

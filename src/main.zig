@@ -219,7 +219,6 @@ fn lintDependabotFile(
     const arena_alloc = arena.allocator();
 
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
@@ -260,14 +259,13 @@ fn prefetchNetworkData(
         const source = file.readToEndAlloc(scratch, 10 * 1024 * 1024) catch continue;
 
         var yaml_parser = zghalint.yaml.Parser.init(scratch, source);
-        defer yaml_parser.deinit();
 
         const yaml_node = yaml_parser.parse() catch continue;
         const workflow = zghalint.workflow.parseWorkflow(scratch, yaml_node) catch continue;
         try workflows.append(scratch, workflow);
     }
 
-    _ = zghalint.rules.prefetch.prefetchAllWithOptions(
+    zghalint.rules.prefetch.prefetchAllWithOptions(
         scratch,
         workflows.items,
         .{ .no_cache = no_cache },
@@ -275,7 +273,7 @@ fn prefetchNetworkData(
 }
 
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
-    const path = config_path orelse zghalint.config.findConfigFile(".") orelse return Config.init(allocator);
+    const path = config_path orelse zghalint.config.defaultConfigPath() orelse return Config.init(allocator);
 
     const file = std.fs.cwd().openFile(path, .{}) catch return Config.init(allocator);
     defer file.close();
@@ -306,7 +304,6 @@ fn lintFile(
 
     // YAML parse
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
-    defer yaml_parser.deinit();
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
@@ -579,7 +576,7 @@ pub fn main() !u8 {
     // Output. Only the terminal format is self-terminating; the machine-readable
     // formats get an explicit trailing newline.
     const rendered = switch (config.output_format) {
-        .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, null, use_color),
+        .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, use_color),
         .json => zghalint.output.renderJson(stdout, all_diags, files.len),
         .sarif => zghalint.output.renderSarif(stdout, all_diags, &all_rules),
     };

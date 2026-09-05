@@ -9,7 +9,6 @@ const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
 const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
-const Span = yaml_types.Span;
 const Fix = diagnostics_mod.Fix;
 
 // ── DEP001: dependabot-cooldown ──
@@ -179,7 +178,6 @@ const yaml_parser_mod = @import("../yaml/parser.zig");
 fn parseYamlWithArena(arena: *std.heap.ArenaAllocator, source: []const u8) !Node {
     const alloc = arena.allocator();
     var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
     return parser.parse();
 }
 

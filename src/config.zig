@@ -111,7 +111,6 @@ pub fn parseConfig(allocator: std.mem.Allocator, source: []const u8) ConfigError
     defer yaml_arena.deinit();
 
     var parser = yaml_parser.Parser.init(yaml_arena.allocator(), source);
-    defer parser.deinit();
 
     const node = parser.parse() catch return ConfigError.InvalidYaml;
 
@@ -255,12 +254,9 @@ fn matchGlob(pattern: []const u8, str: []const u8) bool {
     return pi == pattern.len;
 }
 
-/// Find .zghalint.yml by searching from the given directory upwards.
-pub fn findConfigFile(start_dir: []const u8) ?[]const u8 {
-    // We just check the given directory for .zghalint.yml
-    // In a real implementation we'd walk upward, but for simplicity
-    // we check a fixed name in the start directory.
-    _ = start_dir;
+/// Path of the default config file when it exists in the current working
+/// directory. No upward search is performed.
+pub fn defaultConfigPath() ?[]const u8 {
     const path = ".zghalint.yml";
     std.fs.cwd().access(path, .{}) catch return null;
     return path;
