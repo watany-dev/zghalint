@@ -1,5 +1,3 @@
-//! Type inference and type checks over the expression AST.
-//!
 //! See `docs/design/expr-static-typecheck-design.md` §4-§6.
 //! `typeOf` never fails: anything unknown collapses to `any` (ADR D5).
 
@@ -13,18 +11,14 @@ const TypeRef = t.TypeRef;
 
 const any = &t.type_any;
 
-/// The first type error found while walking a path. Only one is reported per
-/// expression node; the result type collapses to `any` so errors do not cascade.
+/// Only one problem is reported per expression node and the result type
+/// collapses to `any`, so a single error does not cascade.
 pub const Problem = union(enum) {
-    /// Top-level context name is not known (EXPR002).
     unknown_context: []const u8,
-    /// Known receiver object, unknown key (EXPR003).
     unknown_property: struct {
-        /// Path up to and including the receiver, e.g. "github".
         receiver_path: []const u8,
         name: []const u8,
     },
-    /// Property access on a non-object value (EXPR003).
     not_an_object: struct {
         receiver_path: []const u8,
         receiver: TypeRef,
@@ -43,12 +37,9 @@ pub const Segment = union(enum) {
     index_string: []const u8,
 };
 
-/// Iterates the flat `context_access` path produced by the parser
-/// (`github.event.pull_request`, `foo.*`, `secrets['A']`).
 pub const SegmentIter = struct {
     path: []const u8,
     pos: usize = 0,
-    /// Byte offset just past the previously returned segment.
     prev_end: usize = 0,
 
     pub fn next(self: *SegmentIter) ?Segment {
@@ -86,8 +77,6 @@ fn stripQuotes(s: []const u8) []const u8 {
     return s;
 }
 
-/// Walk a context path and infer its type, reporting the first type error.
-///
 /// Every root name resolves against the builtin catalog. Per-workflow overlays
 /// (steps / matrix / needs / inputs / secrets) arrive with T4; see
 /// `docs/design/expr-static-typecheck-design.md` §4.
@@ -152,8 +141,7 @@ fn objectFilter(recv: TypeRef, receiver_path: []const u8) WalkResult {
         .any => return .{ .ty = any },
         .array => return .{ .ty = &t.type_array_any },
         .object => {
-            // Element type is the merge of every value type; a heterogeneous
-            // object collapses to array<any>, which is safe.
+            // A heterogeneous object collapses to array<any>, which is safe.
             var elem: ?TypeRef = if (recv.shape == .map) recv.elem else null;
             if (elem == null) {
                 for (recv.props) |p| {
@@ -181,10 +169,6 @@ fn indexString(recv: TypeRef, key: []const u8, receiver_path: []const u8) WalkRe
         else => notAnObject(recv, key, receiver_path),
     };
 }
-
-// ============================================================
-// typeOf
-// ============================================================
 
 pub fn typeOf(node: *const ExprNode) TypeRef {
     return switch (node.kind) {
@@ -214,8 +198,8 @@ fn functionReturnType(node: *const ExprNode) TypeRef {
     return sig.ret;
 }
 
-/// `fromJSON('<literal>')` infers a shallow type from the literal. Anything
-/// else, including malformed JSON (EXPR009's job), is `any`.
+/// Malformed JSON is EXPR009's job; anything but a string literal argument
+/// is `any`.
 fn fromJsonType(node: *const ExprNode) TypeRef {
     if (node.children.len != 1) return any;
     const arg = &node.children[0];
@@ -236,10 +220,6 @@ fn fromJsonType(node: *const ExprNode) TypeRef {
     };
 }
 
-// ============================================================
-// Comparison rules (EXPR017 / ADR D6)
-// ============================================================
-
 pub fn isCompareOp(op: []const u8) bool {
     return isEqualityOp(op) or isRelationalOp(op);
 }
@@ -257,7 +237,7 @@ fn isScalar(kind: t.TypeKind) bool {
     return kind == .number or kind == .bool or kind == .string;
 }
 
-/// Returns false only when the comparison can never be meaningful.
+/// Returns false only when the comparison can never be meaningful (ADR D6).
 pub fn checkCompare(op: []const u8, lhs: TypeRef, rhs: TypeRef) bool {
     if (lhs.kind == .any or rhs.kind == .any) return true;
 
@@ -275,10 +255,6 @@ pub fn checkCompare(op: []const u8, lhs: TypeRef, rhs: TypeRef) bool {
     }
     return false;
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 fn walkTy(path: []const u8) TypeRef {

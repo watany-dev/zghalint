@@ -18,8 +18,6 @@ const ActionRef = workflow_types.ActionRef;
 const Fix = diagnostics.Fix;
 const spans = @import("spans.zig");
 
-// ── PERM001: Overly broad permissions ──
-
 fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
         checkPermissionsScope(perms, wf.permissions_meta, spans.workflow_head, diag_list);
@@ -84,9 +82,8 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
         return;
     }
 
-    // Individual write permissions across all scope keys. `PermissionsMeta`
-    // declares exactly those keys, so it doubles as the key list.
-    // `id-token` is detected with a dedicated hint (OIDC context) and no autofix,
+    // `PermissionsMeta` declares exactly the scope keys, so it doubles as the
+    // key list. `id-token` gets a dedicated hint (OIDC context) and no autofix,
     // because the GitHub Actions spec does not allow `id-token: read`.
     inline for (workflow_types.permission_scopes) |field| {
         const key: []const u8 = comptime workflow_types.permissionScopeKey(field);
@@ -118,8 +115,6 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
         }
     }
 }
-
-// ── PERM002: Missing job-level permissions with third-party actions ──
 
 fn buildJobPermissionsFix(list: *DiagnosticList, job: *const Job) ?Fix {
     const insert_byte = job.permissions_insertion_byte orelse return null;
@@ -186,8 +181,6 @@ pub const rules = [_]Rule{
         .check_job = checkJobPermissions,
     },
 };
-
-// ── Tests ──
 
 test "PERM001: detect write-all scope" {
     const wf = Workflow{
@@ -362,7 +355,6 @@ test "PERM002: fix is null when permissions_insertion_byte is missing" {
             Step{ .uses = ActionRef.parse("some-org/some-action@v1") },
         },
         .job_indent = 3,
-        // permissions_insertion_byte left null
     };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
@@ -467,8 +459,6 @@ test "PERM002: multiple jobs get fixes applied in back-to-front order" {
     );
 }
 
-// ── PERM001 autofix tests ──
-
 test "PERM001: autofix replaces write-all with minimal permissions" {
     const fix_engine = @import("../fix/engine.zig");
     const source = "permissions: write-all\njobs:";
@@ -517,8 +507,6 @@ test "PERM001: no fix for individual write when meta is null" {
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
 }
-
-// ── PERM001 per-field autofix (14-field coverage + id-token carve-out) ──
 
 test "PERM001: per-field autofix downgrades contents: write to read" {
     const fix_engine = @import("../fix/engine.zig");
@@ -645,7 +633,6 @@ test "PERM001: id-token mixed with other writes produces per-field fixes except 
     var diags = DiagnosticList.init(alloc);
     checkBroadPermissions(&wf, &diags);
 
-    // Two diagnostics (contents + id-token), but only contents carries a fix.
     try std.testing.expectEqual(@as(usize, 2), diags.len());
     var fix_count: usize = 0;
     var has_id_token_diag = false;

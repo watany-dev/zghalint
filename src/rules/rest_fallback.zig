@@ -1,15 +1,10 @@
-//! REST fallback for GitHub repository metadata.
-//!
 //! When the GraphQL batch path is unavailable (no `GITHUB_TOKEN`, transport
 //! error, etc.) the prefetch orchestrator and the lazy per-step rule paths
-//! fall back to single REST calls. This module collects those calls in one
-//! place so each rule file only contains domain logic, not HTTP plumbing.
+//! fall back to single REST calls. Those calls are collected here so each
+//! rule file only contains domain logic, not HTTP plumbing.
 //!
-//! The eight-step fetch ritual (URL alloc, allocating writer, auth header,
-//! standard headers, fetch, status branch, body parse) used to live in five
-//! callsites across `archived.zig`, `stale_refs.zig`, `refconfusion.zig`, and
-//! `impostor_compare.zig`. This module replaces four of them; the
-//! `compareRest` callsite is left for a follow-up tidy.
+//! The `compareRest` callsite in `impostor_compare.zig` is left for a
+//! follow-up tidy.
 
 const std = @import("std");
 
@@ -18,17 +13,9 @@ const json_util = @import("json_util.zig");
 
 const Allocator = std.mem.Allocator;
 
-// ============================================================
-// Public types
-// ============================================================
-
-/// The error set used by every public function in this module.
-///
-/// It is built on top of `http_client.FetchedError` so that transport-level
-/// failures (`NotInitialized`, `FetchFailed`, `NetworkDeadlineExceeded`,
-/// `OutOfMemory`) propagate to callers without being collapsed, and adds the
-/// REST-specific failure modes that come from interpreting GitHub responses
-/// (`HttpError`, `JsonParseError`, `UnexpectedFormat`, `MissingField`).
+/// Built on top of `http_client.FetchedError` so that transport-level
+/// failures propagate to callers without being collapsed into the
+/// REST-specific ones.
 pub const RestError = http_client.FetchedError || error{
     HttpError,
     JsonParseError,
@@ -48,10 +35,6 @@ pub const RefStatus = enum {
     fetch_failed,
 };
 
-// ============================================================
-// Module-level rate-limit flag for SC006
-// ============================================================
-
 /// Once GitHub returns 403 / 429 we stop issuing further REST ref-existence
 /// queries for the lifetime of the process. This flag lives here, not in
 /// `refconfusion.zig`, because it is owned by the REST transport layer.
@@ -61,12 +44,6 @@ pub fn resetRateLimit() void {
     rate_limited = false;
 }
 
-// ============================================================
-// SC004: archived repository
-// ============================================================
-
-/// Fetch the `archived` flag for `owner/repo` via the REST endpoint
-/// `GET /repos/{owner}/{repo}`.
 pub fn fetchArchiveStatus(allocator: Allocator, owner: []const u8, repo: []const u8) RestError!bool {
     const url = try std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}", .{ owner, repo });
     defer allocator.free(url);
@@ -87,13 +64,8 @@ fn parseArchivedField(allocator: Allocator, body: []const u8) RestError!bool {
     return json_util.asBool(archived_val) orelse error.UnexpectedFormat;
 }
 
-// ============================================================
-// SC005: stale SHA → tag resolution
-// ============================================================
-
-/// Resolve the tag relationship for `sha` by listing matching tag refs and
-/// (where necessary) dereferencing annotated tags. Returns `unknown` for any
-/// HTTP failure so the rule can fail open instead of misfiring.
+/// Returns `unknown` for any HTTP failure so the rule can fail open instead
+/// of misfiring.
 pub fn resolveTagForSha(
     allocator: Allocator,
     owner: []const u8,
@@ -171,8 +143,6 @@ fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []cons
     return parseTagObject(resp.body);
 }
 
-/// Parse a Git tag object response and extract the target commit SHA.
-/// Response format: { "object": { "sha": "...", "type": "commit" } }
 fn parseTagObject(body: []const u8) RestError![]const u8 {
     var buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buf);
@@ -188,13 +158,6 @@ fn parseTagObject(body: []const u8) RestError![]const u8 {
     return json_util.stringField(inner, "sha") orelse error.UnexpectedFormat;
 }
 
-// ============================================================
-// SC006: tag/branch ref existence
-// ============================================================
-
-/// Probe whether `ref` exists as a tag, a branch, or both. Sets the module
-/// rate-limit flag on 403 / 429 and returns `fetch_failed` for the lifetime
-/// of the process once tripped.
 pub fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8) RefStatus {
     if (rate_limited) return .fetch_failed;
 
@@ -205,8 +168,6 @@ pub fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8,
     return .not_ambiguous;
 }
 
-/// Returns true on HTTP 200, false on HTTP 404, null on any other status
-/// (rate-limited responses also flip the module flag).
 fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8, ref_type: []const u8) ?bool {
     const url = std.fmt.allocPrint(allocator, "https://api.github.com/repos/{s}/{s}/git/ref/{s}/{s}", .{ owner, repo, ref_type, ref }) catch return null;
     defer allocator.free(url);
@@ -222,10 +183,6 @@ fn checkRefExists(allocator: Allocator, owner: []const u8, repo: []const u8, ref
     }
     return null;
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 

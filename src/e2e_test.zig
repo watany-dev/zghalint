@@ -25,7 +25,6 @@ const diagnostics = @import("diagnostics.zig");
 
 const fixture_dir = "tests/fixtures/e2e";
 
-/// A rule ID plus the optional 1-based line it is expected on.
 const Expectation = struct {
     rule_id: []const u8,
     line: ?u32 = null,
@@ -46,15 +45,13 @@ const Directives = struct {
     expect: std.ArrayList(Expectation) = .{},
     forbid: std.ArrayList(Expectation) = .{},
 
-    /// Collect `# zghalint:expect` / `# zghalint:forbid` directives from the
-    /// fixture's leading comment block.
     fn parse(alloc: std.mem.Allocator, source: []const u8) !Directives {
         var self = Directives{};
         var lines = std.mem.splitScalar(u8, source, '\n');
         while (lines.next()) |raw| {
             const line = std.mem.trim(u8, raw, " \t\r");
             if (line.len == 0) continue;
-            if (line[0] != '#') break; // leading comment block ended
+            if (line[0] != '#') break;
 
             const body = std.mem.trim(u8, line[1..], " \t");
             const target: *std.ArrayList(Expectation) =
@@ -76,8 +73,6 @@ const Directives = struct {
     }
 };
 
-/// Run the full pipeline over one fixture and return its diagnostics.
-///
 /// Network-backed rules (SC003–SC006, SC008) stay offline by default, so the
 /// fixtures only ever exercise local analysis.
 fn lintSource(

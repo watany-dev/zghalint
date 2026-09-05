@@ -1,5 +1,3 @@
-//! Common autofix edit builder.
-//!
 //! Centralizes the byte-level edit construction used by rules so that each
 //! rule only needs to supply span / indent / key / value and a FixSafety
 //! classification of its own. Returning `null` signals "unable to build this
@@ -14,8 +12,8 @@ const Edit = diagnostics.Edit;
 const Span = yaml_types.Span;
 const ScalarStyle = yaml_types.ScalarStyle;
 
-/// Wrap a single edit in an owned slice. Every builder here produces exactly one
-/// edit; only its byte range and replacement text differ.
+/// Every builder here produces exactly one edit; only its byte range and
+/// replacement text differ.
 fn oneEdit(alloc: std.mem.Allocator, start_byte: usize, end_byte: usize, replacement: []const u8) ?[]const Edit {
     const edits = alloc.alloc(Edit, 1) catch return null;
     edits[0] = .{ .start_byte = start_byte, .end_byte = end_byte, .replacement = replacement };
@@ -32,10 +30,8 @@ pub const SubEntry = struct {
     value: []const u8,
 };
 
-/// Build a single-Edit slice inserting "<indent spaces>key: value\n" at `pos.byte`.
 /// Use when the anchor is the start of a physical line (column 1), such as the
 /// byte just after a `full_span` of a prior entry.
-/// Returns null on OOM.
 pub fn insertMappingEntry(
     alloc: std.mem.Allocator,
     pos: InsertPos,
@@ -60,12 +56,10 @@ pub fn insertMappingEntry(
     return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
-/// Build a single-Edit slice inserting "key: value\n<indent spaces>" at `pos.byte`.
 /// Use when the anchor sits at an already-indented sibling key (e.g. `runs-on:`);
 /// the surrounding leading whitespace on the line is preserved and becomes the
 /// indent of the new entry, while the trailing `\n<indent>` restores indentation
 /// for the displaced sibling key.
-/// Returns null on OOM.
 pub fn insertMappingEntryBefore(
     alloc: std.mem.Allocator,
     pos: InsertPos,
@@ -90,9 +84,8 @@ pub fn insertMappingEntryBefore(
     return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
-/// Build a single-Edit slice appending "\n<indent>key: value" at `after_byte`.
-/// Useful when the caller wants to extend an existing mapping whose last entry
-/// ends at `after_byte` (without a trailing newline).
+/// Use when extending an existing mapping whose last entry ends at `after_byte`
+/// (without a trailing newline).
 pub fn appendMappingEntry(
     alloc: std.mem.Allocator,
     after_byte: usize,
@@ -117,10 +110,8 @@ pub fn appendMappingEntry(
     return oneEdit(alloc, after_byte, after_byte, buf);
 }
 
-/// Build a single-Edit slice appending a fresh `with:` block at `after_byte`:
-///   \n<col-1 spaces>with:\n<col+1 spaces>key: value
 /// `uses_key_col` is the 1-based column of the step's `uses:` key, which the
-/// new `with:` aligns with. Returns null when the column is unknown (0) or OOM.
+/// new `with:` aligns with.
 pub fn insertWithEntry(
     alloc: std.mem.Allocator,
     after_byte: usize,
@@ -142,15 +133,9 @@ pub fn insertWithEntry(
     return oneEdit(alloc, after_byte, after_byte, replacement);
 }
 
-/// Build a single-Edit slice inserting a multi-line block mapping at `pos.byte`.
-/// Generated shape (line-oriented, each line newline-terminated):
-///   <indent>key:
-///   <indent+child_indent>subkey1: value1
-///   <indent+child_indent>subkey2: value2
-///   ...
 /// Use when the anchor is at the start of a physical line (e.g. just after a
-/// prior entry's `full_span`). Returns null for empty `sub_entries` (to avoid
-/// producing a key with no mapping children) or on OOM.
+/// prior entry's `full_span`). Empty `sub_entries` yields null to avoid
+/// producing a key with no mapping children.
 pub fn insertMappingEntryBlock(
     alloc: std.mem.Allocator,
     pos: InsertPos,
@@ -194,8 +179,7 @@ pub fn insertMappingEntryBlock(
     return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
-/// Build a single-Edit slice replacing the scalar at `value_span` with `new_value`,
-/// honoring the original `style` so quote characters stay intact.
+/// Honors the original `style` so quote characters stay intact.
 ///
 /// Returns null for `literal` / `folded` block scalars, matching the existing
 /// BP003 / DEP002 behavior: multi-line block scalars can't be rewritten safely
@@ -220,16 +204,11 @@ pub fn replaceScalar(
     return oneEdit(alloc, content_start, content_end, new_value);
 }
 
-/// Build a single-Edit slice that deletes `entry_span` (replacement is empty).
 /// Typical usage is with `MappingEntry.full_span`, which covers the key line
-/// plus its trailing newline.
+/// plus its trailing newline, so no blank line is left behind.
 pub fn deleteMappingEntry(alloc: std.mem.Allocator, entry_span: Span) ?[]const Edit {
     return oneEdit(alloc, entry_span.start_byte, entry_span.end_byte, "");
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 

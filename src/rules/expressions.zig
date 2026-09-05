@@ -19,10 +19,6 @@ pub const Step = workflow_types.Step;
 pub const Job = workflow_types.Job;
 pub const StringMap = workflow_types.StringMap;
 
-// ============================================================
-// Expression Tokenizer
-// ============================================================
-
 pub const TokenKind = enum {
     identifier,
     dot,
@@ -64,14 +60,12 @@ pub const ExprTokenizer = struct {
         }
     }
 
-    /// A token whose text is fixed and known: advance past it and describe it.
     fn emitSimple(self: *ExprTokenizer, kind: TokenKind, comptime text: []const u8) ExprToken {
         const start = self.pos;
         self.pos += text.len;
         return .{ .kind = kind, .value = text, .pos = start };
     }
 
-    /// Whether the character right after the current one is `c`.
     fn peekIs(self: *const ExprTokenizer, c: u8) bool {
         return self.pos + 1 < self.source.len and self.source[self.pos + 1] == c;
     }
@@ -135,20 +129,19 @@ pub const ExprTokenizer = struct {
 
     fn readString(self: *ExprTokenizer) ExprToken {
         const start = self.pos;
-        self.pos += 1; // skip opening quote
+        self.pos += 1;
         while (self.pos < self.source.len) {
             if (self.source[self.pos] == '\'') {
-                // Check for escaped quote ('')
+                // `''` is an escaped quote.
                 if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '\'') {
                     self.pos += 2;
                     continue;
                 }
-                self.pos += 1; // skip closing quote
+                self.pos += 1;
                 return .{ .kind = .string_literal, .value = self.source[start..self.pos], .pos = start };
             }
             self.pos += 1;
         }
-        // Unterminated string
         return .{ .kind = .@"error", .value = self.source[start..self.pos], .pos = start };
     }
 
@@ -160,7 +153,6 @@ pub const ExprTokenizer = struct {
         {
             self.pos += 1;
         }
-        // Handle e/E notation
         if (self.pos < self.source.len and
             (self.source[self.pos] == 'e' or self.source[self.pos] == 'E'))
         {
@@ -190,10 +182,6 @@ pub const ExprTokenizer = struct {
     }
 };
 
-// ============================================================
-// Expression AST
-// ============================================================
-
 pub const NodeKind = enum {
     context_access,
     function_call,
@@ -211,15 +199,10 @@ pub const ExprNode = struct {
     /// for literals: the value; for ops: the operator
     value: []const u8,
     children: []const ExprNode,
-    /// Byte offset of the node's first token within the expression source string
+    /// Relative to the expression source, not the workflow file.
     start_byte: u32 = 0,
-    /// Byte offset one past the node's last token within the expression source string
     end_byte: u32 = 0,
 };
-
-// ============================================================
-// Expression Parser (recursive descent)
-// ============================================================
 
 pub const ParseError = error{
     UnexpectedToken,
@@ -260,7 +243,6 @@ pub const ExprParser = struct {
         self.current = self.tokenizer.next();
     }
 
-    /// Parse a full expression
     pub fn parse(self: *ExprParser) ParseError!ExprNode {
         if (self.current.kind == .eof) {
             self.error_message = "empty expression";
@@ -286,8 +268,6 @@ pub const ExprParser = struct {
         return self.parseBinary(parseUnary, isComparisonOp);
     }
 
-    /// One left-associative binary precedence level. The three levels differ
-    /// only in the next-tighter parser and in which token continues the fold.
     fn parseBinary(
         self: *ExprParser,
         comptime next: fn (*ExprParser) ParseError!ExprNode,
@@ -331,7 +311,6 @@ pub const ExprParser = struct {
         return self.parsePrimary();
     }
 
-    /// Childless node spanning exactly the token's own text.
     fn leaf(kind: NodeKind, tok: ExprToken) ExprNode {
         return .{
             .kind = kind,
@@ -369,7 +348,6 @@ pub const ExprParser = struct {
                 const name_start = tok.pos;
                 self.advance();
 
-                // Check for boolean/null literals
                 if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false")) {
                     return leaf(.boolean_literal, tok);
                 }
@@ -377,12 +355,10 @@ pub const ExprParser = struct {
                     return leaf(.null_literal, tok);
                 }
 
-                // Function call: identifier followed by (
                 if (self.current.kind == .open_paren) {
                     return self.parseFunctionCall(name, name_start);
                 }
 
-                // Context access: identifier possibly followed by dots
                 return self.parseContextAccess(name, name_start);
             },
             .@"error" => {
@@ -397,7 +373,7 @@ pub const ExprParser = struct {
     }
 
     fn parseFunctionCall(self: *ExprParser, name: []const u8, name_start: usize) ParseError!ExprNode {
-        self.advance(); // skip '('
+        self.advance();
         var args = std.ArrayList(ExprNode){};
 
         if (self.current.kind != .close_paren) {
@@ -450,7 +426,6 @@ pub const ExprParser = struct {
             }
         }
 
-        // Handle bracket access: context['key']
         while (self.current.kind == .open_bracket) {
             self.advance();
             if (self.current.kind == .string_literal) {
@@ -481,18 +456,10 @@ pub const ExprParser = struct {
     }
 };
 
-// ============================================================
-// Expression Validator
-// ============================================================
-
-/// Validate an expression.
-///
-/// `expr_base_byte` is the absolute byte offset in the source file at which
-/// `expr` begins. It is used when constructing autofix Edit byte ranges;
-/// diagnostics themselves continue to use `base_span` for reporting.
-/// Pass `null` when the base byte cannot be determined reliably (e.g.
-/// values whose scalar style makes the byte math ambiguous): autofix
-/// generation is skipped in that case while diagnostics remain emitted.
+/// `expr_base_byte` is the absolute file offset of `expr`, used only for
+/// autofix Edit ranges; diagnostics keep reporting through `base_span`.
+/// Pass `null` when it cannot be determined reliably: autofix is skipped
+/// while diagnostics are still emitted.
 pub fn validateExpression(
     allocator: std.mem.Allocator,
     expr: []const u8,
@@ -583,7 +550,6 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
     }) catch return;
 }
 
-/// EXPR017: operands of a comparison whose types can never be compared.
 fn checkComparison(allocator: std.mem.Allocator, node: *const ExprNode, span: Span, list: *DiagnosticList) void {
     if (node.children.len != 2) return;
     const op = node.value;
@@ -647,7 +613,6 @@ fn validateFunctionCall(
         }) catch return;
     }
 
-    // EXPR006: contains() with string literal may cause unsound substring matching
     if (std.mem.eql(u8, name, "contains") and node.children.len == 2) {
         if (node.children[1].kind == .string_literal) {
             const fix = buildContainsEqFix(list, node, expr_base_byte, parent);
@@ -662,37 +627,18 @@ fn validateFunctionCall(
         }
     }
 
-    // Validate arguments recursively
     for (node.children) |*child| {
         validateNode(allocator, child, span, list, expr_base_byte, node);
     }
 }
 
-// ============================================================
-// EXPR006 autofix: contains(ctx, 'lit') → ctx == 'lit'
-//                  !contains(ctx, 'lit') → ctx != 'lit'   (V2)
-// ============================================================
-
-/// Build an unsafe Edit for one of:
-///   * `contains(context.path, 'literal')` → `context.path == 'literal'` (V1)
-///   * `!contains(context.path, 'literal')` → `context.path != 'literal'` (V2)
-///
-/// When `parent` is a unary `!` wrapping this `contains()` call, the Edit
-/// range is widened to span the leading `!` and an inequality operator is
-/// emitted. Otherwise a V1 equality Edit is produced.
-///
-/// Returns null when any of the following exclusions apply:
-///   * first arg is not a bare `context_access` (function calls / literals rejected)
-///   * context path contains `.*` or `[` (array / bracket access rejected)
-///   * literal has a `''` escape in its interior (kept byte-identical)
 fn buildContainsEqFix(
     list: *DiagnosticList,
     node: *const ExprNode,
     expr_base_byte: ?usize,
     parent: ?*const ExprNode,
 ) ?Fix {
-    // If the caller could not determine a reliable absolute byte base, we
-    // cannot produce a well-targeted Edit. Emit the diagnostic only.
+    // Without a reliable byte base an Edit could land anywhere; diagnostic only.
     const base = expr_base_byte orelse return null;
 
     const ctx = &node.children[0];
@@ -732,10 +678,6 @@ fn buildContainsEqFix(
     };
 }
 
-// ============================================================
-// EXPR007: unsound-condition — bare literal in logical operator
-// ============================================================
-
 fn checkUnsoundCondition(
     allocator: std.mem.Allocator,
     node: *const ExprNode,
@@ -768,27 +710,10 @@ fn checkUnsoundCondition(
     }
 }
 
-// ============================================================
-// EXPR007 autofix: a == 'x' || 'y'  →  a == 'x' || a == 'y'
-//                  a != 'x' && 'y'  →  a != 'x' && a != 'y'
-// ============================================================
-
-/// Build an unsafe Edit that expands a bare string literal operand of `||` /
-/// `&&` into an explicit comparison borrowed from its sibling.
-///
-/// Eligibility (V1):
-///   * the parent logical op pairs with the sibling comparator:
-///       - `||` requires sibling op `==`
-///       - `&&` requires sibling op `!=`
-///   * the sibling is a direct `binary_op` whose left child is `context_access`
-///     and whose right child is a `string_literal`
-///   * the bare literal is a `string_literal` (number_literal is V2 / not handled)
-///   * neither literal contains a `''` escape in its interior
-///   * the LHS context path contains neither `.*` nor `[`
-///   * `expr_base_byte` is non-null (otherwise byte math is unreliable)
-///
-/// Returns null when any condition fails. The Edit replaces the bare
-/// literal's byte range with `"{ctx_path} {op} {literal_value}"`.
+/// Unsafe Edit that expands a bare string literal operand of `||` / `&&`
+/// into a comparison borrowed from its sibling (`a == 'x' || 'y'` →
+/// `a == 'x' || a == 'y'`). Only `==` under `||` and `!=` under `&&` pair
+/// up; a bare number_literal is V2 and not handled yet.
 fn buildExpr007Fix(
     list: *DiagnosticList,
     node: *const ExprNode,
@@ -849,23 +774,10 @@ fn literalInteriorIsClean(lit_value: []const u8) bool {
     return std.mem.indexOfScalar(u8, interior, '\'') == null;
 }
 
-// ============================================================
-// Expression extraction from strings
-// ============================================================
-
-/// Find all ${{ ... }} expressions in a string and validate each.
-///
-/// `text_base_byte` is the absolute byte offset in the source file at which
-/// `text` begins. For each inner `${{ ... }}` the trimmed expression's
-/// absolute offset is forwarded to `validateExpression` so EXPR006 autofix
-/// can emit byte-accurate Edits. Pass `null` when the base byte cannot be
-/// determined reliably; in that case diagnostics are still emitted but the
-/// autofix Edit is suppressed (see `validateExpression`).
-/// Validate every `${{ ... }}` expression in `text`.
-///
-/// `anchor` maps an offset inside `text` back to a source position, so each
-/// expression is reported where it actually appears instead of at the start of
-/// the enclosing scalar.
+/// `anchor` maps offsets inside `text` back to source positions so each
+/// expression is reported where it appears, not at the start of the
+/// enclosing scalar. `text_base_byte` follows the `validateExpression`
+/// contract: `null` suppresses autofix Edits but not diagnostics.
 pub fn findAndValidateExpressions(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -880,7 +792,6 @@ pub fn findAndValidateExpressions(
             if (std.mem.indexOf(u8, text[expr_start..], "}}")) |end_offset| {
                 const expr_content = text[expr_start .. expr_start + end_offset];
                 const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
-                // Compute leading trim offset so `trimmed`'s absolute byte is accurate.
                 const leading_trim = std.mem.indexOfNone(u8, expr_content, " \t\n\r") orelse 0;
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
                 const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
@@ -901,25 +812,16 @@ pub fn findAndValidateExpressions(
     }
 }
 
-// ============================================================
-// Rule check functions (for engine integration)
-// ============================================================
-
 fn getArenaAllocator() std.mem.Allocator {
-    // Use a GPA for allocations needed during validation.
-    // In real usage the engine would provide an arena; here we use a GPA
-    // that leaks since diagnostic messages must outlive the call.
+    // Leaks on purpose: diagnostic messages must outlive the call and the
+    // engine provides no arena.
     return std.heap.page_allocator;
 }
 
-/// Return the absolute byte offset of the first character of the scalar's
-/// `value` (the content, not the raw token). For quoted scalars the YAML
-/// parser's `value_span.start_byte` points at the opening quote and `value`
-/// begins one byte later; for plain scalars they coincide. For block
-/// scalars (`|` / `>`) the parser's span points at the indicator while
-/// `value` begins after the first newline — the exact content-start byte
-/// is not preserved, so this function returns `null` to signal that fix
-/// byte ranges cannot be derived from this meta.
+/// For quoted scalars the parser's `value_span` starts at the opening quote,
+/// so the content begins one byte later. For block scalars (`|` / `>`) the
+/// span points at the indicator and the content-start byte is not preserved,
+/// so no fix byte range can be derived: `null`.
 fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
     return switch (meta.style) {
         .plain => meta.value_span.start_byte,
@@ -928,8 +830,8 @@ fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
     };
 }
 
-/// Validate an `if:` condition. GitHub allows the `${{ }}` wrapper to be
-/// omitted, so a condition without one is itself a single expression.
+/// GitHub allows the `${{ }}` wrapper to be omitted from `if:`, so a
+/// condition without one is itself a single expression.
 fn checkIfCondition(
     allocator: std.mem.Allocator,
     if_condition: ?[]const u8,
@@ -951,10 +853,8 @@ fn checkIfCondition(
     validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
 }
 
-/// Whether per-entry byte offsets are trustworthy enough to base autofix ranges on.
 const ByteTracking = enum { track_bytes, no_bytes };
 
-/// Validate the expressions in every value of an `env:` / `with:` style map.
 fn checkScalarMap(
     allocator: std.mem.Allocator,
     map: ?workflow_types.StringMap,
@@ -977,10 +877,9 @@ fn checkScalarMap(
 pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
 
-    // Check 'run' field — the scalar style is not tracked, and `run:` is
-    // very commonly a block scalar (`|` / `>`) whose content-start byte
-    // cannot be recovered from `value_span`. Pass null so autofix byte
-    // ranges are never computed from an unreliable base.
+    // `run:` scalar style is not tracked and it is usually a block scalar,
+    // whose content-start byte cannot be recovered; never derive fix ranges
+    // from it.
     if (step.run) |run_val| {
         const run_anchor = spans.runAnchor(step);
         findAndValidateExpressions(allocator, run_val, run_anchor, list, null);
@@ -988,11 +887,10 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
 
     checkIfCondition(allocator, step.if_condition, step.if_condition_meta, step.span, list);
 
-    // with values — per-entry scalar spans are not captured, so the absolute
-    // byte base is unknown. Suppress fix generation.
+    // Per-entry scalar spans for `with:` are not captured, so the byte base
+    // is unknown.
     checkScalarMap(allocator, step.with, step.with_meta, step.span, list, .no_bytes);
 
-    // env values — env_meta gives accurate byte tracking when available.
     checkScalarMap(allocator, step.env, step.env_meta, step.span, list, .track_bytes);
 }
 
@@ -1004,7 +902,6 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     checkScalarMap(allocator, job.env, job.env_meta, job.span, list, .track_bytes);
 }
 
-/// Pre-built rule for use with the Engine
 pub const expression_rule = @import("engine.zig").Rule{
     .id = "EXPR",
     .name = "expression-validator",
@@ -1014,10 +911,6 @@ pub const expression_rule = @import("engine.zig").Rule{
     .check_step = &checkStep,
     .check_job = &checkJob,
 };
-
-// ============================================================
-// Tests
-// ============================================================
 
 fn expectNoDiagnostics(expr: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1042,8 +935,6 @@ fn expectSingleRule(expr: []const u8, rule_id: []const u8) !void {
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings(rule_id, list.get(0).rule_id);
 }
-
-// --- Tokenizer Tests ---
 
 test "tokenizer: simple identifier" {
     var t = ExprTokenizer.init("github");
@@ -1107,13 +998,13 @@ test "tokenizer: number" {
 
 test "tokenizer: function call tokens" {
     var t = ExprTokenizer.init("contains(github.event_name, 'push')");
-    try std.testing.expectEqual(TokenKind.identifier, t.next().kind); // contains
+    try std.testing.expectEqual(TokenKind.identifier, t.next().kind);
     try std.testing.expectEqual(TokenKind.open_paren, t.next().kind);
-    try std.testing.expectEqual(TokenKind.identifier, t.next().kind); // github
+    try std.testing.expectEqual(TokenKind.identifier, t.next().kind);
     try std.testing.expectEqual(TokenKind.dot, t.next().kind);
-    try std.testing.expectEqual(TokenKind.identifier, t.next().kind); // event_name
+    try std.testing.expectEqual(TokenKind.identifier, t.next().kind);
     try std.testing.expectEqual(TokenKind.comma, t.next().kind);
-    try std.testing.expectEqual(TokenKind.string_literal, t.next().kind); // 'push'
+    try std.testing.expectEqual(TokenKind.string_literal, t.next().kind);
     try std.testing.expectEqual(TokenKind.close_paren, t.next().kind);
     try std.testing.expectEqual(TokenKind.eof, t.next().kind);
 }
@@ -1127,8 +1018,6 @@ test "tokenizer: invalid single pipe" {
     var t = ExprTokenizer.init("|");
     try std.testing.expectEqual(TokenKind.@"error", t.next().kind);
 }
-
-// --- Parser Tests ---
 
 test "parser: simple context access" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1257,8 +1146,6 @@ test "parser: unclosed function call error" {
     try std.testing.expectError(ParseError.UnclosedParen, result);
 }
 
-// --- Byte offset tests ---
-
 test "parser: byte offsets for string literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1336,8 +1223,6 @@ test "parser: byte offsets for star context access" {
     try std.testing.expectEqual(@as(u32, 0), node.start_byte);
     try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
 }
-
-// --- Validator Tests ---
 
 test "validate: valid expression github.sha" {
     try expectNoDiagnostics("github.sha");
@@ -1460,8 +1345,6 @@ test "validate: syntax error unclosed paren" {
     try expectSingleRule("(github.sha", "EXPR001");
 }
 
-// --- findAndValidateExpressions Tests ---
-
 test "find expressions: single expression in string" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1511,8 +1394,6 @@ test "find expressions: expression with unknown context" {
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR002", list.get(0).rule_id);
 }
-
-// --- checkStep / checkJob integration tests ---
 
 test "checkStep: valid run expression" {
     const step = Step{
@@ -1586,8 +1467,6 @@ test "checkJob: invalid if expression" {
     try std.testing.expectEqualStrings("EXPR002", list.get(0).rule_id);
 }
 
-// --- All valid functions test ---
-
 test "validate: all valid functions with correct args" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1612,7 +1491,6 @@ test "validate: all valid functions with correct args" {
     for (exprs) |expr| {
         validateExpression(arena.allocator(), expr, span, &list, 0);
     }
-    // contains('hello', 'ell') triggers EXPR006
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
@@ -1652,8 +1530,6 @@ test "validate: all valid runner properties" {
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
-// --- Edge cases ---
-
 test "validate: hashFiles with multiple args" {
     try expectNoDiagnostics("hashFiles('**/package-lock.json', '**/yarn.lock')");
 }
@@ -1673,8 +1549,6 @@ test "validate: complex logical expression" {
 test "validate: toJSON wrong args" {
     try expectSingleRule("toJSON(github.event, 'extra')", "EXPR005");
 }
-
-// --- EXPR006: unsound-contains tests ---
 
 test "EXPR006: contains with string literal second arg" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1745,8 +1619,6 @@ test "EXPR006: checkJob contains in if condition" {
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR006", list.get(0).rule_id);
 }
-
-// --- EXPR006 V1 autofix tests ---
 
 test "EXPR006 fix: replaces contains(ctx, 'lit') with ctx == 'lit'" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1859,8 +1731,6 @@ test "EXPR006 fix: no fix when literal contains '' escape" {
     try std.testing.expect(list.get(0).fix == null);
 }
 
-// --- EXPR007: unsound-condition tests ---
-
 test "validate EXPR007: bare string literal right of ||" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1935,10 +1805,6 @@ test "checkJob EXPR007: if condition with bare literal" {
     try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
 }
 
-// ============================================================
-// EXPR006 V1 autofix integration tests
-// ============================================================
-
 test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" {
     const fix_engine = @import("../fix/engine.zig");
 
@@ -1976,7 +1842,6 @@ test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" 
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    // The YAML double-quoted wrapper is preserved around the new expression.
     try std.testing.expect(std.mem.indexOf(u8, result.content, "if: \"github.ref == 'main'\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
 }
@@ -2105,8 +1970,6 @@ test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-
     try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
 }
 
-// --- EXPR006 autofix suppression: byte base unreliable ---
-
 test "EXPR006 fix: suppressed when expr_base_byte is null" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2217,8 +2080,6 @@ test "EXPR006 autofix: suppressed for block-scalar `if:` value" {
     }
     try std.testing.expect(saw_diag);
 }
-
-// --- EXPR007 V1 autofix tests ---
 
 fn firstFix(list: DiagnosticList, rule_id: []const u8) ?Fix {
     for (list.items.items) |d| {
@@ -2471,8 +2332,6 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
         "if: github.event_name == 'push' || github.event_name == 'pull_request'",
     ) != null);
 }
-
-// --- Type engine integration (EXPR003 deep walk / EXPR017) ---
 
 test "EXPR003: property access on a string context value" {
     try expectSingleRule("github.repository.permissions.admin", "EXPR003");

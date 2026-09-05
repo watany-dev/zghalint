@@ -19,8 +19,6 @@ const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
 const FixSafety = diagnostics_mod.FixSafety;
 
-// ── BP001: Missing timeout-minutes ──
-
 fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.timeout_minutes != null or job.timeout_minutes_specified) return;
 
@@ -50,8 +48,6 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
         .fix = fix,
     }) catch return;
 }
-
-// ── BP002: Missing step name ──
 
 fn generateStepName(allocator: std.mem.Allocator, step: *const Step) ?[]const u8 {
     if (step.uses) |ref| {
@@ -102,11 +98,8 @@ fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
     diag_list.append(diag) catch return;
 }
 
-// ── BP003: Deprecated action version ──
-
 const DeprecatedAction = struct {
     action: []const u8,
-    /// Major versions strictly below this are deprecated (`v1` .. `vN-1`).
     deprecated_below: u8,
     replacement: []const u8,
 };
@@ -122,7 +115,7 @@ const deprecated_actions = [_]DeprecatedAction{
     .{ .action = "actions/cache", .deprecated_below = 3, .replacement = "v4" },
 };
 
-/// Major version of a bare `vN` tag (single digit, as every deprecated tag is).
+/// Single digit only, as every deprecated tag is.
 fn majorTag(version: []const u8) ?u8 {
     if (version.len != 2 or version[0] != 'v') return null;
     if (!std.ascii.isDigit(version[1])) return null;
@@ -197,8 +190,6 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     }
 }
 
-// ── BP004: Cross-platform shell not specified ──
-
 fn buildCrossPlatformShellFix(list: *DiagnosticList, step: *const Step) ?Fix {
     const insert_byte = step.shell_insertion_byte orelse return null;
     if (step.span.start_col == 0) return null;
@@ -240,8 +231,6 @@ fn hasWindowsTarget(job: *const Job) bool {
     return std.ascii.indexOfIgnoreCase(runs_on, "windows") != null;
 }
 
-// ── BP005: Push trigger without concurrency ──
-
 fn buildPushConcurrencyFix(list: *DiagnosticList, wf: *const Workflow) ?Fix {
     const insert_byte = wf.concurrency_insertion_byte orelse return null;
 
@@ -280,20 +269,15 @@ pub fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) voi
     }
 }
 
-// ── BP008: Deprecated workflow command in `run:` ──
-
-/// A workflow command GitHub has disabled. The diagnostic message and fix hint
-/// are assembled from these parts at comptime in `checkDeprecatedWorkflowCommand`.
+/// The diagnostic message and fix hint are assembled from these fragments at
+/// comptime in `checkDeprecatedWorkflowCommand`.
 const DeprecatedWorkflowCommand = struct {
-    /// Command name as it appears in the script.
     marker: []const u8,
     /// Clause appended to "GitHub disabled it" — empty, or the CVE reason.
     reason: []const u8,
     /// Completes "so ...".
     effect: []const u8,
-    /// Argument form following `marker` in the deprecated call.
     args: []const u8,
-    /// The file-based form that replaced the command.
     replacement: []const u8,
 };
 
@@ -396,8 +380,6 @@ pub const rules = [_]Rule{
     },
 };
 
-// ── Tests ──
-
 test "BP001: detect missing timeout-minutes" {
     const job = Job{ .id = "build" };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -433,12 +415,10 @@ test "BP001: no warning when timeout-minutes key is present but invalid" {
 }
 
 test "BP001: autofix generated with real span" {
-    // Use arena to avoid leaks from fix allocations
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Simulate a job at column 5 (1-based), byte offset 20
     const job = Job{
         .id = "build",
         .span = .{
@@ -463,10 +443,9 @@ test "BP001: autofix generated with real span" {
     try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
 
     const edit = fix.edits[0];
-    // Insertion at start_byte
     try std.testing.expectEqual(@as(usize, 20), edit.start_byte);
     try std.testing.expectEqual(@as(usize, 20), edit.end_byte);
-    // Replacement: "timeout-minutes: 30\n" + 4 spaces (start_col 5 - 1)
+    // 4 trailing spaces = start_col 5 - 1
     try std.testing.expectEqualStrings("timeout-minutes: 30\n    ", edit.replacement);
 }
 
@@ -487,11 +466,8 @@ test "BP001: autofix applied to YAML source" {
 
     try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    // Verify the fixed source contains timeout-minutes
     try std.testing.expect(std.mem.indexOf(u8, result.content, "timeout-minutes: 30") != null);
-    // Verify the original content is preserved
     try std.testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest") != null);
-    // Verify timeout appears before runs-on
     const timeout_pos = std.mem.indexOf(u8, result.content, "timeout-minutes: 30").?;
     const runs_on_pos = std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest").?;
     try std.testing.expect(timeout_pos < runs_on_pos);
@@ -608,7 +584,6 @@ test "BP002: autofix applied to YAML source" {
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "name: Checkout") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4") != null);
-    // name: Checkout must appear before uses:
     const name_pos = std.mem.indexOf(u8, result.content, "name: Checkout").?;
     const uses_pos = std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4").?;
     try std.testing.expect(name_pos < uses_pos);
@@ -915,7 +890,6 @@ test "BP005: fix is null when concurrency_insertion_byte is missing" {
     const wf = Workflow{
         .on = .{ .events = &events },
         .jobs = &.{},
-        // concurrency_insertion_byte left null
     };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
@@ -959,8 +933,6 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
         result.content,
     );
 }
-
-// ── BP008 tests ──
 
 fn bp008Diags(script: []const u8, diags: *DiagnosticList) void {
     const step = Step{ .run = script };

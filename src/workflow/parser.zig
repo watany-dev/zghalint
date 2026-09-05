@@ -43,7 +43,6 @@ fn recordEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allo
     try list.append(allocator, .{ .name = name, .span = node.getSpan() });
 }
 
-/// `workflow_dispatch` / `workflow_call` nested maps (`inputs`, `outputs`, `secrets`).
 fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, node: Node) !void {
     const mapping = switch (node) {
         .mapping => |m| m,
@@ -68,7 +67,6 @@ fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator:
     }
 }
 
-/// Parse a YAML AST Node into a Workflow struct
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
     var type_mismatches = std.ArrayList(type_validation.TypeMismatch){};
     errdefer type_mismatches.deinit(allocator);
@@ -140,8 +138,6 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     workflow.unknown_keys = try unknown_collector.toOwnedSlice();
     workflow.empty_sections = try empty.toOwnedSlice(allocator);
 
-    // Compute insertion anchors for top-level `permissions:` / `concurrency:`
-    // directly after the `on:` entry line.
     for (root.entries) |entry| {
         const name = entry.key.value;
         if (std.mem.eql(u8, name, "on") or std.mem.eql(u8, name, "true")) {
@@ -156,11 +152,9 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     return workflow;
 }
 
-/// Parse the `on:` trigger field
 fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigger {
     switch (node) {
         .scalar => |s| {
-            // on: push
             const events = try allocator.alloc(types.EventConfig, 1);
             events[0] = .{
                 .event = types.EventType.fromString(s.value),
@@ -168,7 +162,6 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
             return .{ .events = events };
         },
         .sequence => |seq| {
-            // on: [push, pull_request]
             const events = try allocator.alloc(types.EventConfig, seq.items.len);
             for (seq.items, 0..) |item, i| {
                 switch (item) {
@@ -183,7 +176,6 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
             return .{ .events = events };
         },
         .mapping => |m| {
-            // on: { push: { branches: [main] }, pull_request: ... }
             const events = try allocator.alloc(types.EventConfig, m.entries.len);
             for (m.entries, 0..) |entry, i| {
                 events[i] = try parseEventConfig(allocator, entry.key.value, entry.value);
@@ -200,7 +192,6 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
 
     switch (node) {
         .null_value => {
-            // on: { push: } — no config
             return config;
         },
         .mapping => |m| {
@@ -444,7 +435,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             else => {},
         }
     }
-    // Capture `run:` value span and the insertion anchor for a sibling `shell:`.
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
         switch (entry.value) {
@@ -459,7 +449,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         break;
     }
 
-    // Parse uses: and capture span info for autofix
     if (m.get("uses")) |uses_node| {
         switch (uses_node) {
             .scalar => |s| {
@@ -499,7 +488,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             ctx.allocator,
         );
     }
-    // Parse with: and capture last entry's value end byte for autofix
     var empty = std.ArrayList(types.EmptySection){};
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
@@ -713,7 +701,6 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
     return services;
 }
 
-/// Values only; callers that need the scalar spans use `parseStringMapWithMeta`.
 fn parseStringMap(allocator: std.mem.Allocator, node: Node) ParseError!types.StringMap {
     return (try parseStringMapWithMeta(allocator, node)).values;
 }
@@ -741,7 +728,6 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
     return .{ .values = values, .meta = meta };
 }
 
-/// Collect every key of an `env:` mapping with the span of its key token.
 /// Unlike `parseStringMapWithMeta`, no entry is dropped: SYN007 must see keys
 /// whose value is not a scalar, and duplicated keys, to validate their names.
 fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.EnvKey {
@@ -793,10 +779,6 @@ fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const
     return (try parseStringArrayWithSpans(allocator, node)).values;
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
 
@@ -842,7 +824,6 @@ test "parseWorkflow minimal" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Build: { name: CI, on: push, jobs: { build: { runs-on: ubuntu-latest, steps: [{ run: echo hi }] } } }
     var step_entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("run"), .value = mkScalar("echo hi"), .span = mkSpan() },
     };
@@ -1305,7 +1286,6 @@ test "parseStep captures if_condition_meta" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    // Simulate `if: contains(github.ref, 'main')` where the value starts at byte 4.
     const if_value_span = mkSpanBytes(4, 32);
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
@@ -1584,10 +1564,8 @@ test "parsePermissions ignores invalid permission level" {
     };
 
     const parsed = try parsePermissions(mkMapping(&entries));
-    // Invalid levels should be skipped (orelse continue)
     try testing.expect(parsed.permissions.contents == null);
     try testing.expect(parsed.permissions.issues == null);
-    // Valid level should be set
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.pull_requests.?);
 }
 

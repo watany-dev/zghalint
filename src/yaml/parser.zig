@@ -32,7 +32,7 @@ pub const Parser = struct {
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         var tokenizer = Tokenizer.init(source);
-        const first = tokenizer.next(); // stream_start
+        const first = tokenizer.next();
         _ = first;
         const current = tokenizer.next();
         return .{
@@ -45,7 +45,6 @@ pub const Parser = struct {
     }
 
     pub fn parse(self: *Parser) ParseError!Node {
-        // Skip document start marker if present
         if (self.current.kind == .document_start) {
             self.advance();
             self.skipNewlines();
@@ -65,42 +64,34 @@ pub const Parser = struct {
             return Node{ .null_value = self.spanFromToken(self.current) };
         }
 
-        // Sequence entry (- item)
         if (self.current.kind == .sequence_entry) {
             return self.parseBlockSequence();
         }
 
-        // Flow mapping {
         if (self.current.kind == .flow_mapping_start) {
             return self.parseFlowMapping();
         }
 
-        // Flow sequence [
         if (self.current.kind == .flow_sequence_start) {
             return self.parseFlowSequence();
         }
 
-        // Scalar - could be start of mapping or standalone value
         if (self.current.kind == .scalar) {
             const scalar_token = self.current;
             self.advance();
 
-            // Check if this is a mapping key (followed by :)
             if (self.current.kind == .mapping_value) {
                 return self.parseBlockMapping(scalar_token, min_indent);
             }
 
-            // Standalone scalar
             return Node{ .scalar = self.scalarFromToken(scalar_token) };
         }
 
-        // Mapping value directly (shouldn't normally happen)
         if (self.current.kind == .mapping_value) {
             self.advance();
             return self.parseNode(min_indent);
         }
 
-        // Comment - skip and continue
         if (self.current.kind == .comment) {
             self.advance();
             return self.parseNode(min_indent);
@@ -116,11 +107,9 @@ pub const Parser = struct {
         var current_key = first_key_token;
 
         while (true) {
-            // We have a key, now expect ':'
             if (self.current.kind != .mapping_value) break;
-            self.advance(); // consume ':'
+            self.advance();
 
-            // Parse value
             const value = if (self.current.kind == .newline or self.current.kind == .eof) blk: {
                 self.skipNewlines();
                 if (self.current.kind != .eof and self.current.column > key_indent) {
@@ -138,7 +127,6 @@ pub const Parser = struct {
                 .full_span = self.blockEntryFullSpan(key_scalar, value),
             });
 
-            // Look for next key at same indent level
             self.skipNewlines();
             if (self.current.kind == .comment) {
                 self.advance();
@@ -180,9 +168,8 @@ pub const Parser = struct {
         const seq_indent = self.current.column;
 
         while (self.current.kind == .sequence_entry and self.current.column == seq_indent) {
-            self.advance(); // consume '-'
+            self.advance();
 
-            // Parse item value
             if (self.current.kind == .newline or self.current.kind == .eof) {
                 self.skipNewlines();
                 if (self.current.kind != .eof and self.current.column > seq_indent) {
@@ -214,22 +201,19 @@ pub const Parser = struct {
     fn parseFlowMapping(self: *Parser) ParseError!Node {
         var entries = std.ArrayList(MappingEntry){};
         const start_span = self.spanFromToken(self.current);
-        self.advance(); // consume '{'
+        self.advance();
 
         while (self.current.kind != .flow_mapping_end and self.current.kind != .eof) {
             self.skipNewlinesAndComments();
             if (self.current.kind == .flow_mapping_end) break;
 
-            // Key
             if (self.current.kind != .scalar) break;
             const key_token = self.current;
             self.advance();
 
-            // Expect ':'
             if (self.current.kind != .mapping_value) break;
             self.advance();
 
-            // Value
             const value = try self.parseFlowValue();
 
             const key_scalar = self.scalarFromToken(key_token);
@@ -239,7 +223,6 @@ pub const Parser = struct {
                 .span = key_scalar.span,
             });
 
-            // Optional comma
             if (self.current.kind == .flow_entry) {
                 self.advance();
             }
@@ -256,7 +239,7 @@ pub const Parser = struct {
     fn parseFlowSequence(self: *Parser) ParseError!Node {
         var items = std.ArrayList(Node){};
         const start_span = self.spanFromToken(self.current);
-        self.advance(); // consume '['
+        self.advance();
 
         while (self.current.kind != .flow_sequence_end and self.current.kind != .eof) {
             self.skipNewlinesAndComments();
@@ -304,7 +287,6 @@ pub const Parser = struct {
 
     fn advance(self: *Parser) void {
         self.current = self.tokenizer.next();
-        // Skip whitespace-only tokens in the main advance
     }
 
     fn skipNewlines(self: *Parser) void {
@@ -333,7 +315,6 @@ pub const Parser = struct {
 
     fn scalarFromToken(self: *Parser, token: Token) Scalar {
         const raw = token.slice(self.source);
-        // Strip quotes from quoted scalars
         if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
             return .{
                 .value = raw[1 .. raw.len - 1],
@@ -341,10 +322,8 @@ pub const Parser = struct {
                 .span = self.spanFromToken(token),
             };
         }
-        // Block scalars - extract content after indicator line
         if (raw.len >= 1 and (raw[0] == '|' or raw[0] == '>')) {
             const style: ScalarStyle = if (raw[0] == '|') .literal else .folded;
-            // Content starts after the indicator line.
             const content_start = if (std.mem.indexOfScalar(u8, raw, '\n')) |nl| nl + 1 else 0;
             return .{
                 .value = if (content_start < raw.len) raw[content_start..] else "",
@@ -410,9 +389,8 @@ pub const Parser = struct {
         return keyLineSpan(key, line_start, end_byte);
     }
 
-    /// Span of a block entry that starts at the beginning of the key's line and
-    /// runs to `end_byte`. The line / column pair describes the key line only;
-    /// the byte range is what callers rewrite.
+    /// The line / column pair describes the key line only; the byte range is
+    /// what callers rewrite.
     fn keyLineSpan(key: Scalar, line_start: usize, end_byte: usize) Span {
         return .{
             .start_line = key.span.start_line,
@@ -439,10 +417,6 @@ pub const Parser = struct {
         return start;
     }
 };
-
-// ============================================================
-// Tests
-// ============================================================
 
 test "parse simple mapping" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -603,7 +577,6 @@ test "parse rejects input nested past max_parse_depth" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    // Build `a:\n b:\n  c:\n   ...` with one level more than the cap.
     const levels = @as(usize, max_parse_depth) + 16;
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);

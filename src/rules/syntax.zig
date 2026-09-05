@@ -15,8 +15,6 @@ const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
 const UnknownKey = workflow_types.UnknownKey;
 
-// ── SYN003: Empty mapping / sequence sections ──
-
 /// The 13 section names all produce the same sentence, so format it instead of
 /// keeping a lookup table of identical strings.
 fn emptySectionMessage(list: *DiagnosticList, section: []const u8) []const u8 {
@@ -52,8 +50,6 @@ fn checkJobEmptySections(job: *const Job, list: *DiagnosticList) void {
 fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
     checkEmptySections(step.empty_sections, list);
 }
-
-// ── SYN002: Case-insensitive duplicate YAML keys ──
 
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const root = wf.yaml_root orelse return;
@@ -109,8 +105,6 @@ fn checkMapping(mapping: Mapping, section: []const u8, list: *DiagnosticList) vo
         walkDuplicateKeys(entry.value, child_section, entry.key.value, list);
     }
 }
-
-// ── SYN001: Unknown mapping keys ──
 
 fn findDidYouMean(key: []const u8, expected: []const []const u8) ?[]const u8 {
     const max_dist: usize = 2;
@@ -170,8 +164,6 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-// ── SYN004: Mapping value type validation ──
-
 fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.type_mismatches) |mismatch| {
@@ -189,8 +181,6 @@ fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
         }) catch return;
     }
 }
-
-// ── SYN006: Invalid job ID / step ID naming ──
 
 fn isValidId(id: []const u8) bool {
     if (id.len == 0) return true;
@@ -233,8 +223,6 @@ fn checkInvalidStepId(step: *const Step, diag_list: *DiagnosticList) void {
     const id = step.id orelse return;
     reportInvalidId(diag_list, "step", id, (step.id_value_span orelse step.span));
 }
-
-// ── SYN005: Duplicated job ID / step ID (case-insensitive) ──
 
 fn reportDuplicateId(
     list: *DiagnosticList,
@@ -296,8 +284,6 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
     }
 }
 
-// ── SYN007: Invalid environment variable name ──
-
 fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
     for (env_keys) |key| {
         if (key.name.len == 0) {
@@ -349,8 +335,6 @@ fn checkStepEnvNames(step: *const Step, list: *DiagnosticList) void {
     checkEnvNames(step.env_keys, list);
 }
 
-// ── SYN008: Duplicated job ID in `needs` ──
-
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     for (job.needs, 0..) |dep, i| {
         // Job IDs are case-insensitive in GitHub Actions. Report on the second
@@ -372,9 +356,6 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
-// ── SYN012: Mutually exclusive event filters ──
-
-/// One `<filter>` / `<filter>-ignore` pair as it appears in a single event.
 /// GitHub Actions rejects a workflow that specifies both halves of a pair.
 const ExclusivePair = struct {
     include: ?Span,
@@ -507,10 +488,6 @@ pub const rules = [_]Rule{
         .check_workflow = &checkExclusiveFilters,
     },
 };
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
@@ -1139,8 +1116,8 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
     try expectSyn003(diags, &.{});
 }
 
-/// Run SYN004 over `source`. The workflow lives in an arena that is released
-/// before returning; the diagnostics only borrow string literals.
+/// The workflow lives in an arena released before returning; the diagnostics
+/// only borrow string literals.
 fn runSyn004(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1348,7 +1325,6 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
     try testing.expect(std.mem.startsWith(u8, diags.get(2).message, "invalid job ID \"1-build\""));
 }
 
-/// Run SYN012's exclusive-filter check over a workflow with just these events.
 fn runOn(events: []const EventConfig) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };
     var list = DiagnosticList.init(testing.allocator);
@@ -1356,7 +1332,6 @@ fn runOn(events: []const EventConfig) DiagnosticList {
     return list;
 }
 
-/// Run SYN008's duplicate-needs check over a job with just this `needs` list.
 fn runOnNeeds(needs: []const []const u8) DiagnosticList {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
     var diags = DiagnosticList.init(testing.allocator);
@@ -1715,7 +1690,6 @@ test "SYN004: mapping value type validation" {
     }
 }
 
-/// Run SYN005's duplicate-job-ID check over a workflow with just these jobs.
 fn runOnDuplicateJobIds(jobs: []const Job) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = jobs };
     var diags = DiagnosticList.init(testing.allocator);
@@ -1723,7 +1697,6 @@ fn runOnDuplicateJobIds(jobs: []const Job) DiagnosticList {
     return diags;
 }
 
-/// Run SYN006's duplicate-step-ID check over a job with just these steps.
 fn runOnDuplicateStepIds(steps: []const Step) DiagnosticList {
     const job = Job{ .id = "build", .runs_on = "ubuntu-latest", .steps = steps };
     var diags = DiagnosticList.init(testing.allocator);

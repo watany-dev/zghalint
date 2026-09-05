@@ -1,18 +1,5 @@
-//! SC008 (impostor-commit) compare REST helpers.
-//!
 //! Extracted from `prefetch.zig` so the orchestration file stays small
 //! and the impostor classification path can be unit-tested in isolation.
-//!
-//! This module owns:
-//!   * the `PendingCompare` work-item shape carried between the GraphQL
-//!     and REST phases,
-//!   * the in-memory step1+step2 oid-equality check
-//!     (`classifyImpostorFromGraphql`),
-//!   * the step3+step4 compare REST sweep (`runImpostorCompares`,
-//!     `classifyImpostorViaCompare`, `compareAllRefs`, `compareRest`,
-//!     `parseCompareStatus`),
-//!   * helpers that bridge `graphql.NamedOid` ↔ `impostor.NamedOid`
-//!     across module boundaries.
 //!
 //! The module deliberately avoids importing `prefetch.zig` so that
 //! `prefetch.zig` can import this without a cycle.
@@ -26,38 +13,19 @@ const graphql = @import("graphql.zig");
 
 const Allocator = std.mem.Allocator;
 
-// ============================================================
-// Types
-// ============================================================
-
-/// Deferred work for SC008's compare REST phase: SHAs that the GraphQL
-/// data alone could not classify as legitimate.
 pub const PendingCompare = struct {
     owner: []const u8,
     repo: []const u8,
     sha: []const u8,
-    /// Default branch + HEAD oid; null if GraphQL didn't surface it.
     default_branch: ?graphql.NamedOid,
-    /// Tag refs to use as compare bases in step4 if step3 fails.
     tag_oids: []const graphql.NamedOid,
-    /// Branch refs to use as compare bases in step4 if step3 fails.
     branch_oids: []const graphql.NamedOid,
 };
 
-/// Outcome of a `/compare/{base}...{head}` REST call.
 pub const CompareStatus = enum { reachable, unreachable_, unknown };
 
-/// Aggregated outcome of sweeping a list of refs with `compareRest`.
 pub const RefSweepResult = enum { legit, all_unreachable, unknown };
 
-// ============================================================
-// step1 / step2 — in-memory oid match
-// ============================================================
-
-/// Run steps 1+2 (in-memory tag/branch oid match) for every SHA the
-/// GraphQL response surfaced. Legitimate / unknown verdicts are committed
-/// straight into the impostor cache here. SHAs that survive both steps
-/// are appended to `pending` for the compare REST phase.
 pub fn classifyImpostorFromGraphql(
     scratch: Allocator,
     res: graphql.RepoResult,
@@ -76,19 +44,16 @@ pub fn classifyImpostorFromGraphql(
             continue;
         }
 
-        // step1: SHA matches a tag's commit oid.
         if (oidIn(res.tag_oids, sr.sha)) {
             impostor.setCachedImpostorResult(res.owner, res.repo, sr.sha, .{ .status = .legitimate });
             continue;
         }
 
-        // step2: SHA matches a branch HEAD oid.
         if (oidIn(res.branch_oids, sr.sha)) {
             impostor.setCachedImpostorResult(res.owner, res.repo, sr.sha, .{ .status = .legitimate });
             continue;
         }
 
-        // step3/4 require REST. Defer.
         if (pending) |list| {
             list.append(scratch, .{
                 .owner = res.owner,
@@ -114,13 +79,6 @@ fn oidIn(refs: []const graphql.NamedOid, target: []const u8) bool {
     return false;
 }
 
-// ============================================================
-// step3 / step4 — compare REST sweep
-// ============================================================
-
-/// Run SC008 step3 + step4 for every pending SHA. Each pending entry is
-/// resolved into a final ImpostorStatus and committed to the impostor
-/// cache (with suggested candidates when the verdict is impostor).
 pub fn runImpostorCompares(scratch: Allocator, pending: []const PendingCompare) void {
     for (pending) |pc| {
         if (engine.isNetworkDeadlineExceeded()) {
@@ -133,13 +91,10 @@ pub fn runImpostorCompares(scratch: Allocator, pending: []const PendingCompare) 
     }
 }
 
-/// Decide impostor status by issuing compare REST calls. Returns the
-/// final cached result (status + suggested candidates for fix_hint).
 fn classifyImpostorViaCompare(
     scratch: Allocator,
     pc: PendingCompare,
 ) impostor.CachedResult {
-    // step3: compare against the default branch HEAD if known.
     if (pc.default_branch) |def| {
         switch (compareRest(scratch, pc.owner, pc.repo, def.name, pc.sha)) {
             .reachable => return .{
@@ -170,8 +125,6 @@ fn classifyImpostorViaCompare(
 
     if (saw_unknown) return .{ .status = .unknown };
 
-    // Every ref came back ahead/diverged. Surface impostor with up to 3
-    // tag candidates and the default branch in the fix_hint.
     return .{
         .status = .impostor,
         .suggested_tags = pc.tag_oids,
@@ -179,11 +132,8 @@ fn classifyImpostorViaCompare(
     };
 }
 
-/// Iterate through `refs`, issuing a compare for each one. Returns
-/// `.legit` on the first reachable ref, `.unknown` if at least one
-/// compare came back unknown (and none reachable), `.all_unreachable`
-/// when every compare was decisively ahead/diverged. `skip` lets the
-/// caller avoid re-checking a ref already tried (the default branch).
+/// `skip` lets the caller avoid re-checking a ref already tried (the default
+/// branch).
 fn compareAllRefs(
     scratch: Allocator,
     pc: PendingCompare,
@@ -207,9 +157,8 @@ fn compareAllRefs(
     return .all_unreachable;
 }
 
-/// Issue `GET /repos/{owner}/{repo}/compare/{base}...{head}` and translate
-/// the returned `status` field. Any non-200 response or parse failure
-/// returns `.unknown` so SC008 fail-closes on uncertainty.
+/// Any non-200 response or parse failure returns `.unknown` so SC008
+/// fail-closes on uncertainty.
 fn compareRest(
     scratch: Allocator,
     owner: []const u8,
@@ -254,13 +203,6 @@ fn parseCompareStatus(scratch: Allocator, body: []const u8) CompareStatus {
     return .unknown;
 }
 
-// ============================================================
-// URL helpers
-// ============================================================
-
-/// Percent-encode bytes that aren't RFC 3986 unreserved so they're safe to
-/// embed in a single URL path segment. Returns the input unchanged when
-/// nothing needs encoding. Null return signals allocation failure.
 fn percentEncodePathSegment(scratch: Allocator, s: []const u8) ?[]const u8 {
     for (s) |c| {
         if (!isUnreserved(c)) break;
@@ -277,10 +219,6 @@ fn isUnreserved(c: u8) bool {
         else => false,
     };
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 
@@ -395,7 +333,6 @@ test "classifyImpostorFromGraphql: no match queues pending compare entry" {
     try testing.expect(pending.items[0].default_branch != null);
     try testing.expectEqualStrings("main", pending.items[0].default_branch.?.name);
 
-    // No verdict cached yet; the compare phase will commit it.
     try testing.expect(impostor.lookupCachedImpostorResult("o", "r", sha) == null);
 }
 
@@ -479,7 +416,6 @@ test "compareRest: invalid component arguments fail closed to unknown without ne
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Bad owner (path traversal), bad sha (not hex), bad ref (slash + dot dot).
     try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "..", "r", "main", "0000000000000000000000000000000000000000"));
     try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "..", "main", "0000000000000000000000000000000000000000"));
     try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "r", "../evil", "0000000000000000000000000000000000000000"));

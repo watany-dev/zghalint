@@ -12,8 +12,6 @@ const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
 const Span = yaml_types.Span;
 
-// ── RUNNER001: Deprecated or retired runner label ──
-
 const LabelStatus = enum {
     retired,
     deprecated,
@@ -110,10 +108,6 @@ pub const rules = [_]Rule{
         .check_job = &checkDeprecatedRunner,
     },
 };
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 const test_support = @import("../test_support.zig");

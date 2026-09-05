@@ -4,7 +4,6 @@ const Diagnostic = diagnostics.Diagnostic;
 const DiagnosticList = diagnostics.DiagnosticList;
 const Severity = diagnostics.Severity;
 
-/// ANSI color codes for terminal output.
 const Color = struct {
     const reset = "\x1b[0m";
     const bold = "\x1b[1m";
@@ -15,7 +14,6 @@ const Color = struct {
     const bold_gray = "\x1b[1;90m";
 };
 
-/// Returns the color code for the given severity.
 fn severityColor(sev: Severity) []const u8 {
     return switch (sev) {
         .@"error" => Color.bold_red,
@@ -25,11 +23,10 @@ fn severityColor(sev: Severity) []const u8 {
     };
 }
 
-/// Emit bytes from an attacker-influenced string (file path, diagnostic
-/// message, workflow source line) while neutralising ANSI escapes. Control
-/// characters (< 0x20) and DEL are rewritten as `\xHH` so a malicious
-/// workflow cannot inject colors, clear the screen, or hide warnings in a
-/// CI log pipeline. Tab is preserved for source alignment.
+/// Control characters (< 0x20) and DEL in attacker-influenced strings (file
+/// path, diagnostic message, source line) are rewritten as `\xHH` so a
+/// malicious workflow cannot inject colors, clear the screen, or hide
+/// warnings in a CI log pipeline. Tab is preserved for source alignment.
 fn writeSanitized(writer: anytype, s: []const u8) !void {
     for (s) |c| {
         if (c == '\t') {
@@ -42,9 +39,6 @@ fn writeSanitized(writer: anytype, s: []const u8) !void {
     }
 }
 
-/// Render a single diagnostic to the writer with ANSI colors and source context.
-/// `source` is the full file source text (optional). If provided, the offending
-/// source line and caret indicators will be displayed.
 pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !void {
     const file_str = diag.file orelse "<unknown>";
     const sev_str = @tagName(diag.severity);
@@ -53,7 +47,6 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !voi
     const reset = if (use_color) Color.reset else "";
     const gray = if (use_color) Color.gray else "";
 
-    // Header line: file:line:col: severity[RULE]: message
     try writer.print("{s}", .{bold});
     try writeSanitized(writer, file_str);
     try writer.print(":{d}:{d}:{s} {s}{s}[{s}]{s}: ", .{
@@ -68,7 +61,6 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !voi
     try writeSanitized(writer, diag.message);
     try writer.writeByte('\n');
 
-    // Fix hint
     if (diag.fix_hint) |hint| {
         try writer.print("  {s}={s} {s}help:{s} ", .{ gray, reset, bold, reset });
         try writeSanitized(writer, hint);
@@ -76,18 +68,15 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !voi
     }
 }
 
-/// Render all diagnostics from a list, followed by the summary line.
 pub fn renderDiagnostics(writer: anytype, list: DiagnosticList, use_color: bool) !void {
     for (list.items.items) |diag| {
         try renderDiagnostic(writer, diag, use_color);
         try writer.writeAll("\n");
     }
 
-    // Summary line
     try renderSummary(writer, list, use_color);
 }
 
-/// Render a summary line showing counts by severity.
 pub fn renderSummary(writer: anytype, list: DiagnosticList, use_color: bool) !void {
     const counts = list.countBySeverity();
     const errors = counts.@"error";
@@ -111,10 +100,6 @@ pub fn renderSummary(writer: anytype, list: DiagnosticList, use_color: bool) !vo
         try writer.writeAll("\n");
     }
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const Span = @import("../yaml/types.zig").Span;
 
@@ -142,14 +127,12 @@ test "renderDiagnostic with color" {
     try renderDiagnostic(writer, diag, true);
     const output = buf.items;
 
-    // Verify key parts are present
     try std.testing.expect(std.mem.indexOf(u8, output, "SEC002") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "error") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "15:14") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "script injection") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "help:") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "environment variable") != null);
-    // Verify ANSI codes present
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
 }
 
@@ -174,7 +157,6 @@ test "renderDiagnostic without color" {
     try std.testing.expect(std.mem.indexOf(u8, output, "warning[BP001]") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "missing timeout") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "help:") != null);
-    // No ANSI codes
     try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
 }
 
@@ -201,7 +183,6 @@ test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
     // No raw ESC (0x1b) anywhere in the output — the sanitizer must rewrite
     // every attacker-supplied byte before it hits the terminal.
     try std.testing.expect(std.mem.indexOfScalar(u8, output, 0x1b) == null);
-    // ESC is displayed as "\x1b" (backslash + x + two hex digits).
     try std.testing.expect(std.mem.indexOf(u8, output, "\\x1b") != null);
 }
 
