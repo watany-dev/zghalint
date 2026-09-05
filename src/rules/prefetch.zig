@@ -52,6 +52,28 @@ pub const Options = struct {
 // ============================================================
 
 /// Orchestrate all network-rule prefetch work for `workflows`.
+/// Which network-backed rules are enabled for this run. Threaded through the
+/// prefetch pipeline so every stage can skip the work no rule asked for.
+const ActiveRules = struct {
+    archived: bool,
+    stale: bool,
+    refconf: bool,
+    impostor: bool,
+
+    fn detect() ActiveRules {
+        return .{
+            .archived = archived.isActive(),
+            .stale = stale_refs.isActive(),
+            .refconf = refconfusion.isActive(),
+            .impostor = impostor.isActive(),
+        };
+    }
+
+    fn any(self: ActiveRules) bool {
+        return self.archived or self.stale or self.refconf or self.impostor;
+    }
+};
+
 /// Safe to call with an empty slice, in offline mode, or with any rule
 /// module left uninitialized (each rule self-gates on `isActive()`).
 pub fn prefetchAll(allocator: Allocator, workflows: []const Workflow) !Stats {
@@ -67,14 +89,8 @@ pub fn prefetchAllWithOptions(
     // Advisory is a single batched fetch regardless of workflow content.
     advisory.prefetch();
 
-    const archived_active = archived.isActive();
-    const stale_active = stale_refs.isActive();
-    const refconf_active = refconfusion.isActive();
-    const impostor_active = impostor.isActive();
-
-    if (!archived_active and !stale_active and !refconf_active and !impostor_active) {
-        return .{};
-    }
+    const active = ActiveRules.detect();
+    if (!active.any()) return .{};
 
     // Scratch arena keyed off of the caller's allocator; freed on return.
     var scratch_arena = std.heap.ArenaAllocator.init(allocator);
@@ -85,7 +101,7 @@ pub fn prefetchAllWithOptions(
 
     var cache_hits: usize = 0;
     if (!opts.no_cache) {
-        cache_hits = applyDiskCache(scratch, &ref_sets, archived_active, stale_active, refconf_active, impostor_active);
+        cache_hits = applyDiskCache(scratch, &ref_sets, active);
     }
 
     // Try the GraphQL batch path first (folds archived + SHA + named ref
@@ -104,23 +120,20 @@ pub fn prefetchAllWithOptions(
     const used_graphql = tryGraphQlBatch(
         scratch,
         ref_sets,
-        archived_active,
-        stale_active,
-        refconf_active,
-        impostor_active,
+        active,
         &pending_compares,
         &pending_persist,
     );
 
     if (!used_graphql) {
-        if (archived_active) fetchRepos(scratch, ref_sets.repos);
-        if (stale_active) fetchShaRefs(scratch, ref_sets.sha_refs);
-        if (refconf_active) fetchNamedRefs(scratch, ref_sets.named_refs);
+        if (active.archived) fetchRepos(scratch, ref_sets.repos);
+        if (active.stale) fetchShaRefs(scratch, ref_sets.sha_refs);
+        if (active.refconf) fetchNamedRefs(scratch, ref_sets.named_refs);
     }
 
     // SC008 step3/4: compare REST against default branch and remaining refs
     // for any SHAs the GraphQL data couldn't classify directly.
-    if (impostor_active and pending_compares.items.len > 0) {
+    if (active.impostor and pending_compares.items.len > 0) {
         impostor_compare.runImpostorCompares(scratch, pending_compares.items);
     }
 
@@ -228,10 +241,7 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
 fn applyDiskCache(
     scratch: Allocator,
     sets: *RefSets,
-    archived_active: bool,
-    stale_active: bool,
-    refconf_active: bool,
-    impostor_active: bool,
+    active: ActiveRules,
 ) usize {
     var hits: usize = 0;
 
@@ -248,17 +258,7 @@ fn applyDiskCache(
         const repo = val_ptr.repo;
 
         const entry = disk_cache.load(scratch, owner, repo) orelse continue;
-        hits += applyCacheEntry(
-            sets,
-            repo_key,
-            owner,
-            repo,
-            entry,
-            archived_active,
-            stale_active,
-            refconf_active,
-            impostor_active,
-        );
+        hits += applyCacheEntry(sets, repo_key, owner, repo, entry, active);
     }
 
     return hits;
@@ -273,14 +273,11 @@ fn applyCacheEntry(
     owner: []const u8,
     repo: []const u8,
     entry: disk_cache.CachedRepo,
-    archived_active: bool,
-    stale_active: bool,
-    refconf_active: bool,
-    impostor_active: bool,
+    active: ActiveRules,
 ) usize {
     var hits: usize = 0;
 
-    if (archived_active) {
+    if (active.archived) {
         if (entry.archived) |b| {
             archived.setCachedResult(owner, repo, b);
             _ = sets.repos.remove(repo_key);
@@ -288,7 +285,7 @@ fn applyCacheEntry(
         }
     }
 
-    if (stale_active) {
+    if (active.stale) {
         for (entry.shas) |s| {
             var key_buf: [max_ref_key_len]u8 = undefined;
             const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, s.sha }) catch continue;
@@ -305,7 +302,7 @@ fn applyCacheEntry(
         }
     }
 
-    if (refconf_active) {
+    if (active.refconf) {
         for (entry.named) |n| {
             var key_buf: [max_ref_key_len]u8 = undefined;
             const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, n.ref }) catch continue;
@@ -326,7 +323,7 @@ fn applyCacheEntry(
     // disk when the rule is active. The fix_hint candidates are lost across
     // process boundaries because suggested_tags/default live in the arena;
     // the next compare phase re-supplies them if needed.
-    if (impostor_active) {
+    if (active.impostor) {
         for (entry.impostor) |e| {
             const mapped_status: impostor.ImpostorStatus = switch (e.status) {
                 .legitimate => .legitimate,
@@ -418,26 +415,17 @@ fn persistRepoResult(
 ///
 /// `pending` collects SC008 SHAs that need a follow-up REST compare phase
 /// because the GraphQL data alone couldn't classify them as legitimate.
-/// When `impostor_active` is false the slot is unused.
+/// When impostor checking is off the slot is unused.
 fn tryGraphQlBatch(
     scratch: Allocator,
     sets: RefSets,
-    archived_active: bool,
-    stale_active: bool,
-    refconf_active: bool,
-    impostor_active: bool,
+    active: ActiveRules,
     pending: *std.ArrayList(PendingCompare),
     persist_buffer: ?*std.ArrayList(graphql.RepoResult),
 ) bool {
     if (sets.repos.count() == 0) return false;
 
-    const inputs = buildRepoInputs(
-        scratch,
-        sets,
-        stale_active,
-        refconf_active,
-        impostor_active,
-    ) catch return false;
+    const inputs = buildRepoInputs(scratch, sets, active) catch return false;
 
     var idx: usize = 0;
     while (idx < inputs.len) {
@@ -458,10 +446,7 @@ fn tryGraphQlBatch(
         applyResults(
             scratch,
             results,
-            archived_active,
-            stale_active,
-            refconf_active,
-            impostor_active,
+            active,
             pending,
             persist_buffer,
             null,
@@ -475,9 +460,7 @@ fn tryGraphQlBatch(
 fn buildRepoInputs(
     scratch: Allocator,
     sets: RefSets,
-    stale_active: bool,
-    refconf_active: bool,
-    impostor_active: bool,
+    active: ActiveRules,
 ) ![]graphql.RepoInput {
     var inputs = try scratch.alloc(graphql.RepoInput, sets.repos.count());
     var shas_by_repo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8)){};
@@ -487,7 +470,7 @@ fn buildRepoInputs(
     // classify against branch/tag oids. Populate the shared map whenever
     // either SC005 or SC008 is active so SC008 doesn't silently lose data
     // when the user only opted into impostor checks.
-    if (stale_active or impostor_active) {
+    if (active.stale or active.impostor) {
         var it = sets.sha_refs.valueIterator();
         while (it.next()) |sha_key| {
             const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ sha_key.owner, sha_key.repo });
@@ -496,7 +479,7 @@ fn buildRepoInputs(
             try gop.value_ptr.append(scratch, sha_key.sha);
         }
     }
-    if (refconf_active) {
+    if (active.refconf) {
         var it = sets.named_refs.valueIterator();
         while (it.next()) |named_key| {
             const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ named_key.owner, named_key.repo });
@@ -529,7 +512,7 @@ fn buildRepoInputs(
             // SC008 only needs the extra branch + default fetch when there
             // are SHA-pinned refs to evaluate against. Without SHAs there's
             // nothing to classify even if impostor checking is on.
-            .needs_impostor = impostor_active and sha_slice.len > 0,
+            .needs_impostor = active.impostor and sha_slice.len > 0,
         };
     }
 
@@ -539,20 +522,17 @@ fn buildRepoInputs(
 fn applyResults(
     scratch: Allocator,
     results: []const graphql.RepoResult,
-    archived_active: bool,
-    stale_active: bool,
-    refconf_active: bool,
-    impostor_active: bool,
+    active: ActiveRules,
     pending: ?*std.ArrayList(PendingCompare),
     persist_buffer: ?*std.ArrayList(graphql.RepoResult),
     persist_dir: ?std.fs.Dir,
 ) void {
     for (results) |res| {
         if (res.missing) continue;
-        if (archived_active) {
+        if (active.archived) {
             if (res.archived) |b| archived.setCachedResult(res.owner, res.repo, b);
         }
-        if (stale_active) {
+        if (active.stale) {
             for (res.sha_results) |sr| {
                 const mapped: stale_refs.TagResolution = switch (sr.resolution) {
                     .has_tag => .has_tag,
@@ -562,7 +542,7 @@ fn applyResults(
                 stale_refs.setCachedTagResult(res.owner, res.repo, sr.sha, mapped);
             }
         }
-        if (refconf_active) {
+        if (active.refconf) {
             for (res.named_results) |nr| {
                 const status: refconfusion.RefStatus = if (nr.is_tag and nr.is_branch)
                     .ambiguous
@@ -571,7 +551,7 @@ fn applyResults(
                 refconfusion.setCachedRefResult(res.owner, res.repo, nr.ref, status);
             }
         }
-        if (impostor_active) {
+        if (active.impostor) {
             impostor_compare.classifyImpostorFromGraphql(scratch, res, pending);
         }
         // When the caller buffers persistence (production path) we defer
@@ -703,7 +683,7 @@ test "buildRepoInputs groups sha and named refs by repo" {
     try named_refs.put(alloc, "actions/checkout@v4", .{ .owner = "actions", .repo = "checkout", .ref = "v4" });
 
     const sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
-    const inputs = try buildRepoInputs(alloc, sets, true, true, false);
+    const inputs = try buildRepoInputs(alloc, sets, .{ .archived = true, .stale = true, .refconf = true, .impostor = false });
 
     try testing.expectEqual(@as(usize, 2), inputs.len);
 
@@ -735,7 +715,7 @@ test "buildRepoInputs: inactive rules leave slices empty" {
     try named_refs.put(alloc, "o/r@v1", .{ .owner = "o", .repo = "r", .ref = "v1" });
 
     const sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
-    const inputs = try buildRepoInputs(alloc, sets, false, false, false);
+    const inputs = try buildRepoInputs(alloc, sets, .{ .archived = true, .stale = false, .refconf = false, .impostor = false });
     try testing.expectEqual(@as(usize, 1), inputs.len);
     try testing.expectEqual(@as(usize, 0), inputs[0].sha_refs.len);
     try testing.expectEqual(@as(usize, 0), inputs[0].named_refs.len);
@@ -774,7 +754,7 @@ test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits
         .named = @constCast(&named),
     };
 
-    const hits = applyCacheEntry(&sets, repo_key, "o", "r", entry, true, true, true, false);
+    const hits = applyCacheEntry(&sets, repo_key, "o", "r", entry, .{ .archived = true, .stale = true, .refconf = true, .impostor = false });
     try testing.expectEqual(@as(usize, 3), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
@@ -806,15 +786,15 @@ test "applyCacheEntry: inactive rules skip corresponding categories" {
         .named = @constCast(&named),
     };
 
-    // archived_active=true, stale_active=false, refconf_active=false
-    const hits = applyCacheEntry(&sets, "o/r", "o", "r", entry, true, false, false, false);
+    // archived only
+    const hits = applyCacheEntry(&sets, "o/r", "o", "r", entry, .{ .archived = true, .stale = false, .refconf = false, .impostor = false });
     try testing.expectEqual(@as(usize, 1), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 1), sets.sha_refs.count()); // untouched
     try testing.expectEqual(@as(usize, 1), sets.named_refs.count()); // untouched
 }
 
-test "applyCacheEntry: impostor_active hydrates SC008 verdicts from disk" {
+test "applyCacheEntry: impostor hydrates SC008 verdicts from disk" {
     impostor.initImpostor(testing.allocator, false);
     defer impostor.deinitImpostor();
 
@@ -841,7 +821,7 @@ test "applyCacheEntry: impostor_active hydrates SC008 verdicts from disk" {
         .impostor = @constCast(&imp_entries),
     };
 
-    _ = applyCacheEntry(&sets, "o/r", "o", "r", entry, false, false, false, true);
+    _ = applyCacheEntry(&sets, "o/r", "o", "r", entry, .{ .archived = false, .stale = false, .refconf = false, .impostor = true });
 
     const legit = impostor.lookupCachedImpostorResult("o", "r", sha_legit) orelse
         return error.TestExpectedNonNull;
@@ -860,7 +840,7 @@ test "applyResults: missing entries are skipped (no rule init required)" {
     };
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    applyResults(arena.allocator(), &results, true, true, true, false, null, null, null);
+    applyResults(arena.allocator(), &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null, null);
 }
 
 test "prefetchAllWithOptions: deadline-expired short-circuits but still counts refs" {
@@ -949,7 +929,7 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     try named_refs.put(alloc, "acme/tool@main", .{ .owner = "acme", .repo = "tool", .ref = "main" });
     var sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
 
-    const hits = applyDiskCache(alloc, &sets, true, true, true, false);
+    const hits = applyDiskCache(alloc, &sets, .{ .archived = true, .stale = true, .refconf = true, .impostor = false });
     try testing.expectEqual(@as(usize, 3), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
@@ -987,7 +967,7 @@ test "applyResults: persists repo state to the provided cache dir" {
         },
     };
 
-    applyResults(alloc, &results, true, true, true, false, null, null, tmp.dir);
+    applyResults(alloc, &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null, tmp.dir);
 
     // The cache file should exist and reload cleanly.
     const loaded = disk_cache.loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
@@ -1074,7 +1054,7 @@ test "persistRepoResult: writes branches/default_branch/impostor (v2)" {
 // SC008 prefetch tests
 // ============================================================
 
-test "buildRepoInputs: impostor_active sets needs_impostor only when SHAs exist" {
+test "buildRepoInputs: impostor sets needs_impostor only when SHAs exist" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1089,7 +1069,7 @@ test "buildRepoInputs: impostor_active sets needs_impostor only when SHAs exist"
     const named_refs: NamedSet = .{};
 
     const sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
-    const inputs = try buildRepoInputs(alloc, sets, true, false, true);
+    const inputs = try buildRepoInputs(alloc, sets, .{ .archived = true, .stale = true, .refconf = false, .impostor = true });
 
     try testing.expectEqual(@as(usize, 2), inputs.len);
     var has_idx: usize = 0;
@@ -1102,7 +1082,7 @@ test "buildRepoInputs: impostor_active sets needs_impostor only when SHAs exist"
     try testing.expect(!inputs[none_idx].needs_impostor);
 }
 
-test "buildRepoInputs: impostor_active populates sha slice even when stale_active is false" {
+test "buildRepoInputs: impostor populates sha slice even when stale_refs is off" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1116,8 +1096,8 @@ test "buildRepoInputs: impostor_active populates sha slice even when stale_activ
     const named_refs: NamedSet = .{};
 
     const sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
-    // stale_active=false, refconf_active=false, impostor_active=true.
-    const inputs = try buildRepoInputs(alloc, sets, false, false, true);
+    // stale=false, refconf=false, impostor=true.
+    const inputs = try buildRepoInputs(alloc, sets, .{ .archived = true, .stale = false, .refconf = false, .impostor = true });
 
     try testing.expectEqual(@as(usize, 1), inputs.len);
     try testing.expectEqual(@as(usize, 1), inputs[0].sha_refs.len);
