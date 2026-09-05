@@ -53,7 +53,33 @@ fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
 
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const root = wf.yaml_root orelse return;
-    walkDuplicateKeys(root, "workflow", null, true, list);
+    walkDuplicateKeys(root, "workflow", null, workflowJobsEntries(root), list);
+}
+
+/// Job ID uniqueness belongs to SYN005, which reports the same duplicate at the
+/// same position and additionally validates `needs` references (issue #136).
+/// SYN002 therefore descends into the workflow's `jobs:` mapping without
+/// reporting its own keys. Identity decides, not the section name: a mapping
+/// that merely happens to be named `jobs` (under `with:`, say) is still checked,
+/// and so is a second root-level `jobs:` key, which the parser never reads.
+fn workflowJobsEntries(root: Node) ?[]const yaml_types.MappingEntry {
+    const mapping = switch (root) {
+        .mapping => |m| m,
+        else => return null,
+    };
+    for (mapping.entries) |entry| {
+        if (!std.mem.eql(u8, entry.key.value, "jobs")) continue;
+        return switch (entry.value) {
+            .mapping => |jobs| jobs.entries,
+            else => null,
+        };
+    }
+    return null;
+}
+
+fn isSameEntries(entries: []const yaml_types.MappingEntry, other: ?[]const yaml_types.MappingEntry) bool {
+    const skip = other orelse return false;
+    return entries.ptr == skip.ptr and entries.len == skip.len;
 }
 
 fn sectionForMappingChild(parent_section: []const u8, key: []const u8, value: Node) []const u8 {
@@ -65,29 +91,22 @@ fn sectionForMappingChild(parent_section: []const u8, key: []const u8, value: No
     };
 }
 
-/// Job ID uniqueness belongs to SYN005, which reports the same duplicate with a
-/// `needs`-aware message at the same position. SYN002 therefore walks into the
-/// top-level `jobs:` mapping but does not report its own keys.
-fn reportsChildDuplicates(parent_section: []const u8, child_section: []const u8) bool {
-    return !(std.mem.eql(u8, parent_section, "workflow") and std.mem.eql(u8, child_section, "jobs"));
-}
-
 fn walkDuplicateKeys(
     node: Node,
     section: []const u8,
     parent_key: ?[]const u8,
-    report_duplicates: bool,
+    skip: ?[]const yaml_types.MappingEntry,
     list: *DiagnosticList,
 ) void {
     switch (node) {
-        .mapping => |m| checkMapping(m, section, report_duplicates, list),
+        .mapping => |m| checkMapping(m, section, skip, list),
         .sequence => |s| {
             const item_section = if (parent_key) |pk|
                 (if (std.ascii.eqlIgnoreCase(pk, "steps")) "step" else section)
             else
                 section;
             for (s.items) |item| {
-                walkDuplicateKeys(item, item_section, parent_key, report_duplicates, list);
+                walkDuplicateKeys(item, item_section, parent_key, skip, list);
             }
         },
         else => {},
@@ -119,18 +138,18 @@ fn reportDuplicateKey(
     }
 }
 
-fn checkMapping(mapping: Mapping, section: []const u8, report_duplicates: bool, list: *DiagnosticList) void {
+fn checkMapping(
+    mapping: Mapping,
+    section: []const u8,
+    skip: ?[]const yaml_types.MappingEntry,
+    list: *DiagnosticList,
+) void {
+    const report = !isSameEntries(mapping.entries, skip);
     for (mapping.entries, 0..) |entry, i| {
-        if (report_duplicates) reportDuplicateKey(mapping.entries[0..i], entry, section, list);
+        if (report) reportDuplicateKey(mapping.entries[0..i], entry, section, list);
 
         const child_section = sectionForMappingChild(section, entry.key.value, entry.value);
-        walkDuplicateKeys(
-            entry.value,
-            child_section,
-            entry.key.value,
-            reportsChildDuplicates(section, child_section),
-            list,
-        );
+        walkDuplicateKeys(entry.value, child_section, entry.key.value, skip, list);
     }
 }
 
@@ -1372,7 +1391,7 @@ fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !v
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
     const node = try parser.parse();
-    walkDuplicateKeys(node, "workflow", null, true, diags);
+    walkDuplicateKeys(node, "workflow", null, workflowJobsEntries(node), diags);
 }
 
 test "SYN002: duplicated steps key is reported" {
@@ -1556,6 +1575,56 @@ test "SYN002: a mapping named jobs outside the workflow root is still checked" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"BUILD\"") != null);
+}
+
+test "SYN002: a jobs mapping nested in a root sequence is still checked" {
+    const source =
+        \\on: push
+        \\x:
+        \\  - jobs:
+        \\      a: 1
+        \\      A: 2
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"A\"") != null);
+}
+
+test "SYN002: a second root-level jobs mapping is still checked" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\jobs:
+        \\  other:
+        \\    runs-on: ubuntu-latest
+        \\  OTHER:
+        \\    runs-on: ubuntu-latest
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    // The duplicate `jobs:` key itself, plus the job IDs SYN005 cannot reach
+    // because the parser only reads the first `jobs:` mapping.
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"jobs\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"OTHER\"") != null);
 }
 
 test "SYN002: a job named env is still a job section" {
