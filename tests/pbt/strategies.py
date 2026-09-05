@@ -442,3 +442,76 @@ def workflow_pair_monotonic(draw: st.DrawFn) -> tuple[str, str]:
 
     extended = base.rstrip("\n") + "\n" + "\n".join(extra_jobs) + "\n"
     return base, extended
+
+
+# ============================================================
+# Plain scalar round-trip (issue #131)
+# ============================================================
+
+# Fragments containing YAML flow indicators (`,` `[` `]` `{` `}`) that are
+# plain text inside a block-context `run:` / `if:` value.  A tokenizer that
+# treats them as indicators truncates the value and loses everything after.
+_flow_indicator_noise = [
+    "npm run build -- --flag [x]",
+    "awk '{print $1}' log.txt",
+    "sed -i 's/a,b/c/' file",
+    "curl -sSL https://example.com/pkg?a=1,b=2 -o out.tar",
+    "jq '.items[0], .items[1]' data.json",
+    "echo a, b, c",
+    "make build[all]",
+    "test -f {a,b}.txt",
+]
+
+
+# Expression shapes whose own text contains characters that would end a plain
+# scalar outside an expression (`#`) or look like flow indicators.
+_expression_shapes = [
+    "${{ %s }}",
+    "${{ format('#{0}', %s) }}",
+    "${{ join(fromJSON('[1,2]'), %s) }}",
+]
+
+
+@st.composite
+def workflow_with_plain_scalar_run(draw: st.DrawFn) -> str:
+    """Generate a workflow whose unquoted `run:` mixes flow indicators with
+    a dangerous expression placed last on the line.
+
+    SEC002 only fires if the plain scalar is read all the way to end of line,
+    so this is a round-trip property for plain scalars in block context.
+    """
+    noise = draw(st.sampled_from(_flow_indicator_noise))
+    context = draw(st.sampled_from(_dangerous_contexts))
+    expression = draw(st.sampled_from(_expression_shapes)) % context
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        f"      - run: {noise} && echo {expression}\n"
+    )
+
+
+@st.composite
+def workflow_with_plain_scalar_if(draw: st.DrawFn) -> str:
+    """Generate a workflow whose unquoted `if:` uses a comma-separated call.
+
+    The condition parses only when the plain scalar keeps its comma, so a
+    truncated value shows up as a bogus EXPR001 (missing closing paren).
+    """
+    context = draw(st.sampled_from(_dangerous_contexts))
+    func = draw(st.sampled_from(["contains", "startsWith", "endsWith"]))
+    needle = draw(st.sampled_from(["fix", "release/", "wip"]))
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - name: guarded\n"
+        f"        if: {func}({context}, '{needle}')\n"
+        "        run: echo ok\n"
+    )

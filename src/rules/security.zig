@@ -209,9 +209,45 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
 // SEC002 - Script injection via untrusted context in run:
 // ============================================================
 
+const script_injection_fix_hint = "assign the context to an environment variable and use the env var instead";
+
 fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
-    const run_body = step.run orelse return;
-    checkContextsInString(run_body, runAnchor(step), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in run: block", "assign the context to an environment variable and use the env var instead", list);
+    if (step.run) |run_body| {
+        checkContextsInString(run_body, runAnchor(step), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+    }
+    checkScriptInputInjection(step, list);
+}
+
+/// SEC002 for action inputs executed as code: `actions/github-script` runs `with.script`
+/// as JavaScript, so it carries the same injection risk as `run:`.
+fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
+    const ref = step.uses orelse return;
+    if (!isGithubScriptAction(ref)) return;
+    const with_map = step.with orelse return;
+    const input = getWithInput(with_map, "script") orelse return;
+    checkContextsInString(input.value, withAnchor(step, input.key), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
+}
+
+fn isGithubScriptAction(ref: ActionRef) bool {
+    const owner = ref.owner orelse return false;
+    const repo = ref.repo orelse return false;
+    // A nested path is a different action; owner/repo are case-insensitive on GitHub.
+    return ref.path == null and
+        std.ascii.eqlIgnoreCase(owner, "actions") and
+        std.ascii.eqlIgnoreCase(repo, "github-script");
+}
+
+/// Look up a `with:` input by name. The runner exposes inputs as `INPUT_<UPPERCASE>`,
+/// so input names resolve case-insensitively; the matched key is returned so the
+/// diagnostic can anchor on that exact scalar.
+fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?struct { key: []const u8, value: []const u8 } {
+    var it = with_map.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) {
+            return .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+        }
+    }
+    return null;
 }
 
 // ============================================================
@@ -1792,7 +1828,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC002",
         .name = "script-injection",
-        .description = "Untrusted GitHub context used in run: block risks script injection",
+        .description = "Untrusted GitHub context used in run: block or a code-executing action input risks script injection",
         .severity = .@"error",
         .category = .security,
         .check_step = &checkScriptInjection,
@@ -2186,6 +2222,49 @@ test "SEC002: element access under a container context" {
     // `github.event.pages` is stored as a container prefix, so its element
     // accesses are caught without a dedicated entry.
     try testing.expect(sec002Fires("echo \"${{ join(github.event.pages.*.page_name, ' ') }}\"", null));
+}
+
+/// Build a single-step workflow whose step is `uses: <ref>` with one `with:`
+/// entry (plus optional step `env`) and report whether SEC002 fires for it.
+fn sec002UsesFires(uses: []const u8, with_key: []const u8, with_value: []const u8, env: ?workflow_types.StringMap) bool {
+    const eng = engine.Engine.init(&security_rules);
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put(with_key, with_value) catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse(uses), .with = with, .env = env },
+    };
+    const jobs = [_]Job{
+        .{ .id = "handle", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC002");
+}
+
+test "SEC002: dangerous context in github-script script input" {
+    const dangerous = "const title = \"${{ github.event.issue.title }}\";";
+    // The action name and the input name both resolve case-insensitively.
+    try testing.expect(sec002UsesFires("actions/github-script@v7", "script", dangerous, null));
+    try testing.expect(sec002UsesFires("Actions/GitHub-Script@v7", "script", dangerous, null));
+    try testing.expect(sec002UsesFires("actions/github-script@v7", "Script", dangerous, null));
+}
+
+test "SEC002: script input is not checked outside github-script" {
+    const dangerous = "const title = \"${{ github.event.issue.title }}\";";
+    // A nested path is a different action, as is an unrelated owner/repo.
+    try testing.expect(!sec002UsesFires("actions/github-script/sub@v7", "script", dangerous, null));
+    try testing.expect(!sec002UsesFires("some-org/other-action@v1", "script", dangerous, null));
+    // Only inputs executed as code are checked.
+    try testing.expect(!sec002UsesFires("actions/github-script@v7", "result-encoding", "${{ github.event.issue.title }}", null));
+}
+
+test "SEC002: github-script script input via env (no false positive)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("TITLE", "${{ github.event.issue.title }}") catch unreachable;
+    try testing.expect(!sec002UsesFires("actions/github-script@v7", "script", "const title = process.env.TITLE;", env));
 }
 
 test "SEC002: trusted contexts in run block (no false positive)" {
