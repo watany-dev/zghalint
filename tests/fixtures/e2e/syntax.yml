@@ -1,0 +1,23 @@
+# zghalint:expect SYN001 SYN004 SYN005
+name: syntax problems
+on: [push]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    unknown-key: oops
+    steps:
+      - name: One
+        id: dup
+        run: echo one
+      - name: Two
+        id: dup
+        run: echo two
+  other:
+    runs-on: ubuntu-latest
+    timeout-minutes: not-a-number
+    steps:
+      - name: Three
+        run: echo three

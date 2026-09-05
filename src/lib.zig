@@ -131,4 +131,5 @@ test {
     _ = @import("config.zig");
     _ = @import("util.zig");
     _ = @import("workspace.zig");
+    _ = @import("e2e_test.zig");
 }

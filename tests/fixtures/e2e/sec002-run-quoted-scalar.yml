@@ -1,0 +1,16 @@
+# zghalint:expect SEC002@16
+name: sec002 quoted scalar
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Echo the issue body
+        run: 'echo "${{ github.event.issue.body }}"'
