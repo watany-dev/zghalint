@@ -200,102 +200,86 @@ pub fn loadFromDir(
         };
     }
 
-    if (obj.get("shas")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(ShaEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 2) continue;
-                if (fields[0] != .string or fields[1] != .string) continue;
-                if (!engine.isValidSha(fields[0].string)) continue;
-                const res = parseResolutionCode(fields[1].string) orelse continue;
-                const sha_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                list.append(allocator, .{ .sha = sha_copy, .resolution = res }) catch continue;
-            }
-            result.shas = list.toOwnedSlice(allocator) catch &.{};
-        }
-    }
-
-    if (obj.get("named")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(NamedEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 3) continue;
-                if (fields[0] != .string) continue;
-                if (!engine.isValidGitRef(fields[0].string)) continue;
-                const ref_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                const is_tag = intFieldAsBool(fields[1]);
-                const is_branch = intFieldAsBool(fields[2]);
-                list.append(allocator, .{ .ref = ref_copy, .is_tag = is_tag, .is_branch = is_branch }) catch continue;
-            }
-            result.named = list.toOwnedSlice(allocator) catch &.{};
-        }
-    }
-
-    if (obj.get("branches")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(BranchEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 2) continue;
-                if (fields[0] != .string or fields[1] != .string) continue;
-                if (!engine.isValidGitRef(fields[0].string)) continue;
-                if (!engine.isValidSha(fields[1].string)) continue;
-                const name_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                const oid_copy = allocator.dupe(u8, fields[1].string) catch {
-                    allocator.free(name_copy);
-                    continue;
-                };
-                list.append(allocator, .{ .name = name_copy, .oid = oid_copy }) catch continue;
-            }
-            result.branches = list.toOwnedSlice(allocator) catch &.{};
-        }
-    }
+    result.shas = parseEntryArray(ShaEntry, allocator, obj, "shas", parseShaEntry);
+    result.named = parseEntryArray(NamedEntry, allocator, obj, "named", parseNamedEntry);
+    result.branches = parseEntryArray(BranchEntry, allocator, obj, "branches", parseBranchEntry);
+    result.impostor = parseEntryArray(ImpostorEntry, allocator, obj, "impostor", parseImpostorEntry);
 
     if (obj.get("default_branch")) |v| {
-        if (v == .array and v.array.items.len >= 2) {
-            const name_v = v.array.items[0];
-            const oid_v = v.array.items[1];
-            if (name_v == .string and oid_v == .string and
-                engine.isValidGitRef(name_v.string) and engine.isValidSha(oid_v.string))
-            {
-                if (allocator.dupe(u8, name_v.string)) |name_copy| {
-                    if (allocator.dupe(u8, oid_v.string)) |oid_copy| {
-                        result.default_branch = .{ .name = name_copy, .oid = oid_copy };
-                    } else |_| {
-                        allocator.free(name_copy);
-                    }
-                } else |_| {}
-            }
-        }
-    }
-
-    if (obj.get("impostor")) |v| {
-        if (v == .array) {
-            var list = std.ArrayList(ImpostorEntry){};
-            defer list.deinit(allocator);
-            for (v.array.items) |entry| {
-                if (entry != .array) continue;
-                const fields = entry.array.items;
-                if (fields.len < 2) continue;
-                if (fields[0] != .string or fields[1] != .string) continue;
-                if (!engine.isValidSha(fields[0].string)) continue;
-                const status = parseImpostorCode(fields[1].string) orelse continue;
-                const sha_copy = allocator.dupe(u8, fields[0].string) catch continue;
-                list.append(allocator, .{ .sha = sha_copy, .status = status }) catch continue;
-            }
-            result.impostor = list.toOwnedSlice(allocator) catch &.{};
-        }
+        if (v == .array) result.default_branch = parseBranchEntry(allocator, v.array.items);
     }
 
     return result;
+}
+
+/// Decode the `key` array of `obj` into owned `T` entries.
+/// `parseEntry` returns null for a malformed or unvalidatable row, which is
+/// skipped: a partially corrupt cache file degrades to a partial cache hit
+/// rather than a hard failure.
+fn parseEntryArray(
+    comptime T: type,
+    allocator: Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    comptime parseEntry: fn (Allocator, []const std.json.Value) ?T,
+) []T {
+    const v = obj.get(key) orelse return &.{};
+    if (v != .array) return &.{};
+
+    var list = std.ArrayList(T){};
+    defer list.deinit(allocator);
+    for (v.array.items) |entry| {
+        if (entry != .array) continue;
+        const parsed = parseEntry(allocator, entry.array.items) orelse continue;
+        list.append(allocator, parsed) catch continue;
+    }
+    return list.toOwnedSlice(allocator) catch &.{};
+}
+
+/// The string at `fields[idx]`, or null when absent or not a string.
+fn stringField(fields: []const std.json.Value, idx: usize) ?[]const u8 {
+    if (idx >= fields.len) return null;
+    if (fields[idx] != .string) return null;
+    return fields[idx].string;
+}
+
+fn parseShaEntry(allocator: Allocator, fields: []const std.json.Value) ?ShaEntry {
+    const sha = stringField(fields, 0) orelse return null;
+    const code = stringField(fields, 1) orelse return null;
+    if (!engine.isValidSha(sha)) return null;
+    const res = parseResolutionCode(code) orelse return null;
+    return .{ .sha = allocator.dupe(u8, sha) catch return null, .resolution = res };
+}
+
+fn parseNamedEntry(allocator: Allocator, fields: []const std.json.Value) ?NamedEntry {
+    if (fields.len < 3) return null;
+    const ref = stringField(fields, 0) orelse return null;
+    if (!engine.isValidGitRef(ref)) return null;
+    return .{
+        .ref = allocator.dupe(u8, ref) catch return null,
+        .is_tag = intFieldAsBool(fields[1]),
+        .is_branch = intFieldAsBool(fields[2]),
+    };
+}
+
+fn parseBranchEntry(allocator: Allocator, fields: []const std.json.Value) ?BranchEntry {
+    const name = stringField(fields, 0) orelse return null;
+    const oid = stringField(fields, 1) orelse return null;
+    if (!engine.isValidGitRef(name) or !engine.isValidSha(oid)) return null;
+    const name_copy = allocator.dupe(u8, name) catch return null;
+    const oid_copy = allocator.dupe(u8, oid) catch {
+        allocator.free(name_copy);
+        return null;
+    };
+    return .{ .name = name_copy, .oid = oid_copy };
+}
+
+fn parseImpostorEntry(allocator: Allocator, fields: []const std.json.Value) ?ImpostorEntry {
+    const sha = stringField(fields, 0) orelse return null;
+    const code = stringField(fields, 1) orelse return null;
+    if (!engine.isValidSha(sha)) return null;
+    const status = parseImpostorCode(code) orelse return null;
+    return .{ .sha = allocator.dupe(u8, sha) catch return null, .status = status };
 }
 
 fn parseImpostorCode(code: []const u8) ?ImpostorStatus {
