@@ -1406,6 +1406,12 @@ const ContextPath = struct {
 /// by one of `contexts`. Function calls need no special handling: `join(...)` and
 /// `toJSON(...)` arguments are themselves references and are visited the same way.
 fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
+    return findAnyContext(expr, contexts) != null;
+}
+
+/// Position of the first reference in `expr` that matches one of `contexts`,
+/// as an offset and length within `expr` so an `Anchor` can turn it into a span.
+fn findAnyContext(expr: []const u8, contexts: []const []const u8) ?ExprMatch {
     var i: usize = 0;
     while (i < expr.len) {
         if (expr[i] == '\'') {
@@ -1421,11 +1427,13 @@ fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
         // `steps.meta.outputs.github.head_ref` are never mistaken for a root.
         const path = parseContextPath(expr, i);
         for (contexts) |ctx| {
-            if (pathMatchesPattern(path, ctx)) return true;
+            if (pathMatchesPattern(path, ctx)) {
+                return .{ .offset = i, .len = (if (path.end > i) path.end else i + 1) - i };
+            }
         }
         i = if (path.end > i) path.end else i + 1;
     }
-    return false;
+    return null;
 }
 
 /// Skip a single-quoted expression literal, honouring the `''` escape.
