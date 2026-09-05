@@ -48,14 +48,6 @@ pub const Anchor = spans.Anchor;
 // enclosing step or job when a value carries no span of its own.
 // ============================================================
 
-/// Workflow-level findings ("this workflow is missing X") have no single
-/// offending token; they point at the head of the file.
-const workflow_head_span = Span.point(1, 1, 0);
-
-fn runAnchor(step: *const Step) Anchor {
-    return Anchor.fromSpan(step.run_value_span, step.run_value_style orelse .plain, step.span);
-}
-
 fn ifAnchorStep(step: *const Step) Anchor {
     return Anchor.fromMeta(step.if_condition_meta, step.span);
 }
@@ -79,20 +71,7 @@ fn envAnchor(step: *const Step, key: []const u8) Anchor {
 const ExprMatch = struct {
     offset: usize,
     len: usize,
-
-    /// Build a match covering `s[start..end]`, clamped to `limit` (the string
-    /// length) so an unterminated expression cannot run past the buffer.
-    fn between(start: usize, end: usize, limit: usize) ExprMatch {
-        const stop = @min(end, limit);
-        return .{ .offset = start, .len = if (stop > start) stop - start else 0 };
-    }
 };
-
-/// Span of the step's `uses:` value, or the step itself when the parser did
-/// not capture it (e.g. a non-scalar `uses:`).
-fn usesSpan(step: *const Step) Span {
-    return step.uses_value_span orelse step.span;
-}
 
 // ============================================================
 // Dangerous GitHub contexts that can be controlled by users
@@ -198,7 +177,7 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .rule_id = "SEC001",
                 .severity = .warning,
                 .message = "action reference is not pinned to a SHA",
-                .span = usesSpan(step),
+                .span = spans.usesSpan(step),
                 .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
             }) catch return;
         }
@@ -213,7 +192,7 @@ const script_injection_fix_hint = "assign the context to an environment variable
 
 fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
     if (step.run) |run_body| {
-        checkContextsInString(run_body, runAnchor(step), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+        checkContextsInString(run_body, spans.runAnchor(step), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
     }
     checkScriptInputInjection(step, list);
 }
@@ -257,7 +236,7 @@ fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?struct { 
 fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
-        checkStringForSecrets(run_body, runAnchor(step), list);
+        checkStringForSecrets(run_body, spans.runAnchor(step), list);
     }
     // Check with: values
     if (step.with) |with_map| {
@@ -327,7 +306,7 @@ fn makeWriteAllFix(list: *DiagnosticList, value_span: Span) ?Fix {
 fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
         if (perms.write_all) {
-            const span = perms.value_span orelse workflow_head_span;
+            const span = perms.value_span orelse spans.workflow_head;
             list.append(.{
                 .rule_id = "SEC004",
                 .severity = .warning,
@@ -475,7 +454,7 @@ fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
             .rule_id = "SEC007",
             .severity = .info,
             .message = "workflow does not define top-level permissions, defaults may be overly broad",
-            .span = workflow_head_span,
+            .span = spans.workflow_head,
             .fix_hint = "add a top-level 'permissions:' block to restrict GITHUB_TOKEN scope",
             .fix = makeMissingPermissionsFix(wf, list),
         }) catch return;
@@ -576,7 +555,7 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
         .rule_id = "SEC008",
         .severity = .@"error",
         .message = "untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment variable injection",
-        .span = runAnchor(step).at(run_body, write_offset, 2),
+        .span = spans.runAnchor(step).at(run_body, write_offset, 2),
         .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
     }) catch return;
 }
@@ -648,7 +627,7 @@ fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
         if (findOverprovisionedSecrets(run_body)) |m| {
-            emitSEC011(runAnchor(step).at(run_body, m.offset, m.len), list);
+            emitSEC011(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
             return;
         }
     }
@@ -701,7 +680,7 @@ fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
             if (depth == 0) {
                 const expr = s[expr_start..j];
                 if (exprIsWholeSecretsRef(expr)) {
-                    return ExprMatch.between(pos, j + 2, s.len);
+                    return .{ .offset = pos, .len = j + 2 - pos };
                 }
                 pos = j + 1;
             }
@@ -761,7 +740,7 @@ fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
         if (findUnredactedSecrets(run_body)) |m| {
-            emitSEC012(runAnchor(step).at(run_body, m.offset, m.len), list);
+            emitSEC012(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
             return;
         }
     }
@@ -860,7 +839,7 @@ fn findSecretsOutsideEnv(s: []const u8) ?ExprMatch {
                 if (std.mem.startsWith(u8, inner, "secrets.")) {
                     const secret_name = inner["secrets.".len..];
                     if (!std.mem.eql(u8, secret_name, "GITHUB_TOKEN")) {
-                        return ExprMatch.between(pos, j + 2, s.len);
+                        return .{ .offset = pos, .len = j + 2 - pos };
                     }
                 }
                 pos = j + 1;
@@ -884,7 +863,7 @@ fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
     // Check run: block
     if (step.run) |run_body| {
         if (findSecretsOutsideEnv(run_body)) |m| {
-            emitSEC019(runAnchor(step).at(run_body, m.offset, m.len), list);
+            emitSEC019(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
             return;
         }
     }
@@ -917,7 +896,7 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
                     .rule_id = "SEC016",
                     .severity = .warning,
                     .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
-                    .span = usesSpan(step),
+                    .span = spans.usesSpan(step),
                     .fix_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope",
                 }) catch return;
             }
@@ -954,7 +933,7 @@ fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
             if (depth == 0) {
                 const expr = s[expr_start..j];
                 if (exprHasSecretJsonCall(expr)) {
-                    return ExprMatch.between(pos, j + 2, s.len);
+                    return .{ .offset = pos, .len = j + 2 - pos };
                 }
                 pos = j + 1;
             }
@@ -1104,7 +1083,7 @@ fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
             if (depth == 0) {
                 const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
                 if (containsActorBotCheck(expr)) {
-                    const match = ExprMatch.between(pos, j + 2, s.len);
+                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
                     list.append(.{
                         .rule_id = "SEC014",
                         .severity = .warning,
@@ -1161,7 +1140,7 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SEC015",
                     .severity = .warning,
                     .message = "actions/checkout persists credentials by default; combined with upload-artifact, the GITHUB_TOKEN may leak via uploaded artifacts",
-                    .span = usesSpan(step),
+                    .span = spans.usesSpan(step),
                     .fix_hint = "add 'persist-credentials: false' to the checkout step's 'with:' block",
                 };
 
@@ -1252,7 +1231,7 @@ fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) voi
         .rule_id = "SEC018",
         .severity = .warning,
         .message = message,
-        .span = usesSpan(step),
+        .span = spans.usesSpan(step),
         .fix_hint = "add 'with.persist-credentials: false' unless you need git push / gh from later steps",
     };
 
@@ -1309,7 +1288,7 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
             .rule_id = "SC002",
             .severity = .@"error",
             .message = message,
-            .span = usesSpan(step),
+            .span = spans.usesSpan(step),
             .fix_hint = "rollback to a pre-incident SHA or migrate to a trusted fork; do not re-pin to any tag of this action",
         }) catch return;
         return;
@@ -1343,7 +1322,7 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []cons
             if (depth == 0) {
                 const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
                 if (containsAnyContext(expr, contexts)) {
-                    const match = ExprMatch.between(pos, j + 2, s.len);
+                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
                     list.append(.{
                         .rule_id = rule_id,
                         .severity = .@"error",
@@ -1590,7 +1569,7 @@ fn checkInsecureCommandsJob(job: *const Job, list: *DiagnosticList) void {
 
 fn checkInsecureCommandsWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     if (wf.env) |env_map| {
-        checkEnvForInsecureCommands(env_map, wf.env_meta, workflow_head_span, list);
+        checkEnvForInsecureCommands(env_map, wf.env_meta, spans.workflow_head, list);
     }
 }
 
@@ -1647,7 +1626,7 @@ fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
             .rule_id = "BP007",
             .severity = .warning,
             .message = "potentially obfuscated command execution detected",
-            .span = runAnchor(step).whole(),
+            .span = spans.runAnchor(step).whole(),
             .fix_hint = "avoid indirect command execution; use explicit, readable commands",
         }) catch return;
     }

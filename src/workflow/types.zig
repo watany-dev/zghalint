@@ -310,12 +310,10 @@ pub const Step = struct {
     uses_value_style: ?yaml_types.ScalarStyle = null,
     /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
     with_last_entry_end_byte: ?usize = null,
-    /// Value span of the `run:` scalar (for future SEC008 family).
-    run_value_span: ?yaml_types.Span = null,
-    /// Scalar style of the `run:` value. Needed to map an offset inside
-    /// `run` back to a source line/column (block scalars start one line
-    /// below their `|` / `>` indicator).
-    run_value_style: ?yaml_types.ScalarStyle = null,
+    /// Span and style of the `run:` scalar. The style is needed to map an
+    /// offset inside `run` back to a source line/column (block scalars start
+    /// one line below their `|` / `>` indicator).
+    run_meta: ?ScalarValueMeta = null,
     /// Span of the `uses:` scalar value (for SEC001 and the SC00x family).
     uses_value_span: ?yaml_types.Span = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).

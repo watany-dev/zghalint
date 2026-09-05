@@ -567,8 +567,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
         switch (entry.value) {
             .scalar => |s| {
-                step.run_value_span = s.span;
-                step.run_value_style = s.style;
+                step.run_meta = .{ .value_span = s.span, .style = s.style };
             },
             else => {},
         }
@@ -2071,7 +2070,7 @@ test "parseStep captures run/uses/with source metadata" {
     try testing.expectEqual(@as(u32, 9), checkout.with_meta.?.get("ref").?.value_span.start_line);
 
     const run_step = wf.jobs[0].steps[1];
-    try testing.expectEqual(yaml.ScalarStyle.literal, run_step.run_value_style.?);
+    try testing.expectEqual(yaml.ScalarStyle.literal, run_step.run_meta.?.style);
     // The `run:` span starts at the `|` indicator, one line above the content.
-    try testing.expectEqual(@as(u32, 10), run_step.run_value_span.?.start_line);
+    try testing.expectEqual(@as(u32, 10), run_step.run_meta.?.value_span.start_line);
 }

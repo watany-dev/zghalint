@@ -6,11 +6,20 @@ pub const Span = yaml.Span;
 pub const ScalarStyle = yaml.ScalarStyle;
 pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
 
+/// Workflow-level findings ("this workflow is missing X") have no single
+/// offending token; they point at the head of the file.
+pub const workflow_head = Span.point(1, 1, 0);
+
 /// Span of a step's `uses:` value, or the step itself when the parser did not
 /// capture it (e.g. a non-scalar `uses:`). Shared by every rule that reports a
 /// finding about the referenced action.
 pub fn usesSpan(step: *const workflow_types.Step) Span {
     return step.uses_value_span orelse step.span;
+}
+
+/// Anchor for text scanned out of a step's `run:` body.
+pub fn runAnchor(step: *const workflow_types.Step) Anchor {
+    return Anchor.fromMeta(step.run_meta, step.span);
 }
 
 /// Byte offset of the first character of a scalar's parsed `value` within the
@@ -21,17 +30,19 @@ pub fn usesSpan(step: *const workflow_types.Step) Span {
 /// block scalars (`|` / `>`) drop the indicator line. In every style the value
 /// ends where the token ends, so the content start is simply
 /// `end_byte - value.len`.
-pub fn contentStartByte(token: Span, value: []const u8) usize {
+fn contentStartByte(token: Span, value: []const u8) usize {
     if (token.end_byte < value.len) return token.start_byte;
     return token.end_byte - value.len;
 }
+
+const Pos = struct { line: u32, col: u32 };
 
 /// Source position of the first character of a scalar's parsed `value`.
 /// Block scalars start on the line after the `|` / `>` indicator, at column 1
 /// (the leading indentation is part of `value`, so the value's first byte is
 /// the first byte of that line). Quoted scalars start one column after the
 /// opening quote; plain scalars start at the token itself.
-fn contentOrigin(token: Span, style: ScalarStyle) struct { line: u32, col: u32 } {
+fn contentOrigin(token: Span, style: ScalarStyle) Pos {
     return switch (style) {
         .literal, .folded => .{ .line = token.start_line + 1, .col = 1 },
         .single_quoted, .double_quoted => .{ .line = token.start_line, .col = token.start_col + 1 },
@@ -50,29 +61,14 @@ pub const Anchor = struct {
     scalar: ?Span = null,
     style: ScalarStyle = .plain,
 
-    pub fn fromSpan(scalar: ?Span, style: ScalarStyle, fallback: Span) Anchor {
-        return .{ .fallback = fallback, .scalar = scalar, .style = style };
-    }
-
     pub fn fromMeta(meta: ?ScalarValueMeta, fallback: Span) Anchor {
         if (meta) |m| return .{ .fallback = fallback, .scalar = m.value_span, .style = m.style };
-        return .{ .fallback = fallback };
-    }
-
-    pub fn none(fallback: Span) Anchor {
         return .{ .fallback = fallback };
     }
 
     /// Span covering the whole scalar (or the fallback when it is unknown).
     pub fn whole(self: Anchor) Span {
         return self.scalar orelse self.fallback;
-    }
-
-    /// Absolute byte offset of `value[offset]`, or null when the scalar span
-    /// is unknown.
-    pub fn byteAt(self: Anchor, value: []const u8, offset: usize) ?usize {
-        const token = self.scalar orelse return null;
-        return contentStartByte(token, value) + @min(offset, value.len);
     }
 
     /// Span of `value[offset .. offset + len]` in the source.
@@ -97,8 +93,6 @@ pub const Anchor = struct {
     }
 };
 
-const Pos = struct { line: u32, col: u32 };
-
 fn advance(line: u32, col: u32, text: []const u8) Pos {
     var l = line;
     var c = col;
@@ -119,7 +113,7 @@ fn advance(line: u32, col: u32, text: []const u8) Pos {
 
 test "Anchor.at without a scalar span falls back to the step span" {
     const fallback = Span.point(4, 7, 30);
-    const a = Anchor.none(fallback);
+    const a = Anchor{ .fallback = fallback };
     const s = a.at("echo hi", 5, 2);
     try std.testing.expectEqual(@as(u32, 4), s.start_line);
     try std.testing.expectEqual(@as(u32, 7), s.start_col);
@@ -136,7 +130,7 @@ test "Anchor.at on a plain scalar offsets from the token column" {
         .end_byte = 115,
     };
     const value = "github.head_ref";
-    const a = Anchor.fromSpan(token, .plain, Span.point(1, 1, 0));
+    const a = Anchor.fromMeta(.{ .value_span = token, .style = .plain }, Span.point(1, 1, 0));
     const s = a.at(value, 7, 8);
     try std.testing.expectEqual(@as(u32, 3), s.start_line);
     try std.testing.expectEqual(@as(u32, 16), s.start_col);
@@ -154,7 +148,7 @@ test "Anchor.at on a quoted scalar skips the opening quote" {
         .end_byte = 15,
     };
     const value = "abc";
-    const a = Anchor.fromSpan(token, .double_quoted, Span.point(1, 1, 0));
+    const a = Anchor.fromMeta(.{ .value_span = token, .style = .double_quoted }, Span.point(1, 1, 0));
     const s = a.at(value, 0, 3);
     try std.testing.expectEqual(@as(u32, 6), s.start_col);
     try std.testing.expectEqual(@as(usize, 12), s.start_byte);
@@ -174,7 +168,7 @@ test "Anchor.at on a block scalar resolves the matching content line" {
         .start_byte = 50,
         .end_byte = 50 + 6 + value.len,
     };
-    const a = Anchor.fromSpan(token, .literal, Span.point(1, 1, 0));
+    const a = Anchor.fromMeta(.{ .value_span = token, .style = .literal }, Span.point(1, 1, 0));
     const offset = std.mem.indexOf(u8, value, "two").?;
     const s = a.at(value, offset, 3);
     try std.testing.expectEqual(@as(u32, 8), s.start_line);
@@ -196,7 +190,7 @@ test "Anchor.at clamps out-of-range offsets" {
         .start_byte = 0,
         .end_byte = 3,
     };
-    const a = Anchor.fromSpan(token, .plain, Span.point(9, 9, 9));
+    const a = Anchor.fromMeta(.{ .value_span = token, .style = .plain }, Span.point(9, 9, 9));
     const s = a.at("abc", 99, 10);
     try std.testing.expectEqual(@as(usize, 3), s.start_byte);
     try std.testing.expectEqual(@as(usize, 3), s.end_byte);

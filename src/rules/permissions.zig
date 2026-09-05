@@ -18,15 +18,11 @@ const Fix = diagnostics.Fix;
 const Edit = diagnostics.Edit;
 const spans = @import("spans.zig");
 
-/// Workflow-level findings have no single offending token; they point at the
-/// head of the file.
-const workflow_head_span = Span.point(1, 1, 0);
-
 // ── PERM001: Overly broad permissions ──
 
 fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
-        checkPermissionsScope(perms, wf.permissions_meta, workflow_head_span, diag_list);
+        checkPermissionsScope(perms, wf.permissions_meta, spans.workflow_head, diag_list);
     }
 
     for (wf.jobs) |job| {
@@ -542,7 +538,7 @@ test "PERM001: autofix replaces write-all with minimal permissions" {
     const perms = Permissions{ .write_all = true, .value_span = value_span };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, workflow_head_span, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -561,7 +557,7 @@ test "PERM001: no fix when value_span is null" {
     const perms = Permissions{ .write_all = true };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, workflow_head_span, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
@@ -571,7 +567,7 @@ test "PERM001: no fix for individual write when meta is null" {
     const perms = Permissions{ .contents = .write };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, workflow_head_span, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
@@ -596,7 +592,7 @@ test "PERM001: per-field autofix downgrades contents: write to read" {
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, workflow_head_span, &diags);
+    checkPermissionsScope(perms, meta, spans.workflow_head, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -624,7 +620,7 @@ test "PERM001: id-token: write emits dedicated hint without autofix" {
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, workflow_head_span, &diags);
+    checkPermissionsScope(perms, meta, spans.workflow_head, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -644,7 +640,7 @@ test "PERM001: detects write on previously uncovered scopes (attestations/discus
     };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, workflow_head_span, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
 
     try std.testing.expectEqual(@as(usize, 4), diags.len());
 }
@@ -666,7 +662,7 @@ test "PERM001: autofix applies to all 13 non-id-token scopes via the engine" {
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, workflow_head_span, &diags);
+    checkPermissionsScope(perms, meta, spans.workflow_head, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;

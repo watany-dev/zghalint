@@ -1005,7 +1005,7 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     // cannot be recovered from `value_span`. Pass null so autofix byte
     // ranges are never computed from an unreliable base.
     if (step.run) |run_val| {
-        const run_anchor = Anchor.fromSpan(step.run_value_span, step.run_value_style orelse .plain, step.span);
+        const run_anchor = spans.runAnchor(step);
         findAndValidateExpressions(allocator, run_val, run_anchor, list, null);
     }
 
@@ -1607,7 +1607,7 @@ test "find expressions: single expression in string" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha }}", Anchor.none(Span.point(1, 1, 0)), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha }}", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1617,7 +1617,7 @@ test "find expressions: multiple expressions" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "${{ github.sha }} and ${{ github.ref }}", Anchor.none(Span.point(1, 1, 0)), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "${{ github.sha }} and ${{ github.ref }}", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1627,7 +1627,7 @@ test "find expressions: unclosed expression" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha", Anchor.none(Span.point(1, 1, 0)), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "echo ${{ github.sha", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
 }
@@ -1636,7 +1636,7 @@ test "find expressions: no expressions in plain text" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(std.testing.allocator, "echo hello world", Anchor.none(Span.point(1, 1, 0)), &list, 0);
+    findAndValidateExpressions(std.testing.allocator, "echo hello world", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
@@ -1646,7 +1646,7 @@ test "find expressions: expression with unknown context" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    findAndValidateExpressions(arena.allocator(), "${{ badcontext.value }}", Anchor.none(Span.point(1, 1, 0)), &list, 0);
+    findAndValidateExpressions(arena.allocator(), "${{ badcontext.value }}", Anchor{ .fallback = Span.point(1, 1, 0) }, &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR002", list.get(0).rule_id);
 }
@@ -2443,8 +2443,6 @@ test "EXPR006 autofix: suppressed for `run:` values" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // `run:` is commonly a block scalar; even plain-scalar form is treated
-    // conservatively because the style is not tracked on Step.run_value_span.
     const source =
         \\name: t
         \\on: push

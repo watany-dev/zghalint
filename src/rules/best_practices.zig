@@ -5,6 +5,7 @@ const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const fix_builder = @import("../fix/builder.zig");
 const util = @import("../util.zig");
+const spans = @import("spans.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -365,7 +366,7 @@ fn checkDeprecatedWorkflowCommand(step: *const Step, diag_list: *DiagnosticList)
                 .rule_id = "BP008",
                 .severity = .@"error",
                 .message = "Deprecated workflow command '" ++ cmd.marker ++ "' in 'run:'. GitHub disabled it" ++ cmd.reason ++ ", so " ++ cmd.effect ++ ".",
-                .span = step.run_value_span orelse step.span,
+                .span = spans.runAnchor(step).whole(),
                 .fix_hint = "Replace '" ++ cmd.marker ++ cmd.args ++ "' with '" ++ cmd.replacement ++ "'.",
             }) catch return;
         }
@@ -1183,12 +1184,12 @@ test "BP008: repeated occurrences of one command report once" {
     try std.testing.expectEqual(@as(usize, 1), diags.len());
 }
 
-test "BP008: diagnostic span follows run_value_span" {
+test "BP008: diagnostic span follows the run: scalar span" {
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     const step = Step{
         .run = "echo \"::set-output name=a::1\"",
-        .run_value_span = Span.point(7, 15, 120),
+        .run_meta = .{ .value_span = Span.point(7, 15, 120), .style = .plain },
     };
     checkDeprecatedWorkflowCommand(&step, &diags);
 
