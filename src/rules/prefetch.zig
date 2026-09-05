@@ -308,12 +308,7 @@ fn applyCacheEntry(
     // the next compare phase re-supplies them if needed.
     if (active.impostor) {
         for (entry.impostor) |e| {
-            const mapped_status: impostor.ImpostorStatus = switch (e.status) {
-                .legitimate => .legitimate,
-                .impostor => .impostor,
-                .unknown => .unknown,
-            };
-            impostor.setCachedImpostorResult(owner, repo, e.sha, .{ .status = mapped_status });
+            impostor.setCachedImpostorResult(owner, repo, e.sha, .{ .status = e.status });
         }
     }
 
@@ -334,44 +329,17 @@ fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult) void {
     const entry: disk_cache.CachedRepo = .{
         .cached_at = std.time.timestamp(),
         .archived = res.archived,
-        .shas = blk: {
-            var list = scratch.alloc(disk_cache.ShaEntry, res.sha_results.len) catch return;
-            for (res.sha_results, 0..) |sr, i| {
-                list[i] = .{ .sha = sr.sha, .resolution = sr.resolution };
-            }
-            break :blk list;
-        },
-        .named = blk: {
-            var list = scratch.alloc(disk_cache.NamedEntry, res.named_results.len) catch return;
-            for (res.named_results, 0..) |nr, i| {
-                list[i] = .{ .ref = nr.ref, .is_tag = nr.is_tag, .is_branch = nr.is_branch };
-            }
-            break :blk list;
-        },
-        .branches = blk: {
-            if (res.branch_oids.len == 0) break :blk &.{};
-            var list = scratch.alloc(disk_cache.BranchEntry, res.branch_oids.len) catch return;
-            for (res.branch_oids, 0..) |b, i| {
-                list[i] = .{ .name = b.name, .oid = b.oid };
-            }
-            break :blk list;
-        },
-        .default_branch = if (res.default_branch) |db|
-            disk_cache.BranchEntry{ .name = db.name, .oid = db.oid }
-        else
-            null,
+        .shas = res.sha_results,
+        .named = res.named_results,
+        .branches = res.branch_oids,
+        .default_branch = res.default_branch,
         .impostor = blk: {
             if (!impostor.isActive() or res.sha_results.len == 0) break :blk &.{};
             var list = std.ArrayList(disk_cache.ImpostorEntry){};
             defer list.deinit(scratch);
             for (res.sha_results) |sr| {
                 const cached = impostor.lookupCachedImpostorResult(res.owner, res.repo, sr.sha) orelse continue;
-                const status: disk_cache.ImpostorStatus = switch (cached.status) {
-                    .legitimate => .legitimate,
-                    .impostor => .impostor,
-                    .unknown => .unknown,
-                };
-                list.append(scratch, .{ .sha = sr.sha, .status = status }) catch break :blk &.{};
+                list.append(scratch, .{ .sha = sr.sha, .status = cached.status }) catch break :blk &.{};
             }
             break :blk list.toOwnedSlice(scratch) catch &.{};
         },

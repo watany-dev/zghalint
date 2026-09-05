@@ -174,11 +174,8 @@ fn classifyImpostorViaCompare(
     // tag candidates and the default branch in the fix_hint.
     return .{
         .status = .impostor,
-        .suggested_tags = bridgeOids(scratch, pc.tag_oids),
-        .suggested_default = if (pc.default_branch) |def|
-            bridgeSingle(def)
-        else
-            null,
+        .suggested_tags = pc.tag_oids,
+        .suggested_default = pc.default_branch,
     };
 }
 
@@ -255,26 +252,6 @@ fn parseCompareStatus(scratch: Allocator, body: []const u8) CompareStatus {
         return .unreachable_;
     }
     return .unknown;
-}
-
-// ============================================================
-// graphql.NamedOid ↔ impostor.NamedOid bridges
-// ============================================================
-
-/// Convert graphql.NamedOid slices into the impostor.NamedOid layout.
-/// Both structs are field-compatible but live in different modules to
-/// avoid a circular import.
-fn bridgeOids(scratch: Allocator, src: []const graphql.NamedOid) []const impostor.NamedOid {
-    if (src.len == 0) return &.{};
-    var out = scratch.alloc(impostor.NamedOid, src.len) catch return &.{};
-    for (src, 0..) |s, i| {
-        out[i] = .{ .name = s.name, .oid = s.oid };
-    }
-    return out;
-}
-
-fn bridgeSingle(src: graphql.NamedOid) impostor.NamedOid {
-    return .{ .name = src.name, .oid = src.oid };
 }
 
 // ============================================================

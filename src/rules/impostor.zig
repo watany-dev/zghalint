@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
+const graphql = @import("graphql.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -23,11 +24,9 @@ const isValidSha = engine.isValidSha;
 pub const ImpostorStatus = enum { legitimate, impostor, unknown };
 
 /// A ref name paired with its target commit OID. Used to surface suggested
-/// alternative pins in fix_hint text when an impostor is flagged.
-pub const NamedOid = struct {
-    name: []const u8,
-    oid: []const u8,
-};
+/// alternative pins in fix_hint text when an impostor is flagged. Shared with
+/// the GraphQL layer so prefetch results can be handed over without a copy.
+pub const NamedOid = graphql.NamedOid;
 
 pub const CachedResult = struct {
     status: ImpostorStatus,

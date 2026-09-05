@@ -426,7 +426,11 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
                     // Check if it checks out the PR head ref
                     if (step.with) |with_map| {
                         if (with_map.get("ref")) |ref_val| {
-                            if (containsDangerousPRRef(ref_val)) {
+                            // github.event.pull_request.head.{sha,ref} and github.head_ref
+                            // all name fork-controlled code.
+                            if (std.mem.indexOf(u8, ref_val, "github.event.pull_request.head") != null or
+                                std.mem.indexOf(u8, ref_val, "github.head_ref") != null)
+                            {
                                 list.append(.{
                                     .rule_id = "SEC005",
                                     .severity = .@"error",
@@ -441,12 +445,6 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             }
         }
     }
-}
-
-fn containsDangerousPRRef(ref_val: []const u8) bool {
-    // Look for github.event.pull_request.head.sha or github.event.pull_request.head.ref or github.head_ref
-    return std.mem.indexOf(u8, ref_val, "github.event.pull_request.head") != null or
-        std.mem.indexOf(u8, ref_val, "github.head_ref") != null;
 }
 
 // ============================================================
@@ -612,7 +610,7 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
             if (!isAction(action_ref, "actions/checkout")) continue;
             const with_map = step.with orelse continue;
             const ref_val = with_map.get("ref") orelse continue;
-            if (!containsDangerousWorkflowRunRef(ref_val)) continue;
+            if (std.mem.indexOf(u8, ref_val, "github.event.workflow_run.") == null) continue;
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
@@ -622,10 +620,6 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
             }) catch return;
         }
     }
-}
-
-fn containsDangerousWorkflowRunRef(ref_val: []const u8) bool {
-    return std.mem.indexOf(u8, ref_val, "github.event.workflow_run.") != null;
 }
 
 // ============================================================
@@ -960,12 +954,6 @@ fn containsActorBotCheck(expr: []const u8) bool {
 // SEC015 - Artipacked: credential leak via upload-artifact
 // ============================================================
 
-fn hasPersistCredentialsFalse(step: *const Step) bool {
-    const with_map = step.with orelse return false;
-    const val = with_map.get("persist-credentials") orelse return false;
-    return std.mem.eql(u8, val, "false");
-}
-
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
     var has_upload_after = false;
     var i = job.steps.len;
@@ -978,7 +966,9 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
                 continue;
             }
 
-            if (has_upload_after and isAction(ref, "actions/checkout") and !hasPersistCredentialsFalse(step)) {
+            if (has_upload_after and isAction(ref, "actions/checkout") and
+                classifyPersistCredentials(step) != .explicit_false)
+            {
                 var diag = Diagnostic{
                     .rule_id = "SEC015",
                     .severity = .warning,
@@ -989,12 +979,7 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
 
                 // Attach autofix when span info is available
                 if (step.uses_value_end_byte != null) {
-                    diag.fix = buildPersistCredentialsFalseFix(
-                        list,
-                        step,
-                        "add persist-credentials: false to checkout step",
-                        .safe,
-                    );
+                    diag.fix = buildPersistCredentialsFalseFix(list, step, .safe);
                 }
 
                 list.append(diag) catch return;
@@ -1006,7 +991,6 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
 fn buildPersistCredentialsFalseFix(
     list: *DiagnosticList,
     step: *const Step,
-    description: []const u8,
     safety: diagnostics.FixSafety,
 ) ?diagnostics.Fix {
     const alloc = list.fixAllocator();
@@ -1023,7 +1007,11 @@ fn buildPersistCredentialsFalseFix(
     else
         fix_builder.appendMappingEntry(alloc, step.with_last_entry_end_byte orelse return null, col + 1, "persist-credentials", "false");
 
-    return .{ .description = description, .safety = safety, .edits = edits orelse return null };
+    return .{
+        .description = "add persist-credentials: false to checkout step",
+        .safety = safety,
+        .edits = edits orelse return null,
+    };
 }
 
 // --- SEC018: checkout-persist-credentials ---
@@ -1060,12 +1048,7 @@ fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) voi
     };
 
     if (state == .not_set and step.uses_value_end_byte != null) {
-        diag.fix = buildPersistCredentialsFalseFix(
-            list,
-            step,
-            "add persist-credentials: false to checkout step",
-            .unsafe,
-        );
+        diag.fix = buildPersistCredentialsFalseFix(list, step, .unsafe);
     }
 
     list.append(diag) catch return;
@@ -2790,18 +2773,6 @@ test "isAction checkout false for other action" {
     try testing.expect(!isAction(ActionRef.parse("actions/setup-node@v3"), "actions/checkout"));
 }
 
-test "containsDangerousPRRef with head.sha" {
-    try testing.expect(containsDangerousPRRef("${{ github.event.pull_request.head.sha }}"));
-}
-
-test "containsDangerousPRRef with head_ref" {
-    try testing.expect(containsDangerousPRRef("${{ github.head_ref }}"));
-}
-
-test "containsDangerousPRRef safe ref" {
-    try testing.expect(!containsDangerousPRRef("${{ github.sha }}"));
-}
-
 // --- Integration: multiple rules fire on same workflow ---
 
 test "multiple security rules fire together" {
@@ -3615,31 +3586,31 @@ test "SEC015: isAction upload-artifact helper" {
     try testing.expect(!isAction(ActionRef.parse("./actions/upload-artifact"), "actions/upload-artifact"));
 }
 
-test "SEC015: hasPersistCredentialsFalse helper" {
+test "classifyPersistCredentials helper" {
     // No with: map
     const step_no_with = Step{};
-    try testing.expect(!hasPersistCredentialsFalse(&step_no_with));
+    try testing.expectEqual(PersistCredentialsState.not_set, classifyPersistCredentials(&step_no_with));
 
     // with: map without persist-credentials
     var with1 = workflow_types.StringMap.init(testing.allocator);
     with1.put("fetch-depth", "0") catch unreachable;
     defer with1.deinit();
     const step_no_pc = Step{ .with = with1 };
-    try testing.expect(!hasPersistCredentialsFalse(&step_no_pc));
+    try testing.expectEqual(PersistCredentialsState.not_set, classifyPersistCredentials(&step_no_pc));
 
     // persist-credentials: false
     var with2 = workflow_types.StringMap.init(testing.allocator);
     with2.put("persist-credentials", "false") catch unreachable;
     defer with2.deinit();
     const step_false = Step{ .with = with2 };
-    try testing.expect(hasPersistCredentialsFalse(&step_false));
+    try testing.expectEqual(PersistCredentialsState.explicit_false, classifyPersistCredentials(&step_false));
 
     // persist-credentials: true
     var with3 = workflow_types.StringMap.init(testing.allocator);
     with3.put("persist-credentials", "true") catch unreachable;
     defer with3.deinit();
     const step_true = Step{ .with = with3 };
-    try testing.expect(!hasPersistCredentialsFalse(&step_true));
+    try testing.expectEqual(PersistCredentialsState.explicit_true, classifyPersistCredentials(&step_true));
 }
 
 test "SEC015: integration - YAML parse to fix apply" {

@@ -26,32 +26,23 @@ pub fn collectFixes(
     return list.toOwnedSlice(allocator);
 }
 
-const FlatEdits = struct {
-    /// The valid edits (sub-slice of `allocation`), sorted descending by start_byte.
-    items: []Edit,
-    /// The original allocation to free.
-    allocation: []Edit,
-
-    fn deinit(self: FlatEdits, allocator: std.mem.Allocator) void {
-        allocator.free(self.allocation);
-    }
-};
-
 /// Flatten all edits from multiple fixes into a single sorted, non-overlapping list.
 /// Edits are sorted by start_byte descending so they can be applied back-to-front
 /// without offset shifting. Overlapping edits are dropped (first wins by position).
 /// Edits with invalid byte ranges (end < start, or end > source_len) are also dropped.
-fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: usize) !FlatEdits {
+/// The returned slice is owned by the caller.
+fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: usize) ![]Edit {
     // Count total edits
     var total: usize = 0;
     for (fixes) |f| {
         total += f.edits.len;
     }
 
-    if (total == 0) return .{ .items = &.{}, .allocation = &.{} };
+    if (total == 0) return &.{};
 
     // Collect all edits (filtering invalid byte ranges up-front)
-    var edits = try allocator.alloc(Edit, total);
+    const edits = try allocator.alloc(Edit, total);
+    errdefer allocator.free(edits);
 
     var idx: usize = 0;
     for (fixes) |f| {
@@ -60,11 +51,6 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: 
             edits[idx] = e;
             idx += 1;
         }
-    }
-
-    if (idx == 0) {
-        allocator.free(edits);
-        return .{ .items = &.{}, .allocation = &.{} };
     }
 
     const filtered = edits[0..idx];
@@ -90,13 +76,10 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: 
         write_idx += 1;
     }
 
-    // Get the valid portion
-    const result = filtered[0..write_idx];
-
-    // Reverse to get descending order (apply back-to-front)
-    std.mem.reverse(Edit, result);
-
-    return .{ .items = result, .allocation = edits };
+    // Reverse to get descending order (apply back-to-front), then hand back an
+    // exactly-sized allocation so the caller can free it directly.
+    std.mem.reverse(Edit, filtered[0..write_idx]);
+    return allocator.realloc(edits, write_idx);
 }
 
 /// An edit is valid iff its byte range is non-inverted and within source bounds.
@@ -115,10 +98,8 @@ pub fn applyFixes(
     source: []const u8,
     fixes: []const Fix,
 ) !ApplyResult {
-    const flat = try flattenAndSort(allocator, fixes, source.len);
-    defer if (flat.allocation.len > 0) flat.deinit(allocator);
-
-    const edits = flat.items;
+    const edits = try flattenAndSort(allocator, fixes, source.len);
+    defer allocator.free(edits);
 
     if (edits.len == 0) {
         return .{ .content = try allocator.dupe(u8, source), .edits_applied = 0 };

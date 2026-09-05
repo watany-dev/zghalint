@@ -285,7 +285,10 @@ pub const TypeEnv = struct {
 };
 ```
 
-T0〜T3 では `TypeEnv{}`（空 overlay）で十分。T4 で EXPR010〜EXPR014 が次を入れる。
+T0〜T3 では overlay が空なので `TypeEnv` 自体を置かず、`walkPath` が
+`catalog.lookupContext` を直接引く（実装済みの形）。`TypeEnv` は overlay を
+入れる T4 で導入し、`walkPath` / `typeOf` に引数として渡す。T4 で
+EXPR010〜EXPR014 が次を入れる。
 
 | overlay | 構築材料 | shape |
 |---|---|---|
