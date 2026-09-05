@@ -1,6 +1,6 @@
 //! Static type representation for GitHub Actions expressions.
 //!
-//! See `docs/adr/0006-expr-static-typecheck.md` (D1) and
+//! See `docs/adr/0009-expr-static-typecheck.md` (D1) and
 //! `docs/design/expr-static-typecheck-design.md` §2.
 //!
 //! Types are interned: every type is a comptime constant shared by pointer, so

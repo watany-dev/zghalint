@@ -46,12 +46,16 @@ runs:
 
         if [ "$OS" = "windows" ]; then
           ARCHIVE="zghalint-$OS-$ARCH.zip"
-          curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/$ARCHIVE" -o "$ARCHIVE"
+        else
+          ARCHIVE="zghalint-$OS-$ARCH.tar.gz"
+        fi
+
+        curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/$ARCHIVE" -o "$ARCHIVE"
+
+        if [ "$OS" = "windows" ]; then
           unzip -q "$ARCHIVE"
           cp "zghalint-$OS-$ARCH/zghalint.exe" ./zghalint.exe
         else
-          ARCHIVE="zghalint-$OS-$ARCH.tar.gz"
-          curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/$ARCHIVE" -o "$ARCHIVE"
           tar -xzf "$ARCHIVE"
           cp "zghalint-$OS-$ARCH/zghalint" ./zghalint
           chmod +x ./zghalint
@@ -71,8 +75,9 @@ runs:
           OFFLINE_FLAG="--offline"
         fi
 
+        EXE=""
         if [ "$RUNNER_OS" = "Windows" ]; then
-          ./zghalint.exe ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG
-        else
-          ./zghalint ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG
+          EXE=".exe"
         fi
+
+        "./zghalint$EXE" ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG

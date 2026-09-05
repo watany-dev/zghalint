@@ -1,11 +1,11 @@
 ---
-description: Validate and improve an implementation plan in plan mode by cross-checking with docs/design/*.md, docs/ROADMAP.md, docs/requirements.md, and src/. Superset of update-design. Use in plan mode whenever the user requests an implementation plan for zghalint - invoke at the start of plan mode so the verification runs before finalizing the plan file, and re-invoke just before ExitPlanMode if the plan has materially changed. Trigger examples - entering plan mode for any zghalint feature work, "プランを作成", "実装計画", "plan this feature", "validate the plan", "整合性チェック".
+description: Validate and improve an implementation plan in plan mode by cross-checking with docs/design/*.md, docs/adr/*.md, docs/rules.md, and src/. Superset of update-design. Use in plan mode whenever the user requests an implementation plan for zghalint - invoke at the start of plan mode so the verification runs before finalizing the plan file, and re-invoke just before ExitPlanMode if the plan has materially changed. Trigger examples - entering plan mode for any zghalint feature work, "プランを作成", "実装計画", "plan this feature", "validate the plan", "整合性チェック".
 ---
 
 # update-plan
 
 プランモードで実装計画を完成させた直後、ユーザーに提示する直前に発動する統合検証・改善スキル。
-update-design の全機能（設計書品質評価）を内包しつつ、ロードマップ・要件定義との横断的整合性チェックと、プラン自体の改善を行う。
+update-design の全機能（設計書品質評価）を内包しつつ、ADR・ルール一覧との横断的整合性チェックと、プラン自体の改善を行う。
 
 ## 発動タイミング
 
@@ -21,7 +21,7 @@ update-design の全機能（設計書品質評価）を内包しつつ、ロー
 ## Phase 1: コンテキスト収集
 
 1. 作成中のプランファイルの内容を把握し、対象の機能・Phase・モジュールを特定する
-2. プランに関連する `docs/design/*.md`、`docs/ROADMAP.md`、`docs/requirements.md` を読み込む
+2. プランに関連する `docs/design/*.md`、`docs/adr/*.md`、`docs/rules.md` を読み込む
 3. プランが対象とするモジュールの `src/` 配下のソースコードを読み込む
 
 ## Phase 2: 設計書品質評価（update-design 完全互換）
@@ -77,7 +77,7 @@ update-design の全機能（設計書品質評価）を内包しつつ、ロー
 
 ## Phase 3: 整合性チェック
 
-設計書・ロードマップ・要件定義・ソースコード間の不整合を検出する。
+設計書・ADR・ルール一覧・ソースコード間の不整合を検出する。
 
 ### 3-1. 設計書 ↔ ソースコード
 
@@ -85,11 +85,11 @@ update-design の全機能（設計書品質評価）を内包しつつ、ロー
 2. 設計書に記載されているが未実装の機能を特定する
 3. 実装されているが設計書に記載されていない機能を特定する
 
-### 3-2. ロードマップ ↔ 設計書 ↔ 要件定義
+### 3-2. ADR ↔ 設計書 ↔ ルール一覧
 
-1. プランが対象とする Phase に対応する設計書が存在するか確認する
-2. プランが対象とする Phase が要件定義の FR/NFR のどれに対応するか確認する
-3. 要件定義の状態（✅ / 🔲）がロードマップのステータスと一致しているか確認する
+1. プランが対象とする機能に対応する設計書・ADR が存在するか確認する
+2. 判断の単一情報源となる ADR とプランの内容が矛盾していないか確認する
+3. `docs/rules.md` のルール一覧・件数がプランの追加/変更と整合するか確認する
 4. ドキュメント間で言及されているがカバーされていない機能・要件を特定する
 
 ## Phase 4: プラン改善と出力
@@ -107,7 +107,7 @@ Phase 2〜3 の結果に基づき、プランを改善する。
 
 発見した問題を優先度付きでプランに反映する:
 
-- **P0（必須修正）**: スコア50未満のカテゴリが1つでもある場合、設計書との矛盾、要件定義に存在しない機能の追加
+- **P0（必須修正）**: スコア50未満のカテゴリが1つでもある場合、設計書・ADR との矛盾
 - **P1（推奨修正）**: スコア50-69のカテゴリがある場合、イテレーション分割の改善、影響範囲の追加記載
 - **P2（情報提供）**: スコア70-89のカテゴリがある場合、既存設計書の改善余地、将来Phaseへの影響（90以上は指摘なし）
 
@@ -135,7 +135,7 @@ Phase 2〜3 の結果に基づき、プランを改善する。
 | チェック項目 | スコア | 詳細 |
 |-------------|--------|------|
 | 設計書 ↔ ソースコード | XX/100 | [詳細] |
-| ロードマップ ↔ 設計書 ↔ 要件定義 | XX/100 | [詳細] |
+| ADR ↔ 設計書 ↔ ルール一覧 | XX/100 | [詳細] |
 
 ### 修正事項
 - **P0**: [スコア50未満の必須修正の一覧]
@@ -154,5 +154,5 @@ Phase 2〜3 の結果に基づき、プランを改善する。
 - 設計書・レポートは日本語で記述すること
 - 構造体名・関数名はZigの命名規則（camelCase / PascalCase）に従うこと
 - 定数名はscreaming_snake_caseまたはZigの慣例に従うこと
-- ロードマップ・要件定義のステータスは実装の実態に基づき、推測で変更しないこと
-- プランの修正は根拠（設計書・要件定義・CLAUDE.md の該当箇所）を明示すること
+- ADR・`docs/rules.md` のステータスは実装の実態に基づき、推測で変更しないこと
+- プランの修正は根拠（設計書・ADR・AGENTS.md の該当箇所）を明示すること

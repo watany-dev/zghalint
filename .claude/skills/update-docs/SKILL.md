@@ -1,5 +1,5 @@
 ---
-description: Update zghalint documentation (docs/design/*.md, README.md, docs/ROADMAP.md, docs/requirements.md) to match current source code. Use when the user asks to update docs, refresh README, sync design documents with implementation, or check doc/code consistency. Trigger examples - "ドキュメントを最新化して", "設計書を更新", "update docs", "README を直して", "docs と src の乖離を確認", "sync documentation".
+description: Update zghalint documentation (docs/design/*.md, docs/adr/*.md, README.md) to match current source code. Use when the user asks to update docs, refresh README, sync design documents with implementation, or check doc/code consistency. Trigger examples - "ドキュメントを最新化して", "設計書を更新", "update docs", "README を直して", "docs と src の乖離を確認", "sync documentation".
 ---
 
 # update-docs
@@ -38,7 +38,7 @@ description: Update zghalint documentation (docs/design/*.md, README.md, docs/RO
 
 ## Phase 2: 各ドキュメントの更新
 
-### 2-1. 設計書 (`docs/design/<feature>.md`)
+### 2-1. 設計書 (`docs/design/<feature>.md`) と ADR (`docs/adr/NNNN-*.md`)
 
 1. 各設計書の内容をソースコードと照合する
 2. 以下を更新する:

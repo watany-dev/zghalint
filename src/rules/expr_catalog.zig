@@ -2,7 +2,7 @@
 //!
 //! Single source of truth for EXPR002 (context names), EXPR003 (properties)
 //! and EXPR004/EXPR005 (function names and arity).
-//! See `docs/adr/0006-expr-static-typecheck.md` (D2, D3).
+//! See `docs/adr/0009-expr-static-typecheck.md` (D2, D3).
 
 const std = @import("std");
 const t = @import("expr_type.zig");

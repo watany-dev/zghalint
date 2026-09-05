@@ -7,7 +7,6 @@
 本設計書では、既存の workflow parser / model を最小限拡張しつつ、安全に `false` へ置換する方法を定義する。
 
 関連資料:
-- `docs/design/sec017-implementation-plan.md`
 
 ## スコープ
 

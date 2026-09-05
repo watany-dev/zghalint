@@ -58,12 +58,7 @@ jobs:
       - name: Install kcov
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ pkg-config libcurl4-openssl-dev libdw-dev libelf-dev
-          git clone --depth 1 --branch v43 https://github.com/SimonKagstrom/kcov.git /tmp/kcov
-          mkdir /tmp/kcov/build && cd /tmp/kcov/build
-          cmake -DCMAKE_INSTALL_PREFIX=/usr/local ..
-          make -j$(nproc)
-          sudo make install
+          sudo apt-get install -y kcov
       - name: Build test binary
         run: zig build test-bin
       - name: Run coverage measurement
@@ -105,5 +100,5 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
-      - run: pip install ".[test]"
+      - run: pip install -r tests/pbt/requirements.txt
       - run: pytest tests/pbt/ -x -v

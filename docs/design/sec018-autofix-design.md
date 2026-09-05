@@ -4,7 +4,7 @@
 
 `actions/checkout` のデフォルト挙動 `persist-credentials: true` は `GITHUB_TOKEN` を `.git/config` に永続化するため、後続 step が `.git/config` 経由でトークンを読み出せる。`SEC015` (artipacked) が `upload-artifact` と組み合わせた場合の狭い漏洩経路を既にカバーしているのに対し、本ルール `SEC018` は **checkout step 単独の時点で** デフォルト挙動を警告し、`with.persist-credentials: false` を挿入する `--fix-unsafe` を提供する。
 
-本設計書の判断は `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` の D1-D12 を単一情報源とする。
+本設計書の判断は `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` の D1-D12 を単一情報源とする。
 
 行番号は本ドキュメント記述時点（commit `f427b0a`）のものである。実装時にズレた場合は `Read` / `git grep` で再確認すること。
 
@@ -200,7 +200,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 
 ## 参考
 
-- `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D1 / D2 / D4 / D5）
+- `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D1 / D2 / D4 / D5）
 - `docs/adr/0003-runner001-deprecated-runner.md` — `.unsafe` autofix の先例
 - `docs/design/sec017-autofix-design.md` — 本設計書の節構成テンプレート
 - `src/rules/security.zig:273-277` — `isCheckoutAction`

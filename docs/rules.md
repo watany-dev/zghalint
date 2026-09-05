@@ -105,7 +105,7 @@ Validate the principle of least privilege in workflow permissions.
 Validate `${{ }}` expression syntax, context access, and function calls.
 
 式は静的型検査エンジン（`src/rules/expr_type.zig` / `expr_catalog.zig` /
-`expr_check.zig`）で評価される。設計は `docs/adr/0006-expr-static-typecheck.md`
+`expr_check.zig`）で評価される。設計は `docs/adr/0009-expr-static-typecheck.md`
 と `docs/design/expr-static-typecheck-design.md` を参照。
 `github.event` はイベントごとのスキーマを持たない緩いオブジェクトとして扱われ、
 未知のキーは報告しない（ADR D3）。
