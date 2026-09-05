@@ -932,6 +932,52 @@ fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
     };
 }
 
+/// Validate an `if:` condition. GitHub allows the `${{ }}` wrapper to be
+/// omitted, so a condition without one is itself a single expression.
+fn checkIfCondition(
+    allocator: std.mem.Allocator,
+    if_condition: ?[]const u8,
+    meta: ?workflow_types.ScalarValueMeta,
+    fallback: Span,
+    list: *DiagnosticList,
+) void {
+    const if_val = if_condition orelse return;
+    const anchor = Anchor.fromMeta(meta, fallback);
+    const base: ?usize = if (meta) |m| scalarValueStartByte(m) else null;
+    if (std.mem.indexOf(u8, if_val, "${{") != null) {
+        findAndValidateExpressions(allocator, if_val, anchor, list, base);
+        return;
+    }
+    const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
+    if (trimmed.len == 0) return;
+    const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
+    const abs: ?usize = if (base) |b| b + leading else null;
+    validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
+}
+
+/// Whether per-entry byte offsets are trustworthy enough to base autofix ranges on.
+const ByteTracking = enum { track_bytes, no_bytes };
+
+/// Validate the expressions in every value of an `env:` / `with:` style map.
+fn checkScalarMap(
+    allocator: std.mem.Allocator,
+    map: ?workflow_types.StringMap,
+    meta_map: ?workflow_types.ScalarValueMetaMap,
+    fallback: Span,
+    list: *DiagnosticList,
+    tracking: ByteTracking,
+) void {
+    const values = map orelse return;
+    for (values.keys(), values.values()) |key, value| {
+        const entry_meta = if (meta_map) |m| m.get(key) else null;
+        const base: ?usize = switch (tracking) {
+            .track_bytes => if (entry_meta) |m| scalarValueStartByte(m) else null,
+            .no_bytes => null,
+        };
+        findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, fallback), list, base);
+    }
+}
+
 pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
 
@@ -944,68 +990,22 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
         findAndValidateExpressions(allocator, run_val, run_anchor, list, null);
     }
 
-    // Check 'if' field
-    if (step.if_condition) |if_val| {
-        const if_anchor = Anchor.fromMeta(step.if_condition_meta, step.span);
-        const if_base: ?usize = if (step.if_condition_meta) |m| scalarValueStartByte(m) else null;
-        if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, if_anchor, list, if_base);
-        } else {
-            const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-            if (trimmed.len > 0) {
-                const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-                const abs: ?usize = if (if_base) |b| b + leading else null;
-                validateExpression(allocator, trimmed, if_anchor.at(if_val, leading, trimmed.len), list, abs);
-            }
-        }
-    }
+    checkIfCondition(allocator, step.if_condition, step.if_condition_meta, step.span, list);
 
-    // Check 'with' values — per-entry scalar spans are not captured, so the
-    // absolute byte base is unknown. Suppress fix generation.
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, value| {
-            const with_meta = if (step.with_meta) |m| m.get(key) else null;
-            findAndValidateExpressions(allocator, value, Anchor.fromMeta(with_meta, step.span), list, null);
-        }
-    }
+    // with values — per-entry scalar spans are not captured, so the absolute
+    // byte base is unknown. Suppress fix generation.
+    checkScalarMap(allocator, step.with, step.with_meta, step.span, list, .no_bytes);
 
-    // Check 'env' values — use env_meta when available for accurate byte tracking.
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, value| {
-            const entry_meta = if (step.env_meta) |meta| meta.get(key) else null;
-            const base: ?usize = if (entry_meta) |m| scalarValueStartByte(m) else null;
-            findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, step.span), list, base);
-        }
-    }
+    // env values — env_meta gives accurate byte tracking when available.
+    checkScalarMap(allocator, step.env, step.env_meta, step.span, list, .track_bytes);
 }
 
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
 
-    // Check 'if' field
-    if (job.if_condition) |if_val| {
-        const if_anchor = Anchor.fromMeta(job.if_condition_meta, job.span);
-        const if_base: ?usize = if (job.if_condition_meta) |m| scalarValueStartByte(m) else null;
-        if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, if_anchor, list, if_base);
-        } else {
-            const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-            if (trimmed.len > 0) {
-                const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-                const abs: ?usize = if (if_base) |b| b + leading else null;
-                validateExpression(allocator, trimmed, if_anchor.at(if_val, leading, trimmed.len), list, abs);
-            }
-        }
-    }
+    checkIfCondition(allocator, job.if_condition, job.if_condition_meta, job.span, list);
 
-    // Check 'env' values
-    if (job.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, value| {
-            const entry_meta = if (job.env_meta) |meta| meta.get(key) else null;
-            const base: ?usize = if (entry_meta) |m| scalarValueStartByte(m) else null;
-            findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, job.span), list, base);
-        }
-    }
+    checkScalarMap(allocator, job.env, job.env_meta, job.span, list, .track_bytes);
 }
 
 /// Pre-built rule for use with the Engine
