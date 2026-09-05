@@ -70,18 +70,6 @@ fn makeDowngradeToReadFix(diag_list: *DiagnosticList, yaml_key: []const u8, valu
 
 /// `fallback` is the span reported when the parser captured no span for the
 /// offending permissions entry (e.g. a flow-style `permissions:` mapping).
-/// `Permissions` field names use `_` where the YAML key uses `-`.
-fn scopeKey(comptime name: []const u8) []const u8 {
-    comptime {
-        var buf: [name.len]u8 = name[0..name.len].*;
-        for (&buf) |*c| {
-            if (c.* == '_') c.* = '-';
-        }
-        const key = buf;
-        return &key;
-    }
-}
-
 fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: Span, diag_list: *DiagnosticList) void {
     if (perms.write_all) {
         const span = perms.value_span orelse fallback;
@@ -100,10 +88,10 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
     // declares exactly those keys, so it doubles as the key list.
     // `id-token` is detected with a dedicated hint (OIDC context) and no autofix,
     // because the GitHub Actions spec does not allow `id-token: read`.
-    inline for (std.meta.fields(PermissionsMeta)) |field| {
-        const key: []const u8 = comptime scopeKey(field.name);
-        const level: ?workflow_types.PermissionLevel = @field(perms, field.name);
-        const value_span: ?Span = if (meta) |m| @field(m, field.name) else null;
+    inline for (workflow_types.permission_scopes) |field| {
+        const key: []const u8 = comptime workflow_types.permissionScopeKey(field);
+        const level: ?workflow_types.PermissionLevel = @field(perms, field);
+        const value_span: ?Span = if (meta) |m| @field(m, field) else null;
         if (level) |lvl| {
             if (lvl == .write) {
                 const is_id_token = comptime std.mem.eql(u8, key, "id-token");

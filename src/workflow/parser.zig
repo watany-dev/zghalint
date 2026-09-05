@@ -691,25 +691,9 @@ fn setPermissionMetaField(meta: *types.PermissionsMeta, key: []const u8, value: 
         .scalar => |s| s.span,
         else => return,
     };
-    const fields = .{
-        .{ "actions", &meta.actions },
-        .{ "attestations", &meta.attestations },
-        .{ "checks", &meta.checks },
-        .{ "contents", &meta.contents },
-        .{ "deployments", &meta.deployments },
-        .{ "discussions", &meta.discussions },
-        .{ "id-token", &meta.id_token },
-        .{ "issues", &meta.issues },
-        .{ "packages", &meta.packages },
-        .{ "pages", &meta.pages },
-        .{ "pull-requests", &meta.pull_requests },
-        .{ "repository-projects", &meta.repository_projects },
-        .{ "security-events", &meta.security_events },
-        .{ "statuses", &meta.statuses },
-    };
-    inline for (fields) |f| {
-        if (std.mem.eql(u8, key, f[0])) {
-            f[1].* = scalar_span;
+    inline for (types.permission_scopes) |field| {
+        if (std.mem.eql(u8, key, comptime types.permissionScopeKey(field))) {
+            @field(meta, field) = scalar_span;
             return;
         }
     }
@@ -728,25 +712,9 @@ fn parsePermissionLevel(node: Node) ?types.PermissionLevel {
 }
 
 fn setPermissionField(perms: *types.Permissions, key: []const u8, level: types.PermissionLevel) void {
-    const fields = .{
-        .{ "actions", &perms.actions },
-        .{ "attestations", &perms.attestations },
-        .{ "checks", &perms.checks },
-        .{ "contents", &perms.contents },
-        .{ "deployments", &perms.deployments },
-        .{ "discussions", &perms.discussions },
-        .{ "id-token", &perms.id_token },
-        .{ "issues", &perms.issues },
-        .{ "packages", &perms.packages },
-        .{ "pages", &perms.pages },
-        .{ "pull-requests", &perms.pull_requests },
-        .{ "repository-projects", &perms.repository_projects },
-        .{ "security-events", &perms.security_events },
-        .{ "statuses", &perms.statuses },
-    };
-    inline for (fields) |f| {
-        if (std.mem.eql(u8, key, f[0])) {
-            f[1].* = level;
+    inline for (types.permission_scopes) |field| {
+        if (std.mem.eql(u8, key, comptime types.permissionScopeKey(field))) {
+            @field(perms, field) = level;
             return;
         }
     }

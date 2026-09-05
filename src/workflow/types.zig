@@ -78,6 +78,23 @@ pub const PermissionsMeta = struct {
     statuses: ?yaml_types.Span = null,
 };
 
+/// The `permissions:` scope keys, in schema order. `Permissions` and
+/// `PermissionsMeta` declare exactly these, so `PermissionsMeta` doubles as the
+/// key list for anything that walks the scopes.
+pub const permission_scopes = std.meta.fieldNames(PermissionsMeta);
+
+/// Field names use `_` where the YAML key uses `-`.
+pub fn permissionScopeKey(comptime field_name: []const u8) []const u8 {
+    comptime {
+        var buf: [field_name.len]u8 = field_name[0..field_name.len].*;
+        for (&buf) |*c| {
+            if (c.* == '_') c.* = '-';
+        }
+        const key = buf;
+        return &key;
+    }
+}
+
 /// Concurrency configuration
 pub const Concurrency = struct {
     group: []const u8,
