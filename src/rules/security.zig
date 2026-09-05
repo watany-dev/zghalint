@@ -13,6 +13,7 @@ const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
+const permissions = @import("permissions.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -385,52 +386,27 @@ fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
 // SEC004 - Excessive permissions (write-all)
 // ============================================================
 
-const write_all_replacement = "{contents: read}";
-
-fn makeWriteAllFix(list: *DiagnosticList, value_span: Span) ?Fix {
-    const edits = fix_builder.replaceScalar(
-        list.fixAllocator(),
-        value_span,
-        .plain,
-        write_all_replacement,
-    ) orelse return null;
-    return .{
-        .description = "Replace 'write-all' with minimal permissions",
-        .safety = .safe,
-        .edits = edits,
-    };
-}
-
 fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
-    if (wf.permissions) |perms| {
-        if (perms.write_all) {
-            const span = perms.value_span orelse spans.workflow_head;
-            list.append(.{
-                .rule_id = "SEC004",
-                .severity = .warning,
-                .message = "workflow uses 'permissions: write-all' which grants excessive permissions",
-                .span = span,
-                .fix_hint = "specify only the permissions that are needed",
-                .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
-            }) catch return;
-        }
-    }
+    checkWriteAll(list, wf.permissions, "workflow", spans.workflow_head);
 }
 
 fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
-    if (job.permissions) |perms| {
-        if (perms.write_all) {
-            const span = perms.value_span orelse job.span;
-            list.append(.{
-                .rule_id = "SEC004",
-                .severity = .warning,
-                .message = "job uses 'permissions: write-all' which grants excessive permissions",
-                .span = span,
-                .fix_hint = "specify only the permissions that are needed",
-                .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
-            }) catch return;
-        }
-    }
+    checkWriteAll(list, job.permissions, "job", job.span);
+}
+
+/// SEC004 for either scope. `scope` only names the level in the message, and
+/// `fallback` locates the diagnostic when the parser recorded no value span.
+fn checkWriteAll(list: *DiagnosticList, maybe_perms: ?Permissions, comptime scope: []const u8, fallback: Span) void {
+    const perms = maybe_perms orelse return;
+    if (!perms.write_all) return;
+    list.append(.{
+        .rule_id = "SEC004",
+        .severity = .warning,
+        .message = scope ++ " uses 'permissions: write-all' which grants excessive permissions",
+        .span = perms.value_span orelse fallback,
+        .fix_hint = "specify only the permissions that are needed",
+        .fix = if (perms.value_span) |vs| permissions.makeWriteAllFix(list, vs) else null,
+    }) catch return;
 }
 
 // ============================================================

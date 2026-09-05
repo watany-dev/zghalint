@@ -34,7 +34,8 @@ fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
 
 const write_all_replacement = "{contents: read}";
 
-fn makeWriteAllFix(diag_list: *DiagnosticList, value_span: Span) ?Fix {
+/// Shared with security.zig, which reports the same `write-all` grant as SEC004.
+pub fn makeWriteAllFix(diag_list: *DiagnosticList, value_span: Span) ?Fix {
     const edits = fix_builder.replaceScalar(
         diag_list.fixAllocator(),
         value_span,
