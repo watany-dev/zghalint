@@ -29,7 +29,7 @@ pub const Advisory = struct {
     diagnostic_hint: []const u8,
 };
 
-pub const Semver = struct {
+const Semver = struct {
     major: u32,
     minor: u32,
     patch: u32,
@@ -404,7 +404,7 @@ fn slugMatches(advisory_slug: []const u8, owner: []const u8, repo: []const u8) b
 // Semver parsing and comparison
 // ============================================================
 
-pub fn parseSemver(ref: []const u8) ?Semver {
+fn parseSemver(ref: []const u8) ?Semver {
     var s = ref;
     // Strip leading 'v' or 'V'
     if (s.len > 0 and (s[0] == 'v' or s[0] == 'V')) {
