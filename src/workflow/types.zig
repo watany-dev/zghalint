@@ -78,10 +78,26 @@ pub const PermissionsMeta = struct {
     statuses: ?yaml_types.Span = null,
 };
 
+/// The `permissions:` scope keys, in schema order. `Permissions` and
+/// `PermissionsMeta` declare exactly these, so `PermissionsMeta` doubles as the
+/// key list for anything that walks the scopes.
+pub const permission_scopes = std.meta.fieldNames(PermissionsMeta);
+
+/// Field names use `_` where the YAML key uses `-`.
+pub fn permissionScopeKey(comptime field_name: []const u8) []const u8 {
+    comptime {
+        var buf: [field_name.len]u8 = field_name[0..field_name.len].*;
+        for (&buf) |*c| {
+            if (c.* == '_') c.* = '-';
+        }
+        const key = buf;
+        return &key;
+    }
+}
+
 /// Concurrency configuration
 pub const Concurrency = struct {
     group: []const u8,
-    cancel_in_progress: bool = false,
 };
 
 /// Key spans for the mutually exclusive `EventFilter` entries. A non-null
@@ -104,45 +120,7 @@ pub const EventFilter = struct {
     tags_ignore: []const []const u8 = &.{},
     paths: []const []const u8 = &.{},
     paths_ignore: []const []const u8 = &.{},
-    types: []const []const u8 = &.{},
     spans: EventFilterSpans = .{},
-};
-
-/// Schedule entry (cron expression)
-pub const ScheduleEntry = struct {
-    cron: []const u8,
-};
-
-/// Input definition for workflow_dispatch / workflow_call
-pub const InputDef = struct {
-    description: ?[]const u8 = null,
-    required: bool = false,
-    default: ?[]const u8 = null,
-    input_type: ?[]const u8 = null,
-};
-
-/// Output definition for workflow_call
-pub const OutputDef = struct {
-    description: ?[]const u8 = null,
-    value: ?[]const u8 = null,
-};
-
-/// Secret definition for workflow_call
-pub const SecretDef = struct {
-    description: ?[]const u8 = null,
-    required: bool = false,
-};
-
-/// Workflow dispatch trigger configuration
-pub const WorkflowDispatch = struct {
-    inputs: ?std.StringArrayHashMap(InputDef) = null,
-};
-
-/// Workflow call trigger configuration
-pub const WorkflowCall = struct {
-    inputs: ?std.StringArrayHashMap(InputDef) = null,
-    outputs: ?std.StringArrayHashMap(OutputDef) = null,
-    secrets: ?std.StringArrayHashMap(SecretDef) = null,
 };
 
 /// Known event types
@@ -189,11 +167,7 @@ pub const EventType = enum {
 /// A single event configuration within a trigger
 pub const EventConfig = struct {
     event: EventType,
-    name: []const u8,
     filter: ?EventFilter = null,
-    schedule: []const ScheduleEntry = &.{},
-    workflow_dispatch: ?WorkflowDispatch = null,
-    workflow_call: ?WorkflowCall = null,
 };
 
 /// Trigger configuration (the `on:` field)
@@ -271,7 +245,6 @@ pub const Strategy = struct {
     fail_fast_value_span: ?yaml_types.Span = null,
     /// Span of the removable `fail-fast` entry in block-style YAML.
     fail_fast_entry_span: ?yaml_types.Span = null,
-    max_parallel: ?u32 = null,
 };
 
 /// A single workflow step
@@ -295,9 +268,6 @@ pub const Step = struct {
     if_condition: ?[]const u8 = null,
     /// Value span and scalar style of the `if:` scalar (for EXPR006 autofix).
     if_condition_meta: ?ScalarValueMeta = null,
-    continue_on_error: bool = false,
-    timeout_minutes: ?u32 = null,
-    working_directory: ?[]const u8 = null,
     /// Span of the step mapping in source YAML (for autofix anchor).
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     /// Column of the `uses:` key in source YAML (for autofix indentation).
@@ -318,8 +288,6 @@ pub const Step = struct {
     uses_value_span: ?yaml_types.Span = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
-    /// Byte position for appending an entry to the step mapping (end of last entry's line).
-    env_insertion_byte: ?usize = null,
 };
 
 /// Secrets configuration for reusable workflow jobs
@@ -377,7 +345,6 @@ pub const Job = struct {
     timeout_minutes_specified: bool = false,
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
-    continue_on_error: bool = false,
     container: ?Container = null,
     services: []const Service = &.{},
     empty_sections: []const EmptySection = &.{},
@@ -421,6 +388,15 @@ pub const Workflow = struct {
     concurrency_insertion_byte: ?usize = null,
     /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
     yaml_root: ?yaml_types.Node = null,
+
+    /// Whether the workflow is triggered by `ev`. Many rules only apply to a
+    /// single trigger, so they gate on this before walking the jobs.
+    pub fn hasEvent(self: *const Workflow, ev: EventType) bool {
+        for (self.on.events) |event| {
+            if (event.event == ev) return true;
+        }
+        return false;
+    }
 };
 
 const type_validation = @import("type_validation.zig");

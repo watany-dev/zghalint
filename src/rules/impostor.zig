@@ -8,7 +8,6 @@ const engine = @import("engine.zig");
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const spans = @import("spans.zig");
-const Span = yaml.Span;
 const Step = workflow_types.Step;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 const isValidSha = engine.isValidSha;

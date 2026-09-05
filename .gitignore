@@ -1,12 +1,7 @@
 .zig-cache/
 zig-out/
-zig-linux-x86_64-*/
 *.o
 coverage/
-
-# Stray local build artifacts
-/hello
-/mini
 
 # Python / PBT
 __pycache__/

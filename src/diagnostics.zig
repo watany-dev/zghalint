@@ -9,10 +9,6 @@ pub const Severity = enum {
     warning,
     info,
     hint,
-
-    pub fn toString(self: Severity) []const u8 {
-        return @tagName(self);
-    }
 };
 
 /// Category of lint rule.
@@ -26,10 +22,6 @@ pub const Category = enum {
     permissions,
     runner,
     reusable_workflow,
-
-    pub fn toString(self: Category) []const u8 {
-        return @tagName(self);
-    }
 };
 
 /// Safety classification for automatic fixes.
@@ -38,10 +30,6 @@ pub const FixSafety = enum {
     safe,
     /// Fix that may change behavior (e.g. permission changes).
     unsafe,
-
-    pub fn toString(self: FixSafety) []const u8 {
-        return @tagName(self);
-    }
 };
 
 /// A single text edit: replace bytes [start_byte..end_byte) with replacement.
@@ -128,12 +116,21 @@ pub const DiagnosticList = struct {
         std.mem.sort(Diagnostic, self.items.items, {}, lessThan);
     }
 
-    pub fn toOwnedSlice(self: *DiagnosticList) ![]Diagnostic {
-        return self.items.toOwnedSlice(self.allocator);
-    }
-
     pub fn len(self: DiagnosticList) usize {
         return self.items.items.len;
+    }
+
+    /// Number of diagnostics per severity, indexed by the `Severity` tag.
+    pub const SeverityCounts = std.enums.EnumFieldStruct(Severity, usize, 0);
+
+    pub fn countBySeverity(self: DiagnosticList) SeverityCounts {
+        var counts: SeverityCounts = .{};
+        for (self.items.items) |diag| {
+            switch (diag.severity) {
+                inline else => |tag| @field(counts, @tagName(tag)) += 1,
+            }
+        }
+        return counts;
     }
 
     pub fn get(self: DiagnosticList, index: usize) Diagnostic {
@@ -174,25 +171,6 @@ fn cloneFix(alloc: std.mem.Allocator, src: Fix) !Fix {
 // ============================================================
 // Tests
 // ============================================================
-
-test "severity toString" {
-    try std.testing.expectEqualStrings("error", Severity.@"error".toString());
-    try std.testing.expectEqualStrings("warning", Severity.warning.toString());
-    try std.testing.expectEqualStrings("info", Severity.info.toString());
-    try std.testing.expectEqualStrings("hint", Severity.hint.toString());
-}
-
-test "category toString" {
-    try std.testing.expectEqualStrings("syntax", Category.syntax.toString());
-    try std.testing.expectEqualStrings("security", Category.security.toString());
-    try std.testing.expectEqualStrings("performance", Category.performance.toString());
-    try std.testing.expectEqualStrings("best_practice", Category.best_practice.toString());
-    try std.testing.expectEqualStrings("expression", Category.expression.toString());
-    try std.testing.expectEqualStrings("dependency", Category.dependency.toString());
-    try std.testing.expectEqualStrings("permissions", Category.permissions.toString());
-    try std.testing.expectEqualStrings("runner", Category.runner.toString());
-    try std.testing.expectEqualStrings("reusable_workflow", Category.reusable_workflow.toString());
-}
 
 test "diagnostic list append and len" {
     var list = DiagnosticList.init(std.testing.allocator);
@@ -258,11 +236,6 @@ test "diagnostic list sort by file then line then col" {
     try std.testing.expectEqualStrings("R3", list.get(3).rule_id);
 }
 
-test "fixSafety toString" {
-    try std.testing.expectEqualStrings("safe", FixSafety.safe.toString());
-    try std.testing.expectEqualStrings("unsafe", FixSafety.unsafe.toString());
-}
-
 test "allocEdit returns valid slice" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -309,24 +282,6 @@ test "diagnostic with fix" {
     try std.testing.expectEqualStrings("Fix it", diag.fix.?.description);
     try std.testing.expect(diag.fix.?.safety == .safe);
     try std.testing.expectEqual(@as(usize, 1), diag.fix.?.edits.len);
-}
-
-test "diagnostic list toOwnedSlice" {
-    var list = DiagnosticList.init(std.testing.allocator);
-    // Don't defer deinit — toOwnedSlice transfers ownership
-
-    try list.append(.{
-        .rule_id = "T001",
-        .severity = .warning,
-        .message = "test",
-        .span = Span.point(1, 1, 0),
-    });
-
-    const slice = try list.toOwnedSlice();
-    defer std.testing.allocator.free(slice);
-
-    try std.testing.expectEqual(@as(usize, 1), slice.len);
-    try std.testing.expectEqualStrings("T001", slice[0].rule_id);
 }
 
 test "appendOwning deep-clones fix across lists" {

@@ -70,13 +70,12 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 **「PBT が機能している証拠」** であると同時に、解消すべき技術的負債である。
 
 現時点で有効な `xfail` は **なし**。P0 (§5 #1, #2) の修正で過去 3 件は
-解消済み — `docs/codebase-improvements.md` の「解決済み (PBT 検出)」節を参照。
+解消済み。
 
 新規に `xfail` を追加する場合は以下を同時に行う:
 
 - 本節に `場所 / 症状 / 修正タスク` の 3 列で登録
-- 修正完了時には該当行を削除し、`docs/codebase-improvements.md` の
-  「解決済み (PBT 検出)」節に日付付きで移設する
+- 修正完了時には該当行を削除し、修正コミットのメッセージに検出経緯を残す
 
 ---
 
@@ -198,8 +197,7 @@ xfail 修正タスク (#1, #2) では、修正後 `XPASS` (strict=False) とし�
 
 ## 8. 関連ドキュメント
 
-- `CLAUDE.md` — プロジェクト基本方針・テスト品質要件
+- `AGENTS.md` — プロジェクト基本方針・テスト品質要件
 - `docs/design/autofix-implementation-plan.md` — タスク #1 の修正対象設計
-- `docs/codebase-improvements.md` — タスク #2 の Known Issues 記録先
 - `docs/rules.md` — 全ルール一覧（タスク #3 の対象選定根拠）
-- `pyproject.toml` — `hypothesis>=6.100` 依存定義
+- `tests/pbt/requirements.txt` — `pytest` / `hypothesis` 依存定義

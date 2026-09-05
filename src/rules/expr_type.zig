@@ -1,6 +1,6 @@
 //! Static type representation for GitHub Actions expressions.
 //!
-//! See `docs/adr/0006-expr-static-typecheck.md` (D1) and
+//! See `docs/adr/0009-expr-static-typecheck.md` (D1) and
 //! `docs/design/expr-static-typecheck-design.md` §2.
 //!
 //! Types are interned: every type is a comptime constant shared by pointer, so
@@ -16,10 +16,6 @@ pub const TypeKind = enum {
     string,
     array,
     object,
-
-    pub fn toString(self: TypeKind) []const u8 {
-        return @tagName(self);
-    }
 };
 
 /// How unknown keys of an object are treated.
@@ -44,8 +40,6 @@ pub const Type = struct {
     /// Known properties of an object, sorted by name (binary search).
     props: []const Prop = &.{},
     shape: ObjectShape = .loose,
-    /// True when the array came from an object filter `.*` (actionlint ArrayType.Deref).
-    deref: bool = false,
 };
 
 pub const TypeRef = *const Type;
@@ -64,19 +58,21 @@ pub const type_loose_object: Type = .{ .kind = .object, .shape = .loose };
 /// `{string => string}` map object.
 pub const type_map_string: Type = .{ .kind = .object, .shape = .map, .elem = &type_string };
 
+/// Binary search for `name` over a slice sorted by its `name` field.
+/// Shared by every static lookup table in the expression checker.
+pub fn findByName(comptime T: type, items: []const T, name: []const u8) ?*const T {
+    const idx = std.sort.binarySearch(T, items, name, struct {
+        fn order(key: []const u8, item: T) std.math.Order {
+            return std.mem.order(u8, key, item.name);
+        }
+    }.order) orelse return null;
+    return &items[idx];
+}
+
 /// Binary search over the sorted `props` of an object type.
 pub fn findProp(ty: TypeRef, name: []const u8) ?TypeRef {
-    var lo: usize = 0;
-    var hi: usize = ty.props.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        switch (std.mem.order(u8, ty.props[mid].name, name)) {
-            .lt => lo = mid + 1,
-            .gt => hi = mid,
-            .eq => return ty.props[mid].ty,
-        }
-    }
-    return null;
+    const prop = findByName(Prop, ty.props, name) orelse return null;
+    return prop.ty;
 }
 
 /// Merge two types. Conflicts collapse to `any` (ADR D5).
@@ -101,54 +97,46 @@ pub fn merge(a: TypeRef, b: TypeRef) TypeRef {
 /// map objects `{string => string}`. Falls back to the bare kind name when the
 /// buffer is too small.
 pub fn display(ty: TypeRef, buf: []u8) []const u8 {
-    var len: usize = 0;
-    write(ty, buf, &len, 0) catch return ty.kind.toString();
-    return buf[0..len];
+    var w = std.Io.Writer.fixed(buf);
+    write(ty, &w, 0) catch return @tagName(ty.kind);
+    return w.buffered();
 }
 
-const WriteError = error{NoSpace};
-
-fn writeStr(buf: []u8, len: *usize, s: []const u8) WriteError!void {
-    if (len.* + s.len > buf.len) return WriteError.NoSpace;
-    @memcpy(buf[len.* .. len.* + s.len], s);
-    len.* += s.len;
-}
-
-fn write(ty: TypeRef, buf: []u8, len: *usize, depth: u8) WriteError!void {
+fn write(ty: TypeRef, w: *std.Io.Writer, depth: u8) std.Io.Writer.Error!void {
     switch (ty.kind) {
         .array => {
-            try writeStr(buf, len, "array<");
+            try w.writeAll("array<");
             if (depth >= 4) {
-                try writeStr(buf, len, "...");
+                try w.writeAll("...");
             } else {
-                try write(ty.elem orelse &type_any, buf, len, depth + 1);
+                try write(ty.elem orelse &type_any, w, depth + 1);
             }
-            try writeStr(buf, len, ">");
+            try w.writeAll(">");
         },
         .object => switch (ty.shape) {
             .map => {
-                try writeStr(buf, len, "{string => ");
+                try w.writeAll("{string => ");
                 if (depth >= 4) {
-                    try writeStr(buf, len, "...");
+                    try w.writeAll("...");
                 } else {
-                    try write(ty.elem orelse &type_any, buf, len, depth + 1);
+                    try write(ty.elem orelse &type_any, w, depth + 1);
                 }
-                try writeStr(buf, len, "}");
+                try w.writeAll("}");
             },
-            .loose => try writeStr(buf, len, "object"),
+            .loose => try w.writeAll("object"),
             .strict => {
-                if (depth >= 2) return writeStr(buf, len, "object");
-                try writeStr(buf, len, "{");
+                if (depth >= 2) return w.writeAll("object");
+                try w.writeAll("{");
                 for (ty.props, 0..) |p, i| {
-                    if (i > 0) try writeStr(buf, len, "; ");
-                    try writeStr(buf, len, p.name);
-                    try writeStr(buf, len, ": ");
-                    try write(p.ty, buf, len, depth + 1);
+                    if (i > 0) try w.writeAll("; ");
+                    try w.writeAll(p.name);
+                    try w.writeAll(": ");
+                    try write(p.ty, w, depth + 1);
                 }
-                try writeStr(buf, len, "}");
+                try w.writeAll("}");
             },
         },
-        else => try writeStr(buf, len, ty.kind.toString()),
+        else => try w.writeAll(@tagName(ty.kind)),
     }
 }
 

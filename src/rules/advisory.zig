@@ -4,14 +4,13 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
 const http_client = @import("http_client.zig");
+const json_util = @import("json_util.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const spans = @import("spans.zig");
-const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
-const Rule = engine.Rule;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // ============================================================
@@ -21,15 +20,13 @@ const isValidGitHubComponent = engine.isValidGitHubComponent;
 pub const Advisory = struct {
     ghsa_id: []const u8,
     action_slug: []const u8,
-    summary: []const u8,
-    severity: []const u8,
     vulnerable_range: ?[]const u8,
     patched_version: ?[]const u8,
     diagnostic_message: []const u8,
     diagnostic_hint: []const u8,
 };
 
-pub const Semver = struct {
+const Semver = struct {
     major: u32,
     minor: u32,
     patch: u32,
@@ -72,24 +69,21 @@ pub fn deinitAdvisories() void {
 /// Eagerly load the advisory database (fresh disk cache -> network fallback).
 /// Safe to call multiple times; subsequent calls are no-ops.
 pub fn prefetch() void {
+    ensureLoaded();
+}
+
+/// Load the advisory database once per process. Both the eager `prefetch` and
+/// the lazy first rule invocation funnel through here.
+fn ensureLoaded() void {
     if (fetched) return;
     fetched = true;
-    if (advisory_arena) |*arena| {
-        const alloc = arena.allocator();
-        advisory_cache = loadAdvisories(alloc);
-    }
+    const arena = &(advisory_arena orelse return);
+    advisory_cache = loadAdvisories(arena.allocator());
 }
 
 /// Rule check function for SC003.
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
-    // Lazy fetch: only on first invocation
-    if (!fetched) {
-        fetched = true;
-        if (advisory_arena) |*arena| {
-            const alloc = arena.allocator();
-            advisory_cache = loadAdvisories(alloc);
-        }
-    }
+    ensureLoaded();
 
     const advisories = advisory_cache orelse return;
     const action_ref = step.uses orelse return;
@@ -128,32 +122,23 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
 // ============================================================
 
 const cache_subdir = "zghalint";
-const cache_filename = "advisories.json";
+const cache_filename = "advisories-v2.tsv";
 
 fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
-    if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        var dir = std.fs.openDirAbsolute(xdg, .{}) catch return null;
-        const sub = dir.makeOpenPath(cache_subdir, .{}) catch {
-            dir.close();
-            return null;
-        };
-        dir.close();
-        return sub;
-    } else |_| {}
+    // XDG_CACHE_HOME is already a cache root; HOME needs the conventional
+    // `.cache` segment appended.
+    if (openCacheSubdir(allocator, "XDG_CACHE_HOME", cache_subdir)) |dir| return dir;
+    return openCacheSubdir(allocator, "HOME", ".cache/" ++ cache_subdir);
+}
 
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        var dir = std.fs.openDirAbsolute(home, .{}) catch return null;
-        const sub = dir.makeOpenPath(".cache/" ++ cache_subdir, .{}) catch {
-            dir.close();
-            return null;
-        };
-        dir.close();
-        return sub;
-    } else |_| {}
-
-    return null;
+/// `$<env_var>/<sub_path>`, created if missing. Null when the variable is unset
+/// or any step of the open fails.
+fn openCacheSubdir(allocator: Allocator, env_var: []const u8, comptime sub_path: []const u8) ?std.fs.Dir {
+    const base = std.process.getEnvVarOwned(allocator, env_var) catch return null;
+    defer allocator.free(base);
+    var dir = std.fs.openDirAbsolute(base, .{}) catch return null;
+    defer dir.close();
+    return dir.makeOpenPath(sub_path, .{}) catch null;
 }
 
 fn isCacheFresh(dir: std.fs.Dir) bool {
@@ -169,23 +154,22 @@ fn writeCacheFile(dir: std.fs.Dir, data: []const u8) void {
     file.writeAll(data) catch {};
 }
 
+/// One tab-separated line per advisory; absent optional fields are empty.
+/// `deserializeAdvisories` is the exact inverse.
 fn serializeAdvisories(allocator: Allocator, advisories: []const Advisory) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
     for (advisories) |adv| {
-        buf.appendSlice(allocator, adv.ghsa_id) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.action_slug) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.summary) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.severity) catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.vulnerable_range orelse "") catch continue;
-        buf.append(allocator, '\t') catch continue;
-        buf.appendSlice(allocator, adv.patched_version orelse "") catch continue;
-        buf.append(allocator, '\n') catch continue;
+        try out.writer.print("{s}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
+            adv.ghsa_id,
+            adv.action_slug,
+            adv.diagnostic_message,
+            adv.diagnostic_hint,
+            adv.vulnerable_range orelse "",
+            adv.patched_version orelse "",
+        });
     }
-    return buf.toOwnedSlice(allocator);
+    return out.toOwnedSlice();
 }
 
 fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Advisory {
@@ -196,26 +180,16 @@ fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Adviso
         var fields = std.mem.splitScalar(u8, line, '\t');
         const ghsa_id = fields.next() orelse continue;
         const action_slug = fields.next() orelse continue;
-        const summary = fields.next() orelse continue;
-        const severity = fields.next() orelse continue;
+        const message = fields.next() orelse continue;
+        const hint = fields.next() orelse continue;
         const range_str = fields.next() orelse continue;
         const patched_str = fields.next() orelse continue;
         const range: ?[]const u8 = if (range_str.len > 0) range_str else null;
         const patched: ?[]const u8 = if (patched_str.len > 0) patched_str else null;
 
-        const message = std.fmt.allocPrint(allocator, "action '{s}' has known vulnerability {s}: {s}", .{
-            action_slug, ghsa_id, summary,
-        }) catch continue;
-        const hint = if (patched) |p|
-            std.fmt.allocPrint(allocator, "update to version {s} or later, see https://github.com/advisories/{s}", .{ p, ghsa_id }) catch continue
-        else
-            std.fmt.allocPrint(allocator, "check https://github.com/advisories/{s} for remediation", .{ghsa_id}) catch continue;
-
         result.append(allocator, .{
             .ghsa_id = ghsa_id,
             .action_slug = action_slug,
-            .summary = summary,
-            .severity = severity,
             .vulnerable_range = range,
             .patched_version = patched,
             .diagnostic_message = message,
@@ -264,28 +238,12 @@ fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
 
 fn fetchAndParse(allocator: Allocator) ![]const Advisory {
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
+    var resp = http_client.fetchAuthenticatedJson(allocator, api_url) catch return error.FetchFailed;
+    defer resp.deinit();
 
-    const auth_value = http_client.getAuthHeader(allocator);
-    defer if (auth_value) |auth| allocator.free(auth);
+    if (resp.status != .ok) return error.HttpError;
 
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
-
-    const result = http_client.fetch(.{
-        .location = .{ .url = api_url },
-        .response_writer = &aw.writer,
-        .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
-    }) catch return error.FetchFailed;
-
-    if (result.status != .ok) return error.HttpError;
-
-    var response_list = aw.toArrayList();
-    defer response_list.deinit(allocator);
-
-    const advisories = try parseAdvisories(allocator, response_list.items);
+    const advisories = try parseAdvisories(allocator, resp.body);
 
     // Write parsed advisories to disk cache in compact TSV format
     if (serializeAdvisories(allocator, advisories)) |serialized| {
@@ -314,36 +272,20 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
     var result = std.ArrayList(Advisory){};
 
     for (items) |item| {
-        const obj = switch (item) {
-            .object => |o| o,
-            else => continue,
-        };
+        const obj = json_util.asObject(item) orelse continue;
+        const ghsa_id = json_util.stringField(obj, "ghsa_id") orelse continue;
+        const summary = json_util.stringField(obj, "summary") orelse "";
 
-        const ghsa_id = getJsonString(obj, "ghsa_id") orelse continue;
-        const summary = getJsonString(obj, "summary") orelse "";
-        const severity = getJsonString(obj, "severity") orelse "unknown";
-
-        const vulns_val = obj.get("vulnerabilities") orelse continue;
-        const vulns = switch (vulns_val) {
-            .array => |a| a.items,
-            else => continue,
-        };
+        const vulns = json_util.arrayField(obj, "vulnerabilities") orelse continue;
 
         for (vulns) |vuln_item| {
-            const vuln = switch (vuln_item) {
-                .object => |o| o,
-                else => continue,
-            };
-            const pkg_val = vuln.get("package") orelse continue;
-            const pkg = switch (pkg_val) {
-                .object => |o| o,
-                else => continue,
-            };
-            const ecosystem = getJsonString(pkg, "ecosystem") orelse continue;
+            const vuln = json_util.asObject(vuln_item) orelse continue;
+            const pkg = json_util.objField(vuln, "package") orelse continue;
+            const ecosystem = json_util.stringField(pkg, "ecosystem") orelse continue;
             if (!std.mem.eql(u8, ecosystem, "actions")) continue;
 
-            const action_name = getJsonString(pkg, "name") orelse continue;
-            const range = getJsonString(vuln, "vulnerable_version_range");
+            const action_name = json_util.stringField(pkg, "name") orelse continue;
+            const range = json_util.stringField(vuln, "vulnerable_version_range");
             const patched = getJsonStringFromObj(vuln, "first_patched_version");
 
             const message = std.fmt.allocPrint(allocator, "action '{s}' has known vulnerability {s}: {s}", .{
@@ -358,8 +300,6 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
             result.append(allocator, .{
                 .ghsa_id = ghsa_id,
                 .action_slug = action_name,
-                .summary = summary,
-                .severity = severity,
                 .vulnerable_range = range,
                 .patched_version = patched,
                 .diagnostic_message = message,
@@ -371,22 +311,11 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
     return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
-fn getJsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const val = obj.get(key) orelse return null;
-    return switch (val) {
-        .string => |s| s,
-        else => null,
-    };
-}
-
 fn getJsonStringFromObj(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const val = obj.get(key) orelse return null;
     // first_patched_version can be an object with "identifier" field or a string
-    return switch (val) {
-        .string => |s| s,
-        .object => |o| getJsonString(o, "identifier"),
-        else => null,
-    };
+    if (json_util.stringField(obj, key)) |s| return s;
+    const nested = json_util.objField(obj, key) orelse return null;
+    return json_util.stringField(nested, "identifier");
 }
 
 // ============================================================
@@ -394,7 +323,7 @@ fn getJsonStringFromObj(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 // ============================================================
 
 fn slugMatches(advisory_slug: []const u8, owner: []const u8, repo: []const u8) bool {
-    const slash_pos = std.mem.indexOf(u8, advisory_slug, "/") orelse return false;
+    const slash_pos = std.mem.indexOfScalar(u8, advisory_slug, '/') orelse return false;
     const adv_owner = advisory_slug[0..slash_pos];
     const adv_repo = advisory_slug[slash_pos + 1 ..];
     return std.mem.eql(u8, adv_owner, owner) and std.mem.eql(u8, adv_repo, repo);
@@ -404,7 +333,7 @@ fn slugMatches(advisory_slug: []const u8, owner: []const u8, repo: []const u8) b
 // Semver parsing and comparison
 // ============================================================
 
-pub fn parseSemver(ref: []const u8) ?Semver {
+fn parseSemver(ref: []const u8) ?Semver {
     var s = ref;
     // Strip leading 'v' or 'V'
     if (s.len > 0 and (s[0] == 'v' or s[0] == 'V')) {
@@ -412,37 +341,27 @@ pub fn parseSemver(ref: []const u8) ?Semver {
     }
     if (s.len == 0) return null;
 
-    // Parse major
-    const major_end = std.mem.indexOf(u8, s, ".") orelse {
-        // Just major version (e.g., "4")
-        return .{
-            .major = std.fmt.parseInt(u32, s, 10) catch return null,
-            .minor = 0,
-            .patch = 0,
-        };
-    };
-    const major = std.fmt.parseInt(u32, s[0..major_end], 10) catch return null;
-    s = s[major_end + 1 ..];
+    // "4", "4.1" and "4.1.2" are all accepted; missing components read as 0.
+    var parts = std.mem.splitScalar(u8, s, '.');
+    var out = [_]u32{ 0, 0, 0 };
+    for (&out, 0..) |*slot, i| {
+        const part = parts.next() orelse break;
+        // The patch component stops at the first non-digit so that
+        // pre-release tags like "1.2.3-beta" still parse.
+        const digits = if (i == 2) part[0..digitPrefixLen(part)] else part;
+        if (digits.len == 0) return null;
+        slot.* = std.fmt.parseInt(u32, digits, 10) catch return null;
+    }
 
-    // Parse minor
-    const minor_end = std.mem.indexOf(u8, s, ".") orelse {
-        // major.minor (e.g., "4.1")
-        return .{
-            .major = major,
-            .minor = std.fmt.parseInt(u32, s, 10) catch return null,
-            .patch = 0,
-        };
-    };
-    const minor = std.fmt.parseInt(u32, s[0..minor_end], 10) catch return null;
-    s = s[minor_end + 1 ..];
+    return .{ .major = out[0], .minor = out[1], .patch = out[2] };
+}
 
-    // Parse patch (stop at first non-digit for pre-release tags like "1.2.3-beta")
-    var patch_end: usize = 0;
-    while (patch_end < s.len and std.ascii.isDigit(s[patch_end])) : (patch_end += 1) {}
-    if (patch_end == 0) return null;
-    const patch = std.fmt.parseInt(u32, s[0..patch_end], 10) catch return null;
-
-    return .{ .major = major, .minor = minor, .patch = patch };
+/// Length of the leading run of ASCII digits in `s`.
+fn digitPrefixLen(s: []const u8) usize {
+    for (s, 0..) |c, i| {
+        if (!std.ascii.isDigit(c)) return i;
+    }
+    return s.len;
 }
 
 fn semverCompare(a: Semver, b: Semver) std.math.Order {
@@ -642,7 +561,6 @@ test "parseAdvisories: valid response" {
     try testing.expectEqual(@as(usize, 1), result.len);
     try testing.expectEqualStrings("evil/action", result[0].action_slug);
     try testing.expectEqualStrings("GHSA-test-1234", result[0].ghsa_id);
-    try testing.expectEqualStrings("high", result[0].severity);
     try testing.expectEqualStrings("< 1.0.0", result[0].vulnerable_range.?);
     try testing.expectEqualStrings("1.0.0", result[0].patched_version.?);
 }
@@ -694,8 +612,6 @@ test "parseAdvisories: multiple vulnerabilities" {
 const mock_advisories = [_]Advisory{.{
     .ghsa_id = "GHSA-test-1234",
     .action_slug = "evil/action",
-    .summary = "RCE vulnerability",
-    .severity = "critical",
     .vulnerable_range = "< 1.0.0",
     .patched_version = "1.0.0",
     .diagnostic_message = "action 'evil/action' has known vulnerability GHSA-test-1234",

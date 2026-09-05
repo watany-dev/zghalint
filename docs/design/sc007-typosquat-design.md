@@ -6,7 +6,7 @@
 
 初期スコープは owner=`actions` に限定する（正当 fork との区別を構造的に担保するため）。ADR D8 の判断。
 
-本設計書の判断は `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` の D8 を単一情報源とする。行番号は本ドキュメント記述時点（commit `f427b0a`）のもの。
+本設計書の判断は `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` の D8 を単一情報源とする。行番号は本ドキュメント記述時点（commit `f427b0a`）のもの。
 
 ## スコープ
 
@@ -257,7 +257,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 
 ## 参考
 
-- `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D8 / D9 / D11）
+- `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` — 判断の単一情報源（特に D8 / D9 / D11）
 - `docs/design/sc002-compromised-action-design.md` — 同 PR 群の兄弟設計書
 - `src/rules/best_practices.zig:106-137` — `deprecated_actions` 定数配列の書式
 - `src/workflow/types.zig:185-234` — `ActionRef.parse`

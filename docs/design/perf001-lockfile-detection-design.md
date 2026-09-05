@@ -15,7 +15,7 @@ setup-node / setup-python の autofix を解禁する方針を定義する。同
 
 関連資料:
 - `docs/design/autofix-implementation-plan.md`
-- `docs/adr/0004-perf001-cache-extension.md`
+- `docs/adr/0005-perf001-cache-extension.md`
 - `src/rules/engine.zig:66` `network_deadline_ns`（モジュール変数パターンの先例）
 
 ## 技術選定
@@ -160,7 +160,7 @@ rules:
 `actions/setup-node` と `actions/setup-python` はいずれも `cache:` input で公式
 に bun / uv をサポートしない。これらは `oven-sh/setup-bun` / `astral-sh/setup-uv`
 という独立した action として提供されているため、PERF001 では別系統のロジック
-を追加する。関連 ADR: `docs/adr/0005-perf001-bun-uv-extension.md`。
+を追加する。関連 ADR: `docs/adr/0007-perf001-bun-uv-extension.md`。
 
 ### SetupKind の分類
 

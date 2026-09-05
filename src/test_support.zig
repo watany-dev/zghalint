@@ -45,10 +45,9 @@ pub fn findDiagnostic(list: *const DiagnosticList, rule_id: []const u8) ?Diagnos
 /// A workflow with no `on:` events at all.
 pub const empty_trigger = Trigger{ .events = &.{} };
 
-/// A single-event `on:` trigger. `name` is the key as it would appear in YAML,
-/// which is `@tagName(ev)` for every event GitHub currently defines.
-pub fn makeTrigger(comptime ev: EventType, comptime name: []const u8) Trigger {
-    const events = &[_]EventConfig{.{ .event = ev, .name = name }};
+/// A single-event `on:` trigger.
+pub fn makeTrigger(comptime ev: EventType) Trigger {
+    const events = &[_]EventConfig{.{ .event = ev }};
     return .{ .events = events };
 }
 
@@ -78,7 +77,6 @@ pub fn mkScalar(value: []const u8) Node {
 /// outlive the result, so tests pass an arena's allocator.
 pub fn parseWorkflowSource(allocator: std.mem.Allocator, source: []const u8) !workflow_types.Workflow {
     var yp = yaml_parser.Parser.init(allocator, source);
-    defer yp.deinit();
     return workflow_parser.parseWorkflow(allocator, try yp.parse());
 }
 
@@ -107,6 +105,16 @@ pub const EnvGuard = struct {
             _ = libc_unsetenv(name.ptr);
         }
         return .{ .allocator = allocator, .name = name, .saved = saved };
+    }
+
+    /// Point `name` at `dir`'s real path for the lifetime of the guard.
+    /// `setenv` copies the value, so the temporary path buffers can go away here.
+    pub fn setDir(allocator: std.mem.Allocator, name: [:0]const u8, dir: std.fs.Dir) !EnvGuard {
+        const path = try dir.realpathAlloc(allocator, ".");
+        defer allocator.free(path);
+        const path_z = try allocator.dupeZ(u8, path);
+        defer allocator.free(path_z);
+        return set(allocator, name, path_z);
     }
 
     pub fn deinit(self: *EnvGuard) void {

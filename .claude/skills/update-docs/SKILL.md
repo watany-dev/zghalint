@@ -1,5 +1,5 @@
 ---
-description: Update zghalint documentation (docs/design/*.md, README.md, docs/ROADMAP.md, docs/requirements.md) to match current source code. Use when the user asks to update docs, refresh README, sync design documents with implementation, or check doc/code consistency. Trigger examples - "ドキュメントを最新化して", "設計書を更新", "update docs", "README を直して", "docs と src の乖離を確認", "sync documentation".
+description: Update zghalint documentation (docs/design/*.md, docs/adr/*.md, README.md) to match current source code. Use when the user asks to update docs, refresh README, sync design documents with implementation, or check doc/code consistency. Trigger examples - "ドキュメントを最新化して", "設計書を更新", "update docs", "README を直して", "docs と src の乖離を確認", "sync documentation".
 ---
 
 # update-docs
@@ -9,36 +9,16 @@ description: Update zghalint documentation (docs/design/*.md, README.md, docs/RO
 ## Phase 1: ソースコードの現状把握
 
 1. `src/` 配下のZigソースコードを読み込む
-   - `src/main.zig` — CLIエントリポイントと引数パース
-   - `src/lib.zig` — ライブラリ公開APIとテストオーケストレーション
-   - `src/config.zig` — 設定パース・ルールオーバーライド
-   - `src/diagnostics.zig` — 診断型・重要度・カテゴリ
-   - `src/rules/` — リントルール実装
-     - `engine.zig` — ルール実行フレームワーク
-     - `security.zig` — セキュリティチェック
-     - `expressions.zig` — `${{ }}` 式バリデーション
-     - `performance.zig` — パフォーマンス最適化ルール
-     - `best_practices.zig` — ベストプラクティスチェック
-     - `permissions.zig` — パーミッションモデル検証
-   - `src/workflow/` — ワークフローデータ構造・パース
-     - `types.zig` — Workflow, Job, Step, Trigger型
-     - `parser.zig` — ワークフロー構造パーサ
-     - `validator.zig` — ワークフローバリデーション
-   - `src/yaml/` — YAMLパース（外部依存なし自前実装）
-     - `tokenizer.zig` — YAMLトークナイゼーション
-     - `parser.zig` — YAML ASTパース
-     - `types.zig` — YAMLノード・スパン型
-   - `src/output/` — 出力フォーマッタ
-     - `terminal.zig` — カラーターミナル出力
-     - `json.zig` — JSON出力形式
-     - `sarif.zig` — SARIF 2.1.0形式（GitHub Code Scanning用）
+   - モジュール構成は `AGENTS.md` の「Architecture」節が唯一の一覧。
+     ここに写経せず、そちらを参照してから対象ファイルを開く
+     （写しを置くと実装追加のたびに二重更新が要る）
 2. `build.zig` のビルド構成を確認する
 3. `build.zig.zon` の依存パッケージ一覧を確認する
 4. 公開API・構造体・enumの一覧を把握する
 
 ## Phase 2: 各ドキュメントの更新
 
-### 2-1. 設計書 (`docs/design/<feature>.md`)
+### 2-1. 設計書 (`docs/design/<feature>.md`) と ADR (`docs/adr/NNNN-*.md`)
 
 1. 各設計書の内容をソースコードと照合する
 2. 以下を更新する:

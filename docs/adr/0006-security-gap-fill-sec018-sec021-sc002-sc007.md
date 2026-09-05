@@ -1,4 +1,4 @@
-# 0004. Security Gap Fill: SEC018 / SEC021 / SC002 / SC007
+# 0006. Security Gap Fill: SEC018 / SEC021 / SC002 / SC007
 
 - Status: Accepted
 - Date: 2026-04-19
@@ -138,7 +138,7 @@ pub const TrustedAction = struct {
 
 ### D10. ドキュメント更新対象
 
-- `docs/adr/0004-security-gap-fill-*.md`: 本 ADR（ADR 連番は `0003` の次。`0002-` が 2 つある既存混乱は無視して `0004` を採る）
+- `docs/adr/0006-security-gap-fill-*.md`: 本 ADR（ADR 連番は `0003` の次。`0002-` が 2 つある既存混乱は無視して `0004` を採る）
 - `docs/design/sec018-autofix-design.md`: SEC018 autofix 設計書（`sec017-autofix-design.md` の構成に倣う）
 - `docs/rules.md`: **必須更新**。冒頭 "includes **45 rules**" → "**49 rules**"、Security / Supply Chain テーブルに 4 行追加
 - `README.md`: ルール件数言及があれば 45→49 更新、新規 4 ルールを Changelog 的に追記

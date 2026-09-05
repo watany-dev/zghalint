@@ -99,53 +99,6 @@ jobs:
           cd artifacts
           sha256sum zghalint-* > SHA256SUMS
 
-      - name: Write release notes
-        run: |
-          cat <<'EOF' > artifacts/RELEASE_NOTES.md
-          ## Summary
-          First public prerelease of zghalint.
-
-          This release is intended to validate binary distribution, installation flow, and basic CLI behavior across supported platforms. It is not the first stable release.
-
-          ## Supported Platforms
-          - Linux x86_64
-          - Linux aarch64
-          - macOS x86_64
-          - macOS aarch64
-          - Windows x86_64
-
-          ## Installation
-          Download the appropriate archive from the release assets, extract it, and place the `zghalint` binary in your PATH.
-
-          Example on Linux/macOS:
-
-          ```bash
-          tar -xzf zghalint-linux-x86_64.tar.gz
-          chmod +x zghalint-linux-x86_64/zghalint
-          ./zghalint-linux-x86_64/zghalint --help
-          ```
-
-          ## Scope Of This Release
-          - First standalone binaries published via GitHub Releases
-          - Basic workflow linting from the CLI
-          - Early validation of output, diagnostics, and exit-code behavior
-
-          ## Known Limitations
-          - CLI flags may still change before stable release
-          - Output details may change in later versions
-          - Config behavior is still considered early-stage
-          - GitHub Action usage is still early and tied to the release asset layout
-
-          ## Feedback Requested
-          - Installation issues by OS or architecture
-          - Incorrect diagnostics
-          - Confusing CLI behavior or messages
-          - Packaging issues in release assets
-
-          ## Checksums
-          See `SHA256SUMS` in the release assets.
-          EOF
-
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -159,6 +112,6 @@ jobs:
 
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes-file artifacts/RELEASE_NOTES.md \
+            --generate-notes \
             $PRERELEASE_FLAG \
             artifacts/*

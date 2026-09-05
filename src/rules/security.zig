@@ -13,6 +13,7 @@ const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
+const permissions = @import("permissions.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -22,23 +23,23 @@ pub fn setRepoVisibility(v: Visibility) void {
     sec020_repo_visibility = v;
 }
 
-pub const Diagnostic = diagnostics.Diagnostic;
-pub const DiagnosticList = diagnostics.DiagnosticList;
-pub const Severity = diagnostics.Severity;
-pub const Span = yaml.Span;
-pub const Workflow = workflow_types.Workflow;
-pub const Job = workflow_types.Job;
-pub const Step = workflow_types.Step;
-pub const ActionRef = workflow_types.ActionRef;
-pub const Permissions = workflow_types.Permissions;
-pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
-pub const ScalarValueMetaMap = workflow_types.ScalarValueMetaMap;
-pub const Fix = diagnostics.Fix;
-pub const Edit = diagnostics.Edit;
-pub const SecretsConfig = workflow_types.SecretsConfig;
-pub const EventType = workflow_types.EventType;
-pub const Rule = engine.Rule;
-pub const Anchor = spans.Anchor;
+const Diagnostic = diagnostics.Diagnostic;
+const DiagnosticList = diagnostics.DiagnosticList;
+const Severity = diagnostics.Severity;
+const Span = yaml.Span;
+const Workflow = workflow_types.Workflow;
+const Job = workflow_types.Job;
+const Step = workflow_types.Step;
+const ActionRef = workflow_types.ActionRef;
+const Permissions = workflow_types.Permissions;
+const ScalarValueMeta = workflow_types.ScalarValueMeta;
+const ScalarValueMetaMap = workflow_types.ScalarValueMetaMap;
+const Fix = diagnostics.Fix;
+const Edit = diagnostics.Edit;
+const SecretsConfig = workflow_types.SecretsConfig;
+const EventType = workflow_types.EventType;
+const Rule = engine.Rule;
+const Anchor = spans.Anchor;
 
 // ============================================================
 // Diagnostic anchors
@@ -66,12 +67,108 @@ fn envAnchor(step: *const Step, key: []const u8) Anchor {
     return Anchor.fromMeta(meta, step.span);
 }
 
+/// Which of a step's scalars a scan visits. `run:` and `with:` carry values
+/// into the runner; `env:` is skipped by rules that treat it as the fix.
+const StepScalars = struct {
+    run: bool = true,
+    with: bool = true,
+    env: bool = true,
+};
+
+/// Visit every selected `run:` / `with:` / `env:` scalar of `step` together
+/// with the anchor that locates it in the source. Stops as soon as `cb`
+/// returns true.
+fn forEachStepScalar(
+    step: *const Step,
+    which: StepScalars,
+    ctx: anytype,
+    comptime cb: fn (@TypeOf(ctx), []const u8, Anchor) bool,
+) void {
+    if (which.run) {
+        if (step.run) |run_body| {
+            if (cb(ctx, run_body, spans.runAnchor(step))) return;
+        }
+    }
+    if (which.with) {
+        if (step.with) |with_map| {
+            for (with_map.keys(), with_map.values()) |key, val| {
+                if (cb(ctx, val, withAnchor(step, key))) return;
+            }
+        }
+    }
+    if (which.env) {
+        if (step.env) |env_map| {
+            for (env_map.keys(), env_map.values()) |key, val| {
+                if (cb(ctx, val, envAnchor(step, key))) return;
+            }
+        }
+    }
+}
+
+/// Span of the first `${{ ... }}` expression matching `pred` in any selected
+/// scalar of `step`.
+fn findStepExprSpan(step: *const Step, which: StepScalars, comptime pred: fn ([]const u8) bool) ?Span {
+    const Finder = struct {
+        found: ?Span = null,
+
+        fn visit(self: *@This(), s: []const u8, anchor: Anchor) bool {
+            const m = findExpr(s, pred) orelse return false;
+            self.found = anchor.at(s, m.offset, m.len);
+            return true;
+        }
+    };
+    var finder: Finder = .{};
+    forEachStepScalar(step, which, &finder, Finder.visit);
+    return finder.found;
+}
+
 /// A `${{ ... }}` expression located inside a scanned string, expressed as an
 /// offset and length within that string so an `Anchor` can turn it into a span.
 const ExprMatch = struct {
     offset: usize,
     len: usize,
 };
+
+/// One `${{ ... }}` expression found while scanning a scalar.
+const ExprSpan = struct {
+    /// Text between `${{` and `}}`, untrimmed.
+    inner: []const u8,
+    /// Offset and length of the whole `${{ ... }}` run in the source string.
+    match: ExprMatch,
+};
+
+/// Iterates the `${{ ... }}` expressions of a string. An opener with no
+/// closing `}}` is skipped and the scan resumes just after it, so a stray
+/// `${{` never swallows the rest of the scalar.
+const ExprIter = struct {
+    s: []const u8,
+    pos: usize = 0,
+
+    fn next(self: *ExprIter) ?ExprSpan {
+        while (std.mem.indexOfPos(u8, self.s, self.pos, "${{")) |open| {
+            const inner_start = open + 3;
+            const close = std.mem.indexOfPos(u8, self.s, inner_start, "}}") orelse {
+                self.pos = open + 1;
+                continue;
+            };
+            self.pos = close + 2;
+            return .{
+                .inner = self.s[inner_start..close],
+                .match = .{ .offset = open, .len = close + 2 - open },
+            };
+        }
+        return null;
+    }
+};
+
+/// First `${{ ... }}` expression whose inner text satisfies `pred`.
+fn findExpr(s: []const u8, comptime pred: fn ([]const u8) bool) ?ExprMatch {
+    var it: ExprIter = .{ .s = s };
+    while (it.next()) |e| {
+        if (pred(e.inner)) return e.match;
+    }
+    return null;
+}
 
 // ============================================================
 // Dangerous GitHub contexts that can be controlled by users
@@ -228,19 +325,21 @@ fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
 /// as JavaScript, so it carries the same injection risk as `run:`.
 fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
-    if (!isGithubScriptAction(ref)) return;
+    if (!isAction(ref, "actions/github-script")) return;
     const with_map = step.with orelse return;
     const input = getWithInput(with_map, "script") orelse return;
     checkContextsInString(input.value, withAnchor(step, input.key), &run_dangerous_contexts, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
 }
 
-fn isGithubScriptAction(ref: ActionRef) bool {
+/// Match `owner/repo` against a marketplace action reference. A nested path is a
+/// different action, and GitHub resolves owner/repo case-insensitively.
+fn isAction(ref: ActionRef, comptime owner_repo: []const u8) bool {
+    const slash = comptime std.mem.indexOfScalar(u8, owner_repo, '/').?;
     const owner = ref.owner orelse return false;
     const repo = ref.repo orelse return false;
-    // A nested path is a different action; owner/repo are case-insensitive on GitHub.
     return ref.path == null and
-        std.ascii.eqlIgnoreCase(owner, "actions") and
-        std.ascii.eqlIgnoreCase(repo, "github-script");
+        std.ascii.eqlIgnoreCase(owner, owner_repo[0..slash]) and
+        std.ascii.eqlIgnoreCase(repo, owner_repo[slash + 1 ..]);
 }
 
 /// Look up a `with:` input by name. The runner exposes inputs as `INPUT_<UPPERCASE>`,
@@ -261,27 +360,18 @@ fn getWithInput(with_map: workflow_types.StringMap, name: []const u8) ?struct { 
 // ============================================================
 
 fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        checkStringForSecrets(run_body, spans.runAnchor(step), list);
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            checkStringForSecrets(val, withAnchor(step, key), list);
+    const scan = struct {
+        fn visit(l: *DiagnosticList, s: []const u8, anchor: Anchor) bool {
+            checkStringForSecrets(s, anchor, l);
+            return false;
         }
-    }
-    // Check env: values
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, val| {
-            checkStringForSecrets(val, envAnchor(step, key), list);
-        }
-    }
+    }.visit;
+    forEachStepScalar(step, .{}, list, scan);
 }
 
 fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     for (secret_prefixes) |prefix| {
-        if (indexOfSecretPrefix(s, prefix)) |offset| {
+        if (std.mem.indexOf(u8, s, prefix)) |offset| {
             list.append(.{
                 .rule_id = "SEC003",
                 .severity = .@"error",
@@ -294,72 +384,31 @@ fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
     }
 }
 
-/// Offset of `prefix` inside `s`, or null when it does not occur.
-fn indexOfSecretPrefix(s: []const u8, prefix: []const u8) ?usize {
-    if (s.len < prefix.len) return null;
-    var i: usize = 0;
-    while (i + prefix.len <= s.len) : (i += 1) {
-        if (std.mem.eql(u8, s[i .. i + prefix.len], prefix)) {
-            return i;
-        }
-    }
-    return null;
-}
-
-fn containsSecretPrefix(s: []const u8, prefix: []const u8) bool {
-    return indexOfSecretPrefix(s, prefix) != null;
-}
-
 // ============================================================
 // SEC004 - Excessive permissions (write-all)
 // ============================================================
 
-const write_all_replacement = "{contents: read}";
-
-fn makeWriteAllFix(list: *DiagnosticList, value_span: Span) ?Fix {
-    const edits = fix_builder.replaceScalar(
-        list.fixAllocator(),
-        value_span,
-        .plain,
-        write_all_replacement,
-    ) orelse return null;
-    return .{
-        .description = "Replace 'write-all' with minimal permissions",
-        .safety = .safe,
-        .edits = edits,
-    };
-}
-
 fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
-    if (wf.permissions) |perms| {
-        if (perms.write_all) {
-            const span = perms.value_span orelse spans.workflow_head;
-            list.append(.{
-                .rule_id = "SEC004",
-                .severity = .warning,
-                .message = "workflow uses 'permissions: write-all' which grants excessive permissions",
-                .span = span,
-                .fix_hint = "specify only the permissions that are needed",
-                .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
-            }) catch return;
-        }
-    }
+    checkWriteAll(list, wf.permissions, "workflow", spans.workflow_head);
 }
 
 fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
-    if (job.permissions) |perms| {
-        if (perms.write_all) {
-            const span = perms.value_span orelse job.span;
-            list.append(.{
-                .rule_id = "SEC004",
-                .severity = .warning,
-                .message = "job uses 'permissions: write-all' which grants excessive permissions",
-                .span = span,
-                .fix_hint = "specify only the permissions that are needed",
-                .fix = if (perms.value_span) |vs| makeWriteAllFix(list, vs) else null,
-            }) catch return;
-        }
-    }
+    checkWriteAll(list, job.permissions, "job", job.span);
+}
+
+/// SEC004 for either scope. `scope` only names the level in the message, and
+/// `fallback` locates the diagnostic when the parser recorded no value span.
+fn checkWriteAll(list: *DiagnosticList, maybe_perms: ?Permissions, comptime scope: []const u8, fallback: Span) void {
+    const perms = maybe_perms orelse return;
+    if (!perms.write_all) return;
+    list.append(.{
+        .rule_id = "SEC004",
+        .severity = .warning,
+        .message = scope ++ " uses 'permissions: write-all' which grants excessive permissions",
+        .span = perms.value_span orelse fallback,
+        .fix_hint = "specify only the permissions that are needed",
+        .fix = if (perms.value_span) |vs| permissions.makeWriteAllFix(list, vs) else null,
+    }) catch return;
 }
 
 // ============================================================
@@ -367,21 +416,13 @@ fn checkExcessivePermissionsJob(job: *const Job, list: *DiagnosticList) void {
 // ============================================================
 
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
-    // Check if workflow has pull_request_target trigger
-    var has_prt = false;
-    for (wf.on.events) |event| {
-        if (event.event == .pull_request_target) {
-            has_prt = true;
-            break;
-        }
-    }
-    if (!has_prt) return;
+    if (!wf.hasEvent(.pull_request_target)) return;
 
     // Look for checkout actions that check out the PR head
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             if (step.uses) |action_ref| {
-                if (isCheckoutAction(action_ref)) {
+                if (isAction(action_ref, "actions/checkout")) {
                     // Check if it checks out the PR head ref
                     if (step.with) |with_map| {
                         if (with_map.get("ref")) |ref_val| {
@@ -400,12 +441,6 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             }
         }
     }
-}
-
-fn isCheckoutAction(ref: ActionRef) bool {
-    const owner = ref.owner orelse return false;
-    const repo = ref.repo orelse return false;
-    return std.mem.eql(u8, owner, "actions") and std.mem.eql(u8, repo, "checkout");
 }
 
 fn containsDangerousPRRef(ref_val: []const u8) bool {
@@ -437,14 +472,7 @@ fn checkUntrustedInConditionJob(job: *const Job, list: *DiagnosticList) void {
 /// so they may contain dangerous contexts either directly or inside `${{ }}`.
 fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     // First check for ${{ expr }} wrapped patterns
-    var has_expr = false;
-    var pos: usize = 0;
-    while (pos + 4 < cond.len) : (pos += 1) {
-        if (cond[pos] == '$' and pos + 1 < cond.len and cond[pos + 1] == '{' and pos + 2 < cond.len and cond[pos + 2] == '{') {
-            has_expr = true;
-            break;
-        }
-    }
+    const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
     if (has_expr) {
         checkContextsInString(cond, anchor, &condition_dangerous_contexts, "SEC006", sec006_severity, "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
     } else {
@@ -548,35 +576,14 @@ fn indexOfGithubEnvWrite(s: []const u8) ?usize {
     return null;
 }
 
-fn containsGithubEnvWrite(s: []const u8) bool {
-    return indexOfGithubEnvWrite(s) != null;
-}
-
 /// Return true if `s` contains any `${{ dangerous_context }}` expression.
 /// `s` is always a `run:` body here, so it uses the same list as SEC002.
 fn hasDangerousContextExpression(s: []const u8) bool {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (containsAnyContext(expr, &run_dangerous_contexts)) {
-                    return true;
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return false;
+    return findExpr(s, isRunDangerousExpr) != null;
+}
+
+fn isRunDangerousExpr(inner: []const u8) bool {
+    return containsAnyContext(std.mem.trim(u8, inner, " \t\n\r"), &run_dangerous_contexts);
 }
 
 fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
@@ -597,19 +604,12 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
 // ============================================================
 
 fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList) void {
-    var has_workflow_run = false;
-    for (wf.on.events) |event| {
-        if (event.event == .workflow_run) {
-            has_workflow_run = true;
-            break;
-        }
-    }
-    if (!has_workflow_run) return;
+    if (!wf.hasEvent(.workflow_run)) return;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             const action_ref = step.uses orelse continue;
-            if (!isCheckoutAction(action_ref)) continue;
+            if (!isAction(action_ref, "actions/checkout")) continue;
             const with_map = step.with orelse continue;
             const ref_val = with_map.get("ref") orelse continue;
             if (!containsDangerousWorkflowRunRef(ref_val)) continue;
@@ -656,34 +656,7 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
 // ============================================================
 
 fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        if (findOverprovisionedSecrets(run_body)) |m| {
-            emitSEC011(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
-            return;
-        }
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            if (findOverprovisionedSecrets(val)) |m| {
-                emitSEC011(withAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-    // Check env: values
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, val| {
-            if (findOverprovisionedSecrets(val)) |m| {
-                emitSEC011(envAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-}
-
-fn emitSEC011(span: Span, list: *DiagnosticList) void {
+    const span = findStepExprSpan(step, .{}, exprIsWholeSecretsRef) orelse return;
     list.append(.{
         .rule_id = "SEC011",
         .severity = .warning,
@@ -696,29 +669,7 @@ fn emitSEC011(span: Span, list: *DiagnosticList) void {
 /// Find the first `${{ ... }}` expression in `s` that references the entire
 /// secrets context. Returns its offset and length within `s`.
 fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = s[expr_start..j];
-                if (exprIsWholeSecretsRef(expr)) {
-                    return .{ .offset = pos, .len = j + 2 - pos };
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return null;
+    return findExpr(s, exprIsWholeSecretsRef);
 }
 
 /// Check if an expression references the entire secrets context (not an individual secret).
@@ -727,41 +678,50 @@ fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
 fn exprIsWholeSecretsRef(expr: []const u8) bool {
     const trimmed = std.mem.trim(u8, expr, " \t\n\r");
     if (trimmed.len == 0) return false;
-
-    // Check for bare "secrets" reference
     if (std.mem.eql(u8, trimmed, "secrets")) return true;
+    return hasJsonCallArg(trimmed, isWholeSecretsArg);
+}
 
-    // Check for toJSON(secrets) / fromJSON(secrets) patterns
-    const patterns = [_][]const u8{ "toJSON", "tojson", "toJson", "TOJSON", "fromJSON", "fromjson", "fromJson", "FROMJSON" };
-    for (patterns) |func_name| {
+const json_funcs = [_][]const u8{ "toJSON", "fromJSON" };
+
+/// Scan `expr` for `toJSON(...)` / `fromJSON(...)` calls — GitHub matches
+/// function names case-insensitively and tolerates blanks before the paren —
+/// and report whether `pred` accepts the argument text of any of them.
+fn hasJsonCallArg(expr: []const u8, comptime pred: fn ([]const u8) bool) bool {
+    for (json_funcs) |func_name| {
         var i: usize = 0;
-        while (i + func_name.len <= trimmed.len) : (i += 1) {
-            if (std.mem.eql(u8, trimmed[i .. i + func_name.len], func_name)) {
-                // Find the opening paren after optional whitespace
-                var k = i + func_name.len;
-                while (k < trimmed.len and (trimmed[k] == ' ' or trimmed[k] == '\t')) : (k += 1) {}
-                if (k < trimmed.len and trimmed[k] == '(') {
-                    // Skip whitespace after '('
-                    var arg_start = k + 1;
-                    while (arg_start < trimmed.len and (trimmed[arg_start] == ' ' or trimmed[arg_start] == '\t')) : (arg_start += 1) {}
-                    if (arg_start + 7 <= trimmed.len and std.mem.eql(u8, trimmed[arg_start .. arg_start + 7], "secrets")) {
-                        // Must be followed by ')' or whitespace then ')' — NOT '.' (individual secret)
-                        const after = arg_start + 7;
-                        if (after >= trimmed.len) return true;
-                        if (trimmed[after] == ')') return true;
-                        if (trimmed[after] == ' ' or trimmed[after] == '\t') {
-                            // Skip whitespace, expect ')'
-                            var m = after;
-                            while (m < trimmed.len and (trimmed[m] == ' ' or trimmed[m] == '\t')) : (m += 1) {}
-                            if (m < trimmed.len and trimmed[m] == ')') return true;
-                        }
-                        // '.' means individual secret — not a match
-                    }
-                }
-            }
+        while (std.ascii.indexOfIgnoreCasePos(expr, i, func_name)) |hit| : (i = hit + 1) {
+            const paren = std.mem.indexOfNonePos(u8, expr, hit + func_name.len, " \t") orelse continue;
+            if (expr[paren] != '(') continue;
+            const arg = std.mem.indexOfNonePos(u8, expr, paren + 1, " \t") orelse continue;
+            if (pred(expr[arg..])) return true;
         }
     }
     return false;
+}
+
+/// The text after a leading `secrets` reference, or null if `arg` does not
+/// start with one.
+fn afterSecrets(arg: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, arg, "secrets")) return null;
+    return arg["secrets".len..];
+}
+
+/// The whole `secrets` context passed as the argument: `secrets.X` names a
+/// single secret and is not over-provisioned.
+fn isWholeSecretsArg(arg: []const u8) bool {
+    const rest = afterSecrets(arg) orelse return false;
+    if (rest.len == 0 or rest[0] == ')') return true;
+    if (rest[0] != ' ' and rest[0] != '\t') return false;
+    const tail = std.mem.trimLeft(u8, rest, " \t");
+    return tail.len > 0 and tail[0] == ')';
+}
+
+/// Any `secrets` reference as the argument, whole or a single secret: both
+/// bypass masking once serialized.
+fn isSecretsArg(arg: []const u8) bool {
+    const rest = afterSecrets(arg) orelse return false;
+    return rest.len == 0 or rest[0] == ')' or rest[0] == '.' or rest[0] == ' ' or rest[0] == '\t';
 }
 
 // ============================================================
@@ -769,31 +729,14 @@ fn exprIsWholeSecretsRef(expr: []const u8) bool {
 // ============================================================
 
 fn checkUnredactedSecrets(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        if (findUnredactedSecrets(run_body)) |m| {
-            emitSEC012(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
-            return;
-        }
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            if (findUnredactedSecrets(val)) |m| {
-                emitSEC012(withAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-    // Check env: values
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, val| {
-            if (findUnredactedSecrets(val)) |m| {
-                emitSEC012(envAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
+    const span = findStepExprSpan(step, .{}, exprHasSecretJsonCall) orelse return;
+    list.append(.{
+        .rule_id = "SEC012",
+        .severity = .@"error",
+        .message = "secret exposed via toJSON()/fromJSON() bypasses masking",
+        .span = span,
+        .fix_hint = "avoid passing secrets through toJSON()/fromJSON(); assign individual secret values to environment variables instead",
+    }) catch return;
 }
 
 // ============================================================
@@ -853,35 +796,20 @@ fn isSecretsExpression(value: []const u8) bool {
 /// Find the first `${{ secrets.* }}` expression in `s` (excluding
 /// secrets.GITHUB_TOKEN). Returns its offset and length within `s`.
 fn findSecretsOutsideEnv(s: []const u8) ?ExprMatch {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const inner = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (std.mem.startsWith(u8, inner, "secrets.")) {
-                    const secret_name = inner["secrets.".len..];
-                    if (!std.mem.eql(u8, secret_name, "GITHUB_TOKEN")) {
-                        return .{ .offset = pos, .len = j + 2 - pos };
-                    }
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return null;
+    return findExpr(s, exprIsNonTokenSecretRef);
 }
 
-fn emitSEC019(span: Span, list: *DiagnosticList) void {
+/// `secrets.X` for any secret other than the automatically-redacted
+/// `secrets.GITHUB_TOKEN`.
+fn exprIsNonTokenSecretRef(inner: []const u8) bool {
+    const trimmed = std.mem.trim(u8, inner, " \t\n\r");
+    if (!std.mem.startsWith(u8, trimmed, "secrets.")) return false;
+    return !std.mem.eql(u8, trimmed["secrets.".len..], "GITHUB_TOKEN");
+}
+
+fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
+    // env: is the recommended binding, so a secret there is not a finding.
+    const span = findStepExprSpan(step, .{ .env = false }, exprIsNonTokenSecretRef) orelse return;
     list.append(.{
         .rule_id = "SEC019",
         .severity = .info,
@@ -889,26 +817,6 @@ fn emitSEC019(span: Span, list: *DiagnosticList) void {
         .span = span,
         .fix_hint = "bind the secret to an env: variable first, then reference the env var in run:/with:",
     }) catch return;
-}
-
-fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
-    // Check run: block
-    if (step.run) |run_body| {
-        if (findSecretsOutsideEnv(run_body)) |m| {
-            emitSEC019(spans.runAnchor(step).at(run_body, m.offset, m.len), list);
-            return;
-        }
-    }
-    // Check with: values
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, val| {
-            if (findSecretsOutsideEnv(val)) |m| {
-                emitSEC019(withAnchor(step, key).at(val, m.offset, m.len), list);
-                return;
-            }
-        }
-    }
-    // NOTE: Do NOT check step.env — that's the correct pattern
 }
 
 // ============================================================
@@ -936,49 +844,14 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-fn emitSEC012(span: Span, list: *DiagnosticList) void {
-    list.append(.{
-        .rule_id = "SEC012",
-        .severity = .@"error",
-        .message = "secret exposed via toJSON()/fromJSON() bypasses masking",
-        .span = span,
-        .fix_hint = "avoid passing secrets through toJSON()/fromJSON(); assign individual secret values to environment variables instead",
-    }) catch return;
-}
-
 /// Find the first `${{ ... }}` expression in `s` with a toJSON(secrets...) or
 /// fromJSON(secrets...) pattern. Returns its offset and length within `s`.
 fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = s[expr_start..j];
-                if (exprHasSecretJsonCall(expr)) {
-                    return .{ .offset = pos, .len = j + 2 - pos };
-                }
-                pos = j + 1;
-            }
-        }
-    }
-    return null;
+    return findExpr(s, exprHasSecretJsonCall);
 }
 
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
-    for (wf.on.events) |event| {
-        if (event.event == .release) return true;
-    }
-    return false;
+    return wf.hasEvent(.release);
 }
 
 fn isDeployJob(job: *const Job) bool {
@@ -991,16 +864,7 @@ fn isDeployJob(job: *const Job) bool {
 
 fn containsAnyKeyword(s: []const u8) bool {
     for (deploy_keywords) |keyword| {
-        if (containsIgnoreCase(s, keyword)) return true;
-    }
-    return false;
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (haystack.len < needle.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+        if (std.ascii.indexOfIgnoreCase(s, keyword) != null) return true;
     }
     return false;
 }
@@ -1029,30 +893,7 @@ fn isSetupActionWithCache(step: *const Step) bool {
 
 /// Check if an expression contains toJSON(secrets...) or fromJSON(secrets...).
 fn exprHasSecretJsonCall(expr: []const u8) bool {
-    const patterns = [_][]const u8{ "toJSON", "tojson", "toJson", "TOJSON", "fromJSON", "fromjson", "fromJson", "FROMJSON" };
-    for (patterns) |func_name| {
-        var i: usize = 0;
-        while (i + func_name.len < expr.len) : (i += 1) {
-            if (std.mem.eql(u8, expr[i .. i + func_name.len], func_name)) {
-                // Find the opening paren after optional whitespace
-                var k = i + func_name.len;
-                while (k < expr.len and (expr[k] == ' ' or expr[k] == '\t')) : (k += 1) {}
-                if (k < expr.len and expr[k] == '(') {
-                    // Check if argument starts with "secrets"
-                    var arg_start = k + 1;
-                    while (arg_start < expr.len and (expr[arg_start] == ' ' or expr[arg_start] == '\t')) : (arg_start += 1) {}
-                    if (arg_start + 7 <= expr.len and std.mem.eql(u8, expr[arg_start .. arg_start + 7], "secrets")) {
-                        // Must be followed by ), ., whitespace or end — not part of a longer word
-                        const after = arg_start + 7;
-                        if (after >= expr.len or expr[after] == ')' or expr[after] == '.' or expr[after] == ' ' or expr[after] == '\t') {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return false;
+    return hasJsonCallArg(expr, isSecretsArg);
 }
 
 // ============================================================
@@ -1073,14 +914,7 @@ fn checkBotConditionJob(job: *const Job, list: *DiagnosticList) void {
 /// against a bot account name (containing "[bot]"). This is spoofable.
 fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     // Check for ${{ expr }} wrapped patterns
-    var has_expr = false;
-    var pos: usize = 0;
-    while (pos + 4 < cond.len) : (pos += 1) {
-        if (cond[pos] == '$' and pos + 1 < cond.len and cond[pos + 1] == '{' and pos + 2 < cond.len and cond[pos + 2] == '{') {
-            has_expr = true;
-            break;
-        }
-    }
+    const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
 
     if (has_expr) {
         checkBotActorInString(cond, anchor, list);
@@ -1100,35 +934,18 @@ fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *Diagn
 
 /// Scan a string for ${{ expr }} patterns that contain actor + [bot] checks.
 fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (containsActorBotCheck(expr)) {
-                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
-                    list.append(.{
-                        .rule_id = "SEC014",
-                        .severity = .warning,
-                        .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
-                        .span = anchor.at(s, match.offset, match.len),
-                        .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
-                    }) catch return;
-                    return;
-                }
-                pos = j + 1;
-            }
-        }
-    }
+    const match = findExpr(s, isActorBotExpr) orelse return;
+    list.append(.{
+        .rule_id = "SEC014",
+        .severity = .warning,
+        .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
+        .span = anchor.at(s, match.offset, match.len),
+        .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
+    }) catch return;
+}
+
+fn isActorBotExpr(inner: []const u8) bool {
+    return containsActorBotCheck(std.mem.trim(u8, inner, " \t\n\r"));
 }
 
 /// Returns true if the expression contains both an actor context reference
@@ -1143,12 +960,6 @@ fn containsActorBotCheck(expr: []const u8) bool {
 // SEC015 - Artipacked: credential leak via upload-artifact
 // ============================================================
 
-fn isUploadArtifactAction(ref: ActionRef) bool {
-    const owner = ref.owner orelse return false;
-    const repo = ref.repo orelse return false;
-    return std.mem.eql(u8, owner, "actions") and std.mem.eql(u8, repo, "upload-artifact");
-}
-
 fn hasPersistCredentialsFalse(step: *const Step) bool {
     const with_map = step.with orelse return false;
     const val = with_map.get("persist-credentials") orelse return false;
@@ -1162,12 +973,12 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
         i -= 1;
         const step = &job.steps[i];
         if (step.uses) |ref| {
-            if (isUploadArtifactAction(ref)) {
+            if (isAction(ref, "actions/upload-artifact")) {
                 has_upload_after = true;
                 continue;
             }
 
-            if (has_upload_after and isCheckoutAction(ref) and !hasPersistCredentialsFalse(step)) {
+            if (has_upload_after and isAction(ref, "actions/checkout") and !hasPersistCredentialsFalse(step)) {
                 var diag = Diagnostic{
                     .rule_id = "SEC015",
                     .severity = .warning,
@@ -1200,7 +1011,6 @@ fn buildPersistCredentialsFalseFix(
 ) ?diagnostics.Fix {
     const alloc = list.fixAllocator();
     const col = step.uses_key_col orelse 7;
-    if (col == 0) return null;
 
     // Only generate Fix when persist-credentials is absent.
     // When persist-credentials: true, fall back to fix_hint only.
@@ -1208,30 +1018,12 @@ fn buildPersistCredentialsFalseFix(
     if (has_persist) return null;
 
     // uses_key_col is 1-based; parent aligns at col - 1 spaces, child at col + 1.
-    const parent_indent = alloc.alloc(u8, col - 1) catch return null;
-    @memset(parent_indent, ' ');
-    const child_indent = alloc.alloc(u8, col + 1) catch return null;
-    @memset(child_indent, ' ');
+    const edits = if (step.with == null)
+        fix_builder.insertWithEntry(alloc, step.uses_value_end_byte orelse return null, col, "persist-credentials", "false")
+    else
+        fix_builder.appendMappingEntry(alloc, step.with_last_entry_end_byte orelse return null, col + 1, "persist-credentials", "false");
 
-    if (step.with == null) {
-        // No with: block — insert with: and persist-credentials: false after uses: value
-        const insert_at = step.uses_value_end_byte orelse return null;
-        const replacement = std.fmt.allocPrint(alloc, "\n{s}with:\n{s}persist-credentials: false", .{ parent_indent, child_indent }) catch return null;
-        const edits = alloc.alloc(diagnostics.Edit, 1) catch return null;
-        edits[0] = .{ .start_byte = insert_at, .end_byte = insert_at, .replacement = replacement };
-        return .{ .description = description, .safety = safety, .edits = edits };
-    } else {
-        // with: exists — append persist-credentials: false after last entry
-        const insert_at = step.with_last_entry_end_byte orelse return null;
-        const edits = fix_builder.appendMappingEntry(
-            alloc,
-            insert_at,
-            col + 1,
-            "persist-credentials",
-            "false",
-        ) orelse return null;
-        return .{ .description = description, .safety = safety, .edits = edits };
-    }
+    return .{ .description = description, .safety = safety, .edits = edits orelse return null };
 }
 
 // --- SEC018: checkout-persist-credentials ---
@@ -1248,7 +1040,7 @@ fn classifyPersistCredentials(step: *const Step) PersistCredentialsState {
 
 fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
-    if (!isCheckoutAction(ref)) return;
+    if (!isAction(ref, "actions/checkout")) return;
 
     const state = classifyPersistCredentials(step);
     if (state == .explicit_false) return;
@@ -1337,35 +1129,16 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
 fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []const u8, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
-    // Find all ${{ ... }} expressions
-    var pos: usize = 0;
-    while (pos + 4 < s.len) : (pos += 1) {
-        if (s[pos] == '$' and pos + 1 < s.len and s[pos + 1] == '{' and pos + 2 < s.len and s[pos + 2] == '{') {
-            // Find closing }}
-            const expr_start = pos + 3;
-            var depth: u32 = 1;
-            var j = expr_start;
-            while (j + 1 < s.len) : (j += 1) {
-                if (s[j] == '}' and s[j + 1] == '}') {
-                    depth -= 1;
-                    if (depth == 0) break;
-                }
-            }
-            if (depth == 0) {
-                const expr = std.mem.trim(u8, s[expr_start..j], " \t\n\r");
-                if (containsAnyContext(expr, contexts)) {
-                    const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
-                    list.append(.{
-                        .rule_id = rule_id,
-                        .severity = severity,
-                        .message = message,
-                        .span = anchor.at(s, match.offset, match.len),
-                        .fix_hint = fix_hint,
-                    }) catch return;
-                }
-                pos = j + 1;
-            }
-        }
+    var it: ExprIter = .{ .s = s };
+    while (it.next()) |e| {
+        if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
+        list.append(.{
+            .rule_id = rule_id,
+            .severity = severity,
+            .message = message,
+            .span = anchor.at(s, e.match.offset, e.match.len),
+            .fix_hint = fix_hint,
+        }) catch return;
     }
 }
 
@@ -1667,78 +1440,75 @@ fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
 const exec_targets = [_][]const u8{ "bash", "sh", "zsh", "eval", "source" };
 const shell_targets = [_][]const u8{ "bash", "sh", "zsh" };
 
-fn containsBase64PipeExec(s: []const u8) bool {
-    const needle = "base64";
-    var i: usize = 0;
-    while (i + needle.len <= s.len) : (i += 1) {
-        if (!std.mem.eql(u8, s[i .. i + needle.len], needle)) continue;
-        const before_ok = i == 0 or !isIdentChar(s[i - 1]);
-        const after_ok = (i + needle.len >= s.len) or !isIdentChar(s[i + needle.len]);
-        if (!before_ok or !after_ok) continue;
+/// True when `token` occurs at `i` and is not glued to a following identifier
+/// character. Used for flags, whose leading `-` is already a word break.
+fn isTokenAt(s: []const u8, i: usize, token: []const u8) bool {
+    if (!std.mem.startsWith(u8, s[i..], token)) return false;
+    const after = i + token.len;
+    return after >= s.len or !isIdentChar(s[after]);
+}
 
-        // Scan for decode flag and pipe
-        var j = i + needle.len;
+/// True when `word` occurs at `i` as a whole shell word — no identifier
+/// character on either side.
+fn isWordAt(s: []const u8, i: usize, word: []const u8) bool {
+    if (i > 0 and isIdentChar(s[i - 1])) return false;
+    return isTokenAt(s, i, word);
+}
+
+/// True when any of `words` starts at `i`. Callers position `i` right after a
+/// pipe and whitespace, so the left-hand boundary is implicit.
+fn startsAnyWordAt(s: []const u8, i: usize, words: []const []const u8) bool {
+    for (words) |word| {
+        if (isTokenAt(s, i, word)) return true;
+    }
+    return false;
+}
+
+/// Index of the first byte at or after `i` that is not shell whitespace.
+fn skipBlanks(s: []const u8, i: usize) usize {
+    return std.mem.indexOfNonePos(u8, s, i, " \t\n") orelse s.len;
+}
+
+/// Length of the leading run of identifier characters in `s`.
+fn identRunLen(s: []const u8) usize {
+    for (s, 0..) |c, i| {
+        if (!isIdentChar(c)) return i;
+    }
+    return s.len;
+}
+
+fn containsBase64PipeExec(s: []const u8) bool {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (!isWordAt(s, i, "base64")) continue;
+
+        // A decode flag anywhere before the next pipe makes this a decode.
+        var j = i + "base64".len;
         var has_decode = false;
         while (j < s.len and s[j] != '|') : (j += 1) {
-            if (s[j] == '-') {
-                // Check -d
-                if (j + 1 < s.len and s[j + 1] == 'd' and
-                    (j + 2 >= s.len or !isIdentChar(s[j + 2])))
-                {
-                    has_decode = true;
-                }
-                // Check --decode
-                if (j + 1 < s.len and s[j + 1] == '-') {
-                    const decode_str = "--decode";
-                    if (j + decode_str.len <= s.len and
-                        std.mem.eql(u8, s[j .. j + decode_str.len], decode_str) and
-                        (j + decode_str.len >= s.len or !isIdentChar(s[j + decode_str.len])))
-                    {
-                        has_decode = true;
-                    }
-                }
-            }
+            if (isTokenAt(s, j, "-d") or isTokenAt(s, j, "--decode")) has_decode = true;
         }
-        if (!has_decode or j >= s.len or s[j] != '|') continue;
+        if (!has_decode or j >= s.len) continue;
 
-        // Skip whitespace after pipe
-        var k = j + 1;
-        while (k < s.len and (s[k] == ' ' or s[k] == '\t' or s[k] == '\n')) : (k += 1) {}
-        // Check for exec target
-        for (exec_targets) |target| {
-            if (k + target.len <= s.len and
-                std.mem.eql(u8, s[k .. k + target.len], target) and
-                (k + target.len >= s.len or !isIdentChar(s[k + target.len])))
-            {
-                return true;
-            }
-        }
+        if (startsAnyWordAt(s, skipBlanks(s, j + 1), &exec_targets)) return true;
     }
     return false;
 }
 
 fn containsEvalVarExpansion(s: []const u8) bool {
-    const needle = "eval";
     var i: usize = 0;
-    while (i + needle.len <= s.len) : (i += 1) {
-        if (!std.mem.eql(u8, s[i .. i + needle.len], needle)) continue;
-        const before_ok = i == 0 or !isIdentChar(s[i - 1]);
-        if (!before_ok) continue;
-        var j = i + needle.len;
-        // Must be followed by whitespace
+    while (i < s.len) : (i += 1) {
+        if (!isWordAt(s, i, "eval")) continue;
+
+        var j = i + "eval".len;
         if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
-        // Skip whitespace
-        while (j < s.len and (s[j] == ' ' or s[j] == '\t')) : (j += 1) {}
-        if (j >= s.len) continue;
-        // Skip optional quote
+        j = std.mem.indexOfNonePos(u8, s, j, " \t") orelse continue;
+        // A quoted argument still expands, so look past the opening quote.
         if (s[j] == '"' or s[j] == '\'') j += 1;
-        if (j >= s.len) continue;
-        // Check for $ (variable expansion)
-        if (s[j] == '$') {
-            // Exclude ${{ (GitHub Actions expression)
-            if (j + 2 < s.len and s[j + 1] == '{' and s[j + 2] == '{') continue;
-            return true;
-        }
+        if (j >= s.len or s[j] != '$') continue;
+        // `${{ }}` is a GitHub expression, not a shell expansion.
+        if (std.mem.startsWith(u8, s[j..], "${{")) continue;
+        return true;
     }
     return false;
 }
@@ -1747,29 +1517,12 @@ fn containsCurlWgetPipeShell(s: []const u8) bool {
     const downloaders = [_][]const u8{ "curl", "wget" };
     for (downloaders) |downloader| {
         var i: usize = 0;
-        while (i + downloader.len <= s.len) : (i += 1) {
-            if (!std.mem.eql(u8, s[i .. i + downloader.len], downloader)) continue;
-            const before_ok = i == 0 or !isIdentChar(s[i - 1]);
-            const after_ok = (i + downloader.len >= s.len) or !isIdentChar(s[i + downloader.len]);
-            if (!before_ok or !after_ok) continue;
+        while (i < s.len) : (i += 1) {
+            if (!isWordAt(s, i, downloader)) continue;
 
-            // Scan forward for | followed by shell
             var j = i + downloader.len;
-            while (j < s.len) : (j += 1) {
-                if (s[j] == '|') {
-                    // Skip whitespace after pipe
-                    var k = j + 1;
-                    while (k < s.len and (s[k] == ' ' or s[k] == '\t' or s[k] == '\n')) : (k += 1) {}
-                    // Check for shell target
-                    for (shell_targets) |shell| {
-                        if (k + shell.len <= s.len and
-                            std.mem.eql(u8, s[k .. k + shell.len], shell) and
-                            (k + shell.len >= s.len or !isIdentChar(s[k + shell.len])))
-                        {
-                            return true;
-                        }
-                    }
-                }
+            while (std.mem.indexOfScalarPos(u8, s, j, '|')) |pipe| : (j = pipe + 1) {
+                if (startsAnyWordAt(s, skipBlanks(s, pipe + 1), &shell_targets)) return true;
             }
         }
     }
@@ -1785,40 +1538,23 @@ fn isAllUppercase(s: []const u8) bool {
 }
 
 fn containsVarAsCommand(s: []const u8) bool {
-    var line_start: usize = 0;
-    while (line_start < s.len) {
-        // Find end of current line
-        var line_end = line_start;
-        while (line_end < s.len and s[line_end] != '\n') : (line_end += 1) {}
+    var lines = std.mem.splitScalar(u8, s, '\n');
+    while (lines.next()) |line| {
+        const start = std.mem.indexOfNone(u8, line, " \t") orelse continue;
+        const rest = line[start..];
+        if (rest.len < 2 or rest[0] != '$') continue;
+        // `${{ }}` is a GitHub expression and `$(...)` a command substitution.
+        if (std.mem.startsWith(u8, rest, "${{") or rest[1] == '(') continue;
 
-        // Skip leading whitespace
-        var pos = line_start;
-        while (pos < line_end and (s[pos] == ' ' or s[pos] == '\t')) : (pos += 1) {}
-
-        if (pos < line_end and s[pos] == '$') {
-            // Exclude ${{ (GitHub Actions expression)
-            if (pos + 2 < line_end and s[pos + 1] == '{' and s[pos + 2] == '{') {
-                // skip
-            } else if (pos + 1 < line_end and s[pos + 1] == '(') {
-                // $(...) command substitution, skip
-            } else if (pos + 1 < line_end and s[pos + 1] == '{') {
-                // ${VAR} form
-                var k = pos + 2;
-                const var_start = k;
-                while (k < line_end and (std.ascii.isAlphabetic(s[k]) or s[k] == '_' or std.ascii.isDigit(s[k]))) : (k += 1) {}
-                if (k < line_end and s[k] == '}' and k > var_start) {
-                    if (isAllUppercase(s[var_start..k])) return true;
-                }
-            } else if (pos + 1 < line_end and (std.ascii.isAlphabetic(s[pos + 1]) or s[pos + 1] == '_')) {
-                // $VAR form
-                var k = pos + 1;
-                const var_start = k;
-                while (k < line_end and (std.ascii.isAlphanumeric(s[k]) or s[k] == '_')) : (k += 1) {}
-                if (k > var_start and isAllUppercase(s[var_start..k])) return true;
-            }
-        }
-
-        line_start = if (line_end < s.len) line_end + 1 else s.len;
+        const name = if (rest[1] == '{') blk: {
+            const end = 2 + identRunLen(rest[2..]);
+            if (end >= rest.len or rest[end] != '}') break :blk "";
+            break :blk rest[2..end];
+        } else blk: {
+            if (!isIdentStart(rest[1])) break :blk "";
+            break :blk rest[1 .. 1 + identRunLen(rest[1..])];
+        };
+        if (isAllUppercase(name)) return true;
     }
     return false;
 }
@@ -2069,13 +1805,13 @@ const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 
 const empty_trigger = test_support.empty_trigger;
-const release_trigger = test_support.makeTrigger(.release, "release");
-const pr_target_trigger = test_support.makeTrigger(.pull_request_target, "pull_request_target");
-const pr_trigger = test_support.makeTrigger(.pull_request, "pull_request");
-const issue_comment_trigger = test_support.makeTrigger(.issue_comment, "issue_comment");
-const workflow_run_trigger = test_support.makeTrigger(.workflow_run, "workflow_run");
-const push_trigger = test_support.makeTrigger(.push, "push");
-const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch, "workflow_dispatch");
+const release_trigger = test_support.makeTrigger(.release);
+const pr_target_trigger = test_support.makeTrigger(.pull_request_target);
+const pr_trigger = test_support.makeTrigger(.pull_request);
+const issue_comment_trigger = test_support.makeTrigger(.issue_comment);
+const workflow_run_trigger = test_support.makeTrigger(.workflow_run);
+const push_trigger = test_support.makeTrigger(.push);
+const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch);
 
 const hasDiagnostic = test_support.hasDiagnostic;
 const countDiagnostics = test_support.countDiagnostics;
@@ -2828,7 +2564,7 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
-    best_practices.checkPushConcurrencyForTest(&wf, &list);
+    best_practices.checkPushConcurrency(&wf, &list);
 
     try testing.expectEqual(@as(usize, 2), list.len());
 
@@ -2862,7 +2598,6 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
 
     // 再 parse で ParseError が出ないことを確認する。
     var reparse = yaml_parser.Parser.init(alloc, result.content);
-    defer reparse.deinit();
     _ = try reparse.parse();
 }
 
@@ -3035,24 +2770,24 @@ test "containsConditionDangerousContext rejects safe actor" {
     try testing.expect(!containsConditionDangerousContext("github.actor"));
 }
 
-test "containsSecretPrefix finds ghp_ token" {
-    try testing.expect(containsSecretPrefix("token ghp_abc123def456", "ghp_"));
+test "hardcoded secret prefixes are located by offset" {
+    try testing.expect(std.mem.indexOf(u8, "token ghp_abc123def456", "ghp_") != null);
 }
 
-test "containsSecretPrefix finds AKIA key" {
-    try testing.expect(containsSecretPrefix("AKIAIOSFODNN7EXAMPLE", "AKIA"));
+test "hardcoded secret prefixes match at offset zero" {
+    try testing.expect(std.mem.indexOf(u8, "AKIAIOSFODNN7EXAMPLE", "AKIA") != null);
 }
 
-test "containsSecretPrefix no false positive" {
-    try testing.expect(!containsSecretPrefix("echo hello world", "ghp_"));
+test "hardcoded secret prefixes do not match unrelated text" {
+    try testing.expect(std.mem.indexOf(u8, "echo hello world", "ghp_") == null);
 }
 
-test "isCheckoutAction true" {
-    try testing.expect(isCheckoutAction(ActionRef.parse("actions/checkout@v4")));
+test "isAction checkout true" {
+    try testing.expect(isAction(ActionRef.parse("actions/checkout@v4"), "actions/checkout"));
 }
 
-test "isCheckoutAction false for other action" {
-    try testing.expect(!isCheckoutAction(ActionRef.parse("actions/setup-node@v3")));
+test "isAction checkout false for other action" {
+    try testing.expect(!isAction(ActionRef.parse("actions/setup-node@v3"), "actions/checkout"));
 }
 
 test "containsDangerousPRRef with head.sha" {
@@ -3872,12 +3607,12 @@ test "SEC015: no fix when span info absent (manually constructed step)" {
     }
 }
 
-test "SEC015: isUploadArtifactAction helper" {
-    try testing.expect(isUploadArtifactAction(ActionRef.parse("actions/upload-artifact@v4")));
-    try testing.expect(isUploadArtifactAction(ActionRef.parse("actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808")));
-    try testing.expect(!isUploadArtifactAction(ActionRef.parse("actions/checkout@v4")));
-    try testing.expect(!isUploadArtifactAction(ActionRef.parse("actions/download-artifact@v4")));
-    try testing.expect(!isUploadArtifactAction(ActionRef.parse("./actions/upload-artifact")));
+test "SEC015: isAction upload-artifact helper" {
+    try testing.expect(isAction(ActionRef.parse("actions/upload-artifact@v4"), "actions/upload-artifact"));
+    try testing.expect(isAction(ActionRef.parse("actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808"), "actions/upload-artifact"));
+    try testing.expect(!isAction(ActionRef.parse("actions/checkout@v4"), "actions/upload-artifact"));
+    try testing.expect(!isAction(ActionRef.parse("actions/download-artifact@v4"), "actions/upload-artifact"));
+    try testing.expect(!isAction(ActionRef.parse("./actions/upload-artifact"), "actions/upload-artifact"));
 }
 
 test "SEC015: hasPersistCredentialsFalse helper" {

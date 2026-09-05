@@ -1,4 +1,4 @@
-# 0004. PERF001 autofix 拡張: setup-node / setup-python / setup-go gating
+# 0005. PERF001 autofix 拡張: setup-node / setup-python / setup-go gating
 
 - Status: Accepted
 - Date: 2026-04-19
