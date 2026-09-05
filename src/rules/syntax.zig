@@ -190,13 +190,6 @@ fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-// ── Shared span helpers ──
-
-fn needsSpan(job: *const Job, index: usize) Span {
-    if (index < job.needs_spans.len) return job.needs_spans[index];
-    return job.span;
-}
-
 // ── SYN006: Invalid job ID / step ID naming ──
 
 fn isValidId(id: []const u8) bool {
@@ -232,7 +225,7 @@ fn reportInvalidId(list: *DiagnosticList, what: []const u8, id: []const u8, span
 fn checkInvalidJobId(job: *const Job, diag_list: *DiagnosticList) void {
     reportInvalidId(diag_list, "job", job.id, (job.id_span orelse job.span));
     for (job.needs, 0..) |need, i| {
-        reportInvalidId(diag_list, "job", need, needsSpan(job, i));
+        reportInvalidId(diag_list, "job", need, if (i < job.needs_spans.len) job.needs_spans[i] else job.span);
     }
 }
 
@@ -373,7 +366,7 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
             .rule_id = "SYN008",
             .severity = .warning,
             .message = "job ID is duplicated in 'needs'",
-            .span = needsSpan(job, i),
+            .span = if (i < job.needs_spans.len) job.needs_spans[i] else job.span,
             .fix_hint = "remove the repeated job ID from 'needs'",
         }) catch return;
     }
