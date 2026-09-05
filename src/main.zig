@@ -331,20 +331,6 @@ fn lintFile(
     }
 }
 
-fn outputTerminal(diag_list: *zghalint.DiagnosticList, writer: anytype, use_color: bool) !void {
-    try zghalint.output.terminal.renderDiagnostics(writer, diag_list.*, null, use_color);
-}
-
-fn outputJson(diag_list: *zghalint.DiagnosticList, writer: anytype, files_checked: usize) !void {
-    try zghalint.output.renderJson(writer, diag_list.*, files_checked);
-    try writer.writeAll("\n");
-}
-
-fn outputSarif(diag_list: *zghalint.DiagnosticList, writer: anytype) !void {
-    try zghalint.output.renderSarif(writer, diag_list.*, &all_rules);
-    try writer.writeAll("\n");
-}
-
 fn applyFixesForFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -583,27 +569,16 @@ pub fn main() !u8 {
         .auto => std.Io.tty.detectConfig(std.fs.File.stdout()) != .no_color,
     };
 
-    // Output
-    switch (config.output_format) {
-        .terminal => {
-            outputTerminal(&all_diags, stdout, use_color) catch {
-                return 2;
-            };
-            try stdout.flush();
-        },
-        .json => {
-            outputJson(&all_diags, stdout, files.len) catch {
-                return 2;
-            };
-            try stdout.flush();
-        },
-        .sarif => {
-            outputSarif(&all_diags, stdout) catch {
-                return 2;
-            };
-            try stdout.flush();
-        },
-    }
+    // Output. Only the terminal format is self-terminating; the machine-readable
+    // formats get an explicit trailing newline.
+    const rendered = switch (config.output_format) {
+        .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, null, use_color),
+        .json => zghalint.output.renderJson(stdout, all_diags, files.len),
+        .sarif => zghalint.output.renderSarif(stdout, all_diags, &all_rules),
+    };
+    rendered catch return 2;
+    if (config.output_format != .terminal) stdout.writeAll("\n") catch return 2;
+    try stdout.flush();
 
     // Exit code
     if (hasErrors(&all_diags)) return 1;
