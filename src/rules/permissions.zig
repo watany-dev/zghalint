@@ -70,6 +70,18 @@ fn makeDowngradeToReadFix(diag_list: *DiagnosticList, yaml_key: []const u8, valu
 
 /// `fallback` is the span reported when the parser captured no span for the
 /// offending permissions entry (e.g. a flow-style `permissions:` mapping).
+/// `Permissions` field names use `_` where the YAML key uses `-`.
+fn scopeKey(comptime name: []const u8) []const u8 {
+    comptime {
+        var buf: [name.len]u8 = name[0..name.len].*;
+        for (&buf) |*c| {
+            if (c.* == '_') c.* = '-';
+        }
+        const key = buf;
+        return &key;
+    }
+}
+
 fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: Span, diag_list: *DiagnosticList) void {
     if (perms.write_all) {
         const span = perms.value_span orelse fallback;
@@ -84,30 +96,14 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
         return;
     }
 
-    // Individual write permissions across all 14 scope keys.
+    // Individual write permissions across all scope keys. `PermissionsMeta`
+    // declares exactly those keys, so it doubles as the key list.
     // `id-token` is detected with a dedicated hint (OIDC context) and no autofix,
     // because the GitHub Actions spec does not allow `id-token: read`.
-    const fields = .{
-        .{ "actions", perms.actions, if (meta) |m| m.actions else null },
-        .{ "attestations", perms.attestations, if (meta) |m| m.attestations else null },
-        .{ "checks", perms.checks, if (meta) |m| m.checks else null },
-        .{ "contents", perms.contents, if (meta) |m| m.contents else null },
-        .{ "deployments", perms.deployments, if (meta) |m| m.deployments else null },
-        .{ "discussions", perms.discussions, if (meta) |m| m.discussions else null },
-        .{ "id-token", perms.id_token, if (meta) |m| m.id_token else null },
-        .{ "issues", perms.issues, if (meta) |m| m.issues else null },
-        .{ "packages", perms.packages, if (meta) |m| m.packages else null },
-        .{ "pages", perms.pages, if (meta) |m| m.pages else null },
-        .{ "pull-requests", perms.pull_requests, if (meta) |m| m.pull_requests else null },
-        .{ "repository-projects", perms.repository_projects, if (meta) |m| m.repository_projects else null },
-        .{ "security-events", perms.security_events, if (meta) |m| m.security_events else null },
-        .{ "statuses", perms.statuses, if (meta) |m| m.statuses else null },
-    };
-
-    inline for (fields) |f| {
-        const key: []const u8 = f[0];
-        const level: ?workflow_types.PermissionLevel = f[1];
-        const value_span: ?Span = f[2];
+    inline for (std.meta.fields(PermissionsMeta)) |field| {
+        const key: []const u8 = comptime scopeKey(field.name);
+        const level: ?workflow_types.PermissionLevel = @field(perms, field.name);
+        const value_span: ?Span = if (meta) |m| @field(m, field.name) else null;
         if (level) |lvl| {
             if (lvl == .write) {
                 const is_id_token = comptime std.mem.eql(u8, key, "id-token");
