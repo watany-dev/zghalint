@@ -315,9 +315,8 @@ pub const Tokenizer = struct {
     /// Returns false (leaving the position untouched) when one does not start
     /// here, or when it is not closed before the end of the line.
     ///
-    /// Only needed inside a flow context, where the expression's `}` and `,`
-    /// would otherwise be read as YAML indicators. In block context the flow
-    /// indicators already belong to the scalar.
+    /// An expression is opaque to YAML scanning: `}` and `,` inside it are not
+    /// flow indicators, and neither `#` nor `: ` inside it ends the scalar.
     fn skipExpressionInterpolation(self: *Tokenizer) bool {
         if (self.pos + 2 >= self.source.len) return false;
         if (self.source[self.pos] != '$') return false;
@@ -339,14 +338,13 @@ pub const Tokenizer = struct {
         const col = self.column;
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
+            // A GitHub Actions expression is scanned whole: its braces,
+            // commas, `#` and `: ` all belong to the scalar.
+            if (self.skipExpressionInterpolation()) continue;
             if (ch == '\n' or ch == '#') break;
-            if (self.flow_depth > 0) {
-                // `${{ ... }}` is a GitHub Actions expression, not a YAML flow
-                // mapping: its braces and commas belong to the scalar.
-                if (self.skipExpressionInterpolation()) continue;
-                if (ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']') {
-                    break;
-                }
+            // `,` `[` `]` `{` `}` are indicators only inside a flow collection.
+            if (self.flow_depth > 0 and (ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']')) {
+                break;
             }
             // Colon followed by space is a mapping value indicator
             if (ch == ':' and (self.pos + 1 >= self.source.len or self.source[self.pos + 1] == ' ' or self.source[self.pos + 1] == '\n')) {
@@ -523,6 +521,22 @@ test "tokenizer run: value is read to end of line" {
     try std.testing.expectEqual(TokenKind.scalar, value.kind);
     try std.testing.expectEqualStrings("echo a, b [c] {d}", value.slice(tokenizer.source));
     try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+}
+
+// `: ` inside a plain scalar is invalid YAML, but a workflow that ships it is
+// exactly the one worth linting, so the expression is scanned whole anyway.
+test "tokenizer plain scalar keeps a colon inside an interpolation" {
+    try expectFirstScalar(
+        "echo ${{ format('{0}: {1}', github.event.issue.title, 'x') }}",
+        "echo ${{ format('{0}: {1}', github.event.issue.title, 'x') }}",
+    );
+}
+
+test "tokenizer plain scalar keeps a hash inside an interpolation" {
+    try expectFirstScalar(
+        "echo ${{ format('#{0}', github.event.issue.title) }} # trailing",
+        "echo ${{ format('#{0}', github.event.issue.title) }}",
+    );
 }
 
 test "tokenizer plain scalar still stops at a comment in block context" {

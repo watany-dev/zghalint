@@ -463,6 +463,15 @@ _flow_indicator_noise = [
 ]
 
 
+# Expression shapes whose own text contains characters that would end a plain
+# scalar outside an expression (`#`) or look like flow indicators.
+_expression_shapes = [
+    "${{ %s }}",
+    "${{ format('#{0}', %s) }}",
+    "${{ join(fromJSON('[1,2]'), %s) }}",
+]
+
+
 @st.composite
 def workflow_with_plain_scalar_run(draw: st.DrawFn) -> str:
     """Generate a workflow whose unquoted `run:` mixes flow indicators with
@@ -473,6 +482,7 @@ def workflow_with_plain_scalar_run(draw: st.DrawFn) -> str:
     """
     noise = draw(st.sampled_from(_flow_indicator_noise))
     context = draw(st.sampled_from(_dangerous_contexts))
+    expression = draw(st.sampled_from(_expression_shapes)) % context
     return (
         "name: CI\n"
         "on: push\n"
@@ -480,7 +490,7 @@ def workflow_with_plain_scalar_run(draw: st.DrawFn) -> str:
         "  build:\n"
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
-        f"      - run: {noise} && echo ${{{{ {context} }}}}\n"
+        f"      - run: {noise} && echo {expression}\n"
     )
 
 
