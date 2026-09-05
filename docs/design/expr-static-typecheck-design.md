@@ -2,7 +2,7 @@
 
 ## 目的
 
-GitHub Actions の `${{ }}` 式に対し、actionlint と同型の静的型体系を zghalint に導入する。本設計は **実装ではなく基盤** であり、判断の単一情報源は `docs/adr/0006-expr-static-typecheck.md` である。
+GitHub Actions の `${{ }}` 式に対し、actionlint と同型の静的型体系を zghalint に導入する。本設計は **実装ではなく基盤** であり、判断の単一情報源は `docs/adr/0009-expr-static-typecheck.md` である。
 
 行番号は本ドキュメント記述時点（`src/rules/expressions.zig` の EXPR001〜EXPR007 実装、`src/config.zig` の `RuleOverride`）のもの。
 
@@ -606,7 +606,7 @@ T4（steps / matrix / needs / inputs / secrets の overlay）は `expr_check.Typ
 
 ## 参考
 
-- `docs/adr/0006-expr-static-typecheck.md` — 決定の単一情報源
+- `docs/adr/0009-expr-static-typecheck.md` — 決定の単一情報源
 - `docs/design/expr006-autofix-design.md` — `ExprNode` の byte 範囲。本エンジンはパーサを壊さない
 - `docs/rules.md` Expression 節 — 現行 ID
 - actionlint `expr_type.go` / `expr_sema.go`

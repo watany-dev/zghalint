@@ -1,10 +1,7 @@
 const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
-const util = @import("../util.zig");
 const Diagnostic = diagnostics.Diagnostic;
 const DiagnosticList = diagnostics.DiagnosticList;
-const Severity = diagnostics.Severity;
-const writeJsonString = util.writeJsonString;
 
 /// Render diagnostics as a JSON object to the writer.
 /// Output format:
@@ -14,65 +11,43 @@ const writeJsonString = util.writeJsonString;
 ///   "summary": { "errors": N, "warnings": N, "infos": N, "hints": N, "total": N,
 ///                "files_checked": N }
 /// }
-pub fn renderJson(writer: anytype, list: DiagnosticList, files_checked: usize) !void {
-    var errors: usize = 0;
-    var warnings: usize = 0;
-    var infos: usize = 0;
-    var hints: usize = 0;
+pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: usize) !void {
+    const counts = list.countBySeverity();
 
-    try writer.writeAll("{\"diagnostics\":[");
+    var js: std.json.Stringify = .{ .writer = writer };
 
-    for (list.items.items, 0..) |diag, i| {
-        if (i > 0) try writer.writeAll(",");
-        try writeDiagnosticJson(writer, diag);
-        switch (diag.severity) {
-            .@"error" => errors += 1,
-            .warning => warnings += 1,
-            .info => infos += 1,
-            .hint => hints += 1,
-        }
+    try js.beginObject();
+    try js.objectField("diagnostics");
+    try js.beginArray();
+    for (list.items.items) |diag| {
+        try writeDiagnosticJson(&js, diag);
     }
+    try js.endArray();
 
-    try writer.writeAll("],\"summary\":{");
-    try writer.print("\"errors\":{d},\"warnings\":{d},\"infos\":{d},\"hints\":{d},\"total\":{d},\"files_checked\":{d}", .{
-        errors,
-        warnings,
-        infos,
-        hints,
-        list.len(),
-        files_checked,
+    try js.objectField("summary");
+    try js.write(.{
+        .errors = counts.@"error",
+        .warnings = counts.warning,
+        .infos = counts.info,
+        .hints = counts.hint,
+        .total = list.len(),
+        .files_checked = files_checked,
     });
-    try writer.writeAll("}}");
+    try js.endObject();
 }
 
-fn writeDiagnosticJson(writer: anytype, diag: Diagnostic) !void {
-    try writer.writeAll("{\"file\":");
-    try writeJsonString(writer, diag.file orelse "<unknown>");
-
-    try writer.print(",\"line\":{d},\"column\":{d},\"end_line\":{d},\"end_column\":{d}", .{
-        diag.span.start_line,
-        diag.span.start_col,
-        diag.span.end_line,
-        diag.span.end_col,
+fn writeDiagnosticJson(js: *std.json.Stringify, diag: Diagnostic) !void {
+    try js.write(.{
+        .file = diag.file orelse "<unknown>",
+        .line = diag.span.start_line,
+        .column = diag.span.start_col,
+        .end_line = diag.span.end_line,
+        .end_column = diag.span.end_col,
+        .severity = diag.severity,
+        .rule_id = diag.rule_id,
+        .message = diag.message,
+        .fix_hint = diag.fix_hint,
     });
-
-    try writer.writeAll(",\"severity\":");
-    try writeJsonString(writer, @tagName(diag.severity));
-
-    try writer.writeAll(",\"rule_id\":");
-    try writeJsonString(writer, diag.rule_id);
-
-    try writer.writeAll(",\"message\":");
-    try writeJsonString(writer, diag.message);
-
-    try writer.writeAll(",\"fix_hint\":");
-    if (diag.fix_hint) |hint| {
-        try writeJsonString(writer, hint);
-    } else {
-        try writer.writeAll("null");
-    }
-
-    try writer.writeAll("}");
 }
 
 // ============================================================
@@ -82,14 +57,14 @@ fn writeDiagnosticJson(writer: anytype, diag: Diagnostic) !void {
 const Span = @import("../yaml/types.zig").Span;
 
 test "renderJson empty diagnostics" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    try renderJson(buf.writer(std.testing.allocator), list, 3);
-    const output = buf.items;
+    try renderJson(&out.writer, list, 3);
+    const output = out.written();
 
     // Valid JSON structure
     try std.testing.expect(std.mem.indexOf(u8, output, "\"diagnostics\":[]") != null);
@@ -98,8 +73,8 @@ test "renderJson empty diagnostics" {
 }
 
 test "renderJson single diagnostic" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -120,8 +95,8 @@ test "renderJson single diagnostic" {
         .fix_hint = "Use an environment variable instead",
     });
 
-    try renderJson(buf.writer(std.testing.allocator), list, 1);
-    const output = buf.items;
+    try renderJson(&out.writer, list, 1);
+    const output = out.written();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"rule_id\":\"SEC002\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"severity\":\"error\"") != null);
@@ -133,8 +108,8 @@ test "renderJson single diagnostic" {
 }
 
 test "renderJson multiple diagnostics" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -142,8 +117,8 @@ test "renderJson multiple diagnostics" {
     try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err", .file = "a.yml", .span = Span.point(1, 1, 0) });
     try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn", .file = "a.yml", .span = Span.point(2, 1, 0), .fix_hint = "fix it" });
 
-    try renderJson(buf.writer(std.testing.allocator), list, 1);
-    const output = buf.items;
+    try renderJson(&out.writer, list, 1);
+    const output = out.written();
 
     // Should have two entries separated by comma
     try std.testing.expect(std.mem.indexOf(u8, output, "\"errors\":1") != null);
@@ -152,90 +127,65 @@ test "renderJson multiple diagnostics" {
 }
 
 test "renderJson null fix_hint" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
     try list.append(.{ .rule_id = "T1", .severity = .info, .message = "test", .span = Span.point(1, 1, 0) });
 
-    try renderJson(buf.writer(std.testing.allocator), list, 0);
-    const output = buf.items;
+    try renderJson(&out.writer, list, 0);
+    const output = out.written();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"fix_hint\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"file\":\"<unknown>\"") != null);
 }
 
-test "writeJsonString escapes special chars" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    try writeJsonString(buf.writer(std.testing.allocator), "hello \"world\"\nnew\\line");
-    try std.testing.expectEqualStrings("\"hello \\\"world\\\"\\nnew\\\\line\"", buf.items);
-}
-
 test "renderJson is valid JSON structure" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
     try list.append(.{ .rule_id = "R1", .severity = .@"error", .message = "msg", .span = Span.point(1, 1, 0) });
 
-    try renderJson(buf.writer(std.testing.allocator), list, 1);
-    const output = buf.items;
+    try renderJson(&out.writer, list, 1);
+    const output = out.written();
 
     // Starts with { ends with }
     try std.testing.expect(output[0] == '{');
     try std.testing.expect(output[output.len - 1] == '}');
 }
 
-test "writeJsonString escapes tabs and carriage returns" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    try writeJsonString(buf.writer(std.testing.allocator), "col1\tcol2\rend");
-    try std.testing.expectEqualStrings("\"col1\\tcol2\\rend\"", buf.items);
-}
-
-test "writeJsonString escapes control characters" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-
-    // Test with a control char (0x01 = SOH)
-    try writeJsonString(buf.writer(std.testing.allocator), "\x01");
-    try std.testing.expectEqualStrings("\"\\u0001\"", buf.items);
-}
-
 test "renderJson with hint severity" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
     try list.append(.{ .rule_id = "H1", .severity = .hint, .message = "hint msg", .span = Span.point(1, 1, 0) });
 
-    try renderJson(buf.writer(std.testing.allocator), list, 1);
-    const output = buf.items;
+    try renderJson(&out.writer, list, 1);
+    const output = out.written();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"hints\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"severity\":\"hint\"") != null);
 }
 
 test "renderJson with info severity" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
     try list.append(.{ .rule_id = "I1", .severity = .info, .message = "info msg", .span = Span.point(1, 1, 0) });
 
-    try renderJson(buf.writer(std.testing.allocator), list, 1);
-    const output = buf.items;
+    try renderJson(&out.writer, list, 1);
+    const output = out.written();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"infos\":1") != null);
 }

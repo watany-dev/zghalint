@@ -4,7 +4,7 @@
 
 `uses: owner/repo@<sha>` の SHA pin に対し、その SHA が upstream リポジトリのいずれの branch・tag からも到達不能（reachable でない）である状態 — いわゆる **impostor commit** — を検出する。GitHub の共有 object DB により fork/未マージ PR の commit も `/commits/{sha}` で 200 を返すため、SHA pin 自体では本攻撃を防げない。
 
-本設計書の判断は `docs/adr/0005-sc008-impostor-commit.md` を単一情報源とする。行番号は本ドキュメント記述時点（commit `57cdc47`）のもの。
+本設計書の判断は `docs/adr/0008-sc008-impostor-commit.md` を単一情報源とする。行番号は本ドキュメント記述時点（commit `57cdc47`）のもの。
 
 ## スコープ
 
@@ -395,7 +395,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 ## 実装手順
 
 1. **Tidy**（Step 1, 完了）: `graphql.zig` pagination を pageInfo ベースに切替
-2. **Docs**（Step 2, 本 PR）: ADR 0005 + 本設計書 + `docs/rules.md` 46→47 更新
+2. **Docs**（Step 2, 本 PR）: ADR 0008 + 本設計書 + `docs/rules.md` 46→47 更新
 3. **Red**（Step 3）: `impostor.zig` スケルトン + C-1 の失敗テスト
 4. **Green**（Step 4）: `checkImpostorCommit` 本体を mock cache で実装
 5. **Green**（Step 5）: `graphql.zig` に branches / defaultBranchRef / cursors 追加、テスト 7-11
@@ -408,7 +408,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 
 ## 参考
 
-- `docs/adr/0005-sc008-impostor-commit.md` — 判断の単一情報源
+- `docs/adr/0008-sc008-impostor-commit.md` — 判断の単一情報源
 - `docs/design/sc007-typosquat-design.md` — 設計書構成テンプレート（兄弟 PR 群）
 - `src/rules/stale_refs.zig` — SC005 実装（SC008 のテンプレ）
 - `src/rules/graphql.zig` — GraphQL バッチ（SC008 で拡張）

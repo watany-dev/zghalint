@@ -33,7 +33,8 @@ fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
 
 const write_all_replacement = "{contents: read}";
 
-fn makeWriteAllFix(diag_list: *DiagnosticList, value_span: Span) ?Fix {
+/// Shared with security.zig, which reports the same `write-all` grant as SEC004.
+pub fn makeWriteAllFix(diag_list: *DiagnosticList, value_span: Span) ?Fix {
     const edits = fix_builder.replaceScalar(
         diag_list.fixAllocator(),
         value_span,
@@ -82,30 +83,14 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
         return;
     }
 
-    // Individual write permissions across all 14 scope keys.
+    // Individual write permissions across all scope keys. `PermissionsMeta`
+    // declares exactly those keys, so it doubles as the key list.
     // `id-token` is detected with a dedicated hint (OIDC context) and no autofix,
     // because the GitHub Actions spec does not allow `id-token: read`.
-    const fields = .{
-        .{ "actions", perms.actions, if (meta) |m| m.actions else null },
-        .{ "attestations", perms.attestations, if (meta) |m| m.attestations else null },
-        .{ "checks", perms.checks, if (meta) |m| m.checks else null },
-        .{ "contents", perms.contents, if (meta) |m| m.contents else null },
-        .{ "deployments", perms.deployments, if (meta) |m| m.deployments else null },
-        .{ "discussions", perms.discussions, if (meta) |m| m.discussions else null },
-        .{ "id-token", perms.id_token, if (meta) |m| m.id_token else null },
-        .{ "issues", perms.issues, if (meta) |m| m.issues else null },
-        .{ "packages", perms.packages, if (meta) |m| m.packages else null },
-        .{ "pages", perms.pages, if (meta) |m| m.pages else null },
-        .{ "pull-requests", perms.pull_requests, if (meta) |m| m.pull_requests else null },
-        .{ "repository-projects", perms.repository_projects, if (meta) |m| m.repository_projects else null },
-        .{ "security-events", perms.security_events, if (meta) |m| m.security_events else null },
-        .{ "statuses", perms.statuses, if (meta) |m| m.statuses else null },
-    };
-
-    inline for (fields) |f| {
-        const key: []const u8 = f[0];
-        const level: ?workflow_types.PermissionLevel = f[1];
-        const value_span: ?Span = f[2];
+    inline for (workflow_types.permission_scopes) |field| {
+        const key: []const u8 = comptime workflow_types.permissionScopeKey(field);
+        const level: ?workflow_types.PermissionLevel = @field(perms, field);
+        const value_span: ?Span = if (meta) |m| @field(m, field) else null;
         if (level) |lvl| {
             if (lvl == .write) {
                 const is_id_token = comptime std.mem.eql(u8, key, "id-token");

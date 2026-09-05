@@ -63,6 +63,18 @@ pub const ExprTokenizer = struct {
         }
     }
 
+    /// A token whose text is fixed and known: advance past it and describe it.
+    fn emitSimple(self: *ExprTokenizer, kind: TokenKind, comptime text: []const u8) ExprToken {
+        const start = self.pos;
+        self.pos += text.len;
+        return .{ .kind = kind, .value = text, .pos = start };
+    }
+
+    /// Whether the character right after the current one is `c`.
+    fn peekIs(self: *const ExprTokenizer, c: u8) bool {
+        return self.pos + 1 < self.source.len and self.source[self.pos + 1] == c;
+    }
+
     pub fn next(self: *ExprTokenizer) ExprToken {
         self.skipWhitespace();
         if (self.pos >= self.source.len) {
@@ -73,81 +85,36 @@ pub const ExprTokenizer = struct {
         const c = self.source[self.pos];
 
         switch (c) {
-            '.' => {
-                self.pos += 1;
-                return .{ .kind = .dot, .value = ".", .pos = start };
-            },
-            '(' => {
-                self.pos += 1;
-                return .{ .kind = .open_paren, .value = "(", .pos = start };
-            },
-            ')' => {
-                self.pos += 1;
-                return .{ .kind = .close_paren, .value = ")", .pos = start };
-            },
-            '[' => {
-                self.pos += 1;
-                return .{ .kind = .open_bracket, .value = "[", .pos = start };
-            },
-            ']' => {
-                self.pos += 1;
-                return .{ .kind = .close_bracket, .value = "]", .pos = start };
-            },
-            ',' => {
-                self.pos += 1;
-                return .{ .kind = .comma, .value = ",", .pos = start };
-            },
-            '*' => {
-                self.pos += 1;
-                return .{ .kind = .star, .value = "*", .pos = start };
-            },
+            '.' => return self.emitSimple(.dot, "."),
+            '(' => return self.emitSimple(.open_paren, "("),
+            ')' => return self.emitSimple(.close_paren, ")"),
+            '[' => return self.emitSimple(.open_bracket, "["),
+            ']' => return self.emitSimple(.close_bracket, "]"),
+            ',' => return self.emitSimple(.comma, ","),
+            '*' => return self.emitSimple(.star, "*"),
             '!' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = "!=", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .not_op, .value = "!", .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, "!=");
+                return self.emitSimple(.not_op, "!");
             },
             '=' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = "==", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .@"error", .value = self.source[start .. start + 1], .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, "==");
+                return self.emitSimple(.@"error", "=");
             },
             '<' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = "<=", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .comparison_op, .value = "<", .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, "<=");
+                return self.emitSimple(.comparison_op, "<");
             },
             '>' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
-                    self.pos += 2;
-                    return .{ .kind = .comparison_op, .value = ">=", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .comparison_op, .value = ">", .pos = start };
+                if (self.peekIs('=')) return self.emitSimple(.comparison_op, ">=");
+                return self.emitSimple(.comparison_op, ">");
             },
             '&' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '&') {
-                    self.pos += 2;
-                    return .{ .kind = .logical_op, .value = "&&", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .@"error", .value = self.source[start .. start + 1], .pos = start };
+                if (self.peekIs('&')) return self.emitSimple(.logical_op, "&&");
+                return self.emitSimple(.@"error", "&");
             },
             '|' => {
-                if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '|') {
-                    self.pos += 2;
-                    return .{ .kind = .logical_op, .value = "||", .pos = start };
-                }
-                self.pos += 1;
-                return .{ .kind = .@"error", .value = self.source[start .. start + 1], .pos = start };
+                if (self.peekIs('|')) return self.emitSimple(.logical_op, "||");
+                return self.emitSimple(.@"error", "|");
             },
             '\'' => return self.readString(),
             else => {
@@ -260,6 +227,18 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
+fn isOrOp(tok: ExprToken) bool {
+    return tok.kind == .logical_op and std.mem.eql(u8, tok.value, "||");
+}
+
+fn isAndOp(tok: ExprToken) bool {
+    return tok.kind == .logical_op and std.mem.eql(u8, tok.value, "&&");
+}
+
+fn isComparisonOp(tok: ExprToken) bool {
+    return tok.kind == .comparison_op;
+}
+
 pub const ExprParser = struct {
     tokenizer: ExprTokenizer,
     current: ExprToken,
@@ -295,51 +274,29 @@ pub const ExprParser = struct {
     }
 
     fn parseOr(self: *ExprParser) ParseError!ExprNode {
-        var left = try self.parseAnd();
-        while (self.current.kind == .logical_op and std.mem.eql(u8, self.current.value, "||")) {
-            const op = self.current.value;
-            self.advance();
-            const right = try self.parseAnd();
-            const children = try self.allocator.alloc(ExprNode, 2);
-            children[0] = left;
-            children[1] = right;
-            left = ExprNode{
-                .kind = .binary_op,
-                .value = op,
-                .children = children,
-                .start_byte = children[0].start_byte,
-                .end_byte = children[1].end_byte,
-            };
-        }
-        return left;
+        return self.parseBinary(parseAnd, isOrOp);
     }
 
     fn parseAnd(self: *ExprParser) ParseError!ExprNode {
-        var left = try self.parseComparison();
-        while (self.current.kind == .logical_op and std.mem.eql(u8, self.current.value, "&&")) {
-            const op = self.current.value;
-            self.advance();
-            const right = try self.parseComparison();
-            const children = try self.allocator.alloc(ExprNode, 2);
-            children[0] = left;
-            children[1] = right;
-            left = ExprNode{
-                .kind = .binary_op,
-                .value = op,
-                .children = children,
-                .start_byte = children[0].start_byte,
-                .end_byte = children[1].end_byte,
-            };
-        }
-        return left;
+        return self.parseBinary(parseComparison, isAndOp);
     }
 
     fn parseComparison(self: *ExprParser) ParseError!ExprNode {
-        var left = try self.parseUnary();
-        while (self.current.kind == .comparison_op) {
+        return self.parseBinary(parseUnary, isComparisonOp);
+    }
+
+    /// One left-associative binary precedence level. The three levels differ
+    /// only in the next-tighter parser and in which token continues the fold.
+    fn parseBinary(
+        self: *ExprParser,
+        comptime next: fn (*ExprParser) ParseError!ExprNode,
+        comptime matches: fn (ExprToken) bool,
+    ) ParseError!ExprNode {
+        var left = try next(self);
+        while (matches(self.current)) {
             const op = self.current.value;
             self.advance();
-            const right = try self.parseUnary();
+            const right = try next(self);
             const children = try self.allocator.alloc(ExprNode, 2);
             children[0] = left;
             children[1] = right;
@@ -373,31 +330,27 @@ pub const ExprParser = struct {
         return self.parsePrimary();
     }
 
+    /// Childless node spanning exactly the token's own text.
+    fn leaf(kind: NodeKind, tok: ExprToken) ExprNode {
+        return .{
+            .kind = kind,
+            .value = tok.value,
+            .children = &.{},
+            .start_byte = @intCast(tok.pos),
+            .end_byte = @intCast(tok.pos + tok.value.len),
+        };
+    }
+
     fn parsePrimary(self: *ExprParser) ParseError!ExprNode {
         switch (self.current.kind) {
-            .string_literal => {
-                const val = self.current.value;
-                const start = self.current.pos;
+            .string_literal, .number => {
+                const kind: NodeKind = if (self.current.kind == .string_literal)
+                    .string_literal
+                else
+                    .number_literal;
+                const node = leaf(kind, self.current);
                 self.advance();
-                return ExprNode{
-                    .kind = .string_literal,
-                    .value = val,
-                    .children = &.{},
-                    .start_byte = @intCast(start),
-                    .end_byte = @intCast(start + val.len),
-                };
-            },
-            .number => {
-                const val = self.current.value;
-                const start = self.current.pos;
-                self.advance();
-                return ExprNode{
-                    .kind = .number_literal,
-                    .value = val,
-                    .children = &.{},
-                    .start_byte = @intCast(start),
-                    .end_byte = @intCast(start + val.len),
-                };
+                return node;
             },
             .open_paren => {
                 self.advance();
@@ -410,28 +363,17 @@ pub const ExprParser = struct {
                 return inner;
             },
             .identifier => {
-                const name = self.current.value;
-                const name_start = self.current.pos;
+                const tok = self.current;
+                const name = tok.value;
+                const name_start = tok.pos;
                 self.advance();
 
                 // Check for boolean/null literals
                 if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false")) {
-                    return ExprNode{
-                        .kind = .boolean_literal,
-                        .value = name,
-                        .children = &.{},
-                        .start_byte = @intCast(name_start),
-                        .end_byte = @intCast(name_start + name.len),
-                    };
+                    return leaf(.boolean_literal, tok);
                 }
                 if (std.mem.eql(u8, name, "null")) {
-                    return ExprNode{
-                        .kind = .null_literal,
-                        .value = name,
-                        .children = &.{},
-                        .start_byte = @intCast(name_start),
-                        .end_byte = @intCast(name_start + name.len),
-                    };
+                    return leaf(.null_literal, tok);
                 }
 
                 // Function call: identifier followed by (
@@ -943,14 +885,7 @@ pub fn findAndValidateExpressions(
                 const expr_content = text[expr_start .. expr_start + end_offset];
                 const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
                 // Compute leading trim offset so `trimmed`'s absolute byte is accurate.
-                const leading_trim = blk: {
-                    var i: usize = 0;
-                    while (i < expr_content.len) : (i += 1) {
-                        const c = expr_content[i];
-                        if (c != ' ' and c != '\t' and c != '\n' and c != '\r') break;
-                    }
-                    break :blk i;
-                };
+                const leading_trim = std.mem.indexOfNone(u8, expr_content, " \t\n\r") orelse 0;
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
                 const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
                 validateExpression(allocator, trimmed, expr_span, list, expr_base_byte);
@@ -997,6 +932,52 @@ fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
     };
 }
 
+/// Validate an `if:` condition. GitHub allows the `${{ }}` wrapper to be
+/// omitted, so a condition without one is itself a single expression.
+fn checkIfCondition(
+    allocator: std.mem.Allocator,
+    if_condition: ?[]const u8,
+    meta: ?workflow_types.ScalarValueMeta,
+    fallback: Span,
+    list: *DiagnosticList,
+) void {
+    const if_val = if_condition orelse return;
+    const anchor = Anchor.fromMeta(meta, fallback);
+    const base: ?usize = if (meta) |m| scalarValueStartByte(m) else null;
+    if (std.mem.indexOf(u8, if_val, "${{") != null) {
+        findAndValidateExpressions(allocator, if_val, anchor, list, base);
+        return;
+    }
+    const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
+    if (trimmed.len == 0) return;
+    const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
+    const abs: ?usize = if (base) |b| b + leading else null;
+    validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
+}
+
+/// Whether per-entry byte offsets are trustworthy enough to base autofix ranges on.
+const ByteTracking = enum { track_bytes, no_bytes };
+
+/// Validate the expressions in every value of an `env:` / `with:` style map.
+fn checkScalarMap(
+    allocator: std.mem.Allocator,
+    map: ?workflow_types.StringMap,
+    meta_map: ?workflow_types.ScalarValueMetaMap,
+    fallback: Span,
+    list: *DiagnosticList,
+    tracking: ByteTracking,
+) void {
+    const values = map orelse return;
+    for (values.keys(), values.values()) |key, value| {
+        const entry_meta = if (meta_map) |m| m.get(key) else null;
+        const base: ?usize = switch (tracking) {
+            .track_bytes => if (entry_meta) |m| scalarValueStartByte(m) else null,
+            .no_bytes => null,
+        };
+        findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, fallback), list, base);
+    }
+}
+
 pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
 
@@ -1009,68 +990,22 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
         findAndValidateExpressions(allocator, run_val, run_anchor, list, null);
     }
 
-    // Check 'if' field
-    if (step.if_condition) |if_val| {
-        const if_anchor = Anchor.fromMeta(step.if_condition_meta, step.span);
-        const if_base: ?usize = if (step.if_condition_meta) |m| scalarValueStartByte(m) else null;
-        if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, if_anchor, list, if_base);
-        } else {
-            const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-            if (trimmed.len > 0) {
-                const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-                const abs: ?usize = if (if_base) |b| b + leading else null;
-                validateExpression(allocator, trimmed, if_anchor.at(if_val, leading, trimmed.len), list, abs);
-            }
-        }
-    }
+    checkIfCondition(allocator, step.if_condition, step.if_condition_meta, step.span, list);
 
-    // Check 'with' values — per-entry scalar spans are not captured, so the
-    // absolute byte base is unknown. Suppress fix generation.
-    if (step.with) |with_map| {
-        for (with_map.keys(), with_map.values()) |key, value| {
-            const with_meta = if (step.with_meta) |m| m.get(key) else null;
-            findAndValidateExpressions(allocator, value, Anchor.fromMeta(with_meta, step.span), list, null);
-        }
-    }
+    // with values — per-entry scalar spans are not captured, so the absolute
+    // byte base is unknown. Suppress fix generation.
+    checkScalarMap(allocator, step.with, step.with_meta, step.span, list, .no_bytes);
 
-    // Check 'env' values — use env_meta when available for accurate byte tracking.
-    if (step.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, value| {
-            const entry_meta = if (step.env_meta) |meta| meta.get(key) else null;
-            const base: ?usize = if (entry_meta) |m| scalarValueStartByte(m) else null;
-            findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, step.span), list, base);
-        }
-    }
+    // env values — env_meta gives accurate byte tracking when available.
+    checkScalarMap(allocator, step.env, step.env_meta, step.span, list, .track_bytes);
 }
 
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     const allocator = getArenaAllocator();
 
-    // Check 'if' field
-    if (job.if_condition) |if_val| {
-        const if_anchor = Anchor.fromMeta(job.if_condition_meta, job.span);
-        const if_base: ?usize = if (job.if_condition_meta) |m| scalarValueStartByte(m) else null;
-        if (std.mem.indexOf(u8, if_val, "${{") != null) {
-            findAndValidateExpressions(allocator, if_val, if_anchor, list, if_base);
-        } else {
-            const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-            if (trimmed.len > 0) {
-                const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-                const abs: ?usize = if (if_base) |b| b + leading else null;
-                validateExpression(allocator, trimmed, if_anchor.at(if_val, leading, trimmed.len), list, abs);
-            }
-        }
-    }
+    checkIfCondition(allocator, job.if_condition, job.if_condition_meta, job.span, list);
 
-    // Check 'env' values
-    if (job.env) |env_map| {
-        for (env_map.keys(), env_map.values()) |key, value| {
-            const entry_meta = if (job.env_meta) |meta| meta.get(key) else null;
-            const base: ?usize = if (entry_meta) |m| scalarValueStartByte(m) else null;
-            findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, job.span), list, base);
-        }
-    }
+    checkScalarMap(allocator, job.env, job.env_meta, job.span, list, .track_bytes);
 }
 
 /// Pre-built rule for use with the Engine

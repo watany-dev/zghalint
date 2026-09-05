@@ -120,6 +120,19 @@ pub const DiagnosticList = struct {
         return self.items.items.len;
     }
 
+    /// Number of diagnostics per severity, indexed by the `Severity` tag.
+    pub const SeverityCounts = std.enums.EnumFieldStruct(Severity, usize, 0);
+
+    pub fn countBySeverity(self: DiagnosticList) SeverityCounts {
+        var counts: SeverityCounts = .{};
+        for (self.items.items) |diag| {
+            switch (diag.severity) {
+                inline else => |tag| @field(counts, @tagName(tag)) += 1,
+            }
+        }
+        return counts;
+    }
+
     pub fn get(self: DiagnosticList, index: usize) Diagnostic {
         return self.items.items[index];
     }

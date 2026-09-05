@@ -48,19 +48,36 @@ fn buildCooldownFix(list: *DiagnosticList, entry: yaml_types.Mapping) ?Fix {
     };
 }
 
-fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
-    const updates_node = root.get("updates") orelse return;
-    const items = switch (updates_node) {
+/// Walk the mappings under `updates:`, skipping anything that is not a mapping.
+/// Both DEP001 and DEP002 are per-update-entry checks.
+fn updateEntries(root: Mapping) UpdateEntryIterator {
+    const node = root.get("updates") orelse return .{ .items = &.{} };
+    return .{ .items = switch (node) {
         .sequence => |seq| seq.items,
-        else => return,
-    };
+        else => &.{},
+    } };
+}
 
-    for (items) |item| {
-        const entry = switch (item) {
-            .mapping => |m| m,
-            else => continue,
-        };
+const UpdateEntryIterator = struct {
+    items: []const yaml_types.Node,
+    index: usize = 0,
 
+    fn next(self: *UpdateEntryIterator) ?Mapping {
+        while (self.index < self.items.len) {
+            const item = self.items[self.index];
+            self.index += 1;
+            switch (item) {
+                .mapping => |m| return m,
+                else => continue,
+            }
+        }
+        return null;
+    }
+};
+
+fn checkCooldown(root: Mapping, diag_list: *DiagnosticList) void {
+    var it = updateEntries(root);
+    while (it.next()) |entry| {
         if (entry.get("cooldown") == null) {
             var diag = diagnostics_mod.Diagnostic{
                 .rule_id = "DEP001",
@@ -96,17 +113,8 @@ fn buildInsecureExecutionFix(
 }
 
 fn checkInsecureExecution(root: Mapping, diag_list: *DiagnosticList) void {
-    const updates_node = root.get("updates") orelse return;
-    const items = switch (updates_node) {
-        .sequence => |seq| seq.items,
-        else => return,
-    };
-
-    for (items) |item| {
-        const entry = switch (item) {
-            .mapping => |m| m,
-            else => continue,
-        };
+    var it = updateEntries(root);
+    while (it.next()) |entry| {
 
         // Find the entry to get the value's span
         for (entry.entries) |map_entry| {

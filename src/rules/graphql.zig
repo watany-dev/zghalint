@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const http_client = @import("http_client.zig");
+const json_util = @import("json_util.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -226,22 +227,7 @@ pub fn batchQuery(
 }
 
 fn encodeRequestBody(allocator: Allocator, query: []const u8) ![]const u8 {
-    // Manual encoding is sufficient: the query we build never contains
-    // control characters, backslashes, or double quotes (GitHub component
-    // validation already filters those), so escaping is trivial.
-    var buf = std.ArrayList(u8){};
-    errdefer buf.deinit(allocator);
-    try buf.appendSlice(allocator, "{\"query\":\"");
-    for (query) |c| {
-        switch (c) {
-            '"' => try buf.appendSlice(allocator, "\\\""),
-            '\\' => try buf.appendSlice(allocator, "\\\\"),
-            '\n' => try buf.appendSlice(allocator, "\\n"),
-            else => try buf.append(allocator, c),
-        }
-    }
-    try buf.appendSlice(allocator, "\"}");
-    return buf.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{});
 }
 
 // ============================================================
@@ -332,10 +318,7 @@ fn parseRepoObject(
     var result: RepoResult = .{ .owner = repo.owner, .repo = repo.repo };
 
     if (obj.get("isArchived")) |v| {
-        result.archived = switch (v) {
-            .bool => |b| b,
-            else => null,
-        };
+        result.archived = json_util.asBool(v);
     }
 
     if (repo.named_refs.len > 0) {
@@ -390,26 +373,10 @@ fn parseRepoObject(
 }
 
 fn parseDefaultBranchRef(obj: std.json.ObjectMap) ?NamedOid {
-    const ref_val = obj.get("defaultBranchRef") orelse return null;
-    const ref_obj = switch (ref_val) {
-        .object => |o| o,
-        else => return null,
-    };
-    const name_val = ref_obj.get("name") orelse return null;
-    const name = switch (name_val) {
-        .string => |s| s,
-        else => return null,
-    };
-    const target_val = ref_obj.get("target") orelse return null;
-    const target = switch (target_val) {
-        .object => |o| o,
-        else => return null,
-    };
-    const oid_val = target.get("oid") orelse return null;
-    const oid = switch (oid_val) {
-        .string => |s| s,
-        else => return null,
-    };
+    const ref_obj = json_util.objField(obj, "defaultBranchRef") orelse return null;
+    const name = json_util.stringField(ref_obj, "name") orelse return null;
+    const target = json_util.objField(ref_obj, "target") orelse return null;
+    const oid = json_util.stringField(target, "oid") orelse return null;
     return .{ .name = name, .oid = oid };
 }
 
@@ -418,11 +385,7 @@ fn parseDefaultBranchRef(obj: std.json.ObjectMap) ?NamedOid {
 /// legacy heuristic (full 100-node page = "could have more") preserves
 /// behaviour for pre-pageInfo fixtures.
 fn refsListingComplete(obj: std.json.ObjectMap, listing_name: []const u8) bool {
-    const listing_val = obj.get(listing_name) orelse return true;
-    const listing_obj = switch (listing_val) {
-        .object => |o| o,
-        else => return true,
-    };
+    const listing_obj = json_util.objField(obj, listing_name) orelse return true;
     if (listing_obj.get("pageInfo")) |pi_val| {
         if (pi_val == .object) {
             if (pi_val.object.get("hasNextPage")) |hnp_val| {
@@ -472,29 +435,15 @@ fn collectRefOids(
     listing_name: []const u8,
     follow_inner_target: bool,
 ) ![]const NamedOid {
-    const listing_val = obj.get(listing_name) orelse return &[_]NamedOid{};
-    const listing_obj = switch (listing_val) {
-        .object => |o| o,
-        else => return &[_]NamedOid{},
-    };
-    const nodes_val = listing_obj.get("nodes") orelse return &[_]NamedOid{};
-    const nodes = switch (nodes_val) {
-        .array => |a| a.items,
-        else => return &[_]NamedOid{},
-    };
+    const listing_obj = json_util.objField(obj, listing_name) orelse return &[_]NamedOid{};
+    const nodes = json_util.arrayField(listing_obj, "nodes") orelse return &[_]NamedOid{};
 
     var entries = std.ArrayList(NamedOid){};
     errdefer entries.deinit(allocator);
 
     for (nodes) |node_val| {
-        const node = switch (node_val) {
-            .object => |o| o,
-            else => continue,
-        };
-        const name = switch (node.get("name") orelse continue) {
-            .string => |s| s,
-            else => continue,
-        };
+        const node = json_util.asObject(node_val) orelse continue;
+        const name = json_util.stringField(node, "name") orelse continue;
         const target_val = node.get("target") orelse continue;
         const target = switch (target_val) {
             .object => |o| o,

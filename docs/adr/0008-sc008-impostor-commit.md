@@ -1,4 +1,4 @@
-# 0005. SC008 impostor-commit 検知
+# 0008. SC008 impostor-commit 検知
 
 - Status: Accepted
 - Date: 2026-04-20
@@ -16,7 +16,7 @@ impostor commit を検出する独立ルール **SC008** を追加し、SHA pin 
 
 grill-me セッション（2026-04-20）で以下の分岐点を確定:
 
-1. **Rule ID 採番**: ADR 0004 で SC007 を typosquat-action に予約済みのため、衝突回避で **SC008** を採用
+1. **Rule ID 採番**: ADR 0006 で SC007 を typosquat-action に予約済みのため、衝突回避で **SC008** を採用
 2. **判定アルゴリズム**: **D'-full**（全 refs 到達可能性、Scorecard 方式と理論的に等価）を採用
 3. **統合方式**: **α 案**（SC005 の GraphQL / prefetch / disk_cache パイプラインに相乗り）
 4. **SC005 との重複**: **ii 案**（SC008 発火時に同一 SHA の SC005 info を drop）
@@ -28,9 +28,9 @@ grill-me セッション（2026-04-20）で以下の分岐点を確定:
 
 ### D1. Rule ID = SC008, severity = warning, category = dependency
 
-- **ID**: ADR 0004 が SC002（compromised-action）と SC007（typosquat-action）を予約済み。連番で SC008 を採用
+- **ID**: ADR 0006 が SC002（compromised-action）と SC007（typosquat-action）を予約済み。連番で SC008 を採用
 - **severity**: `warning`（SC006 ref-confusion と同格）。API 失敗時は `unknown` に倒して fail-closed のため `error` は過剰
-- **category**: `.dependency`（SC 系の既存慣例、ADR 0004 D3 参照）
+- **category**: `.dependency`（SC 系の既存慣例、ADR 0006 D3 参照）
 
 ### D2. 判定アルゴリズム D'-full（Scorecard 方式と理論等価）
 
@@ -93,7 +93,7 @@ pagination 未完了のまま deadline を迎えた repo は全 SHA を `unknown
 **機械的 autofix を却下する理由**:
 - 「どの tag に pin するか」は意図依存（major pin / minor pin / sha pin）で機械的判断不能
 - 意図と異なる tag に自動差し替えすると、機能的変更を混入させる恐れ
-- RUNNER001（ADR 0003 D4）/ SC007（ADR 0004 D4）と同じ「autofix 保守的運用」方針
+- RUNNER001（ADR 0003 D4）/ SC007（ADR 0006 D4）と同じ「autofix 保守的運用」方針
 
 ### D7. デフォルト有効 + `.zghalint.yml` override
 
@@ -122,12 +122,12 @@ SC006 と同格。`--quick` / `--offline` 時は `isActive() = false` で全パ�
 - REST-only フォールバック（GraphQL token 無し環境での SC008 動作）
 - `Step.uses` の `value_span` 付与による SARIF location 精緻化（SC005/SC006 も受益）
 - `refs/pull/*` を legitimate と見做すオプション（PR 内 CI で自己参照するケース用、通常は非推奨）
-- Trusted org allowlist（`docker/*` 等への SC008 適用拡張、ADR 0004 の SC007 follow-up と共通化）
+- Trusted org allowlist（`docker/*` 等への SC008 適用拡張、ADR 0006 の SC007 follow-up と共通化）
 - compare 結果の SHA 単位ではなく commit reachability index 化（bloom filter 等、大規模 monorepo 対策）
 
 ## 参考
 
-- `docs/adr/0004-security-gap-fill-sec018-sec021-sc002-sc007.md` — ID 衝突回避の根拠（SC007 予約）
+- `docs/adr/0006-security-gap-fill-sec018-sec021-sc002-sc007.md` — ID 衝突回避の根拠（SC007 予約）
 - `docs/design/sc008-impostor-commit-design.md` — 本 ADR の実装詳細
 - `docs/design/sc007-typosquat-design.md` — 設計書構成テンプレート
 - `src/rules/stale_refs.zig` — SC005 実装（SC008 の relatives）

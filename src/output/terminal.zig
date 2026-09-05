@@ -89,19 +89,11 @@ pub fn renderDiagnostics(writer: anytype, list: DiagnosticList, use_color: bool)
 
 /// Render a summary line showing counts by severity.
 pub fn renderSummary(writer: anytype, list: DiagnosticList, use_color: bool) !void {
-    var errors: usize = 0;
-    var warnings: usize = 0;
-    var infos: usize = 0;
-    var hints: usize = 0;
-
-    for (list.items.items) |diag| {
-        switch (diag.severity) {
-            .@"error" => errors += 1,
-            .warning => warnings += 1,
-            .info => infos += 1,
-            .hint => hints += 1,
-        }
-    }
+    const counts = list.countBySeverity();
+    const errors = counts.@"error";
+    const warnings = counts.warning;
+    const infos = counts.info;
+    const hints = counts.hint;
 
     const bold = if (use_color) Color.bold else "";
     const reset = if (use_color) Color.reset else "";
