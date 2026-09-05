@@ -260,6 +260,18 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
+fn isOrOp(tok: ExprToken) bool {
+    return tok.kind == .logical_op and std.mem.eql(u8, tok.value, "||");
+}
+
+fn isAndOp(tok: ExprToken) bool {
+    return tok.kind == .logical_op and std.mem.eql(u8, tok.value, "&&");
+}
+
+fn isComparisonOp(tok: ExprToken) bool {
+    return tok.kind == .comparison_op;
+}
+
 pub const ExprParser = struct {
     tokenizer: ExprTokenizer,
     current: ExprToken,
@@ -295,51 +307,29 @@ pub const ExprParser = struct {
     }
 
     fn parseOr(self: *ExprParser) ParseError!ExprNode {
-        var left = try self.parseAnd();
-        while (self.current.kind == .logical_op and std.mem.eql(u8, self.current.value, "||")) {
-            const op = self.current.value;
-            self.advance();
-            const right = try self.parseAnd();
-            const children = try self.allocator.alloc(ExprNode, 2);
-            children[0] = left;
-            children[1] = right;
-            left = ExprNode{
-                .kind = .binary_op,
-                .value = op,
-                .children = children,
-                .start_byte = children[0].start_byte,
-                .end_byte = children[1].end_byte,
-            };
-        }
-        return left;
+        return self.parseBinary(parseAnd, isOrOp);
     }
 
     fn parseAnd(self: *ExprParser) ParseError!ExprNode {
-        var left = try self.parseComparison();
-        while (self.current.kind == .logical_op and std.mem.eql(u8, self.current.value, "&&")) {
-            const op = self.current.value;
-            self.advance();
-            const right = try self.parseComparison();
-            const children = try self.allocator.alloc(ExprNode, 2);
-            children[0] = left;
-            children[1] = right;
-            left = ExprNode{
-                .kind = .binary_op,
-                .value = op,
-                .children = children,
-                .start_byte = children[0].start_byte,
-                .end_byte = children[1].end_byte,
-            };
-        }
-        return left;
+        return self.parseBinary(parseComparison, isAndOp);
     }
 
     fn parseComparison(self: *ExprParser) ParseError!ExprNode {
-        var left = try self.parseUnary();
-        while (self.current.kind == .comparison_op) {
+        return self.parseBinary(parseUnary, isComparisonOp);
+    }
+
+    /// One left-associative binary precedence level. The three levels differ
+    /// only in the next-tighter parser and in which token continues the fold.
+    fn parseBinary(
+        self: *ExprParser,
+        comptime next: fn (*ExprParser) ParseError!ExprNode,
+        comptime matches: fn (ExprToken) bool,
+    ) ParseError!ExprNode {
+        var left = try next(self);
+        while (matches(self.current)) {
             const op = self.current.value;
             self.advance();
-            const right = try self.parseUnary();
+            const right = try next(self);
             const children = try self.allocator.alloc(ExprNode, 2);
             children[0] = left;
             children[1] = right;
@@ -373,31 +363,27 @@ pub const ExprParser = struct {
         return self.parsePrimary();
     }
 
+    /// Childless node spanning exactly the token's own text.
+    fn leaf(kind: NodeKind, tok: ExprToken) ExprNode {
+        return .{
+            .kind = kind,
+            .value = tok.value,
+            .children = &.{},
+            .start_byte = @intCast(tok.pos),
+            .end_byte = @intCast(tok.pos + tok.value.len),
+        };
+    }
+
     fn parsePrimary(self: *ExprParser) ParseError!ExprNode {
         switch (self.current.kind) {
-            .string_literal => {
-                const val = self.current.value;
-                const start = self.current.pos;
+            .string_literal, .number => {
+                const kind: NodeKind = if (self.current.kind == .string_literal)
+                    .string_literal
+                else
+                    .number_literal;
+                const node = leaf(kind, self.current);
                 self.advance();
-                return ExprNode{
-                    .kind = .string_literal,
-                    .value = val,
-                    .children = &.{},
-                    .start_byte = @intCast(start),
-                    .end_byte = @intCast(start + val.len),
-                };
-            },
-            .number => {
-                const val = self.current.value;
-                const start = self.current.pos;
-                self.advance();
-                return ExprNode{
-                    .kind = .number_literal,
-                    .value = val,
-                    .children = &.{},
-                    .start_byte = @intCast(start),
-                    .end_byte = @intCast(start + val.len),
-                };
+                return node;
             },
             .open_paren => {
                 self.advance();
@@ -410,28 +396,17 @@ pub const ExprParser = struct {
                 return inner;
             },
             .identifier => {
-                const name = self.current.value;
-                const name_start = self.current.pos;
+                const tok = self.current;
+                const name = tok.value;
+                const name_start = tok.pos;
                 self.advance();
 
                 // Check for boolean/null literals
                 if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false")) {
-                    return ExprNode{
-                        .kind = .boolean_literal,
-                        .value = name,
-                        .children = &.{},
-                        .start_byte = @intCast(name_start),
-                        .end_byte = @intCast(name_start + name.len),
-                    };
+                    return leaf(.boolean_literal, tok);
                 }
                 if (std.mem.eql(u8, name, "null")) {
-                    return ExprNode{
-                        .kind = .null_literal,
-                        .value = name,
-                        .children = &.{},
-                        .start_byte = @intCast(name_start),
-                        .end_byte = @intCast(name_start + name.len),
-                    };
+                    return leaf(.null_literal, tok);
                 }
 
                 // Function call: identifier followed by (
