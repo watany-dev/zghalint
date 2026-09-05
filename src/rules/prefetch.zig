@@ -621,6 +621,7 @@ fn fetchNamedRefs(scratch: Allocator, set: NamedSet) void {
 // Tests
 // ============================================================
 
+const test_support = @import("../test_support.zig");
 const testing = std.testing;
 const ActionRef = workflow_types.ActionRef;
 const Step = workflow_types.Step;
@@ -909,19 +910,8 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     const tmp_path_z = try testing.allocator.dupeZ(u8, tmp_path);
     defer testing.allocator.free(tmp_path_z);
 
-    const saved = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
-    defer if (saved) |s| testing.allocator.free(s);
-    const saved_z: ?[:0]u8 = if (saved) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
-    defer if (saved_z) |z| testing.allocator.free(z);
-
-    _ = libc_setenv("XDG_CACHE_HOME", tmp_path_z.ptr, 1);
-    defer {
-        if (saved_z) |z| {
-            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
-        } else {
-            _ = libc_unsetenv("XDG_CACHE_HOME");
-        }
-    }
+    var env = try test_support.EnvGuard.set(testing.allocator, "XDG_CACHE_HOME", tmp_path_z);
+    defer env.deinit();
 
     // Stage a fresh entry at the real on-disk cache location so that
     // `disk_cache.load` (via XDG resolution) finds it.
@@ -955,9 +945,6 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
     try testing.expectEqual(@as(usize, 0), sets.named_refs.count());
 }
-
-const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
-const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
 
 test "applyResults: persists repo state to the provided cache dir" {
     archived.initForTesting(testing.allocator);

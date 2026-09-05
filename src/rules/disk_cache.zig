@@ -437,6 +437,7 @@ pub fn saveToDir(
 // Tests
 // ============================================================
 
+const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
 test "isFresh: recent timestamp is fresh" {
@@ -642,20 +643,8 @@ test "load/save: round-trip via XDG_CACHE_HOME" {
     const tmp_path_z = try testing.allocator.dupeZ(u8, tmp_path);
     defer testing.allocator.free(tmp_path_z);
 
-    // Snapshot current env so we leave the process state untouched.
-    const saved_xdg = std.process.getEnvVarOwned(testing.allocator, "XDG_CACHE_HOME") catch null;
-    defer if (saved_xdg) |s| testing.allocator.free(s);
-    const saved_xdg_z: ?[:0]u8 = if (saved_xdg) |s| (testing.allocator.dupeZ(u8, s) catch null) else null;
-    defer if (saved_xdg_z) |z| testing.allocator.free(z);
-
-    _ = libc_setenv("XDG_CACHE_HOME", tmp_path_z.ptr, 1);
-    defer {
-        if (saved_xdg_z) |z| {
-            _ = libc_setenv("XDG_CACHE_HOME", z.ptr, 1);
-        } else {
-            _ = libc_unsetenv("XDG_CACHE_HOME");
-        }
-    }
+    var env = try test_support.EnvGuard.set(testing.allocator, "XDG_CACHE_HOME", tmp_path_z);
+    defer env.deinit();
 
     const now = std.time.timestamp();
     try save(testing.allocator, "xdg-o", "xdg-r", .{ .cached_at = now, .archived = true });
@@ -669,9 +658,6 @@ test "load/save: round-trip via XDG_CACHE_HOME" {
     try testing.expect(loaded.archived.?);
     try testing.expectEqual(now, loaded.cached_at);
 }
-
-const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
-const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
 
 test "loadFromDir: invalid sha hex is dropped" {
     var tmp = testing.tmpDir(.{});
