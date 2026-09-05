@@ -77,12 +77,18 @@ const ExprMatch = struct {
 // Dangerous GitHub contexts that can be controlled by users
 // ============================================================
 
-/// Untrusted inputs that an attacker can control freely.
+/// Untrusted inputs that an attacker can control freely, reported by the
+/// injection rules (SEC002 / SEC008) when they are interpolated into a shell
+/// script or written to `GITHUB_ENV` / `GITHUB_PATH`.
 ///
 /// Entries are matched as segment prefixes (see `pathMatchesPattern`), so a
 /// container path such as `github.event.commits` also covers element accesses
 /// like `github.event.commits[0].message` and `github.event.commits.*.author.email`.
-const dangerous_contexts = [_][]const u8{
+///
+/// This list is deliberately independent of `condition_dangerous_contexts`:
+/// expanding the injection surface must not widen what SEC006 reports, because
+/// an `if:` condition never reaches a shell.
+const run_dangerous_contexts = [_][]const u8{
     "github.event.issue.title",
     "github.event.issue.body",
     "github.event.discussion.title",
@@ -104,21 +110,46 @@ const dangerous_contexts = [_][]const u8{
     "github.event.head_commit.author.name",
     "github.event.pages",
     "github.event.workflow_run.head_branch",
-};
-
-/// Untrusted inputs reported only inside `run:` bodies.
-///
-/// Label names need triage permission to set, so they are a weak injection
-/// vector but still land verbatim in the shell. Reporting them in `if:` too
-/// would fire on the very common
-/// `contains(github.event.pull_request.labels.*.name, 'deploy')` idiom.
-/// Written as a prefix, so `labels.*.name`, `labels[0].name` and a bare
-/// `toJSON(labels)` are all covered.
-const run_only_dangerous_contexts = [_][]const u8{
+    // Label names need triage permission to set, so they are a weak injection
+    // vector, but they still land verbatim in the shell. Written as a prefix,
+    // so `labels.*.name`, `labels[0].name` and a bare `toJSON(labels)` are all
+    // covered.
     "github.event.pull_request.labels",
 };
 
-const run_dangerous_contexts = dangerous_contexts ++ run_only_dangerous_contexts;
+/// Untrusted inputs reported by SEC006 inside `if:` conditions.
+///
+/// An `if:` condition is evaluated by the Actions expression engine and yields
+/// a boolean; the value never reaches a shell, so this is not injection. What
+/// SEC006 flags is a *gate* an attacker can satisfy on purpose by authoring the
+/// text it tests, which is why only free-text fields the attacker writes are
+/// listed here.
+///
+/// Ref-shaped inputs (`github.head_ref`, `...head.ref`, `...head.label`,
+/// `...head.repo.default_branch`, `...workflow_run.head_branch`) and label
+/// names are deliberately absent: branching on them
+/// (`startsWith(github.head_ref, 'release/')`,
+/// `contains(github.event.pull_request.labels.*.name, 'deploy')`) is a
+/// mainstream routing idiom, and reporting it drowned the real findings (#138).
+/// They remain untrusted for SEC002 / SEC008.
+const condition_dangerous_contexts = [_][]const u8{
+    "github.event.issue.title",
+    "github.event.issue.body",
+    "github.event.discussion.title",
+    "github.event.discussion.body",
+    "github.event.comment.body",
+    "github.event.review.body",
+    "github.event.review_comment.body",
+    "github.event.discussion_comment.body",
+    "github.event.pull_request.title",
+    "github.event.pull_request.body",
+    // Container prefixes: cover `[0].message`, `.*.author.name`, ...
+    "github.event.commits",
+    "github.event.head_commit.message",
+    "github.event.head_commit.author.email",
+    "github.event.head_commit.author.name",
+    "github.event.pages",
+};
 
 // ============================================================
 // Actor contexts that are spoofable identity checks
@@ -192,7 +223,7 @@ const script_injection_fix_hint = "assign the context to an environment variable
 
 fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
     if (step.run) |run_body| {
-        checkContextsInString(run_body, spans.runAnchor(step), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+        checkContextsInString(run_body, spans.runAnchor(step), &run_dangerous_contexts, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
     }
     checkScriptInputInjection(step, list);
 }
@@ -204,7 +235,7 @@ fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
     if (!isGithubScriptAction(ref)) return;
     const with_map = step.with orelse return;
     const input = getWithInput(with_map, "script") orelse return;
-    checkContextsInString(input.value, withAnchor(step, input.key), &run_dangerous_contexts, "SEC002", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
+    checkContextsInString(input.value, withAnchor(step, input.key), &run_dangerous_contexts, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
 }
 
 fn isGithubScriptAction(ref: ActionRef) bool {
@@ -391,6 +422,11 @@ fn containsDangerousPRRef(ref_val: []const u8) bool {
 // SEC006 - Untrusted input in if: conditions
 // ============================================================
 
+/// SEC006 reports a weak gate, not code execution: the expression engine only
+/// compares the value. It is a warning so a noisy but non-exploitable condition
+/// does not fail a build the way SEC002 / SEC008 do (#138).
+const sec006_severity: Severity = .warning;
+
 fn checkUntrustedInCondition(step: *const Step, list: *DiagnosticList) void {
     const cond = step.if_condition orelse return;
     checkConditionForDangerousContext(cond, ifAnchorStep(step), list);
@@ -414,13 +450,13 @@ fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *Di
         }
     }
     if (has_expr) {
-        checkContextsInString(cond, anchor, &dangerous_contexts, "SEC006", "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
+        checkContextsInString(cond, anchor, &condition_dangerous_contexts, "SEC006", sec006_severity, "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
     } else {
         // Bare expression (no ${{ }}), check directly
-        if (containsDangerousContext(cond)) {
+        if (containsConditionDangerousContext(cond)) {
             list.append(.{
                 .rule_id = "SEC006",
-                .severity = .@"error",
+                .severity = sec006_severity,
                 .message = "untrusted context used in if: condition expression",
                 .span = anchor.whole(),
                 .fix_hint = "validate the input before using it in a condition",
@@ -1304,7 +1340,7 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
 /// Every offending expression is reported separately: a single `run:` block can
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
-fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []const u8, rule_id: []const u8, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
+fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []const u8, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
     // Find all ${{ ... }} expressions
     var pos: usize = 0;
     while (pos + 4 < s.len) : (pos += 1) {
@@ -1325,7 +1361,7 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []cons
                     const match = ExprMatch{ .offset = pos, .len = j + 2 - pos };
                     list.append(.{
                         .rule_id = rule_id,
-                        .severity = .@"error",
+                        .severity = severity,
                         .message = message,
                         .span = anchor.at(s, match.offset, match.len),
                         .fix_hint = fix_hint,
@@ -1337,8 +1373,8 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []cons
     }
 }
 
-fn containsDangerousContext(expr: []const u8) bool {
-    return containsAnyContext(expr, &dangerous_contexts);
+fn containsConditionDangerousContext(expr: []const u8) bool {
+    return containsAnyContext(expr, &condition_dangerous_contexts);
 }
 
 // ------------------------------------------------------------
@@ -1841,7 +1877,7 @@ pub const security_rules = [_]Rule{
         .id = "SEC006",
         .name = "untrusted-input-condition",
         .description = "Untrusted context in if: condition expression",
-        .severity = .@"error",
+        .severity = sec006_severity,
         .category = .security,
         .check_step = &checkUntrustedInCondition,
         .check_job = &checkUntrustedInConditionJob,
@@ -2777,16 +2813,58 @@ fn sec006Fires(cond: []const u8) bool {
     return hasDiagnostic(&list, "SEC006");
 }
 
-test "SEC006: attacker-controlled branch names in conditions" {
-    // A branch name is chosen freely by whoever opens the pull request, so a
-    // condition that gates on one can be spoofed. `github.head_ref` has always
-    // been reported here; `pull_request.head.ref` is the same value reached by
-    // a different path and is reported for the same reason.
-    try testing.expect(sec006Fires("github.head_ref == 'release'"));
-    try testing.expect(sec006Fires("startsWith(github.event.pull_request.head.ref, 'release/')"));
-    try testing.expect(sec006Fires("github.event.pull_request.head.label == 'octo:release'"));
-    // The immutable identity of the same commit stays trusted.
+test "SEC006: ref-shaped contexts in conditions are not reported" {
+    // Routing on a branch name is a mainstream idiom and the value never
+    // reaches a shell from an `if:`, so SEC006 stays quiet (#138). The same
+    // contexts are still injection vectors inside `run:` — see the SEC002 and
+    // SEC008 tests above.
+    try testing.expect(!sec006Fires("github.head_ref == 'release'"));
+    try testing.expect(!sec006Fires("startsWith(github.event.pull_request.head.ref, 'release/')"));
+    try testing.expect(!sec006Fires("github.event.pull_request.head.label == 'octo:release'"));
+    try testing.expect(!sec006Fires("github.event.workflow_run.head_branch == 'main'"));
+    // The immutable identity of the same commit stays trusted too.
     try testing.expect(!sec006Fires("github.event.pull_request.head.sha == env.EXPECTED"));
+}
+
+test "SEC006: attacker-authored free text in conditions is still reported" {
+    // These gate a decision on text the attacker writes, which is what SEC006
+    // is about.
+    try testing.expect(sec006Fires("contains(github.event.issue.body, 'ship it')"));
+    try testing.expect(sec006Fires("github.event.pull_request.title == 'release'"));
+    try testing.expect(sec006Fires("contains(github.event.head_commit.message, '[deploy]')"));
+}
+
+test "SEC006: expanding the injection table does not widen SEC006" {
+    // The two tables are independent by design: every SEC006 entry must be an
+    // untrusted input for the injection rules too, but not the other way round.
+    for (condition_dangerous_contexts) |ctx| {
+        var found = false;
+        for (run_dangerous_contexts) |run_ctx| {
+            if (std.mem.eql(u8, ctx, run_ctx)) found = true;
+        }
+        try testing.expect(found);
+    }
+    try testing.expect(condition_dangerous_contexts.len < run_dangerous_contexts.len);
+}
+
+test "SEC006: reports a warning, not an error" {
+    const eng = engine.Engine.init(&security_rules);
+    const steps = [_]Step{
+        .{ .run = "echo test", .if_condition = "contains(github.event.issue.title, 'deploy')" },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = makeEmptyTrigger(), .jobs = &jobs, .permissions = Permissions{} };
+    var list = eng.run(testing.allocator, &wf);
+    defer list.deinit();
+    for (list.items.items) |d| {
+        if (std.mem.eql(u8, d.rule_id, "SEC006")) {
+            try testing.expectEqual(Severity.warning, d.severity);
+            return;
+        }
+    }
+    try testing.expect(false);
 }
 
 test "SEC006: safe context in condition (no false positive)" {
@@ -3392,20 +3470,20 @@ test "SEC012: only one diagnostic per step" {
 
 // --- Helper function tests ---
 
-test "containsDangerousContext recognizes issue title" {
-    try testing.expect(containsDangerousContext("github.event.issue.title"));
+test "containsConditionDangerousContext recognizes issue title" {
+    try testing.expect(containsConditionDangerousContext("github.event.issue.title"));
 }
 
-test "containsDangerousContext recognizes PR body" {
-    try testing.expect(containsDangerousContext("github.event.pull_request.body"));
+test "containsConditionDangerousContext recognizes PR body" {
+    try testing.expect(containsConditionDangerousContext("github.event.pull_request.body"));
 }
 
-test "containsDangerousContext rejects safe ref" {
-    try testing.expect(!containsDangerousContext("github.sha"));
+test "containsConditionDangerousContext rejects safe ref" {
+    try testing.expect(!containsConditionDangerousContext("github.sha"));
 }
 
-test "containsDangerousContext rejects safe actor" {
-    try testing.expect(!containsDangerousContext("github.actor"));
+test "containsConditionDangerousContext rejects safe actor" {
+    try testing.expect(!containsConditionDangerousContext("github.actor"));
 }
 
 test "containsSecretPrefix finds ghp_ token" {
