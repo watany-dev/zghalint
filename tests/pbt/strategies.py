@@ -502,7 +502,8 @@ def workflow_with_plain_scalar_if(draw: st.DrawFn) -> str:
     truncated value shows up as a bogus EXPR001 (missing closing paren).
     """
     context = draw(st.sampled_from(_dangerous_contexts))
-    needle = draw(st.sampled_from(["fix", "release", "wip"]))
+    func = draw(st.sampled_from(["contains", "startsWith", "endsWith"]))
+    needle = draw(st.sampled_from(["fix", "release/", "wip"]))
     return (
         "name: CI\n"
         "on: push\n"
@@ -511,6 +512,6 @@ def workflow_with_plain_scalar_if(draw: st.DrawFn) -> str:
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
         "      - name: guarded\n"
-        f"        if: contains({context}, '{needle}')\n"
+        f"        if: {func}({context}, '{needle}')\n"
         "        run: echo ok\n"
     )

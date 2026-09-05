@@ -498,6 +498,13 @@ test "tokenizer plain scalar keeps commas in block context" {
     );
 }
 
+test "tokenizer plain scalar keeps a quoted argument after a comma" {
+    try expectFirstScalar(
+        "startsWith(github.event.pull_request.head.ref, 'release/')",
+        "startsWith(github.event.pull_request.head.ref, 'release/')",
+    );
+}
+
 test "tokenizer plain scalar keeps brackets in block context" {
     try expectFirstScalar(
         "npm run build -- --flag [x]",
