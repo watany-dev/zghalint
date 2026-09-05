@@ -161,6 +161,46 @@ fn isDependabotFile(path: []const u8) bool {
         std.mem.endsWith(u8, path, "dependabot.yaml");
 }
 
+/// Read a whole workflow / config file, reporting open and read failures on
+/// `stderr`. Null means the file was skipped; the caller owns the returned
+/// bytes.
+fn readSourceFile(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    stderr: *std.Io.Writer,
+) ?[]u8 {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
+        return null;
+    };
+    defer file.close();
+
+    return file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
+        return null;
+    };
+}
+
+/// Move the diagnostics the config keeps into `all_diags`, applying the
+/// severity override and stamping the file path.
+///
+/// `appendOwning` is required because `diag_list`'s fix arena dies with the
+/// caller's frame; `Fix.edits` would otherwise dangle.
+fn appendFiltered(
+    all_diags: *zghalint.DiagnosticList,
+    diag_list: *zghalint.DiagnosticList,
+    config: *const Config,
+    file_path: []const u8,
+) void {
+    for (diag_list.items.items) |diag| {
+        if (!config.isRuleEnabled(diag.rule_id)) continue;
+        var d = diag;
+        d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
+        d.file = file_path;
+        all_diags.appendOwning(d) catch {};
+    }
+}
+
 fn lintDependabotFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -171,16 +211,7 @@ fn lintDependabotFile(
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
-    defer file.close();
-
-    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
+    const source = readSourceFile(allocator, file_path, stderr) orelse return;
     defer allocator.free(source);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -200,13 +231,7 @@ fn lintDependabotFile(
 
     zghalint.rules.dependabot.lintDependabot(yaml_node, &diag_list);
 
-    for (diag_list.items.items) |diag| {
-        if (!config.isRuleEnabled(diag.rule_id)) continue;
-        var d = diag;
-        d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
-        d.file = file_path;
-        all_diags.appendOwning(d) catch {};
-    }
+    appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
 /// Pre-parse every workflow file and pre-fetch network-dependent rule data
@@ -271,16 +296,7 @@ fn lintFile(
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
-    defer file.close();
-
-    const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
-        return;
-    };
+    const source = readSourceFile(allocator, file_path, stderr) orelse return;
     defer allocator.free(source);
 
     // Arena for YAML/workflow parsing (freed after diagnostics are collected)
@@ -319,16 +335,7 @@ fn lintFile(
         zghalint.rules.engine.postProcess(allocator, &workflow, &diag_list);
     }
 
-    // Apply config: filter disabled rules, override severity, set file.
-    // Use `appendOwning` because `diag_list`'s fix_arena is deinitialized when
-    // this function returns; Fix.edits would otherwise dangle.
-    for (diag_list.items.items) |diag| {
-        if (!config.isRuleEnabled(diag.rule_id)) continue;
-        var d = diag;
-        d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
-        d.file = file_path;
-        all_diags.appendOwning(d) catch {};
-    }
+    appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
 fn applyFixesForFile(
