@@ -854,20 +854,9 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
     return services;
 }
 
+/// Values only; callers that need the scalar spans use `parseStringMapWithMeta`.
 fn parseStringMap(allocator: std.mem.Allocator, node: Node) ParseError!types.StringMap {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
-
-    var map = types.StringMap.init(allocator);
-    for (m.entries) |entry| {
-        switch (entry.value) {
-            .scalar => |s| try map.put(entry.key.value, s.value),
-            else => {},
-        }
-    }
-    return map;
+    return (try parseStringMapWithMeta(allocator, node)).values;
 }
 
 fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!ParsedStringMap {

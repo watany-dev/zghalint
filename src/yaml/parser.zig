@@ -376,91 +376,66 @@ pub const Parser = struct {
     fn blockEntryFullSpan(self: *Parser, key: Scalar, value: Node) ?Span {
         const line_start = self.lineStartByte(key.span.start_byte);
 
-        switch (value) {
-            .scalar => {
-                var end_byte = value.getSpan().end_byte;
-                while (end_byte < self.source.len and self.source[end_byte] != '\n') {
-                    end_byte += 1;
-                }
+        // A scalar value sits on the key's own line, so its end line / column
+        // follow the value itself. Every other shape keeps the key line as the
+        // end anchor and differs only in where the entry's bytes stop.
+        if (value == .scalar) {
+            var end_byte = value.getSpan().end_byte;
+            while (end_byte < self.source.len and self.source[end_byte] != '\n') {
+                end_byte += 1;
+            }
 
-                var end_line = key.span.start_line;
-                var end_col: u32 = @as(u32, @intCast(end_byte - line_start + 1));
-                if (end_byte < self.source.len and self.source[end_byte] == '\n') {
-                    end_byte += 1;
-                    end_line += 1;
-                    end_col = 1;
-                }
+            var end_line = key.span.start_line;
+            var end_col: u32 = @as(u32, @intCast(end_byte - line_start + 1));
+            if (end_byte < self.source.len and self.source[end_byte] == '\n') {
+                end_byte += 1;
+                end_line += 1;
+                end_col = 1;
+            }
 
-                return .{
-                    .start_line = key.span.start_line,
-                    .start_col = 1,
-                    .end_line = end_line,
-                    .end_col = end_col,
-                    .start_byte = line_start,
-                    .end_byte = end_byte,
-                };
-            },
-            .null_value => {
-                // Null value: end at the key's own line. The value's span may
-                // point at a far-away token (the next sibling), so we anchor
-                // on `key.span.end_byte` instead.
-                const end_byte = self.scanLineEndInclusive(key.span.end_byte);
-                return .{
-                    .start_line = key.span.start_line,
-                    .start_col = 1,
-                    .end_line = key.span.start_line,
-                    .end_col = key.span.start_col,
-                    .start_byte = line_start,
-                    .end_byte = end_byte,
-                };
-            },
-            .mapping => |m| {
-                if (m.entries.len == 0) {
-                    const end_byte = self.scanLineEndInclusive(key.span.end_byte);
-                    return .{
-                        .start_line = key.span.start_line,
-                        .start_col = 1,
-                        .end_line = key.span.start_line,
-                        .end_col = key.span.start_col,
-                        .start_byte = line_start,
-                        .end_byte = end_byte,
-                    };
-                }
+            return .{
+                .start_line = key.span.start_line,
+                .start_col = 1,
+                .end_line = end_line,
+                .end_col = end_col,
+                .start_byte = line_start,
+                .end_byte = end_byte,
+            };
+        }
+
+        // An empty or null value has no body: end at the key's own line. The
+        // value's span may point at a far-away token (the next sibling), so we
+        // anchor on `key.span.end_byte` instead.
+        const key_line_end = self.scanLineEndInclusive(key.span.end_byte);
+        const end_byte = switch (value) {
+            .scalar => unreachable,
+            .null_value => key_line_end,
+            .mapping => |m| if (m.entries.len == 0) key_line_end else blk: {
                 const last = m.entries[m.entries.len - 1];
                 const last_full = self.blockEntryFullSpan(last.key, last.value) orelse return null;
-                return .{
-                    .start_line = key.span.start_line,
-                    .start_col = 1,
-                    .end_line = key.span.start_line,
-                    .end_col = key.span.start_col,
-                    .start_byte = line_start,
-                    .end_byte = last_full.end_byte,
-                };
+                break :blk last_full.end_byte;
             },
-            .sequence => |s| {
-                if (s.items.len == 0) {
-                    const end_byte = self.scanLineEndInclusive(key.span.end_byte);
-                    return .{
-                        .start_line = key.span.start_line,
-                        .start_col = 1,
-                        .end_line = key.span.start_line,
-                        .end_col = key.span.start_col,
-                        .start_byte = line_start,
-                        .end_byte = end_byte,
-                    };
-                }
-                const last_item = s.items[s.items.len - 1];
-                const end_byte = self.scanLineEndInclusive(last_item.getSpan().end_byte);
-                return .{
-                    .start_line = key.span.start_line,
-                    .start_col = 1,
-                    .end_line = key.span.start_line,
-                    .end_col = key.span.start_col,
-                    .start_byte = line_start,
-                    .end_byte = end_byte,
-                };
-            },
-        }
+            .sequence => |seq| if (seq.items.len == 0)
+                key_line_end
+            else
+                self.scanLineEndInclusive(seq.items[seq.items.len - 1].getSpan().end_byte),
+        };
+
+        return keyLineSpan(key, line_start, end_byte);
+    }
+
+    /// Span of a block entry that starts at the beginning of the key's line and
+    /// runs to `end_byte`. The line / column pair describes the key line only;
+    /// the byte range is what callers rewrite.
+    fn keyLineSpan(key: Scalar, line_start: usize, end_byte: usize) Span {
+        return .{
+            .start_line = key.span.start_line,
+            .start_col = 1,
+            .end_line = key.span.start_line,
+            .end_col = key.span.start_col,
+            .start_byte = line_start,
+            .end_byte = end_byte,
+        };
     }
 
     fn scanLineEndInclusive(self: *Parser, start: usize) usize {
