@@ -1,0 +1,17 @@
+# zghalint:expect EXPR001 EXPR002
+name: expressions
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Broken expression
+        run: echo "${{ github.event_name == }}"
+      - name: Unknown context
+        run: echo "${{ githbu.sha }}"

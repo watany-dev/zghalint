@@ -1,0 +1,17 @@
+# zghalint:expect SEC002@17
+name: sec002 block scalar
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Echo the comment
+        run: |
+          echo "${{ github.event.comment.body }}"

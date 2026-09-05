@@ -27,12 +27,22 @@ pub fn runAnchor(step: *const workflow_types.Step) Anchor {
 ///
 /// The YAML parser stores the *token* span on every scalar, but `value` is a
 /// sub-slice of that token: quoted scalars drop the surrounding quotes and
-/// block scalars (`|` / `>`) drop the indicator line. In every style the value
-/// ends where the token ends, so the content start is simply
-/// `end_byte - value.len`.
-fn contentStartByte(token: Span, value: []const u8) usize {
-    if (token.end_byte < value.len) return token.start_byte;
-    return token.end_byte - value.len;
+/// block scalars (`|` / `>`) drop the indicator line. Mirrors
+/// `contentOrigin`, which resolves the same position as line / column.
+fn contentStartByte(token: Span, style: ScalarStyle, value: []const u8) usize {
+    return switch (style) {
+        // The token span covers the indicator line too, and the value runs to
+        // the end of the token, so count back from there.
+        .literal, .folded => if (token.end_byte < value.len)
+            token.start_byte
+        else
+            token.end_byte - value.len,
+        // The value starts right after the opening quote. Counting back from
+        // the end would land on the closing quote, and escapes make the value
+        // shorter than the quoted text anyway.
+        .single_quoted, .double_quoted => token.start_byte + 1,
+        .plain => token.start_byte,
+    };
 }
 
 const Pos = struct { line: u32, col: u32 };
@@ -81,7 +91,7 @@ pub const Anchor = struct {
         const start = advance(origin.line, origin.col, value[0..start_off]);
         const end = advance(start.line, start.col, value[start_off..end_off]);
 
-        const content_start = contentStartByte(token, value);
+        const content_start = contentStartByte(token, self.style, value);
         return .{
             .start_line = start.line,
             .start_col = start.col,
@@ -151,8 +161,9 @@ test "Anchor.at on a quoted scalar skips the opening quote" {
     const a = Anchor.fromMeta(.{ .value_span = token, .style = .double_quoted }, Span.point(1, 1, 0));
     const s = a.at(value, 0, 3);
     try std.testing.expectEqual(@as(u32, 6), s.start_col);
-    try std.testing.expectEqual(@as(usize, 12), s.start_byte);
-    try std.testing.expectEqual(@as(usize, 15), s.end_byte);
+    // Token bytes 10..15 are `"abc"`, so the value itself is 11..14.
+    try std.testing.expectEqual(@as(usize, 11), s.start_byte);
+    try std.testing.expectEqual(@as(usize, 14), s.end_byte);
 }
 
 test "Anchor.at on a block scalar resolves the matching content line" {
@@ -176,9 +187,23 @@ test "Anchor.at on a block scalar resolves the matching content line" {
     try std.testing.expectEqual(@as(usize, 56 + offset), s.start_byte);
 }
 
-test "contentStartByte handles a value longer than the token" {
+test "contentStartByte handles a block value longer than the token" {
     const token = Span.point(1, 1, 0);
-    try std.testing.expectEqual(@as(usize, 0), contentStartByte(token, "too long"));
+    try std.testing.expectEqual(@as(usize, 0), contentStartByte(token, .literal, "too long"));
+}
+
+test "contentStartByte skips the opening quote of a quoted scalar" {
+    const token = Span{
+        .start_line = 1,
+        .start_col = 1,
+        .end_line = 1,
+        .end_col = 6,
+        .start_byte = 10,
+        .end_byte = 15,
+    };
+    try std.testing.expectEqual(@as(usize, 11), contentStartByte(token, .double_quoted, "abc"));
+    try std.testing.expectEqual(@as(usize, 11), contentStartByte(token, .single_quoted, "abc"));
+    try std.testing.expectEqual(@as(usize, 10), contentStartByte(token, .plain, "abc"));
 }
 
 test "Anchor.at clamps out-of-range offsets" {

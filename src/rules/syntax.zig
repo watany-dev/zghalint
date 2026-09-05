@@ -895,7 +895,9 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     var list = rule_engine.run(testing.allocator, &wf);
     defer list.deinit();
     for (list.items.items) |diag| {
-        diags.append(diag) catch return;
+        // `appendOwning`, not `append`: allocPrint-ed messages live in
+        // `list`'s arena, which dies with this function.
+        diags.appendOwning(diag) catch return;
     }
 }
 

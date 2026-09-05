@@ -39,10 +39,12 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `src/config.zig` — Configuration parsing and rule overrides (.zghalint.yml)
 - `src/diagnostics.zig` — Diagnostic types, severity, categories
 - `src/util.zig` — Shared helpers (e.g. step name generation for autofix)
+- `src/e2e_test.zig` — Fixture-driven E2E tests over `tests/fixtures/e2e/` (real files through parser → rules)
 - `src/fix/` — Auto-fix engine
   - `engine.zig` — Collect and apply `--fix` / `--fix-unsafe` rewrites in place
 - `src/rules/` — Linting rule implementations
   - `engine.zig` — Rule execution framework
+  - `registry.zig` — The single list of all lint rules (`all_rules`)
   - `security.zig` — Security checks (script injection, unpinned actions, hardcoded secrets)
   - `expressions.zig` — `${{ }}` expression validation
   - `performance.zig` — Performance optimization rules (caching, redundant steps)
