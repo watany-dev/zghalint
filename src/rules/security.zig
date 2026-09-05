@@ -1015,7 +1015,6 @@ fn buildPersistCredentialsFalseFix(
 ) ?diagnostics.Fix {
     const alloc = list.fixAllocator();
     const col = step.uses_key_col orelse 7;
-    if (col == 0) return null;
 
     // Only generate Fix when persist-credentials is absent.
     // When persist-credentials: true, fall back to fix_hint only.
@@ -1023,30 +1022,12 @@ fn buildPersistCredentialsFalseFix(
     if (has_persist) return null;
 
     // uses_key_col is 1-based; parent aligns at col - 1 spaces, child at col + 1.
-    const parent_indent = alloc.alloc(u8, col - 1) catch return null;
-    @memset(parent_indent, ' ');
-    const child_indent = alloc.alloc(u8, col + 1) catch return null;
-    @memset(child_indent, ' ');
+    const edits = if (step.with == null)
+        fix_builder.insertWithEntry(alloc, step.uses_value_end_byte orelse return null, col, "persist-credentials", "false")
+    else
+        fix_builder.appendMappingEntry(alloc, step.with_last_entry_end_byte orelse return null, col + 1, "persist-credentials", "false");
 
-    if (step.with == null) {
-        // No with: block — insert with: and persist-credentials: false after uses: value
-        const insert_at = step.uses_value_end_byte orelse return null;
-        const replacement = std.fmt.allocPrint(alloc, "\n{s}with:\n{s}persist-credentials: false", .{ parent_indent, child_indent }) catch return null;
-        const edits = alloc.alloc(diagnostics.Edit, 1) catch return null;
-        edits[0] = .{ .start_byte = insert_at, .end_byte = insert_at, .replacement = replacement };
-        return .{ .description = description, .safety = safety, .edits = edits };
-    } else {
-        // with: exists — append persist-credentials: false after last entry
-        const insert_at = step.with_last_entry_end_byte orelse return null;
-        const edits = fix_builder.appendMappingEntry(
-            alloc,
-            insert_at,
-            col + 1,
-            "persist-credentials",
-            "false",
-        ) orelse return null;
-        return .{ .description = description, .safety = safety, .edits = edits };
-    }
+    return .{ .description = description, .safety = safety, .edits = edits orelse return null };
 }
 
 // --- SEC018: checkout-persist-credentials ---

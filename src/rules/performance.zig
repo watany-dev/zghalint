@@ -113,20 +113,8 @@ fn buildCacheFix(
             edits.appendSlice(alloc, appended) catch continue;
         } else {
             const anchor = step.uses_value_end_byte orelse continue;
-            const parent_indent = alloc.alloc(u8, col - 1) catch continue;
-            @memset(parent_indent, ' ');
-            const child_indent = alloc.alloc(u8, col + 1) catch continue;
-            @memset(child_indent, ' ');
-            const replacement = std.fmt.allocPrint(
-                alloc,
-                "\n{s}with:\n{s}cache: {s}",
-                .{ parent_indent, child_indent, cache_value },
-            ) catch continue;
-            edits.append(alloc, .{
-                .start_byte = anchor,
-                .end_byte = anchor,
-                .replacement = replacement,
-            }) catch continue;
+            const inserted = fix_builder.insertWithEntry(alloc, anchor, col, "cache", cache_value) orelse continue;
+            edits.appendSlice(alloc, inserted) catch continue;
         }
     }
 

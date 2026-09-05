@@ -115,6 +115,33 @@ pub fn appendMappingEntry(
     return edits;
 }
 
+/// Build a single-Edit slice appending a fresh `with:` block at `after_byte`:
+///   \n<col-1 spaces>with:\n<col+1 spaces>key: value
+/// `uses_key_col` is the 1-based column of the step's `uses:` key, which the
+/// new `with:` aligns with. Returns null when the column is unknown (0) or OOM.
+pub fn insertWithEntry(
+    alloc: std.mem.Allocator,
+    after_byte: usize,
+    uses_key_col: u32,
+    key: []const u8,
+    value: []const u8,
+) ?[]const Edit {
+    if (uses_key_col == 0) return null;
+    const parent_indent = alloc.alloc(u8, uses_key_col - 1) catch return null;
+    @memset(parent_indent, ' ');
+    const child_indent = alloc.alloc(u8, uses_key_col + 1) catch return null;
+    @memset(child_indent, ' ');
+    const replacement = std.fmt.allocPrint(
+        alloc,
+        "\n{s}with:\n{s}{s}: {s}",
+        .{ parent_indent, child_indent, key, value },
+    ) catch return null;
+
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{ .start_byte = after_byte, .end_byte = after_byte, .replacement = replacement };
+    return edits;
+}
+
 /// Build a single-Edit slice inserting a multi-line block mapping at `pos.byte`.
 /// Generated shape (line-oriented, each line newline-terminated):
 ///   <indent>key:
