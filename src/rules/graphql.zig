@@ -256,22 +256,7 @@ pub fn batchQuery(
 }
 
 fn encodeRequestBody(allocator: Allocator, query: []const u8) ![]const u8 {
-    // Manual encoding is sufficient: the query we build never contains
-    // control characters, backslashes, or double quotes (GitHub component
-    // validation already filters those), so escaping is trivial.
-    var buf = std.ArrayList(u8){};
-    errdefer buf.deinit(allocator);
-    try buf.appendSlice(allocator, "{\"query\":\"");
-    for (query) |c| {
-        switch (c) {
-            '"' => try buf.appendSlice(allocator, "\\\""),
-            '\\' => try buf.appendSlice(allocator, "\\\\"),
-            '\n' => try buf.appendSlice(allocator, "\\n"),
-            else => try buf.append(allocator, c),
-        }
-    }
-    try buf.appendSlice(allocator, "\"}");
-    return buf.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{});
 }
 
 // ============================================================
