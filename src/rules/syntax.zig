@@ -541,10 +541,7 @@ fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
     checkUnknownKeys(&wf, list);
 }
 
@@ -887,10 +884,7 @@ fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var parser = yaml_parser_mod.Parser.init(alloc, source);
-    defer parser.deinit();
-    const node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const rule_engine = engine.Engine.init(&rules);
     var list = rule_engine.run(testing.allocator, &wf);
@@ -1167,10 +1161,7 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
 
 fn runSyn004(source: []const u8, arena: *std.heap.ArenaAllocator, list: *DiagnosticList) !void {
     const alloc = arena.allocator();
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
     checkMappingValueTypes(&wf, list);
 }
 
@@ -1354,10 +1345,7 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
@@ -1591,10 +1579,7 @@ test "SYN002: engine.run emits via yaml_root" {
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var parser = yaml_parser.Parser.init(arena.allocator(), source);
-    defer parser.deinit();
-    const node = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(arena.allocator(), node);
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
 
     const engine_inst = engine.Engine.init(&rules);
     var diags = engine_inst.run(testing.allocator, &wf);
@@ -1953,10 +1938,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
         \\
     ;
 
-    var yp = yaml_parser.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&rules);
     var diags = eng.run(alloc, &wf);
@@ -1995,10 +1977,7 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
 }
 
 fn runSyn007(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     checkWorkflowEnvNames(&wf, list);
     for (wf.jobs) |*job| {

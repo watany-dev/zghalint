@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
@@ -2023,8 +2024,6 @@ test "checkJob EXPR007: if condition with bare literal" {
 // ============================================================
 
 test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2043,10 +2042,7 @@ test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" 
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
@@ -2070,8 +2066,6 @@ test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" 
 }
 
 test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2090,10 +2084,7 @@ test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
@@ -2115,8 +2106,6 @@ test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`
 }
 
 test "EXPR006 autofix: --fix (safe only) does not apply EXPR006 fixes" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2135,10 +2124,7 @@ test "EXPR006 autofix: --fix (safe only) does not apply EXPR006 fixes" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
@@ -2159,8 +2145,6 @@ test "EXPR006 autofix: --fix (safe only) does not apply EXPR006 fixes" {
 }
 
 test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-end" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2179,10 +2163,7 @@ test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
@@ -2224,9 +2205,6 @@ test "EXPR006 fix: suppressed when expr_base_byte is null" {
 }
 
 test "EXPR006 autofix: suppressed for `with:` values" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2244,10 +2222,7 @@ test "EXPR006 autofix: suppressed for `with:` values" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkStep(&wf.jobs[0].steps[0], &diags);
@@ -2263,9 +2238,6 @@ test "EXPR006 autofix: suppressed for `with:` values" {
 }
 
 test "EXPR006 autofix: suppressed for `run:` values" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2281,10 +2253,7 @@ test "EXPR006 autofix: suppressed for `run:` values" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkStep(&wf.jobs[0].steps[0], &diags);
@@ -2298,9 +2267,6 @@ test "EXPR006 autofix: suppressed for `run:` values" {
 }
 
 test "EXPR006 autofix: suppressed for block-scalar `if:` value" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2321,10 +2287,7 @@ test "EXPR006 autofix: suppressed for block-scalar `if:` value" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
@@ -2550,8 +2513,6 @@ test "EXPR007 fix: suppressed when expr_base_byte is null" {
 }
 
 test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2570,10 +2531,7 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);

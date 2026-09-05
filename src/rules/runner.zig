@@ -214,8 +214,6 @@ test "RUNNER001: unknown label produces no diagnostic" {
 }
 
 test "RUNNER001: autofix end-to-end replaces label in YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -233,10 +231,7 @@ test "RUNNER001: autofix end-to-end replaces label in YAML source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkDeprecatedRunner(&wf.jobs[0], &diags);

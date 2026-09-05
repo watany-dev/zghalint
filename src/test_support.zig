@@ -77,6 +77,14 @@ pub fn mkScalar(value: []const u8) Node {
 
 // ── Autofix harness ──
 
+/// Parse `source` into a `Workflow` allocated from `allocator` — which must
+/// outlive the result, so tests pass an arena's allocator.
+pub fn parseWorkflowSource(allocator: std.mem.Allocator, source: []const u8) !workflow_types.Workflow {
+    var yp = yaml_parser.Parser.init(allocator, source);
+    defer yp.deinit();
+    return workflow_parser.parseWorkflow(allocator, try yp.parse());
+}
+
 /// Parse `source` as a workflow, run `rules` over it, apply the fixes they
 /// produce and hand back the rewritten source. `unsafe` also applies fixes
 /// marked `.unsafe`. The caller owns the result.
@@ -90,9 +98,7 @@ pub fn lintAndFix(
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var yp = yaml_parser.Parser.init(alloc, source);
-    defer yp.deinit();
-    const wf = try workflow_parser.parseWorkflow(alloc, try yp.parse());
+    const wf = try parseWorkflowSource(alloc, source);
 
     var diags = rule_engine.Engine.init(rules).run(alloc, &wf);
     defer diags.deinit();

@@ -500,8 +500,6 @@ test "BP001: autofix generated with real span" {
 }
 
 test "BP001: autofix applied to YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -520,10 +518,7 @@ test "BP001: autofix applied to YAML source" {
     ;
 
     // Parse YAML → Workflow
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     // Run rule
     var diags = DiagnosticList.init(alloc);
@@ -612,9 +607,6 @@ test "BP002: no fix for local actions" {
 }
 
 test "BP002: no fix when `if:` precedes `uses:` in step" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -633,10 +625,7 @@ test "BP002: no fix when `if:` precedes `uses:` in step" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkMissingStepName(&wf.jobs[0].steps[0], &diags);
@@ -646,8 +635,6 @@ test "BP002: no fix when `if:` precedes `uses:` in step" {
 }
 
 test "BP002: autofix applied to YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -665,10 +652,7 @@ test "BP002: autofix applied to YAML source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkMissingStepName(&wf.jobs[0].steps[0], &diags);
@@ -780,8 +764,6 @@ test "BP003: autofix with single-quoted scalar keeps quotes" {
 }
 
 test "BP003: autofix applied to YAML source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -799,10 +781,7 @@ test "BP003: autofix applied to YAML source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkDeprecatedAction(&wf.jobs[0].steps[0], &diags);
@@ -910,8 +889,6 @@ test "BP004: attaches unsafe fix when shell_insertion_byte and span are present"
 }
 
 test "BP004: autofix applied to YAML source inserts shell: bash after run" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -929,10 +906,7 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkCrossPlatformShell(&wf.jobs[0], &diags);
@@ -1037,8 +1011,6 @@ test "BP005: fix is null when concurrency_insertion_byte is missing" {
 }
 
 test "BP005: autofix inserts block-form concurrency after on: line" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1056,10 +1028,7 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkPushConcurrency(&wf, &diags);

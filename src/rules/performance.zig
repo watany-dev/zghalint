@@ -1,4 +1,5 @@
 const std = @import("std");
+const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
@@ -890,8 +891,6 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
     workspace.set(.{ .go_sum_present = true });
     defer workspace.clear();
 
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -912,10 +911,7 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkCacheNotUsed(&wf.jobs[0], &diags);
@@ -940,8 +936,6 @@ test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
     workspace.set(.{ .node_cache = .npm });
     defer workspace.clear();
 
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -959,10 +953,7 @@ test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     checkCacheNotUsed(&wf.jobs[0], &diags);
@@ -1225,8 +1216,6 @@ test "PERF003: no autofix without removable span" {
 }
 
 test "PERF003: autofix removes fail-fast line from workflow source" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1249,10 +1238,7 @@ test "PERF003: autofix removes fail-fast line from workflow source" {
         \\
     ;
 
-    var yp = yaml_parser_mod.Parser.init(alloc, source);
-    defer yp.deinit();
-    const yaml_node = try yp.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var diags = DiagnosticList.init(alloc);
     defer diags.deinit();
@@ -1311,8 +1297,6 @@ test "PERF003: no warning without strategy" {
 }
 
 test "PERF001: fixture harness applies expected fix" {
-    const yaml_parser_mod = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     const node_ambiguous_lockfiles = [_][]const u8{ "package-lock.json", "yarn.lock" };
@@ -1388,10 +1372,7 @@ test "PERF001: fixture harness applies expected fix" {
             return err;
         };
 
-        var yp = yaml_parser_mod.Parser.init(alloc, input);
-        defer yp.deinit();
-        const yaml_node = try yp.parse();
-        const wf = try workflow_parser.parseWorkflow(alloc, yaml_node);
+        const wf = try test_support.parseWorkflowSource(alloc, input);
 
         var diags = DiagnosticList.init(alloc);
         checkCacheNotUsed(&wf.jobs[0], &diags);

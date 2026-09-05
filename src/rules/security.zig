@@ -2660,9 +2660,6 @@ test "SEC007: empty permissions block counts as defined" {
 }
 
 test "SEC007: autofix generated on single-line on:" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2678,10 +2675,7 @@ test "SEC007: autofix generated on single-line on:" {
         \\
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
@@ -2700,9 +2694,6 @@ test "SEC007: autofix generated on single-line on:" {
 }
 
 test "SEC007: autofix on multi-line on: block inserts after last child" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2720,10 +2711,7 @@ test "SEC007: autofix on multi-line on: block inserts after last child" {
         \\
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
@@ -2754,9 +2742,6 @@ test "SEC007: no fix when permissions_insertion_byte missing" {
 }
 
 test "SEC007: no diagnostic when permissions already defined (parser path)" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2773,10 +2758,7 @@ test "SEC007: no diagnostic when permissions already defined (parser path)" {
         \\
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
@@ -2784,8 +2766,6 @@ test "SEC007: no diagnostic when permissions already defined (parser path)" {
 }
 
 test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2803,10 +2783,7 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
         \\
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
@@ -2829,7 +2806,6 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
     // (start_byte, end_byte) 昇順 → reverse なので、両 edit が隣接挿入されても
     // 構文上 valid な YAML になる。このテストは順序と再 parse 可能性をピン止めする。
     const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
     const best_practices = @import("best_practices.zig");
 
@@ -2848,10 +2824,7 @@ test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
         \\
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
     checkMissingPermissions(&wf, &list);
@@ -3935,8 +3908,6 @@ test "SEC015: hasPersistCredentialsFalse helper" {
 }
 
 test "SEC015: integration - YAML parse to fix apply" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     // Use arena for parser allocations (jobs, steps, etc.)
@@ -3959,10 +3930,7 @@ test "SEC015: integration - YAML parse to fix apply" {
         \\          path: ./dist
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&security_rules);
     var list = eng.run(testing.allocator, &wf);
@@ -3999,9 +3967,6 @@ test "SEC015: integration - YAML parse to fix apply" {
 }
 
 test "SEC015: integration ignores checkout after upload-artifact" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -4020,10 +3985,7 @@ test "SEC015: integration ignores checkout after upload-artifact" {
         \\      - uses: actions/checkout@v4
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&security_rules);
     var list = eng.run(testing.allocator, &wf);
@@ -4455,8 +4417,6 @@ test "SEC017: no env (no false positive)" {
 }
 
 test "SEC017: integration applies fix to workflow env" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4475,10 +4435,7 @@ test "SEC017: integration applies fix to workflow env" {
         \\      - run: echo test
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&security_rules);
     var list = eng.run(testing.allocator, &wf);
@@ -4494,8 +4451,6 @@ test "SEC017: integration applies fix to workflow env" {
 }
 
 test "SEC017: integration applies fix to job env and preserves single quote/comment" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4514,10 +4469,7 @@ test "SEC017: integration applies fix to job env and preserves single quote/comm
         \\      - run: echo test
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&security_rules);
     var list = eng.run(testing.allocator, &wf);
@@ -4533,8 +4485,6 @@ test "SEC017: integration applies fix to job env and preserves single quote/comm
 }
 
 test "SEC017: integration applies fix to step env and preserves double quote/comment" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
     const fix_engine = @import("../fix/engine.zig");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -4553,10 +4503,7 @@ test "SEC017: integration applies fix to step env and preserves double quote/com
         \\          ACTIONS_ALLOW_UNSECURE_COMMANDS: "true" # deprecated
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     const eng = engine.Engine.init(&security_rules);
     var list = eng.run(testing.allocator, &wf);
@@ -4878,9 +4825,6 @@ test "SC002: uppercase SHA still fires (case-insensitive match)" {
 }
 
 test "SEC002: each untrusted reference in a run: block is reported at its own position" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -4898,10 +4842,7 @@ test "SEC002: each untrusted reference in a run: block is reported at its own po
         \\
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
     checkScriptInjection(&wf.jobs[0].steps[0], &list);
@@ -4916,9 +4857,6 @@ test "SEC002: each untrusted reference in a run: block is reported at its own po
 }
 
 test "SEC001: unpinned action is reported at the uses: value" {
-    const yaml_parser = @import("../yaml/parser.zig");
-    const workflow_parser = @import("../workflow/parser.zig");
-
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -4934,10 +4872,7 @@ test "SEC001: unpinned action is reported at the uses: value" {
         \\
     ;
 
-    var parser = yaml_parser.Parser.init(alloc, source);
-    defer parser.deinit();
-    const yaml_ast = try parser.parse();
-    const wf = try workflow_parser.parseWorkflow(alloc, yaml_ast);
+    const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
     checkUnpinnedAction(&wf.jobs[0].steps[0], &list);
