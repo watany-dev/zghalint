@@ -167,8 +167,6 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     return ctx;
 }
 
-const bun_lockfiles = [_][]const u8{ "bun.lock", "bun.lockb" };
-
 /// Which of the probed candidates exist in the workspace root. Bit `i`
 /// corresponds to index `i` of the matching lockfile table.
 const RootEntries = struct {
@@ -184,22 +182,34 @@ fn scanRoot(dir: *std.fs.Dir) RootEntries {
     var present: RootEntries = .{};
 
     var it = dir.iterate();
-    while (it.next() catch return present) |entry| {
-        if (entry.kind == .directory) continue;
+    while (true) {
+        // A half-read directory could hide one lockfile of an ambiguous pair and
+        // turn the hint into a confident wrong answer, so a failed sweep reports
+        // nothing rather than what it managed to collect.
+        const entry = (it.next() catch return .{}) orelse break;
 
         for (node_lockfiles, 0..) |candidate, i| {
-            if (std.mem.eql(u8, entry.name, candidate.name)) present.node.set(i);
+            if (matches(dir, entry, candidate.name)) present.node.set(i);
         }
         for (python_lockfiles, 0..) |candidate, i| {
-            if (std.mem.eql(u8, entry.name, candidate.name)) present.python.set(i);
+            if (matches(dir, entry, candidate.name)) present.python.set(i);
         }
-        if (std.mem.eql(u8, entry.name, "go.sum")) present.go_sum = true;
-        for (bun_lockfiles) |candidate| {
-            if (std.mem.eql(u8, entry.name, candidate)) present.bun = true;
-        }
+        if (matches(dir, entry, "go.sum")) present.go_sum = true;
+        if (matches(dir, entry, "bun.lock") or matches(dir, entry, "bun.lockb")) present.bun = true;
     }
 
     return present;
+}
+
+/// A listing reports dangling symlinks and non-regular entries that the
+/// previous `access` probe rejected, so a matching name is only accepted once
+/// it is known to resolve to something readable.
+fn matches(dir: *std.fs.Dir, entry: std.fs.Dir.Entry, candidate: []const u8) bool {
+    if (!std.mem.eql(u8, entry.name, candidate)) return false;
+    if (entry.kind == .file) return true;
+    if (entry.kind != .sym_link) return false;
+    dir.access(entry.name, .{}) catch return false;
+    return true;
 }
 
 fn dupeLockfiles(allocator: std.mem.Allocator, names: []const []const u8) ![]const []const u8 {
@@ -372,6 +382,31 @@ test "detectFromRoot ignores a directory named like a lockfile" {
 
     const ctx = try detectFromRoot(testing.allocator, abs);
     try testing.expect(ctx.node_cache == null);
+}
+
+test "detectFromRoot ignores a dangling symlink named like a lockfile" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.symLink("nowhere", "package-lock.json", .{}) catch return error.SkipZigTest;
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.node_cache == null);
+}
+
+test "detectFromRoot follows a symlink that resolves to a lockfile" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "real.json", .data = "{}" });
+    tmp.dir.symLink("real.json", "package-lock.json", .{}) catch return error.SkipZigTest;
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expectEqual(NodeCache.npm, ctx.node_cache.?);
 }
 
 test "detectFromRoot ambiguity list follows table order, not directory order" {

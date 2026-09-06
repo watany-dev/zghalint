@@ -103,7 +103,7 @@ pub fn prefetchAllWithOptions(
     // Persisted only now that the impostor cache is fully populated.
     // Failures are non-fatal (best-effort warm-run hint).
     if (pending_persist.items.len > 0) {
-        var cache_dir = disk_cache.openCacheDir(scratch);
+        var cache_dir = disk_cache.getCacheDir(scratch);
         defer if (cache_dir) |*d| d.close();
         for (pending_persist.items) |res| {
             persistRepoResult(scratch, res, cache_dir);
@@ -203,7 +203,7 @@ fn applyDiskCache(
     // Opened once for the whole sweep: `disk_cache.load` resolves and opens
     // the cache directory per call, which is a per-repo open on a path that
     // never changes during a run.
-    var cache_dir = disk_cache.openCacheDir(scratch) orelse return hits;
+    var cache_dir = disk_cache.getCacheDir(scratch) orelse return hits;
     defer cache_dir.close();
 
     // Iterate over a stable snapshot because `sets` is mutated while iterating.
