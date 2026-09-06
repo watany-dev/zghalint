@@ -627,6 +627,24 @@ fn validateFunctionCall(
         }
     }
 
+    if (std.mem.eql(u8, name, "format") and node.children.len >= 1) {
+        if (node.children[0].kind == .string_literal) {
+            checkFormatPlaceholders(
+                allocator,
+                node.children[0].value,
+                node.children.len - 1,
+                span,
+                list,
+            );
+        }
+    }
+
+    if (std.mem.eql(u8, name, "fromJSON") and node.children.len == 1) {
+        if (node.children[0].kind == .string_literal) {
+            checkFromJsonLiteral(allocator, node.children[0].value, span, list);
+        }
+    }
+
     for (node.children) |*child| {
         validateNode(allocator, child, span, list, expr_base_byte, node);
     }
@@ -710,10 +728,10 @@ fn checkUnsoundCondition(
     }
 }
 
-/// Unsafe Edit that expands a bare string literal operand of `||` / `&&`
-/// into a comparison borrowed from its sibling (`a == 'x' || 'y'` →
-/// `a == 'x' || a == 'y'`). Only `==` under `||` and `!=` under `&&` pair
-/// up; a bare number_literal is not handled yet (#158).
+/// Unsafe Edit that expands a bare string or number literal operand of `||` /
+/// `&&` into a comparison borrowed from its sibling (`a == 'x' || 'y'` →
+/// `a == 'x' || a == 'y'`, `a == 1 || 2` → `a == 1 || a == 2`). Only `==`
+/// under `||` and `!=` under `&&` pair up.
 fn buildExpr007Fix(
     list: *DiagnosticList,
     node: *const ExprNode,
@@ -722,7 +740,7 @@ fn buildExpr007Fix(
 ) ?Fix {
     const base = expr_base_byte orelse return null;
 
-    if (bare.kind != .string_literal) return null;
+    if (bare.kind != .string_literal and bare.kind != .number_literal) return null;
     if (node.children.len != 2) return null;
 
     const op: []const u8 = if (std.mem.eql(u8, node.value, "||"))
@@ -745,13 +763,15 @@ fn buildExpr007Fix(
     const lhs = &sibling.children[0];
     const rhs = &sibling.children[1];
     if (lhs.kind != .context_access) return null;
-    if (rhs.kind != .string_literal) return null;
+    if (rhs.kind != bare.kind) return null;
 
     if (std.mem.indexOf(u8, lhs.value, ".*") != null) return null;
     if (std.mem.indexOfScalar(u8, lhs.value, '[') != null) return null;
 
-    if (!literalInteriorIsClean(bare.value)) return null;
-    if (!literalInteriorIsClean(rhs.value)) return null;
+    if (bare.kind == .string_literal) {
+        if (!literalInteriorIsClean(bare.value)) return null;
+        if (!literalInteriorIsClean(rhs.value)) return null;
+    }
 
     const alloc = list.fixAllocator();
     const replacement = std.fmt.allocPrint(alloc, "{s} {s} {s}", .{ lhs.value, op, bare.value }) catch return null;
@@ -772,6 +792,137 @@ fn literalInteriorIsClean(lit_value: []const u8) bool {
     if (lit_value.len < 2) return true;
     const interior = lit_value[1 .. lit_value.len - 1];
     return std.mem.indexOfScalar(u8, interior, '\'') == null;
+}
+
+fn decodeExprStringLiteral(allocator: std.mem.Allocator, lit: []const u8) ?[]const u8 {
+    if (lit.len < 2 or lit[0] != '\'') return null;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 1;
+    while (i < lit.len) {
+        if (lit[i] == '\'') {
+            if (i + 1 < lit.len and lit[i + 1] == '\'') {
+                out.append(allocator, '\'') catch return null;
+                i += 2;
+                continue;
+            }
+            if (i + 1 == lit.len) return out.toOwnedSlice(allocator) catch null;
+            return null;
+        }
+        out.append(allocator, lit[i]) catch return null;
+        i += 1;
+    }
+    return null;
+}
+
+fn checkFormatPlaceholders(
+    allocator: std.mem.Allocator,
+    format_lit: []const u8,
+    data_arg_count: usize,
+    span: Span,
+    list: *DiagnosticList,
+) void {
+    const decoded = decodeExprStringLiteral(allocator, format_lit) orelse return;
+
+    var used: std.DynamicBitSetUnmanaged = .{};
+    used.resize(allocator, data_arg_count, false) catch return;
+    defer used.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < decoded.len) {
+        const c = decoded[i];
+        if (c == '{') {
+            if (i + 1 < decoded.len and decoded[i + 1] == '{') {
+                i += 2;
+                continue;
+            }
+            const start = i + 1;
+            var j = start;
+            while (j < decoded.len and std.ascii.isDigit(decoded[j])) j += 1;
+            if (j > start and j < decoded.len and decoded[j] == '}') {
+                const index = std.fmt.parseInt(usize, decoded[start..j], 10) catch {
+                    list.append(.{
+                        .rule_id = "EXPR008",
+                        .severity = .@"error",
+                        .message = "format() format string has an invalid placeholder index",
+                        .span = span,
+                    }) catch return;
+                    return;
+                };
+                if (index >= data_arg_count) {
+                    const msg = std.fmt.allocPrint(
+                        allocator,
+                        "format() placeholder '{{{d}}}' is out of range; only {d} data argument(s) provided",
+                        .{ index, data_arg_count },
+                    ) catch "format() placeholder is out of range";
+                    list.append(.{
+                        .rule_id = "EXPR008",
+                        .severity = .@"error",
+                        .message = msg,
+                        .span = span,
+                    }) catch return;
+                } else {
+                    used.set(index);
+                }
+                i = j + 1;
+                continue;
+            }
+            list.append(.{
+                .rule_id = "EXPR008",
+                .severity = .@"error",
+                .message = "format() format string has an unclosed '{'",
+                .span = span,
+            }) catch return;
+            return;
+        }
+        if (c == '}') {
+            if (i + 1 < decoded.len and decoded[i + 1] == '}') {
+                i += 2;
+                continue;
+            }
+            list.append(.{
+                .rule_id = "EXPR008",
+                .severity = .@"error",
+                .message = "format() format string has a stray '}'",
+                .span = span,
+            }) catch return;
+            return;
+        }
+        i += 1;
+    }
+
+    for (0..data_arg_count) |idx| {
+        if (used.isSet(idx)) continue;
+        const msg = std.fmt.allocPrint(allocator, "format() argument {d} is unused", .{idx + 1}) catch
+            "format() argument is unused";
+        list.append(.{
+            .rule_id = "EXPR008",
+            .severity = .warning,
+            .message = msg,
+            .span = span,
+        }) catch return;
+    }
+}
+
+fn jsonLiteralIsValid(allocator: std.mem.Allocator, text: []const u8) bool {
+    _ = std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch return false;
+    return true;
+}
+
+fn checkFromJsonLiteral(
+    allocator: std.mem.Allocator,
+    lit: []const u8,
+    span: Span,
+    list: *DiagnosticList,
+) void {
+    const decoded = decodeExprStringLiteral(allocator, lit) orelse return;
+    if (jsonLiteralIsValid(allocator, decoded)) return;
+    list.append(.{
+        .rule_id = "EXPR009",
+        .severity = .@"error",
+        .message = "fromJSON() argument is not valid JSON",
+        .span = span,
+        .fix_hint = "pass a valid JSON string literal to fromJSON()",
+    }) catch return;
 }
 
 /// `anchor` maps offsets inside `text` back to source positions so each
@@ -830,6 +981,161 @@ fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
     };
 }
 
+const IfConditionShape = enum {
+    bare_expression,
+    single_wrapped_expression,
+    mixed_expression_string,
+};
+
+fn classifyIfConditionShape(if_val: []const u8) IfConditionShape {
+    const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
+    if (std.mem.indexOf(u8, trimmed, "${{") == null) return .bare_expression;
+    if (isSingleWrappedExpression(trimmed)) return .single_wrapped_expression;
+    return .mixed_expression_string;
+}
+
+fn singleWrappedExpressionInner(s: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, s, " \t\n\r");
+    if (!std.mem.startsWith(u8, trimmed, "${{")) return null;
+    const after_open = trimmed[3..];
+    const close = std.mem.indexOf(u8, after_open, "}}") orelse return null;
+    if (std.mem.trim(u8, after_open[close + 2 ..], " \t\n\r").len != 0) return null;
+    const inner = std.mem.trim(u8, after_open[0..close], " \t\n\r");
+    if (inner.len == 0) return null;
+    return inner;
+}
+
+fn isSingleWrappedExpression(s: []const u8) bool {
+    return singleWrappedExpressionInner(s) != null;
+}
+
+fn isConstantBooleanExpression(expr: []const u8) ?bool {
+    var parser = ExprParser.init(std.heap.page_allocator, expr);
+    const node = parser.parse() catch return null;
+    if (node.kind != .boolean_literal) return null;
+    return std.mem.eql(u8, node.value, "true");
+}
+
+fn checkIfConstantBoolean(
+    expr: []const u8,
+    span: Span,
+    list: *DiagnosticList,
+) void {
+    const value = isConstantBooleanExpression(expr) orelse return;
+    const msg = if (value)
+        "if condition is always true"
+    else
+        "if condition is always false; this step or job will never run";
+    list.append(.{
+        .rule_id = "EXPR007",
+        .severity = .warning,
+        .message = msg,
+        .span = span,
+        .fix_hint = if (value)
+            "remove the redundant `if:` or use a meaningful condition"
+        else
+            "remove the step or job, or fix the condition",
+    }) catch return;
+}
+
+fn gapIsMergeable(gap: []const u8) bool {
+    for (gap) |c| {
+        switch (c) {
+            ' ', '\t', '\n', '\r', '&', '|', '"', '\'' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+const IfExprBlock = struct {
+    open: usize,
+    close_end: usize,
+    inner: []const u8,
+};
+
+fn findIfExprBlocks(if_val: []const u8) ?[]const IfExprBlock {
+    var blocks: std.ArrayList(IfExprBlock) = .empty;
+    var pos: usize = 0;
+    while (pos + 2 < if_val.len) {
+        if (!(if_val[pos] == '$' and if_val[pos + 1] == '{' and if_val[pos + 2] == '{')) {
+            pos += 1;
+            continue;
+        }
+        const inner_start = pos + 3;
+        const close_rel = std.mem.indexOf(u8, if_val[inner_start..], "}}") orelse return null;
+        const inner_end = inner_start + close_rel;
+        const close_end = inner_end + 2;
+        const inner = std.mem.trim(u8, if_val[inner_start..inner_end], " \t\n\r");
+        if (inner.len == 0) return null;
+        blocks.append(std.heap.page_allocator, .{
+            .open = pos,
+            .close_end = close_end,
+            .inner = inner,
+        }) catch return null;
+        pos = close_end;
+    }
+    if (blocks.items.len == 0) return null;
+    return blocks.toOwnedSlice(std.heap.page_allocator) catch null;
+}
+
+fn buildIfConditionMergeFix(
+    list: *DiagnosticList,
+    if_val: []const u8,
+    base: ?usize,
+) ?Fix {
+    const base_byte = base orelse return null;
+    const blocks = findIfExprBlocks(if_val) orelse return null;
+    if (blocks.len < 2) return null;
+
+    var prev_end: usize = 0;
+    var combined: std.ArrayList(u8) = .empty;
+    const alloc = list.fixAllocator();
+
+    for (blocks, 0..) |block, i| {
+        if (!gapIsMergeable(if_val[prev_end..block.open])) return null;
+        if (i > 0) {
+            const gap = if_val[prev_end..block.open];
+            if (gap.len == 0) return null;
+            combined.appendSlice(alloc, gap) catch return null;
+        }
+        combined.appendSlice(alloc, block.inner) catch return null;
+        prev_end = block.close_end;
+    }
+    if (!gapIsMergeable(if_val[prev_end..])) return null;
+
+    const replacement = std.fmt.allocPrint(alloc, "${{{{ {s} }}}}", .{combined.items}) catch return null;
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{
+        .start_byte = base_byte + blocks[0].open,
+        .end_byte = base_byte + blocks[blocks.len - 1].close_end,
+        .replacement = replacement,
+    };
+    return .{
+        .description = "merge multiple ${{ }} expressions into a single expression",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
+fn checkMixedIfCondition(
+    if_val: []const u8,
+    span: Span,
+    list: *DiagnosticList,
+    base: ?usize,
+) void {
+    const msg = "if condition mixes text with ${{ }} expressions; GitHub stringifies the whole value so it is always truthy";
+    const fix = buildIfConditionMergeFix(list, if_val, base);
+    list.append(.{
+        .rule_id = "EXPR007",
+        .severity = .warning,
+        .message = msg,
+        .span = span,
+        .fix_hint = "use a single ${{ }} expression, e.g. ${{ A && B }} instead of \"${{ A }} && ${{ B }}\"",
+        .fix = fix,
+    }) catch return;
+}
+
 /// GitHub allows the `${{ }}` wrapper to be omitted from `if:`, so a
 /// condition without one is itself a single expression.
 fn checkIfCondition(
@@ -842,15 +1148,27 @@ fn checkIfCondition(
     const if_val = if_condition orelse return;
     const anchor = Anchor.fromMeta(meta, fallback);
     const base: ?usize = if (meta) |m| scalarValueStartByte(m) else null;
-    if (std.mem.indexOf(u8, if_val, "${{") != null) {
-        findAndValidateExpressions(allocator, if_val, anchor, list, base);
-        return;
+    const span = anchor.at(if_val, 0, if_val.len);
+
+    switch (classifyIfConditionShape(if_val)) {
+        .mixed_expression_string => {
+            checkMixedIfCondition(if_val, span, list, base);
+            findAndValidateExpressions(allocator, if_val, anchor, list, base);
+        },
+        .single_wrapped_expression => {
+            findAndValidateExpressions(allocator, if_val, anchor, list, base);
+            const inner = singleWrappedExpressionInner(if_val) orelse return;
+            checkIfConstantBoolean(inner, span, list);
+        },
+        .bare_expression => {
+            const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
+            if (trimmed.len == 0) return;
+            const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
+            const abs: ?usize = if (base) |b| b + leading else null;
+            validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
+            checkIfConstantBoolean(trimmed, span, list);
+        },
     }
-    const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-    if (trimmed.len == 0) return;
-    const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-    const abs: ?usize = if (base) |b| b + leading else null;
-    validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
 }
 
 const ByteTracking = enum { track_bytes, no_bytes };
@@ -1308,6 +1626,11 @@ test "validate: unknown function" {
     try expectSingleRule("unknownFunc()", "EXPR004");
 }
 
+test "validate: function names are case-insensitive" {
+    try expectNoDiagnostics("Contains(github.ref, 'refs/heads/main')");
+    try expectNoDiagnostics("TOJSON(github.event)");
+}
+
 test "validate: case() is a known function" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1538,6 +1861,26 @@ test "validate: format with multiple args" {
     try expectNoDiagnostics("format('{0}-{1}', github.ref, github.sha)");
 }
 
+test "validate EXPR008: format placeholder out of range" {
+    try expectSingleRule("format('{0} {1}', github.sha)", "EXPR008");
+}
+
+test "validate EXPR008: format unused argument" {
+    try expectSingleRule("format('{0}', github.sha, github.ref)", "EXPR008");
+}
+
+test "validate EXPR008: format unclosed brace" {
+    try expectSingleRule("format('{0} {', github.sha)", "EXPR008");
+}
+
+test "validate EXPR008: format escaped braces are valid" {
+    try expectNoDiagnostics("format('{{literal}} {0}', github.sha)");
+}
+
+test "validate EXPR008: no check when format string is not a literal" {
+    try expectNoDiagnostics("format(github.event, github.sha)");
+}
+
 test "validate: nested function calls" {
     try expectSingleRule("contains(toJSON(github.event), 'push')", "EXPR006");
 }
@@ -1752,7 +2095,15 @@ test "validate EXPR007: bare string literal left of ||" {
 }
 
 test "validate EXPR007: bare number literal right of ||" {
-    try expectSingleRule("github.run_attempt == 1 || 2", "EXPR007");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+    try std.testing.expect(firstFix(list, "EXPR007") != null);
 }
 
 test "validate EXPR007: no false positive for proper comparison" {
@@ -1803,6 +2154,144 @@ test "checkJob EXPR007: if condition with bare literal" {
 
     checkJob(&job, &list);
     try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: if condition always false (bare)" {
+    const step = Step{
+        .if_condition = "false",
+        .run = "echo never",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: if condition always false (wrapped)" {
+    const step = Step{
+        .if_condition = "${{ false }}",
+        .run = "echo never",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkJob EXPR007: if condition always false" {
+    const job = Job{
+        .id = "deploy",
+        .if_condition = "false",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkJob(&job, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: if condition always true (bare)" {
+    const step = Step{
+        .if_condition = "true",
+        .run = "echo always",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: mixed expression string is always truthy" {
+    const step = Step{
+        .if_condition = "${{ github.event_name == 'push' }} && ${{ github.ref == 'refs/heads/main' }}",
+        .run = "echo always",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: prefix text with expression is always truthy" {
+    const step = Step{
+        .if_condition = "foo ${{ github.event_name == 'push' }}",
+        .run = "echo always",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: no false positive for single wrapped expression" {
+    const step = Step{
+        .if_condition = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+        .run = "echo hi",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(!test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: no false positive for bare expression" {
+    const step = Step{
+        .if_condition = "github.event_name == 'push'",
+        .run = "echo hi",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(!test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "EXPR007 fix: merges multiple ${{ }} expressions in if condition" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const step = Step{
+        .if_condition = "${{ github.event_name == 'push' }} && ${{ github.ref == 'refs/heads/main' }}",
+        .if_condition_meta = .{
+            .value_span = .{
+                .start_line = 1,
+                .start_col = 5,
+                .end_line = 1,
+                .end_col = 81,
+                .start_byte = 4,
+                .end_byte = 80,
+            },
+            .style = .plain,
+        },
+        .run = "echo always",
+    };
+    checkStep(&step, &list);
+
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqualStrings(
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+        fix.edits[0].replacement,
+    );
+}
+
+test "EXPR007 fix: no fix when mixed if condition has non-operator text" {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const step = Step{
+        .if_condition = "foo ${{ github.event_name == 'push' }}",
+        .run = "echo always",
+    };
+    checkStep(&step, &list);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
 test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" {
@@ -2238,13 +2727,41 @@ test "EXPR007 fix: no fix for && with == mismatch (always false)" {
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
-test "EXPR007 fix: no fix for bare number literal in V1" {
+test "EXPR007 fix: rewrites bare number right of ||" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
+    const src = "github.run_attempt == 1 || 2";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    const edit = fix.edits[0];
+    try std.testing.expectEqual(@as(usize, std.mem.lastIndexOf(u8, src, "2").?), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, src.len), edit.end_byte);
+    try std.testing.expectEqualStrings("github.run_attempt == 2", edit.replacement);
+}
+
+test "EXPR007 fix: rewrites bare number with && and !=" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt != 1 && 2", Span.point(1, 1, 0), &list, 0);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqualStrings("github.run_attempt != 2", fix.edits[0].replacement);
+}
+
+test "EXPR007 fix: no fix when sibling comparison uses mismatched literal kind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt == '1' || 2", Span.point(1, 1, 0), &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -2333,6 +2850,26 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
     ) != null);
 }
 
+test "EXPR007 autofix: fixture harness applies expected fix for bare number literal" {
+    const cwd = std.fs.cwd();
+    const input_path = "tests/fixtures/expr007-bare-number/input.yml";
+    const expected_path = "tests/fixtures/expr007-bare-number/expected.yml";
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input = cwd.readFileAlloc(alloc, input_path, 64 * 1024) catch return error.TestExpectedFixture;
+    const expected = cwd.readFileAlloc(alloc, expected_path, 64 * 1024) catch return error.TestExpectedFixture;
+
+    const result = try test_support.lintAndFix(std.testing.allocator, input, .{ .job = &checkJob }, true);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.diagnostic_count > 0);
+    try std.testing.expect(result.fix_count > 0);
+    try std.testing.expectEqualStrings(expected, result.content);
+}
+
 test "EXPR003: property access on a string context value" {
     try expectSingleRule("github.repository.permissions.admin", "EXPR003");
 }
@@ -2391,6 +2928,22 @@ test "EXPR017: bool is not orderable" {
 // operands (and non-orderable operands for < > <= >=) are.
 test "EXPR017: array compared to a scalar" {
     try expectSingleRule("fromJSON('[1,2]') == 'x'", "EXPR017");
+}
+
+test "validate EXPR009: fromJSON invalid object literal" {
+    try expectSingleRule("fromJSON('{invalid}')", "EXPR009");
+}
+
+test "validate EXPR009: fromJSON trailing comma in array" {
+    try expectSingleRule("fromJSON('[\"ubuntu-latest\", \"macos-latest\",]')", "EXPR009");
+}
+
+test "validate EXPR009: fromJSON valid array literal" {
+    try expectNoDiagnostics("fromJSON('[\"ubuntu-latest\", \"macos-latest\"]')");
+}
+
+test "validate EXPR009: fromJSON skips non-literal argument" {
+    try expectNoDiagnostics("fromJSON(needs.setup.outputs.matrix)");
 }
 
 test "EXPR017: map value compared to number is allowed" {

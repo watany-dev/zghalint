@@ -1,0 +1,18 @@
+# zghalint:expect RW001@7 RW001@10 RW001@13
+name: rw001
+on:
+  workflow_call:
+    inputs:
+      env:
+        type: choice
+        options: [dev, prod]
+      version:
+        description: Version
+      verbose:
+        type: boolean
+        default: 'yes'
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
