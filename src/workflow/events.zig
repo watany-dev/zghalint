@@ -7,7 +7,6 @@
 
 const std = @import("std");
 
-/// Ref and path filters, by the sets GitHub actually offers.
 const push_filters = &[_][]const u8{ "branches", "branches-ignore", "tags", "tags-ignore", "paths", "paths-ignore" };
 /// `pull_request` runs on a branch, so the tag filters do not apply to it.
 const pull_request_filters = &[_][]const u8{ "branches", "branches-ignore", "paths", "paths-ignore" };
@@ -47,7 +46,6 @@ pub const EventSpec = struct {
     /// `repository_dispatch` names are chosen by whoever sends the dispatch —
     /// so the key is accepted and its values are left unchecked.
     activity_types: ?[]const []const u8 = &.{},
-    /// Ref and path filters the event accepts.
     filters: []const []const u8 = &.{},
     /// Keys that are neither `types` nor a filter, such as `workflow_call`'s
     /// `inputs`. Listed so a misspelling of one is still caught.

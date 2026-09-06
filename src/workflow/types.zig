@@ -262,7 +262,6 @@ pub const EventConfig = struct {
     /// Span of the `types:` key itself, so SYN010 can point at it for an event
     /// that has no activity types at all.
     types_key_span: ?yaml_types.Span = null,
-    /// Every key under the event mapping, whatever the event.
     config_keys: []const EventConfigKey = &.{},
     schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
