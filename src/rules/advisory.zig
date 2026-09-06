@@ -182,9 +182,8 @@ fn loadFromDiskCache(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
     return readCacheFile(allocator, dir);
 }
 
-/// The cache directory is opened once and shared by both read attempts: the
-/// fresh read and the ignore-age fallback used to reopen it independently,
-/// doubling the startup syscalls on every stale-cache run.
+/// The cache directory is opened once and shared by both read attempts;
+/// reopening it per attempt doubled the startup syscalls of a stale-cache run.
 fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
     var cache_dir = getCacheDir(allocator);
     defer if (cache_dir) |*d| d.close();

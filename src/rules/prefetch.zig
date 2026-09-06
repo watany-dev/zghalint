@@ -200,9 +200,8 @@ fn applyDiskCache(
 ) usize {
     var hits: usize = 0;
 
-    // Opened once for the whole sweep: `disk_cache.load` resolves and opens
-    // the cache directory per call, which is a per-repo open on a path that
-    // never changes during a run.
+    // Opened once for the whole sweep: `disk_cache.load` resolves and opens the
+    // directory per call, on a path that never changes during a run.
     var cache_dir = disk_cache.getCacheDir(scratch) orelse return hits;
     defer cache_dir.close();
 
@@ -524,8 +523,8 @@ fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
         const shas = group.shas.items;
 
         const out = scratch.alloc(rest_fallback.TagResolution, shas.len) catch continue;
-        // A transport failure leaves every entry `.unknown`, matching the
-        // per-SHA fallback the loop used before batching.
+        // A transport failure leaves every entry `.unknown`, as the per-SHA
+        // path did.
         rest_fallback.resolveTagsForShas(scratch, group.owner, group.repo, shas, out) catch
             @memset(out, rest_fallback.TagResolution.unknown);
 
@@ -572,7 +571,6 @@ test "groupShasByRepo: collapses one repo's SHAs into a single request unit" {
 
     var by_repo = groupShasByRepo(scratch, set);
 
-    // Three pinned SHAs, but only two repositories to query.
     try testing.expectEqual(@as(usize, 2), by_repo.count());
     try testing.expectEqual(@as(usize, 2), by_repo.get("actions/checkout").?.shas.items.len);
     try testing.expectEqual(@as(usize, 1), by_repo.get("actions/setup-node").?.shas.items.len);

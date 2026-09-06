@@ -117,8 +117,7 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     };
     defer dir.close();
 
-    // One getdents sweep instead of one `access` syscall per candidate: the
-    // repo root is read once and every candidate is matched against it.
+    // One getdents sweep instead of one `access` syscall per candidate.
     const present = scanRoot(&dir);
 
     var node_found = std.ArrayList([]const u8){};
@@ -176,8 +175,6 @@ const RootEntries = struct {
     bun: bool = false,
 };
 
-/// Iteration errors are treated as "nothing found", matching the probe's
-/// existing fail-open behavior on FS trouble.
 fn scanRoot(dir: *std.fs.Dir) RootEntries {
     var present: RootEntries = .{};
 
