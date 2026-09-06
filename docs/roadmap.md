@@ -1,28 +1,29 @@
 # 実施ロードマップ（2026-09-06 時点）
 
-オープンな PR / issue を main（`0d7002e`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`82fad14`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数 | 68（`docs/rules.md` の表・見出しとも 68 で一致。PR #208 で修正済み） |
-| `src/**/*.zig` | 33,890 行 |
-| ユニットテスト | 1314 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **27 close 済み（50%）** |
+| ルール数 | 69（`docs/rules.md` の表・見出しとも 69 で一致。PR #209 の SYN009 で +1） |
+| `src/**/*.zig` | 34,174 行 |
+| ユニットテスト | 1323 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **28 close 済み（52%）**。#65 が PR #209 で close |
 | 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129、引数型検査は #162 |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（19 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（20 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。#170 / #171 / #172 の回帰 strategy を収録済み |
 | ADR | `docs/adr/0001`〜`0010` |
 | オープン PR | #207（本ロードマップ）のみ |
-| オープン issue | 32 件。内訳は #55 本体 1、#55 の sub-issue 27、それ以外 4（#124 #135 #159 #162） |
+| オープン issue | 32 件。内訳は #55 本体 1、#55 の sub-issue 26、それ以外 5（#124 #135 #159 #162 #210） |
 | 実装済みだが未 close の issue | **なし** |
 | 既知バグ | **なし**。#170〜#173 は PR #205 で修正済み |
 
 棚卸しの積み残しはなく、出力層の perf 2 件（#192 terminal、#191 JSON）も PR #206 で main に入った。
-残っているのは #55 parity の sub-issue 27 件と、それ以外の 4 件（#124 #135 #159 #162）だけである。
-#124 と #162 は型検査エンジンに依存するので Phase 3 に置き、#135 / #159 / #64 を並行トラックとして扱う。
+残っているのは #55 parity の sub-issue 26 件と、それ以外の 5 件（#124 #135 #159 #162 #210）だけである。
+#124 と #162 は型検査エンジンに、#210 は matrix 展開に依存するのでそれぞれ Phase 3 / Phase 2 に置き、
+#135 / #159 / #64 を並行トラックとして扱う。
 
 ## 2. ロードマップ
 
@@ -35,16 +36,16 @@
 
 ### Phase 1: トリガー `on:` 群
 
-`ScheduleEntry` / `EventConfig` の拡張を伴うため直列。イベント名テーブルを先に作り、後続で再利用する。
+`ScheduleEntry` / `EventConfig` の拡張を伴うため直列。イベント名テーブルは #65（PR #209）で
+`src/workflow/events.zig` に入り、`trigger_names` / `isKnown` として後続から再利用できる。
 cron（#70 / #71）と glob（#69）は `src/workflow/cron.zig` / `src/rules/glob.zig` として実装済み。
 
 | 順 | issue | ルール | 状態・依存 |
 |---|---|---|---|
-| 1 | #65 | SYN009 webhook イベント名（+ `util.didYouMean` で候補提示） | イベント名 / activity type の埋め込みテーブルを新設 |
-| 2 | #66 | SYN010 `types` 値 | #65 のテーブル |
-| 3 | #67 | SYN011 イベントで使えないフィルタ | #65 のテーブル。SYN012 で `EventFilter` の key span は記録済み |
-| 4 | #72 | SYN016 timezone | `ScheduleEntry.timezone` 追加 + IANA 名テーブル（`scripts/` で生成、`src/rules/data/` に置く）。cron パーサは `workflow/cron.zig` を再利用 |
-| 5 | #73 | SYN017 workflow_dispatch inputs | #129 の `github.event.inputs` overlay と同時に実装 |
+| 1 | #66 | SYN010 `types` 値 | `events.zig` はイベント名だけを持つので、イベント → activity type の表を同ファイルに追加する。候補提示は `util.didYouMean` を SYN009 と同じ形で使う |
+| 2 | #67 | SYN011 イベントで使えないフィルタ | イベント → 許可フィルタ（`branches` / `paths` / `tags` 等）の表を `events.zig` に追加。SYN012 で `EventFilter` の key span は記録済み |
+| 3 | #72 | SYN016 timezone | `ScheduleEntry.timezone` 追加 + IANA 名テーブル（`scripts/` で生成、`src/rules/data/` に置く）。cron パーサは `workflow/cron.zig` を再利用 |
+| 4 | #73 | SYN017 workflow_dispatch inputs | #129 の `github.event.inputs` overlay と同時に実装 |
 
 ### Phase 2: job / step / matrix
 
@@ -55,7 +56,8 @@ cron（#70 / #71）と glob（#69）は `src/workflow/cron.zig` / `src/rules/glo
 | 1 | #74 | SYN018 matrix 値重複 | `Strategy` に matrix 構造を追加 |
 | 2 | #75 | SYN019 include / exclude 整合 | #74 |
 | 3 | #76 | RUNNER002 未知ラベル | RUNNER001 のラベルデータを既知ラベル一覧に拡張。`.zghalint.yml` に self-hosted ラベル許可設定が要る |
-| 4 | #77 | RUNNER003 ラベル衝突 | #76 |
+| 4 | #210 | RUNNER002 第二段階: `runs-on: ${{ matrix.<key> }}` を matrix 展開して検証 | #76 + #74（matrix 構造）。展開できない式は従来どおりスキップし、span は matrix 値側に向ける |
+| 5 | #77 | RUNNER003 ラベル衝突 | #76 |
 
 ### Phase 3: contextual typing（エンジン T4 = #129）
 
@@ -102,14 +104,14 @@ cron（#70 / #71）と glob（#69）は `src/workflow/cron.zig` / `src/rules/glo
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | #65 | イベント名テーブルを作る。これが入ると #66 / #67 が同じ表の上に乗り 3 件まとまる |
-| 2 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める |
-| 3 | #135 | 設計済み・オフライン完結・他と非競合。並列で流せる |
-| 4 | #64 | `yaml/` が落ち着いた今が着手時期。Phase 2 以降の matrix / anchor 併用ワークフローに効く |
-| 5 | #129 | 最大の山。#86〜#89 の 4 件が一気に解ける。1〜4 で足場を固めてから着手する |
-| 6 | #162 | #129 の overlay が入った直後に続けて実装する |
+| 1 | #66 | `events.zig` が入った直後の続き。activity type の表を同ファイルに足す |
+| 2 | #67 | #66 と同じファイル・同じ形。連続で入れると `events.zig` を 1 度で固められる |
+| 3 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める |
+| 4 | #135 | 設計済み・オフライン完結・他と非競合。並列で流せる |
+| 5 | #64 | `yaml/` が落ち着いた今が着手時期。Phase 2 以降の matrix / anchor 併用ワークフローに効く |
+| 6 | #129 | 最大の山。#86〜#89 の 4 件が一気に解ける。1〜5 で足場を固めてから着手する |
 
-棚卸しと perf が片付いたため、以後はルール実装（#55 parity）が主線になる。
+#162 は #129 の overlay が入った直後に続ける。棚卸しと perf が片付いたため、以後はルール実装（#55 parity）が主線になる。
 
 ## 4. 進め方の注意
 
