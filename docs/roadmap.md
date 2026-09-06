@@ -10,30 +10,32 @@
 | ルール数（`docs/rules.md`） | 62 |
 | `src/**/*.zig` | 29,818 行 |
 | ユニットテスト | 1161 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **18 close 済み（33%）**。実装済み・未 close の 2 件（§2.1）を閉じると 20/54（37%） |
+| #55 actionlint parity | 54 sub-issue 中 **20 close 済み（37%）** |
 | 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129、引数型検査は #162 |
 | E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml` の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | ADR | `docs/adr/0001`〜`0010`（最新は 0010 SEC022） |
 | PBT（`tests/pbt/`） | xfail 0 件 |
 | オープン PR | #130（本ロードマップ）のみ |
-| オープン issue | 46 件。内訳は #55 本体 1、parity sub-issue 36、それ以外 9（#124 #134 #135 #143 #158 #159 #160 #161 #162） |
+| オープン issue | 43 件。内訳は #55 本体 1、parity sub-issue 34、それ以外 8（#124 #134 #135 #158 #159 #160 #161 #162） |
 | 既知バグ | なし。#143（`workflow_run` 信頼ゲート）は SEC022 で、#136（SYN002 / SYN005 二重報告）は SYN002 の `jobs:` 除外で解消済み。いずれも main のバイナリで確認 |
 
-## 2. すぐ片付くもの
+## 2. 直近で解決した検出漏れ
 
-### 2.1 実装済みだが open のままの issue（close 候補）
+### 2.1 SEC022 — `workflow_run` の信頼ゲート（#143）
 
-main のバイナリ（`./zig-out/bin/zghalint --quick`）で E2E fixture を流した結果を根拠にできる。
+`on: workflow_run` は base リポジトリの secrets を持つ privileged コンテキストで走るのに、
+`head_branch` は fork 側が自由に名付けられる。`if: github.event.workflow_run.head_branch == 'main'`
+のようなゲートは信頼の根拠にならない。#138 で SEC006 が ref 形状のコンテキストを条件から外して以降、
+このパターンを報告するルールが無かった。
 
-| issue | 実装 | 根拠 |
-|---|---|---|
-| #143 `workflow_run.head_branch` の信頼ゲート | **SEC022** `workflow-run-branch-gate`（PR #165、ADR-0010、`docs/design/sec022-workflow-run-branch-gate-design.md`） | `sec022-workflow-run-branch-gate.yml:14:9: error[SEC022]: workflow_run gate compares an attribute of the triggering run that a fork controls...` |
-| #79 PERM003 permissions スコープ / レベル | **PERM003** `invalid-permissions`（PR #167）。`util.didYouMean` による候補提示つき | `perm003-invalid-permissions.yml:8:3: error[PERM003]: unknown permission scope "content". did you mean "contents"?` |
-| #95 DEP003 `uses` フォーマット | **DEP003** `uses-format`（PR #169） | `dep003-uses-format.yml:14:15: error[DEP003]: \`uses:\` has no \`@ref\`; the version is required` |
+SEC022 `workflow-run-branch-gate` として実装済み（PR #165、ADR-0010）。設計上の要点:
 
-SEC022 の設計上の要点（ADR-0010）: 検出対象は `on: workflow_run` のジョブ / ステップの `if:` に限定し、
-`head_repository.*` か `workflow_run.event == 'push'` が**等値比較のオペランド**として現れる条件は trust anchor とみなして抑制する。
-`!=` は fork 側を選ぶ比較なので anchor に数えない。job 条件に anchor があれば配下の step は抑制する。
+- 検出対象は `on: workflow_run` のジョブ / ステップの `if:` に限定する
+- `head_repository.*` か `workflow_run.event == 'push'` が**等値比較のオペランド**として現れる条件は
+  trust anchor とみなして抑制する。`!=` は fork 側を選ぶ比較なので anchor に数えない
+- job 条件に anchor があれば配下の step は抑制する
+- SEC006 の `condition_dangerous_contexts` は変更していない。責務境界は `docs/rules.md` の
+  「SEC022 vs. SEC006」節に記載
 
 ### 2.2 オープン PR
 
@@ -126,7 +128,7 @@ main が `reportConditionContexts` に集約する別方向へ進んだため、
 
 | 項目 | 位置づけ |
 |---|---|
-| #134 SEC021 untrusted checkout ref | #55 の対象外。ADR-0006 と `docs/design/sec021-untrusted-checkout-ref-design.md` で設計済み・未実装。SEC022 と同じ `security.zig` の `workflow_run` 周辺（`checkWorkflowRunUntrustedCheckout` / `reportConditionContexts`）を触るので、記憶が新しいうちに着手する |
+| #134 SEC021 untrusted checkout ref | #55 の対象外。ADR-0006 と `docs/design/sec021-untrusted-checkout-ref-design.md` で設計済み・未実装。SEC022（§2.1）と同じ `security.zig` の `workflow_run` 周辺（`checkWorkflowRunUntrustedCheckout` / `reportConditionContexts`）を触るので、記憶が新しいうちに着手する |
 | #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
 | #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator` が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が集中する Phase 2〜4 の**前**に済ませると衝突が少ない |
 | #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
@@ -136,7 +138,6 @@ main が `reportConditionContexts` に集約する別方向へ進んだため、
 
 | 順 | issue | 理由 |
 |---|---|---|
-| 0 | #143 / #79 / #95 を close | 作業ゼロ。§2.1 の fixture 出力を根拠にコメントして閉じる |
 | 1 | #134 | SEC022 の直後で `security.zig` の `workflow_run` 経路が頭に入っている。設計済み |
 | 2 | #135 | 設計済み・オフライン完結・他と非競合。並列で流せる |
 | 3 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める |
