@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **59 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **60 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (21 rules)
 
@@ -138,9 +138,10 @@ invalid permission levels.
 
 `${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions.
 
-### Dependencies (2 rules)
+### Dependencies (3 rules)
 
-Dependabot cooldown configuration, insecure external code execution settings.
+Dependabot cooldown configuration, insecure external code execution settings,
+`uses:` reference format for actions and reusable workflow calls.
 
 ### Runner (1 rule)
 

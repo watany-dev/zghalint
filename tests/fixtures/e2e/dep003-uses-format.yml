@@ -1,0 +1,26 @@
+# zghalint:expect DEP003@14 DEP003@16 DEP003@18 DEP003@26
+# zghalint:forbid DEP003@20
+name: uses format
+on: [push]
+concurrency: ci
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout without a ref
+        uses: actions/checkout
+      - name: Local action with a ref
+        uses: ./.github/actions/setup@v1
+      - name: Empty owner segment
+        uses: actions//cache@v4
+      - name: Well formed
+        uses: actions/cache/restore@v4
+      - name: Docker image
+        uses: docker://alpine:3.19
+  call:
+    permissions:
+      contents: read
+    uses: octo-org/repo/ci.yml@main

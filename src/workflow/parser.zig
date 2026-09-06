@@ -268,6 +268,12 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
     job.uses = m.getScalar("uses");
+    if (m.get("uses")) |n| {
+        switch (n) {
+            .scalar => |s| job.uses_value_span = s.span,
+            else => {},
+        }
+    }
 
     var empty = std.ArrayList(types.EmptySection){};
     defer empty.deinit(ctx.allocator);
