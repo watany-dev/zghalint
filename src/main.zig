@@ -570,6 +570,11 @@ pub fn main() !u8 {
     initWorkspaceContext(workspace_arena.allocator(), files, &config);
     defer zghalint.workspace.clear();
 
+    // RUNNER002 cannot enumerate a self-hosted fleet, so the user's own labels
+    // come from `runner.labels` in .zghalint.yml.
+    zghalint.rules.runner.setAllowedLabels(config.runner_labels.items);
+    defer zghalint.rules.runner.setAllowedLabels(&.{});
+
     // Set a 10-second deadline for all network operations to prevent hangs
     zghalint.rules.engine.setNetworkDeadline(10 * std.time.ns_per_s);
     defer zghalint.rules.engine.clearNetworkDeadline();

@@ -44,6 +44,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `syn016-schedule-timezone.yml` | #72: `schedule` `timezone` names outside the IANA database |
 | `syn017-workflow-dispatch-inputs.yml` | #73: `workflow_dispatch` input type, `options`, and `default` mismatches |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
+| `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
