@@ -1057,9 +1057,8 @@ fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
     return matchesAnyContext(expr, contexts, .any);
 }
 
-/// `.any` accepts a reference wherever it appears; `.equality_operand` accepts
-/// it only as an operand of `==`, which is what separates a check that excludes
-/// untrusted runs from one that selects them.
+/// `.equality_operand` is what separates a check that excludes untrusted runs
+/// from one that selects them.
 const ContextMatch = enum { any, equality_operand };
 
 fn matchesAnyContext(expr: []const u8, contexts: []const []const u8, mode: ContextMatch) bool {
@@ -1089,8 +1088,7 @@ fn matchesAnyContext(expr: []const u8, contexts: []const []const u8, mode: Conte
     return false;
 }
 
-/// `==` may sit on either side of the reference, and `!=` / `>=` / `<=` must
-/// not be mistaken for it — hence the character before the `=` pair is checked.
+/// `==` may sit on either side of the reference.
 fn isEqualityOperand(expr: []const u8, start: usize, end: usize) bool {
     var after = end;
     while (after < expr.len and (expr[after] == ' ' or expr[after] == '\t')) after += 1;
@@ -2204,7 +2202,6 @@ test "SEC022: an anchor must exclude untrusted runs, not select them" {
     try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.event != 'push' && github.event.workflow_run.head_branch == 'main'"));
     // `fork == true` is a fork-only gate, so it is not in the anchor table.
     try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.fork == true && github.event.workflow_run.head_branch == 'main'"));
-    // The reference may sit on either side of the `==`.
     try testing.expect(sec022JobCondition("github.repository == github.event.workflow_run.head_repository.full_name && github.event.workflow_run.head_branch == 'main'") == null);
 }
 
@@ -2233,8 +2230,6 @@ test "SEC022: step condition inside a workflow_run job" {
 }
 
 test "SEC022: a job-level trust check covers its steps" {
-    // The step only runs once the job condition passed, so the identity check
-    // on the job already guards it.
     const steps = [_]Step{
         .{ .run = "./deploy.sh", .if_condition = "github.event.workflow_run.head_branch == 'main'" },
     };
