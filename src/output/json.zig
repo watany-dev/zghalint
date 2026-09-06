@@ -3,43 +3,79 @@ const diagnostics = @import("../diagnostics.zig");
 const Diagnostic = diagnostics.Diagnostic;
 const DiagnosticList = diagnostics.DiagnosticList;
 
+/// The object shape is fixed, so every key is a literal and each diagnostic
+/// costs one `print` plus one escape scan per string. `std.json.Stringify`
+/// would re-derive the same layout from the type on every diagnostic; on a
+/// 45k-diagnostic run that generic path was 16% of the instructions.
 pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: usize) !void {
     const counts = list.countBySeverity();
 
-    var js: std.json.Stringify = .{ .writer = writer };
-
-    try js.beginObject();
-    try js.objectField("diagnostics");
-    try js.beginArray();
-    for (list.items.items) |diag| {
-        try writeDiagnosticJson(&js, diag);
+    try writer.writeAll("{\"diagnostics\":[");
+    for (list.items.items, 0..) |diag, i| {
+        if (i > 0) try writer.writeByte(',');
+        try writeDiagnosticJson(writer, diag);
     }
-    try js.endArray();
-
-    try js.objectField("summary");
-    try js.write(.{
-        .errors = counts.@"error",
-        .warnings = counts.warning,
-        .infos = counts.info,
-        .hints = counts.hint,
-        .total = list.len(),
-        .files_checked = files_checked,
-    });
-    try js.endObject();
+    try writer.print(
+        "],\"summary\":{{\"errors\":{d},\"warnings\":{d},\"infos\":{d},\"hints\":{d}," ++
+            "\"total\":{d},\"files_checked\":{d}}}}}",
+        .{ counts.@"error", counts.warning, counts.info, counts.hint, list.len(), files_checked },
+    );
 }
 
-fn writeDiagnosticJson(js: *std.json.Stringify, diag: Diagnostic) !void {
-    try js.write(.{
-        .file = diag.file orelse "<unknown>",
-        .line = diag.span.start_line,
-        .column = diag.span.start_col,
-        .end_line = diag.span.end_line,
-        .end_column = diag.span.end_col,
-        .severity = diag.severity,
-        .rule_id = diag.rule_id,
-        .message = diag.message,
-        .fix_hint = diag.fix_hint,
-    });
+fn writeDiagnosticJson(writer: *std.Io.Writer, diag: Diagnostic) !void {
+    try writer.writeAll("{\"file\":");
+    try writeJsonString(writer, diag.file orelse "<unknown>");
+    try writer.print(
+        ",\"line\":{d},\"column\":{d},\"end_line\":{d},\"end_column\":{d},\"severity\":\"{s}\",\"rule_id\":",
+        .{
+            diag.span.start_line,
+            diag.span.start_col,
+            diag.span.end_line,
+            diag.span.end_col,
+            @tagName(diag.severity),
+        },
+    );
+    try writeJsonString(writer, diag.rule_id);
+    try writer.writeAll(",\"message\":");
+    try writeJsonString(writer, diag.message);
+    try writer.writeAll(",\"fix_hint\":");
+    if (diag.fix_hint) |hint| {
+        try writeJsonString(writer, hint);
+    } else {
+        try writer.writeAll("null");
+    }
+    try writer.writeByte('}');
+}
+
+/// Same encoding as `std.json.Stringify` with default options: only `"`,
+/// `\` and C0 controls are escaped, and non-ASCII bytes pass through as-is.
+/// Runs between escapes are emitted with a single `writeAll`, so a string
+/// that needs no escaping (the common case) costs one scan and one copy.
+fn writeJsonString(writer: *std.Io.Writer, s: []const u8) !void {
+    try writer.writeByte('"');
+    var run_start: usize = 0;
+    for (s, 0..) |c, i| {
+        const escape = switch (c) {
+            '"' => "\\\"",
+            '\\' => "\\\\",
+            0x08 => "\\b",
+            0x0c => "\\f",
+            '\n' => "\\n",
+            '\r' => "\\r",
+            '\t' => "\\t",
+            0x00...0x07, 0x0b, 0x0e...0x1f => "",
+            else => continue,
+        };
+        try writer.writeAll(s[run_start..i]);
+        if (escape.len == 0) {
+            try writer.print("\\u{x:0>4}", .{c});
+        } else {
+            try writer.writeAll(escape);
+        }
+        run_start = i + 1;
+    }
+    try writer.writeAll(s[run_start..]);
+    try writer.writeByte('"');
 }
 
 const Span = @import("../yaml/types.zig").Span;
@@ -158,6 +194,71 @@ test "renderJson with hint severity" {
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"hints\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"severity\":\"hint\"") != null);
+}
+
+test "renderJson escapes quotes, backslashes and control characters" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{
+        .rule_id = "E1",
+        .severity = .@"error",
+        .message = "say \"hi\"\\ then\nstop\x01",
+        .file = "a\tb.yml",
+        .span = Span.point(1, 1, 0),
+    });
+
+    try renderJson(&out.writer, list, 1);
+    const output = out.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"file\":\"a\\tb.yml\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "\"message\":\"say \\\"hi\\\"\\\\ then\\nstop\\u0001\"") != null);
+}
+
+test "renderJson passes multi-byte UTF-8 through unescaped" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{
+        .rule_id = "E1",
+        .severity = .@"error",
+        .message = "ワークフロー 🚀",
+        .span = Span.point(1, 1, 0),
+    });
+
+    try renderJson(&out.writer, list, 1);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"message\":\"ワークフロー 🚀\"") != null);
+}
+
+test "renderJson output parses as JSON" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "a \"quoted\" msg", .file = "a.yml", .span = Span.point(1, 2, 0) });
+    try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "b", .file = "b.yml", .span = Span.point(3, 4, 0), .fix_hint = "do\nit" });
+
+    try renderJson(&out.writer, list, 2);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
+    defer parsed.deinit();
+
+    const diags = parsed.value.object.get("diagnostics").?.array;
+    try std.testing.expectEqual(@as(usize, 2), diags.items.len);
+    try std.testing.expectEqualStrings("a \"quoted\" msg", diags.items[0].object.get("message").?.string);
+    try std.testing.expectEqual(@as(i64, 2), diags.items[0].object.get("column").?.integer);
+    try std.testing.expectEqual(std.json.Value.null, diags.items[0].object.get("fix_hint").?);
+    try std.testing.expectEqualStrings("do\nit", diags.items[1].object.get("fix_hint").?.string);
+    try std.testing.expectEqualStrings("warning", diags.items[1].object.get("severity").?.string);
+    try std.testing.expectEqual(@as(i64, 2), parsed.value.object.get("summary").?.object.get("files_checked").?.integer);
 }
 
 test "renderJson with info severity" {
