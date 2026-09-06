@@ -206,17 +206,45 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
                         config.workflow_call_input_problems = parsed.problems;
                     }
                 },
-                // schedule / workflow_dispatch carry no filters
-                .schedule, .workflow_dispatch => {},
+                .workflow_dispatch => {},
                 else => {
                     config.filter = try parseEventFilter(allocator, m);
                 },
             }
         },
-        .sequence, .scalar => {},
+        .sequence => |seq| {
+            if (event_type == .schedule) {
+                config.schedules = try parseScheduleEntries(allocator, seq);
+            }
+        },
+        .scalar => {},
     }
 
     return config;
+}
+
+fn parseScheduleEntries(allocator: std.mem.Allocator, seq: yaml.Sequence) ParseError![]const types.ScheduleEntry {
+    var entries = std.ArrayList(types.ScheduleEntry){};
+    errdefer entries.deinit(allocator);
+
+    for (seq.items) |item| {
+        const mapping = switch (item) {
+            .mapping => |m| m,
+            else => continue,
+        };
+        const cron_node = mapping.get("cron") orelse continue;
+        const cron_scalar = switch (cron_node) {
+            .scalar => |s| s,
+            else => continue,
+        };
+        if (cron_scalar.value.len == 0) continue;
+        try entries.append(allocator, .{
+            .cron = cron_scalar.value,
+            .cron_span = cron_scalar.span,
+        });
+    }
+
+    return try entries.toOwnedSlice(allocator);
 }
 
 const ParsedWorkflowCallInputs = struct {
@@ -1167,6 +1195,26 @@ test "parseTrigger mapping with filter" {
     try testing.expectEqualStrings("main", trigger.events[0].filter.?.branches[0]);
     try testing.expect(trigger.events[0].filter.?.spans.branches != null);
     try testing.expect(trigger.events[0].filter.?.spans.branches_ignore == null);
+}
+
+test "parseTrigger schedule entries capture cron spans" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var cron_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("cron"), .value = mkScalarStyled("0 0 * * *", .single_quoted, mkSpanBytes(40, 51)), .span = mkSpan() },
+    };
+    var schedule_items = [_]Node{mkMapping(&cron_entries)};
+    var trigger_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("schedule"), .value = mkSequence(&schedule_items), .span = mkSpan() },
+    };
+
+    const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
+    try testing.expectEqual(@as(usize, 1), trigger.events.len);
+    try testing.expectEqual(types.EventType.schedule, trigger.events[0].event);
+    try testing.expectEqual(@as(usize, 1), trigger.events[0].schedules.len);
+    try testing.expectEqualStrings("0 0 * * *", trigger.events[0].schedules[0].cron);
+    try testing.expectEqual(@as(usize, 40), trigger.events[0].schedules[0].cron_span.start_byte);
 }
 
 test "parseTrigger records key spans for empty filter values" {

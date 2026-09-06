@@ -214,6 +214,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+| SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
+| SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
 
 ### SYN002 duplicate-key
 

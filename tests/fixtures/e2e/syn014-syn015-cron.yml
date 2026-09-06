@@ -1,0 +1,19 @@
+# zghalint:expect SYN014@7 SYN014@8 SYN014@9 SYN014@10
+# zghalint:expect SYN015@11 SYN015@12 SYN015@13
+# zghalint:forbid SYN015@14
+name: cron schedule checks
+on:
+  schedule:
+    - cron: '0 0 * *'
+    - cron: '99 * * * *'
+    - cron: '0 0 * * 8'
+    - cron: '@daily'
+    - cron: '* * * * *'
+    - cron: '*/3 * * * *'
+    - cron: '0,1,2 * * * *'
+    - cron: '*/5 * * * *'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
