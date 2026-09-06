@@ -31,7 +31,6 @@ const add_ref_hint = "append a ref, e.g. \"@v4\" or a full commit SHA";
 const docker_prefix = "docker://";
 const workflows_prefix = ".github/workflows/";
 
-/// Returns null when `raw` is a well-formed step `uses:` value.
 pub fn actionProblem(raw: []const u8) ?Problem {
     // A `uses:` built from an expression is only known at run time.
     if (std.mem.indexOf(u8, raw, "${{") != null) return null;
@@ -82,7 +81,6 @@ pub fn actionProblem(raw: []const u8) ?Problem {
     return null;
 }
 
-/// Returns null when `raw` is a well-formed job `uses:` value.
 pub fn reusableWorkflowProblem(raw: []const u8) ?Problem {
     if (std.mem.indexOf(u8, raw, "${{") != null) return null;
 
