@@ -371,8 +371,6 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-/// The `with.ref` of an `actions/checkout` step, or null when the step is not a
-/// checkout or does not pin a ref.
 fn checkoutRefInput(step: *const Step) ?WithInput {
     const action_ref = step.uses orelse return null;
     if (!isAction(action_ref, "actions/checkout")) return null;
@@ -2299,7 +2297,6 @@ const workflow_run_and_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
     .{ .event = .workflow_dispatch },
 } };
 
-/// Runs a single `actions/checkout` step under `on`, with `key: value` in `with:`.
 fn runCheckoutWith(on: Trigger, key: []const u8, value: []const u8) DiagnosticList {
     var with = workflow_types.StringMap.init(testing.allocator);
     defer with.deinit();
