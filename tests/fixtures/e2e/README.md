@@ -39,6 +39,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
+| `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `clean.yml` | A well-formed workflow: nothing may fire |
 
 Network-backed rules (SC003–SC006, SC008) stay offline in tests, so fixtures
