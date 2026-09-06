@@ -23,20 +23,59 @@ fn severityColor(sev: Severity) []const u8 {
     };
 }
 
-/// Control characters (< 0x20) and DEL in attacker-influenced strings (file
-/// path, diagnostic message, source line) are rewritten as `\xHH` so a
-/// malicious workflow cannot inject colors, clear the screen, or hide
-/// warnings in a CI log pipeline. Tab is preserved for source alignment.
+/// Attacker-influenced strings (file path, diagnostic message, source line)
+/// are rewritten so a malicious workflow cannot inject colors, clear the
+/// screen, or hide warnings in a CI log pipeline. ASCII control characters
+/// and DEL become `\xHH`; C1 controls (U+0080–U+009F, e.g. the 8-bit CSI)
+/// and Unicode bidi embedding/override/isolate controls become `\u{XXXX}`;
+/// bytes that are not valid UTF-8 become `\xHH`. Tab is preserved for
+/// source alignment, and every other code point is copied through intact.
 fn writeSanitized(writer: anytype, s: []const u8) !void {
-    for (s) |c| {
-        if (c == '\t') {
-            try writer.writeByte(c);
-        } else if (c < 0x20 or c == 0x7f) {
-            try writer.print("\\x{x:0>2}", .{c});
-        } else {
-            try writer.writeByte(c);
+    var i: usize = 0;
+    while (i < s.len) {
+        const c = s[i];
+        if (c < 0x80) {
+            if (c == '\t' or (c >= 0x20 and c != 0x7f)) {
+                try writer.writeByte(c);
+            } else {
+                try writer.print("\\x{x:0>2}", .{c});
+            }
+            i += 1;
+            continue;
         }
+
+        const len = std.unicode.utf8ByteSequenceLength(c) catch {
+            try writer.print("\\x{x:0>2}", .{c});
+            i += 1;
+            continue;
+        };
+        if (i + len > s.len) {
+            try writer.print("\\x{x:0>2}", .{c});
+            i += 1;
+            continue;
+        }
+        const seq = s[i .. i + len];
+        const cp = std.unicode.utf8Decode(seq) catch {
+            try writer.print("\\x{x:0>2}", .{c});
+            i += 1;
+            continue;
+        };
+        if (isInvisibleControl(cp)) {
+            try writer.print("\\u{{{x:0>4}}}", .{cp});
+        } else {
+            try writer.writeAll(seq);
+        }
+        i += len;
     }
+}
+
+/// Code points that alter how surrounding text is displayed without being
+/// visible themselves: C1 controls and the bidirectional formatting
+/// characters used in "Trojan Source" style attacks.
+fn isInvisibleControl(cp: u21) bool {
+    return (cp >= 0x80 and cp <= 0x9f) or
+        (cp >= 0x202a and cp <= 0x202e) or
+        (cp >= 0x2066 and cp <= 0x2069);
 }
 
 pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !void {
@@ -184,6 +223,44 @@ test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
     // every attacker-supplied byte before it hits the terminal.
     try std.testing.expect(std.mem.indexOfScalar(u8, output, 0x1b) == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\\x1b") != null);
+}
+
+test "writeSanitized passes multi-byte UTF-8 through unchanged" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    // Japanese text contains continuation bytes in 0x80–0x9F; they must never
+    // be byte-escaped. Tab is kept as-is.
+    const input = "ワークフロー\tcafé 🚀";
+    try writeSanitized(writer, input);
+    try std.testing.expectEqualStrings(input, buf.items);
+}
+
+test "writeSanitized escapes C1 and bidi controls but not invalid-looking text" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    // U+009B is the 8-bit CSI; U+202E is RIGHT-TO-LEFT OVERRIDE; U+2066 is
+    // LEFT-TO-RIGHT ISOLATE.
+    try writeSanitized(writer, "a\u{9b}b\u{202e}c\u{2066}d");
+    try std.testing.expectEqualStrings("a\\u{009b}b\\u{202e}c\\u{2066}d", buf.items);
+}
+
+test "writeSanitized escapes bytes that are not valid UTF-8" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    // Lone continuation byte, truncated 3-byte sequence at end of input, and
+    // an overlong/invalid lead byte.
+    try writeSanitized(writer, "x\x9by\xe3\x81");
+    try std.testing.expectEqualStrings("x\\x9by\\xe3\\x81", buf.items);
+
+    buf.clearRetainingCapacity();
+    try writeSanitized(writer, "\xffz\x7f");
+    try std.testing.expectEqualStrings("\\xffz\\x7f", buf.items);
 }
 
 test "renderDiagnostic no hint" {

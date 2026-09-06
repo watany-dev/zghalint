@@ -112,10 +112,20 @@ const combined_msg_len = max_msg_part + hint_sep.len + max_hint_part;
 fn combinedMessage(buf: *[combined_msg_len]u8, diag: Diagnostic) []const u8 {
     const hint = diag.fix_hint orelse return diag.message;
     return std.fmt.bufPrint(buf, "{s}{s}{s}", .{
-        diag.message[0..@min(diag.message.len, max_msg_part)],
+        truncateUtf8(diag.message, max_msg_part),
         hint_sep,
-        hint[0..@min(hint.len, max_hint_part)],
+        truncateUtf8(hint, max_hint_part),
     }) catch diag.message;
+}
+
+/// Cuts `s` to at most `max_len` bytes without splitting a multi-byte UTF-8
+/// sequence, so the JSON string emitted for the message stays valid UTF-8.
+fn truncateUtf8(s: []const u8, max_len: usize) []const u8 {
+    if (s.len <= max_len) return s;
+    var end = max_len;
+    // Back off over continuation bytes (10xxxxxx) to the preceding boundary.
+    while (end > 0 and (s[end] & 0xC0) == 0x80) end -= 1;
+    return s[0..end];
 }
 
 fn findRuleIndex(rules: []const Rule, rule_id: []const u8) ?usize {
@@ -292,4 +302,33 @@ test "renderSarif empty rules array" {
     const output = out.written();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"rules\":[]") != null);
+}
+
+test "truncateUtf8 never splits a multi-byte sequence" {
+    // "あ" is 3 bytes (e3 81 82); cutting at 4 or 5 must fall back to 3.
+    const s = "ああ";
+    try std.testing.expectEqualStrings("あ", truncateUtf8(s, 4));
+    try std.testing.expectEqualStrings("あ", truncateUtf8(s, 5));
+    try std.testing.expectEqualStrings("ああ", truncateUtf8(s, 6));
+    try std.testing.expectEqualStrings("ああ", truncateUtf8(s, 100));
+    try std.testing.expectEqualStrings("", truncateUtf8(s, 0));
+    try std.testing.expectEqualStrings("ab", truncateUtf8("abc", 2));
+}
+
+test "combinedMessage keeps the truncated message valid UTF-8" {
+    // 200 × "あ" = 600 bytes; the 512-byte cap lands mid-character
+    // (512 = 170 × 3 + 2) and must be pulled back to 510 bytes.
+    const long_msg = "あ" ** 200;
+    var buf: [combined_msg_len]u8 = undefined;
+    const out = combinedMessage(&buf, .{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = long_msg,
+        .fix_hint = "hint",
+        .span = Span.point(1, 1, 0),
+    });
+    try std.testing.expect(std.unicode.utf8ValidateSlice(out));
+    try std.testing.expect(std.mem.startsWith(u8, out, "あ" ** 170));
+    try std.testing.expect(std.mem.endsWith(u8, out, ". hint"));
+    try std.testing.expectEqual(@as(usize, 170 * 3 + ". hint".len), out.len);
 }

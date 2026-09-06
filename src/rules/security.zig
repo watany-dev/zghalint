@@ -174,11 +174,16 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.head_commit.author.name",
     "github.event.pages",
     "github.event.workflow_run.head_branch",
+    // A fork authors the triggering run's commit, PR list and title.
+    "github.event.workflow_run.head_commit",
+    "github.event.workflow_run.pull_requests",
+    "github.event.workflow_run.display_title",
     // Label names need triage permission to set, so they are a weak injection
     // vector, but they still land verbatim in the shell. Written as a prefix,
     // so `labels.*.name`, `labels[0].name` and a bare `toJSON(labels)` are all
     // covered.
     "github.event.pull_request.labels",
+    "github.event.issue.labels",
 };
 
 /// An `if:` condition is evaluated by the Actions expression engine and yields
@@ -357,17 +362,14 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             if (step.uses) |action_ref| {
                 if (isAction(action_ref, "actions/checkout")) {
                     if (step.with) |with_map| {
-                        if (with_map.get("ref")) |ref_val| {
-                            // github.event.pull_request.head.{sha,ref} and github.head_ref
-                            // all name fork-controlled code.
-                            if (std.mem.indexOf(u8, ref_val, "github.event.pull_request.head") != null or
-                                std.mem.indexOf(u8, ref_val, "github.head_ref") != null)
-                            {
+                        // The runner matches `with:` keys case-insensitively.
+                        if (getWithInput(with_map, "ref")) |input| {
+                            if (namesPullRequestHead(input.value)) {
                                 list.append(.{
                                     .rule_id = "SEC005",
                                     .severity = .@"error",
                                     .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
-                                    .span = withAnchor(step, "ref").whole(),
+                                    .span = withAnchor(step, input.key).whole(),
                                     .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
                                 }) catch return;
                             }
@@ -377,6 +379,22 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             }
         }
     }
+}
+
+/// `github.event.pull_request.head.{sha,ref}`, `github.head_ref` and the
+/// `refs/pull/<n>/{head,merge}` spellings all name fork-controlled code.
+fn namesPullRequestHead(ref_val: []const u8) bool {
+    const markers = [_][]const u8{
+        "github.event.pull_request.head",
+        "github.head_ref",
+        "refs/pull/",
+        "github.event.pull_request.number",
+        "github.event.number",
+    };
+    for (markers) |marker| {
+        if (std.mem.indexOf(u8, ref_val, marker) != null) return true;
+    }
+    return false;
 }
 
 /// SEC006 reports a weak gate, not code execution: the expression engine only
@@ -451,11 +469,27 @@ const github_env_targets = [_][]const u8{
     "GITHUB_PATH",
 };
 
+/// Length of the write operator at `i` (`>>`, `>`, or `tee [-a|--append]`),
+/// or null when `i` does not start one.
+fn githubEnvWriteOperatorLen(s: []const u8, i: usize) ?usize {
+    if (s[i] == '>') {
+        return if (i + 1 < s.len and s[i + 1] == '>') 2 else 1;
+    }
+    if (!isWordAt(s, i, "tee")) return null;
+    var j = i + "tee".len;
+    if (j < s.len and s[j] != ' ' and s[j] != '\t') return null;
+    while (j < s.len and (s[j] == ' ' or s[j] == '\t')) : (j += 1) {}
+    for ([_][]const u8{ "--append", "-a" }) |flag| {
+        if (isTokenAt(s, j, flag)) return j + flag.len - i;
+    }
+    return j - i;
+}
+
 fn indexOfGithubEnvWrite(s: []const u8) ?usize {
     var i: usize = 0;
     while (i + 1 < s.len) : (i += 1) {
-        if (s[i] == '>' and s[i + 1] == '>') {
-            var j = i + 2;
+        if (githubEnvWriteOperatorLen(s, i)) |op_len| {
+            var j = i + op_len;
             while (j < s.len and (s[j] == ' ' or s[j] == '\t')) : (j += 1) {}
             if (j >= s.len) continue;
             const has_quote = s[j] == '"';
@@ -520,13 +554,14 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
             const action_ref = step.uses orelse continue;
             if (!isAction(action_ref, "actions/checkout")) continue;
             const with_map = step.with orelse continue;
-            const ref_val = with_map.get("ref") orelse continue;
-            if (std.mem.indexOf(u8, ref_val, "github.event.workflow_run.") == null) continue;
+            // The runner matches `with:` keys case-insensitively.
+            const input = getWithInput(with_map, "ref") orelse continue;
+            if (std.mem.indexOf(u8, input.value, "github.event.workflow_run.") == null) continue;
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
                 .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                .span = withAnchor(step, "ref").whole(),
+                .span = withAnchor(step, input.key).whole(),
                 .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
             }) catch return;
         }
@@ -736,8 +771,9 @@ fn findSecretsOutsideEnv(s: []const u8) ?ExprMatch {
 /// `secrets.GITHUB_TOKEN` is automatically redacted, so it is exempt.
 fn exprIsNonTokenSecretRef(inner: []const u8) bool {
     const trimmed = std.mem.trim(u8, inner, " \t\n\r");
-    if (!std.mem.startsWith(u8, trimmed, "secrets.")) return false;
-    return !std.mem.eql(u8, trimmed["secrets.".len..], "GITHUB_TOKEN");
+    // Context and property names are case-insensitive in the expression engine.
+    if (!std.ascii.startsWithIgnoreCase(trimmed, "secrets.")) return false;
+    return !std.ascii.eqlIgnoreCase(trimmed["secrets.".len..], "GITHUB_TOKEN");
 }
 
 fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
@@ -1387,16 +1423,23 @@ fn containsEvalVarExpansion(s: []const u8) bool {
     return false;
 }
 
+/// Single forward pass: a `| sh` counts once any downloader word precedes it,
+/// so each byte is visited once regardless of how many `curl`s the body has.
 fn containsCurlWgetPipeShell(s: []const u8) bool {
     const downloaders = [_][]const u8{ "curl", "wget" };
-    for (downloaders) |downloader| {
-        var i: usize = 0;
-        while (i < s.len) : (i += 1) {
-            if (!isWordAt(s, i, downloader)) continue;
-
-            var j = i + downloader.len;
-            while (std.mem.indexOfScalarPos(u8, s, j, '|')) |pipe| : (j = pipe + 1) {
-                if (startsAnyWordAt(s, skipBlanks(s, pipe + 1), &shell_targets)) return true;
+    var seen_downloader = false;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (s[i] == '|') {
+            if (seen_downloader and startsAnyWordAt(s, skipBlanks(s, i + 1), &shell_targets)) return true;
+            continue;
+        }
+        if (seen_downloader) continue;
+        for (downloaders) |downloader| {
+            if (isWordAt(s, i, downloader)) {
+                seen_downloader = true;
+                i += downloader.len - 1;
+                break;
             }
         }
     }
@@ -1883,6 +1926,18 @@ test "SEC002: context names are case-insensitive" {
     try testing.expectEqual(true, sec002Fires("echo \"${{ GitHub.Event.Issue.Body }}\"", null));
 }
 
+test "SEC002: workflow_run head_commit message in run block" {
+    var list = runStep(.{ .run = "echo \"${{ github.event.workflow_run.head_commit.message }}\"" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: issue labels in run block" {
+    var list = runStep(.{ .run = "echo \"${{ github.event.issue.labels[0].name }}\"" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
 test "SEC008: run-only context is reported for GITHUB_ENV writes too" {
     var list = runStep(.{ .run = "echo \"LABEL=${{ github.event.pull_request.labels.*.name }}\" >> $GITHUB_ENV" });
     defer list.deinit();
@@ -2077,6 +2132,42 @@ test "SEC005: PR target with checkout of head ref" {
     try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
 
+test "SEC005: with key is matched case-insensitively (Ref)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("Ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: refs/pull/N/head built from the PR number" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "refs/pull/${{ github.event.pull_request.number }}/head") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: PR target checkout of the base ref (no false positive)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.pull_request.base.sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
 test "SEC005: PR target without checkout (no false positive)" {
     const steps = [_]Step{
         .{ .run = "echo safe" },
@@ -2126,6 +2217,18 @@ test "SEC009: workflow_run with checkout of workflow_run head_sha" {
 test "SEC009: workflow_run with checkout of workflow_run head_branch" {
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.workflow_run.head_branch }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: with key is matched case-insensitively (REF)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("REF", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
@@ -2547,6 +2650,24 @@ test "SEC008: quoted GITHUB_ENV target" {
 
 test "SEC008: braced GITHUB_ENV target" {
     var list = runStep(.{ .run = "echo \"X=${{ github.event.pull_request.title }}\" >> ${GITHUB_ENV}" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: single > redirect to GITHUB_ENV" {
+    var list = runStep(.{ .run = "echo \"X=${{ github.event.issue.title }}\" > $GITHUB_ENV" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: tee -a into GITHUB_ENV" {
+    var list = runStep(.{ .run = "echo \"X=${{ github.event.issue.title }}\" | tee -a $GITHUB_ENV" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: tee --append into GITHUB_PATH" {
+    var list = runStep(.{ .run = "echo \"${{ github.head_ref }}\" | tee --append \"$GITHUB_PATH\"" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
@@ -3817,6 +3938,18 @@ test "SEC019: GITHUB_TOKEN in run is allowed" {
     try testing.expect(!hasDiagnostic(&list, "SEC019"));
 }
 
+test "SEC019: GITHUB_TOKEN is matched case-insensitively" {
+    var list = runStep(.{ .run = "echo ${{ Secrets.github_token }}" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC019"));
+}
+
+test "SEC019: lowercase secrets context is still a secret" {
+    var list = runStep(.{ .run = "echo ${{ SECRETS.my_token }}" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC019"));
+}
+
 test "SEC019: no secrets usage" {
     var list = runStep(.{ .run = "echo hello" });
     defer list.deinit();
@@ -4191,6 +4324,18 @@ test "BP007: no false positive on wget download" {
     var list = runStep(.{ .run = "wget https://example.com/file.tar.gz" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: pipe before the downloader is not a match" {
+    var list = runStep(.{ .run = "cat list.txt | sh -c 'echo ok'; curl -o out.bin https://example.com/x" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "containsCurlWgetPipeShell: long input with many pipes stays linear" {
+    const body = "curl |" ** 20000;
+    try testing.expect(!containsCurlWgetPipeShell(body));
+    try testing.expect(containsCurlWgetPipeShell(body ++ " bash"));
 }
 
 test "BP007: no false positive on echo with variable" {
