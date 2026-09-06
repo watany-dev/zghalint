@@ -1,79 +1,58 @@
 # 実施ロードマップ（2026-09-06 時点）
 
-オープンな PR / issue を main（`5d3552b`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`a5dbf5f`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数（`docs/rules.md`） | 65 |
-| `src/**/*.zig` | 31,064 行 |
-| ユニットテスト | 1207 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **23 close 済み（42%）** |
+| ルール数 | 68（`docs/rules.md` の表の行数。本文の見出しが `63 rules` のまま止まっているので要修正） |
+| `src/**/*.zig` | 33,728 行 |
+| ユニットテスト | 1310 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **26 close 済み（48%）** |
 | 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129、引数型検査は #162 |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（16 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（19 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。#170 / #171 / #172 の回帰 strategy を収録済み |
 | ADR | `docs/adr/0001`〜`0010` |
-| PBT（`tests/pbt/`） | xfail 0 件 |
-| オープン PR | #130（本ロードマップ）、#180 draft（SYN014 / SYN015）、#181 draft（SYN013） |
-| オープン issue | 43 件。内訳は バグ 4（#170〜#173）、#55 本体 1、parity ラベル 33、それ以外 5（#124 #134 #135 #159 #160） |
-| 既知バグ | **4 件（#170〜#173）**。すべて main のバイナリで再現を確認済み。§2 参照 |
+| オープン PR | #130（本ロードマップ）、#190（#170〜#173 の修正計画書。実装が先に入ったため扱いの判断が要る） |
+| オープン issue | 42 件。内訳は 実装済み未 close 8、#55 本体 1、parity ラベル 28、それ以外 5（#124 #135 #159 #191 #192） |
+| 既知バグ | **なし**。#170〜#173 はすべて main で修正済み（§2 で再現確認済み） |
 
-## 2. 最優先: バグ 4 件
+## 2. 実装済みだが未 close の issue（8 件）
 
-ファジングと autofix の実地確認で判明した未修正バグ。新ルールの追加よりこちらが先である。
-いずれもユーザーのファイルを壊すか、プロセスを落とすか、CI アノテーションの位置をずらす。
+main に実装が入っているのに issue が開いたままのもの。棚卸しして close する。
+バグ 4 件は今回、main のバイナリで修正済みであることを実地確認した。
 
-### 2.1 #170 式パーサのスタックオーバーフロー（クラッシュ）
-
-`${{ }}` の中で括弧や関数呼び出しを深くネストすると、再帰下降パーサに深度上限が無いため
-SIGSEGV で落ちる（20,000 段で再現、しきい値は概ね 17,000 段前後でスタックサイズ依存）。
-YAML ブロックパーサ側は `max_parse_depth = 256`（`src/yaml/parser.zig`）で守られているが、
-`src/rules/expressions.zig` の `parseOr → parseAnd → parseComparison → parseBinary → parseUnary → parsePrimary`
-と `parseFunctionCall` の相互再帰にはカウンタが無い。
-
-修正は `ExprParser` に `depth` を持たせ、YAML 側と同じく上限超過で `ParseError` を返す。
-実運用の式は浅いので上限は 128〜256 で足りる。**4 件のうち唯一プロセスが落ちるので最優先。**
-
-### 2.2 #172 ブロックスカラー直後の autofix 挿入位置がずれる
-
-`runs-on: |` のように値がブロックスカラーだと、`blockEntryFullSpan`（`src/yaml/parser.zig`）の
-スカラー分岐が「スカラーはキーと同じ行で終わる」前提で次の `\n` まで走査し、次の兄弟キー行
-（例 `    steps:`）を span に飲み込む。その `end_byte` をアンカーにする autofix
-（トップレベル / ジョブレベルの `permissions:` `concurrency:`）が `steps:` とステップリストの
-間に挿入され、YAML が壊れる。
-
-根が YAML パーサ側にあり `workflow/parser.zig` の 4 つの `*_insertion_byte` すべてに波及するため、
-バグ 4 件の中では #170 の次に重い。修正はブロックスカラー（literal / folded）をプレーンスカラーと
-分岐し、次行の走査を行わないようにする。
-
-### 2.3 #171 フロースタイル `with:` を SEC018 autofix が破壊
-
-`with: {a: b}` のようなフローマッピングに `persist-credentials: false` を追記すると
-`x: {\n          persist-credentials: falsea: b}` となり、元の値と連結して意味が変わる。
-`fix/builder.zig` の `appendMappingEntry` がブロックマッピング末尾への追記専用なのに、
-フロー / ブロックを区別しないアンカー（`step.with_last_entry_end_byte`）で呼ばれている。
-しかもフローマッピングのパースが緩く、書き換え後も SEC018 は消えない（fix が無効なうえ副作用だけ残る）。
-
-同型のリスクは PERF の cache 追記（`src/rules/performance.zig`）にもある。
-`Step` に `with_is_flow` を持たせ、フロー時は append 系 fix を一律スキップするのが安全。
-
-### 2.4 #173 行継続エスケープ以降で行番号が 1 ずれる
-
-ダブルクォートスカラー内の `\` + 改行を `scanQuotedScalar`（`src/yaml/tokenizer.zig`）が
-`self.line` を増やさずに消費するため、それ以降の全診断が 1 行手前を指す。
-4 件の中では影響が限定的だが修正は最も小さい（エスケープ対象が `\n` かを判定して行カウンタを進めるだけ）。
-
-## 3. 実装済みだが未 close の issue
-
-main に実装が入っているのに issue が開いたままのもの。着手前に確認して close する。
-
-| issue | 実装 | 確認箇所 |
+| issue | 実装 | 確認方法・確認箇所 |
 |---|---|---|
-| #134 SEC021 untrusted checkout ref | PR #174 | `security.zig` に `.id = "SEC021"` / `untrusted-checkout-ref`、fixture `tests/fixtures/e2e/sec021-untrusted-checkout-ref.yml` |
+| #170 式パーサのスタックオーバーフロー | PR #205 | `expressions.zig` に `max_expr_depth = 256` と `ExprParser.depth`。`${{ }}` を 20,000 段ネストさせても SIGSEGV せず exit 1。`tests/pbt/test_crash.py` の `deeply_nested_expression` で回帰 |
+| #172 ブロックスカラー直後の autofix 挿入位置 | PR #205 | `yaml/parser.zig` の `blockEntryFullSpan` がブロックスカラーを分岐。`runs-on: \|` に対する `--fix-unsafe` が `permissions:` / `timeout-minutes:` を正しい位置に入れる |
+| #171 フロースタイル `with:` の破壊 | PR #205 | `workflow/parser.zig:744` で `with_last_entry_end_byte` をブロックマッピング + インラインスカラーの場合だけ設定。`with: {fetch-depth: 0}` に `--fix-unsafe` しても書き換えない |
+| #173 行継続エスケープ以降の行番号ずれ | PR #205 | `yaml/tokenizer.zig` の `consumeNewline` 抽出。fixture `bp004-shell-after-quoted-continuation.yml` が行 18 をアサート |
+| #134 SEC021 untrusted checkout ref | PR #174 | `security.zig:1670` に `.id = "SEC021"`、fixture `sec021-untrusted-checkout-ref.yml` |
 | #104 RW001 workflow_call inputs type | PR #178 | `src/rules/reusable_workflow.zig`（新設）、fixture `rw001-workflow-call-inputs.yml` |
-| #160 SC008 `compareRest` の移設 | PR #178 | `rest_fallback.zig` に `pub fn compareRest`。`impostor_compare.zig` から消えている |
-| #161 関数名 lookup の case-insensitive 化 | PR #178 | `expr_type.zig` が `std.ascii.eqlIgnoreCase` で引く。actionlint 互換の方向で決着 |
+| #160 SC008 `compareRest` の移設 | PR #178 | `rest_fallback.zig:244` に `pub fn compareRest`。`impostor_compare.zig` から消えている |
+| #161 関数名 lookup の case-insensitive 化 | PR #178 | `expr_type.zig:66` が `std.ascii.eqlIgnoreCase` で引く。actionlint 互換の方向で決着 |
+
+PR #190 は #170〜#173 の修正計画書だが、計画より先に PR #205 で実装が入った。
+内容を設計記録として残すなら実装後の形に直し、残さないなら close する。
+
+## 3. パフォーマンス: 出力層の残り 2 件
+
+#182〜#202 の 21 件はすでに main へ入り、残っているのは出力層の 2 件だけである。
+どちらも診断件数に比例して効くため、大きなワークフロー群を回す CI で体感差が出る。
+
+### 3.1 #192 terminal 出力が JSON の 2 倍遅い
+
+`src/output/terminal.zig` の `writeSanitized` が ASCII の通常文字も 1 バイトずつ `writeByte` する。
+安全な連続区間をまとめて `writeAll` する形に変えれば、サニタイズが必要なバイトだけ個別処理で済む。
+出力層だけで 130M Ir（1.108s vs JSON の 0.575s）。
+
+### 3.2 #191 JSON 出力の Stringify コスト
+
+`src/output/json.zig` が診断ごとに `std.json.Stringify` を回し、`encodeJsonString` と memcpy で 16% を消費する。
+stdout バッファも 4KB のまま。バッファ拡大とエスケープ不要文字列の高速パスが要る。
 
 ## 4. ロードマップ
 
@@ -84,30 +63,29 @@ main に実装が入っているのに issue が開いたままのもの。着�
 - 誤検出ゼロを優先。不確かなものは検出しない（ADR-0009 の方針を全ルールに適用）
 - 新ルールは `src/rules/registry.zig` へ登録し、`tests/fixtures/e2e/` に `# zghalint:expect RULE@line` つきの fixture を 1 本足す
 
-### Phase 1: バグ修正
+### Phase 1: 棚卸しと出力層 perf
 
-| 順 | issue | 内容 | 触る主なファイル |
-|---|---|---|---|
-| 1 | #170 | 式パーサに再帰深度上限 | `rules/expressions.zig` |
-| 2 | #172 | `blockEntryFullSpan` のブロックスカラー分岐 | `yaml/parser.zig`。`workflow/parser.zig` の insertion byte 全体に効く |
-| 3 | #171 | フロースタイル `with:` で append 系 fix をスキップ | `workflow/types.zig` / `workflow/parser.zig` / `rules/security.zig` / `rules/performance.zig` |
-| 4 | #173 | `scanQuotedScalar` の行カウンタ | `yaml/tokenizer.zig` |
+| 順 | 対象 | 内容 |
+|---|---|---|
+| 1 | #170 / #171 / #172 / #173 / #134 / #104 / #160 / #161 | §2 の 8 件を close。PR #190 の扱いも同時に決める |
+| 2 | `docs/rules.md` | 見出しのルール数を 63 → 68 に直す |
+| 3 | #192 | `writeSanitized` を区間まとめ書きにする |
+| 4 | #191 | JSON 出力の Stringify とバッファ |
 
-#172 と #173 はどちらも `yaml/` 配下なので直列にする。#170 と #171 は独立。
+#191 / #192 はどちらも `src/output/` 配下なので直列にする。
 
 ### Phase 2: トリガー `on:` 群
 
-`ScheduleEntry` / `EventConfig` の拡張を伴うため直列。イベント名テーブルと cron パーサを先に作り、後続で再利用する。
+`ScheduleEntry` / `EventConfig` の拡張を伴うため直列。イベント名テーブルを先に作り、後続で再利用する。
+cron（#70 / #71）と glob（#69）は `src/workflow/cron.zig` / `src/rules/glob.zig` として実装済み。
 
 | 順 | issue | ルール | 状態・依存 |
 |---|---|---|---|
-| 1 | #70 / #71 | SYN014 CRON 構文 / SYN015 5 分未満 | **PR #180 が draft で存在**。cron パーサを 1 本書けば 2 件 |
-| 2 | #69 | SYN013 glob 構文 | **PR #181 が draft で存在**。独立して着手可 |
-| 3 | #65 | SYN009 webhook イベント名（+ `util.didYouMean` で候補提示） | イベント名 / activity type の埋め込みテーブルを新設 |
-| 4 | #66 | SYN010 `types` 値 | #65 のテーブル |
-| 5 | #67 | SYN011 イベントで使えないフィルタ | #65 のテーブル。SYN012 で `EventFilter` の key span は記録済み |
-| 6 | #72 | SYN016 timezone | `ScheduleEntry.timezone` 追加 + IANA 名テーブル（`scripts/` で生成、`src/rules/data/` に置く） |
-| 7 | #73 | SYN017 workflow_dispatch inputs | #129 の `github.event.inputs` overlay と同時に実装 |
+| 1 | #65 | SYN009 webhook イベント名（+ `util.didYouMean` で候補提示） | イベント名 / activity type の埋め込みテーブルを新設 |
+| 2 | #66 | SYN010 `types` 値 | #65 のテーブル |
+| 3 | #67 | SYN011 イベントで使えないフィルタ | #65 のテーブル。SYN012 で `EventFilter` の key span は記録済み |
+| 4 | #72 | SYN016 timezone | `ScheduleEntry.timezone` 追加 + IANA 名テーブル（`scripts/` で生成、`src/rules/data/` に置く）。cron パーサは `workflow/cron.zig` を再利用 |
+| 5 | #73 | SYN017 workflow_dispatch inputs | #129 の `github.event.inputs` overlay と同時に実装 |
 
 ### Phase 3: job / step / matrix
 
@@ -158,33 +136,32 @@ main に実装が入っているのに issue が開いたままのもの。着�
 | 項目 | 位置づけ |
 |---|---|
 | #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
-| #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator` が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が集中する Phase 2〜4 の**前**に済ませると衝突が少ない |
-| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する。Phase 1 の #172 / #173 で同ファイルを触るのでその後に回す |
-| ファジングのリポジトリ内取り込み | #170 は 240,000 件規模のインプロセスファジングで見つかったが、ハーネスがリポジトリに無い。`docs/design/pbt-strategy.md` の枠組みに乗せて `zig build fuzz` 相当を用意すれば、同種のクラッシュを回帰として押さえられる |
+| #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator`（:1009）が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が集中する Phase 2〜4 の**前**に済ませると衝突が少ない |
+| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する。#172 / #173 の修正が入って同ファイルが落ち着いたので、着手可能になった |
 
 ## 5. 直近の着手順（上位 10 件）
 
-| 順 | issue | 理由 |
+| 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | #170 | 唯一プロセスが落ちる。修正は深度カウンタの追加のみで小さい |
-| 2 | #172 | autofix がユーザーの YAML を壊す。根が `yaml/parser.zig` にあり insertion byte 全体に効く |
-| 3 | #171 | 同じく autofix の破壊。#172 と原因は別（フロー / ブロックの区別）なので並列可 |
-| 4 | #173 | 行番号ずれ。修正が最小で、#172 と同じ `yaml/` なので直後に処理する |
-| 5 | #134 / #104 / #160 / #161 | 実装済み・未 close（§3）。棚卸しして close する |
-| 6 | PR #180 / #181 | #70 / #71 / #69 の draft PR。main へ rebase して CI を通し、レビューして取り込む |
-| 7 | #65 | イベント名テーブルを作る。これが入ると #66 / #67 が同じ表の上に乗り 3 件まとまる |
-| 8 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める |
-| 9 | #135 | 設計済み・オフライン完結・他と非競合。並列で流せる |
-| 10 | #129 | 最大の山。#86〜#89 の 4 件が一気に解ける。7〜9 で足場を固めてから着手し、続けて #162 |
+| 1 | #170 / #171 / #172 / #173 / #134 / #104 / #160 / #161 の close | 実装済み・未 close が 8 件。open issue 42 件のうち 2 割が実態と乖離しており、優先度判断を歪める |
+| 2 | PR #190 | 実装後に残った計画書。close か設計記録化かを決める |
+| 3 | `docs/rules.md` の見出し修正 | ルール数 63 → 68。表と本文が食い違っている |
+| 4 | #192 | 残る perf 2 件のうち効果が大きい方（terminal が JSON の 2 倍） |
+| 5 | #191 | #192 と同じ `src/output/` なので直後に処理する |
+| 6 | #65 | イベント名テーブルを作る。これが入ると #66 / #67 が同じ表の上に乗り 3 件まとまる |
+| 7 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める |
+| 8 | #135 | 設計済み・オフライン完結・他と非競合。並列で流せる |
+| 9 | #64 | `yaml/` が落ち着いた今が着手時期。Phase 3 以降の matrix / anchor 併用ワークフローに効く |
+| 10 | #129 | 最大の山。#86〜#89 の 4 件が一気に解ける。6〜9 で足場を固めてから着手し、続けて #162 |
 
 ## 6. 進め方の注意
 
-- Phase 1 のバグ 4 件を新ルールより先に片付ける。特に #171 / #172 は `--fix` がユーザーのファイルを壊すので、修正まで autofix の広報は控える
 - Phase 2 以降は `types.zig` の拡張を伴うため、同 Phase 内は直列にする
 - エージェント PR は CI 緑でもマージ前に main へ rebase する
 - ルールを追加・変更したら `tests/fixtures/e2e/` に fixture を足し、`# zghalint:expect RULE@line` で行まで含めてアサートする（インラインテストだけでは `Step` 構造体を直接組み立ててパーサを通らない経路が残る）
 - 新ルールのテストは自前でワークフローを組み立てず、`src/test_support.zig` の `parseWorkflowSource` / `runStep` / `runJob` / `runWorkflow` を使う
-- autofix を伴うルールは、フロースタイル（`{}` / `[]`）とブロックスカラー（`|` / `>`）の入力を必ずテストに含める（#171 / #172 はどちらもこの 2 形式の抜け）
+- autofix を伴うルールは、フロースタイル（`{}` / `[]`）とブロックスカラー（`|` / `>`）の入力を必ずテストに含める（#171 / #172 はどちらもこの 2 形式の抜けだった）。`tests/pbt/strategies.py` に両形式の strategy があるので PBT 側にも足す
+- 深い再帰を持つパーサには上限を入れる（YAML は `max_parse_depth = 256`、式は `max_expr_depth = 256`）。新しい再帰下降を書いたら同じガードを必ず付ける
 - 実装が終わったら `/wrapup`（`.claude/skills/wrapup`）で正しさ・過剰設計・コメントの 3 点を見てからコミットする。コメントは「コードから復元できない why」だけ残す（`/cleanup-comments` の基準）
 - 各 Phase 完了時に `docs/rules.md` のルール数と #55 の進捗を確認する
 - `zig build` は build.zig 一本で、`scripts/setup-zig.sh` の wrapper は `-fllvm` 注入のみ。**古い wrapper が `/usr/local/bin/zig` に残っていると `no module named 'build_options'` でビルドが落ちる**。main を取り込んだら `bash scripts/setup-zig.sh` を流し直す
