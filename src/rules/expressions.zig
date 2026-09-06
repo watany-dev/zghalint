@@ -728,10 +728,10 @@ fn checkUnsoundCondition(
     }
 }
 
-/// Unsafe Edit that expands a bare string literal operand of `||` / `&&`
-/// into a comparison borrowed from its sibling (`a == 'x' || 'y'` →
-/// `a == 'x' || a == 'y'`). Only `==` under `||` and `!=` under `&&` pair
-/// up; a bare number_literal is not handled yet (#158).
+/// Unsafe Edit that expands a bare string or number literal operand of `||` /
+/// `&&` into a comparison borrowed from its sibling (`a == 'x' || 'y'` →
+/// `a == 'x' || a == 'y'`, `a == 1 || 2` → `a == 1 || a == 2`). Only `==`
+/// under `||` and `!=` under `&&` pair up.
 fn buildExpr007Fix(
     list: *DiagnosticList,
     node: *const ExprNode,
@@ -740,7 +740,7 @@ fn buildExpr007Fix(
 ) ?Fix {
     const base = expr_base_byte orelse return null;
 
-    if (bare.kind != .string_literal) return null;
+    if (bare.kind != .string_literal and bare.kind != .number_literal) return null;
     if (node.children.len != 2) return null;
 
     const op: []const u8 = if (std.mem.eql(u8, node.value, "||"))
@@ -763,13 +763,15 @@ fn buildExpr007Fix(
     const lhs = &sibling.children[0];
     const rhs = &sibling.children[1];
     if (lhs.kind != .context_access) return null;
-    if (rhs.kind != .string_literal) return null;
+    if (rhs.kind != bare.kind) return null;
 
     if (std.mem.indexOf(u8, lhs.value, ".*") != null) return null;
     if (std.mem.indexOfScalar(u8, lhs.value, '[') != null) return null;
 
-    if (!literalInteriorIsClean(bare.value)) return null;
-    if (!literalInteriorIsClean(rhs.value)) return null;
+    if (bare.kind == .string_literal) {
+        if (!literalInteriorIsClean(bare.value)) return null;
+        if (!literalInteriorIsClean(rhs.value)) return null;
+    }
 
     const alloc = list.fixAllocator();
     const replacement = std.fmt.allocPrint(alloc, "{s} {s} {s}", .{ lhs.value, op, bare.value }) catch return null;
@@ -2091,7 +2093,15 @@ test "validate EXPR007: bare string literal left of ||" {
 }
 
 test "validate EXPR007: bare number literal right of ||" {
-    try expectSingleRule("github.run_attempt == 1 || 2", "EXPR007");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
+    try std.testing.expect(firstFix(list, "EXPR007") != null);
 }
 
 test "validate EXPR007: no false positive for proper comparison" {
@@ -2703,13 +2713,41 @@ test "EXPR007 fix: no fix for && with == mismatch (always false)" {
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
-test "EXPR007 fix: no fix for bare number literal in V1" {
+test "EXPR007 fix: rewrites bare number right of ||" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
+    const src = "github.run_attempt == 1 || 2";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
+    try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
+    const edit = fix.edits[0];
+    try std.testing.expectEqual(@as(usize, std.mem.lastIndexOf(u8, src, "2").?), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, src.len), edit.end_byte);
+    try std.testing.expectEqualStrings("github.run_attempt == 2", edit.replacement);
+}
+
+test "EXPR007 fix: rewrites bare number with && and !=" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt != 1 && 2", Span.point(1, 1, 0), &list, 0);
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqualStrings("github.run_attempt != 2", fix.edits[0].replacement);
+}
+
+test "EXPR007 fix: no fix when sibling comparison uses mismatched literal kind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.run_attempt == '1' || 2", Span.point(1, 1, 0), &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -2796,6 +2834,26 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
         result.content,
         "if: github.event_name == 'push' || github.event_name == 'pull_request'",
     ) != null);
+}
+
+test "EXPR007 autofix: fixture harness applies expected fix for bare number literal" {
+    const cwd = std.fs.cwd();
+    const input_path = "tests/fixtures/expr007-bare-number/input.yml";
+    const expected_path = "tests/fixtures/expr007-bare-number/expected.yml";
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const input = cwd.readFileAlloc(alloc, input_path, 64 * 1024) catch return error.TestExpectedFixture;
+    const expected = cwd.readFileAlloc(alloc, expected_path, 64 * 1024) catch return error.TestExpectedFixture;
+
+    const result = try test_support.lintAndFix(std.testing.allocator, input, .{ .job = &checkJob }, true);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.diagnostic_count > 0);
+    try std.testing.expect(result.fix_count > 0);
+    try std.testing.expectEqualStrings(expected, result.content);
 }
 
 test "EXPR003: property access on a string context value" {
