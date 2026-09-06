@@ -57,6 +57,7 @@ test {
     _ = @import("workflow/types.zig");
     _ = @import("workflow/parser.zig");
     _ = @import("workflow/events.zig");
+    _ = @import("workflow/timezones.zig");
     _ = @import("workflow/schema.zig");
     _ = @import("workflow/type_validation.zig");
     _ = @import("diagnostics.zig");
@@ -67,6 +68,7 @@ test {
     _ = @import("rules/expr_type.zig");
     _ = @import("rules/expr_catalog.zig");
     _ = @import("rules/expr_check.zig");
+    _ = @import("rules/needs_context.zig");
     _ = @import("rules/steps_ref.zig");
     _ = @import("rules/security.zig");
     _ = @import("rules/performance.zig");
