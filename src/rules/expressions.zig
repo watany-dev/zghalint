@@ -994,22 +994,19 @@ fn classifyIfConditionShape(if_val: []const u8) IfConditionShape {
     return .mixed_expression_string;
 }
 
-fn isSingleWrappedExpression(s: []const u8) bool {
-    const trimmed = std.mem.trim(u8, s, " \t\n\r");
-    if (!std.mem.startsWith(u8, trimmed, "${{")) return false;
-    const after_open = trimmed[3..];
-    const close = std.mem.indexOf(u8, after_open, "}}") orelse return false;
-    return std.mem.trim(u8, after_open[close + 2 ..], " \t\n\r").len == 0;
-}
-
-fn wrappedExpressionInner(s: []const u8) ?[]const u8 {
+fn singleWrappedExpressionInner(s: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, s, " \t\n\r");
     if (!std.mem.startsWith(u8, trimmed, "${{")) return null;
     const after_open = trimmed[3..];
     const close = std.mem.indexOf(u8, after_open, "}}") orelse return null;
+    if (std.mem.trim(u8, after_open[close + 2 ..], " \t\n\r").len != 0) return null;
     const inner = std.mem.trim(u8, after_open[0..close], " \t\n\r");
     if (inner.len == 0) return null;
     return inner;
+}
+
+fn isSingleWrappedExpression(s: []const u8) bool {
+    return singleWrappedExpressionInner(s) != null;
 }
 
 fn isConstantBooleanExpression(expr: []const u8) ?bool {
@@ -1160,7 +1157,7 @@ fn checkIfCondition(
         },
         .single_wrapped_expression => {
             findAndValidateExpressions(allocator, if_val, anchor, list, base);
-            const inner = wrappedExpressionInner(if_val) orelse return;
+            const inner = singleWrappedExpressionInner(if_val) orelse return;
             checkIfConstantBoolean(inner, span, list);
         },
         .bare_expression => {
