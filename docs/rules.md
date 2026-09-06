@@ -214,6 +214,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+| SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 
 ### SYN002 duplicate-key
 
@@ -310,6 +311,31 @@ on:
 
 To exclude patterns while keeping the positive filter, use a negated pattern
 under the positive key (`branches: [main, '!wip/**']`).
+
+### SYN013 invalid-filter-glob
+
+Filter values under `branches`, `tags`, `paths`, and their `-ignore` forms must
+use GitHub Actions glob syntax. Invalid patterns are rejected at workflow
+parse time on GitHub.
+
+```yaml
+on:
+  push:
+    branches:
+      - 'v[1.*'          # error: unclosed [
+    paths:
+      - '+foo'           # error: + must follow a literal character
+      - './src/**'       # error: paths cannot start with ./
+```
+
+Valid examples:
+
+```yaml
+on:
+  push:
+    branches: [main, releases/**, v[0-9].*]
+    paths: [src/**/*.zig, '!src/vendor/**']
+```
 
 ---
 

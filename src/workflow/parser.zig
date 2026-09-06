@@ -366,14 +366,22 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
     };
 }
 
+fn parseFilterPatternList(allocator: std.mem.Allocator, node: ?Node) ParseError!types.FilterPatternList {
+    if (node) |n| {
+        const parsed = try parseStringArrayWithSpans(allocator, n);
+        return .{ .values = parsed.values, .spans = parsed.spans };
+    }
+    return .{};
+}
+
 fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.EventFilter {
     return .{
-        .branches = if (m.get("branches")) |n| try parseStringArray(allocator, n) else &.{},
-        .branches_ignore = if (m.get("branches-ignore")) |n| try parseStringArray(allocator, n) else &.{},
-        .tags = if (m.get("tags")) |n| try parseStringArray(allocator, n) else &.{},
-        .tags_ignore = if (m.get("tags-ignore")) |n| try parseStringArray(allocator, n) else &.{},
-        .paths = if (m.get("paths")) |n| try parseStringArray(allocator, n) else &.{},
-        .paths_ignore = if (m.get("paths-ignore")) |n| try parseStringArray(allocator, n) else &.{},
+        .branches = try parseFilterPatternList(allocator, m.get("branches")),
+        .branches_ignore = try parseFilterPatternList(allocator, m.get("branches-ignore")),
+        .tags = try parseFilterPatternList(allocator, m.get("tags")),
+        .tags_ignore = try parseFilterPatternList(allocator, m.get("tags-ignore")),
+        .paths = try parseFilterPatternList(allocator, m.get("paths")),
+        .paths_ignore = try parseFilterPatternList(allocator, m.get("paths-ignore")),
         .spans = .{
             .branches = m.getKeySpan("branches"),
             .branches_ignore = m.getKeySpan("branches-ignore"),
@@ -1163,8 +1171,8 @@ test "parseTrigger mapping with filter" {
     const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
     try testing.expectEqual(@as(usize, 1), trigger.events.len);
     try testing.expectEqual(types.EventType.push, trigger.events[0].event);
-    try testing.expectEqual(@as(usize, 1), trigger.events[0].filter.?.branches.len);
-    try testing.expectEqualStrings("main", trigger.events[0].filter.?.branches[0]);
+    try testing.expectEqual(@as(usize, 1), trigger.events[0].filter.?.branches.values.len);
+    try testing.expectEqualStrings("main", trigger.events[0].filter.?.branches.values[0]);
     try testing.expect(trigger.events[0].filter.?.spans.branches != null);
     try testing.expect(trigger.events[0].filter.?.spans.branches_ignore == null);
 }
@@ -1184,7 +1192,7 @@ test "parseTrigger records key spans for empty filter values" {
 
     const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
     const spans = trigger.events[0].filter.?.spans;
-    try testing.expectEqual(@as(usize, 0), trigger.events[0].filter.?.paths_ignore.len);
+    try testing.expectEqual(@as(usize, 0), trigger.events[0].filter.?.paths_ignore.values.len);
     try testing.expectEqual(@as(usize, 20), (spans.paths_ignore orelse return error.TestUnexpectedResult).start_byte);
     try testing.expect(spans.paths == null);
 }

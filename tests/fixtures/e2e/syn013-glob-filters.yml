@@ -1,0 +1,12 @@
+# zghalint:expect SYN013
+on:
+  push:
+    branches:
+      - 'v[1.*'
+    paths:
+      - '+foo'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
