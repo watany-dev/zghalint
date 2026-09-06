@@ -1,0 +1,8 @@
+name: expr007-number
+on: push
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.run_attempt == 1 || 2
+    steps:
+      - run: echo hi

@@ -80,6 +80,7 @@ test {
     _ = @import("rules/runner.zig");
     _ = @import("rules/syntax.zig");
     _ = @import("rules/uses.zig");
+    _ = @import("rules/reusable_workflow.zig");
     _ = @import("rules/http_client.zig");
     _ = @import("rules/prefetch.zig");
     _ = @import("rules/graphql.zig");

@@ -168,8 +168,8 @@ pub const FuncSig = struct {
     ret: TypeRef,
 };
 
-/// Sorted by name. Lookup is case-sensitive, matching the current EXPR004
-/// behaviour (actionlint is case-insensitive; #161 tracks that decision).
+/// Sorted by name. Lookup is ASCII case-insensitive, matching GitHub Actions
+/// and actionlint (#161).
 const functions = [_]FuncSig{
     .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },
@@ -187,7 +187,7 @@ const functions = [_]FuncSig{
 };
 
 pub fn lookupFunction(name: []const u8) ?*const FuncSig {
-    return t.findByName(FuncSig, &functions, name);
+    return t.findByNameAsciiCaseInsensitive(FuncSig, &functions, name);
 }
 
 fn isSorted(comptime T: type, items: []const T) bool {
@@ -242,9 +242,11 @@ test "catalog: github.event is loose" {
     try std.testing.expectEqual(@as(usize, 0), github_event.props.len);
 }
 
-test "catalog: lookupFunction is case-sensitive" {
+test "catalog: lookupFunction is case-insensitive" {
     try std.testing.expect(lookupFunction("contains") != null);
-    try std.testing.expectEqual(@as(?*const FuncSig, null), lookupFunction("Contains"));
+    try std.testing.expect(lookupFunction("Contains") != null);
+    try std.testing.expect(lookupFunction("TOJSON") != null);
+    try std.testing.expectEqual(@as(?*const FuncSig, null), lookupFunction("unknownFunc"));
 }
 
 test "catalog: arity of overloaded join" {

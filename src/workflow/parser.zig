@@ -199,8 +199,15 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
         },
         .mapping => |m| {
             switch (event_type) {
-                // schedule / workflow_dispatch / workflow_call carry no filters
-                .schedule, .workflow_dispatch, .workflow_call => {},
+                .workflow_call => {
+                    if (m.get("inputs")) |inputs_node| {
+                        const parsed = try parseWorkflowCallInputs(allocator, inputs_node);
+                        config.workflow_call_inputs = parsed.inputs;
+                        config.workflow_call_input_problems = parsed.problems;
+                    }
+                },
+                // schedule / workflow_dispatch carry no filters
+                .schedule, .workflow_dispatch => {},
                 else => {
                     config.filter = try parseEventFilter(allocator, m);
                 },
@@ -210,6 +217,153 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
     }
 
     return config;
+}
+
+const ParsedWorkflowCallInputs = struct {
+    inputs: []const types.InputDef,
+    problems: []const types.WorkflowCallInputProblem,
+};
+
+fn parseCallableInputType(type_name: []const u8) ?types.CallableInputType {
+    if (std.mem.eql(u8, type_name, "string")) return .string;
+    if (std.mem.eql(u8, type_name, "number")) return .number;
+    if (std.mem.eql(u8, type_name, "boolean")) return .boolean;
+    return null;
+}
+
+fn callableInputTypeName(input_type: types.CallableInputType) []const u8 {
+    return switch (input_type) {
+        .string => "string",
+        .number => "number",
+        .boolean => "boolean",
+    };
+}
+
+fn parseYamlBool(node: Node) ?bool {
+    return switch (node) {
+        .scalar => |s| blk: {
+            if (std.mem.eql(u8, s.value, "true")) break :blk true;
+            if (std.mem.eql(u8, s.value, "false")) break :blk false;
+            break :blk null;
+        },
+        else => null,
+    };
+}
+
+fn defaultMatchesCallableInputType(input_type: types.CallableInputType, node: Node) bool {
+    return switch (input_type) {
+        .boolean => parseYamlBool(node) != null,
+        .number => switch (node) {
+            .scalar => |s| if (std.fmt.parseFloat(f64, s.value)) |_| true else |_| false,
+            else => false,
+        },
+        .string => switch (node) {
+            .scalar => true,
+            else => false,
+        },
+    };
+}
+
+fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowCallInputs {
+    const inputs_mapping = switch (node) {
+        .mapping => |m| m,
+        else => return .{ .inputs = &.{}, .problems = &.{} },
+    };
+
+    var inputs = std.ArrayList(types.InputDef){};
+    errdefer inputs.deinit(allocator);
+    var problems = std.ArrayList(types.WorkflowCallInputProblem){};
+    errdefer problems.deinit(allocator);
+
+    for (inputs_mapping.entries) |entry| {
+        const input_name = entry.key.value;
+        const input_mapping = switch (entry.value) {
+            .mapping => |m| m,
+            else => continue,
+        };
+
+        var def = types.InputDef{
+            .name = input_name,
+            .name_span = entry.key.span,
+        };
+
+        const type_node = input_mapping.get("type");
+        if (type_node) |tn| {
+            switch (tn) {
+                .scalar => |s| {
+                    def.type_span = s.span;
+                    if (parseCallableInputType(s.value)) |parsed_type| {
+                        def.input_type = parsed_type;
+                    } else {
+                        try problems.append(allocator, .{
+                            .kind = .invalid_type,
+                            .input_name = input_name,
+                            .detail = s.value,
+                            .span = s.span,
+                        });
+                    }
+                },
+                else => {
+                    try problems.append(allocator, .{
+                        .kind = .invalid_type,
+                        .input_name = input_name,
+                        .detail = "",
+                        .span = tn.getSpan(),
+                    });
+                },
+            }
+        } else {
+            try problems.append(allocator, .{
+                .kind = .missing_type,
+                .input_name = input_name,
+                .detail = "",
+                .span = entry.value.getSpan(),
+            });
+        }
+
+        if (input_mapping.get("required")) |required_node| {
+            def.required = parseYamlBool(required_node);
+        }
+
+        if (input_mapping.get("default")) |default_node| {
+            switch (default_node) {
+                .scalar => |s| {
+                    def.default_value = s.value;
+                    def.default_span = s.span;
+                },
+                else => {},
+            }
+        }
+
+        if (def.required == true and def.default_value != null) {
+            try problems.append(allocator, .{
+                .kind = .required_with_default,
+                .input_name = input_name,
+                .detail = "",
+                .span = def.default_span orelse entry.value.getSpan(),
+            });
+        }
+
+        if (def.input_type) |input_type| {
+            if (input_mapping.get("default")) |default_node| {
+                if (!defaultMatchesCallableInputType(input_type, default_node)) {
+                    try problems.append(allocator, .{
+                        .kind = .default_type_mismatch,
+                        .input_name = input_name,
+                        .detail = callableInputTypeName(input_type),
+                        .span = default_node.getSpan(),
+                    });
+                }
+            }
+        }
+
+        try inputs.append(allocator, def);
+    }
+
+    return .{
+        .inputs = try inputs.toOwnedSlice(allocator),
+        .problems = try problems.toOwnedSlice(allocator),
+    };
 }
 
 fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.EventFilter {
@@ -1888,6 +2042,43 @@ test "parseWorkflow records empty workflow_dispatch inputs" {
 
     try testing.expectEqual(@as(usize, 1), wf.empty_sections.len);
     try testing.expectEqualStrings("inputs", wf.empty_sections[0].name);
+}
+
+test "parseWorkflowCallInputs collects workflow_call input problems" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      env:
+        \\        type: choice
+        \\      version:
+        \\        description: Version
+        \\      verbose:
+        \\        type: boolean
+        \\        default: 'yes'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var parser = yaml_parser_mod.Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const wf = try parseWorkflow(arena.allocator(), node);
+
+    try testing.expectEqual(@as(usize, 1), wf.on.events.len);
+    const event = wf.on.events[0];
+    try testing.expectEqual(types.EventType.workflow_call, event.event);
+    try testing.expectEqual(@as(usize, 3), event.workflow_call_inputs.len);
+    try testing.expectEqual(@as(usize, 3), event.workflow_call_input_problems.len);
+    try testing.expectEqual(types.WorkflowCallInputProblemKind.invalid_type, event.workflow_call_input_problems[0].kind);
+    try testing.expectEqual(types.WorkflowCallInputProblemKind.missing_type, event.workflow_call_input_problems[1].kind);
+    try testing.expectEqual(types.WorkflowCallInputProblemKind.default_type_mismatch, event.workflow_call_input_problems[2].kind);
 }
 
 test "parseTrigger null value" {
