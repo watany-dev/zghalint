@@ -177,9 +177,8 @@ const NeedsVisitor = struct {
         }) catch return;
     }
 
-    /// Returns a `. did you mean "x"?` suffix, or an empty string. Allocated
-    /// from the diagnostic allocator so it outlives this call; allocation
-    /// failure degrades to no suggestion.
+    /// Allocated from the diagnostic allocator so the suffix outlives this
+    /// call; allocation failure degrades to no suggestion.
     fn jobIdSuggestion(self: *const NeedsVisitor, job_id: []const u8) []const u8 {
         const alloc = self.list.fixAllocator();
         const names = alloc.alloc([]const u8, self.wf.jobs.len) catch return "";
