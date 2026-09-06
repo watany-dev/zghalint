@@ -50,6 +50,7 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliAr
     var args = CliArgs{ .files = .{}, .allocator = allocator };
 
     for (argv) |arg| {
+        if (std.mem.eql(u8, arg, "--")) break;
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             args.show_help = true;
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
@@ -71,6 +72,13 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliAr
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
         const arg = argv[i];
+        if (std.mem.eql(u8, arg, "--")) {
+            // Everything after `--` is a file, even if it begins with `-`.
+            for (argv[i + 1 ..]) |file| {
+                try args.files.append(allocator, file);
+            }
+            break;
+        }
         if (std.mem.eql(u8, arg, "--config")) {
             if (i + 1 < argv.len) {
                 i += 1;
@@ -114,6 +122,7 @@ fn printHelp(writer: anytype) !void {
         \\
         \\Arguments:
         \\  [FILES...]  Files to lint (default: .github/workflows/*.yml, .github/dependabot.yml)
+        \\              Use `--` before files whose names begin with `-`.
         \\
         \\Options:
         \\  --config <path>   Path to config file (default: .zghalint.yml)
@@ -657,4 +666,16 @@ test "parseArgsSlice parses config and format options" {
     try std.testing.expectEqual(OutputFormat.json, args.format.?);
     try std.testing.expectEqual(ColorMode.never, args.color.?);
     try std.testing.expectEqual(FixMode.all, args.fix_mode);
+}
+
+test "parseArgsSlice treats everything after -- as files" {
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--offline", "--", "--fix-unsafe", "-h", "a.yml" });
+    defer args.deinit();
+    try std.testing.expect(args.offline);
+    try std.testing.expect(!args.show_help);
+    try std.testing.expectEqual(FixMode.off, args.fix_mode);
+    try std.testing.expectEqual(@as(usize, 3), args.files.items.len);
+    try std.testing.expectEqualStrings("--fix-unsafe", args.files.items[0]);
+    try std.testing.expectEqualStrings("-h", args.files.items[1]);
+    try std.testing.expectEqualStrings("a.yml", args.files.items[2]);
 }
