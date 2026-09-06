@@ -1,0 +1,31 @@
+# zghalint:expect RUNNER002@8 RUNNER002@13
+# zghalint:forbid RUNNER002@18 RUNNER002@23 RUNNER002@28
+name: unknown runner labels
+on: push
+jobs:
+  typo:
+    # unknown runner label; nearest known label is ubuntu-latest
+    runs-on: ubunut-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  unknown-version:
+    runs-on: macos-99
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  hosted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  larger:
+    runs-on: ubuntu-latest-4-cores
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  self-hosted-fleet:
+    runs-on: gpu-box
+    timeout-minutes: 5
+    steps:
+      - run: echo hi

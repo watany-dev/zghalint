@@ -35,6 +35,7 @@ pub const rules = struct {
     pub const impostor = @import("rules/impostor.zig");
     pub const http_client = @import("rules/http_client.zig");
     pub const prefetch = @import("rules/prefetch.zig");
+    pub const runner = @import("rules/runner.zig");
 };
 
 pub const fix = struct {
