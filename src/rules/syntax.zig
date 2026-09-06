@@ -3178,3 +3178,54 @@ test "SYN017: a malformed options list does not abort the parse" {
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"prod\"") != null);
 }
+
+test "SYN017: YAML 1.2 boolean spellings are accepted as defaults" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      a:
+        \\        type: boolean
+        \\        default: True
+        \\      b:
+        \\        type: boolean
+        \\        default: FALSE
+        \\      c:
+        \\        type: boolean
+        \\        default: yes
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    // `yes` is YAML 1.1 only, so it stays a string and is still reported.
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"c\"") != null);
+}
+
+test "SYN017: a scalar options value counts as no options" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      pick:
+        \\        type: choice
+        \\        options: dev
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "is empty") != null);
+}

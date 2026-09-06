@@ -298,8 +298,10 @@ fn callableInputTypeName(input_type: types.CallableInputType) []const u8 {
 fn parseYamlBool(node: Node) ?bool {
     return switch (node) {
         .scalar => |s| blk: {
-            if (std.mem.eql(u8, s.value, "true")) break :blk true;
-            if (std.mem.eql(u8, s.value, "false")) break :blk false;
+            // YAML 1.2 core schema: only these six spellings resolve to a
+            // bool. `yes` / `on` are YAML 1.1 and stay strings on GitHub.
+            if (std.mem.eql(u8, s.value, "true") or std.mem.eql(u8, s.value, "True") or std.mem.eql(u8, s.value, "TRUE")) break :blk true;
+            if (std.mem.eql(u8, s.value, "false") or std.mem.eql(u8, s.value, "False") or std.mem.eql(u8, s.value, "FALSE")) break :blk false;
             break :blk null;
         },
         else => null,
@@ -436,20 +438,19 @@ fn defaultMatchesDispatchInputType(input_type: types.DispatchInputType, node: No
     };
 }
 
-/// A malformed `options:` is a shape error for SYN004 to report, not a parse
-/// failure: non-scalar entries are skipped so the rest of the file still lints.
+/// GitHub accepts only a sequence of scalars here. Anything else yields no
+/// values rather than a parse error, so a malformed `options:` surfaces as an
+/// empty option list instead of aborting the whole file.
 fn collectOptionValues(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
     var values = std.ArrayList([]const u8){};
     errdefer values.deinit(allocator);
-    switch (node) {
-        .sequence => |seq| for (seq.items) |item| {
+    if (node == .sequence) {
+        for (node.sequence.items) |item| {
             switch (item) {
                 .scalar => |sc| try values.append(allocator, sc.value),
                 else => {},
             }
-        },
-        .scalar => |sc| try values.append(allocator, sc.value),
-        else => {},
+        }
     }
     return values.toOwnedSlice(allocator);
 }
@@ -500,8 +501,9 @@ fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseEr
         const options_node = input_mapping.get("options");
         if (options_node) |on| def.options = try collectOptionValues(allocator, on);
 
-        if (input_mapping.get("default")) |default_node| {
-            switch (default_node) {
+        const default_node = input_mapping.get("default");
+        if (default_node) |dn| {
+            switch (dn) {
                 .scalar => |sc| {
                     def.default_value = sc.value;
                     def.default_span = sc.span;
@@ -520,7 +522,7 @@ fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseEr
                 def,
                 def.input_type orelse .string,
                 options_node,
-                input_mapping.get("default"),
+                default_node,
                 entry.value.getSpan(),
             );
         }
