@@ -27,6 +27,7 @@ const ParsedStringMap = struct {
 const ParsedPermissions = struct {
     permissions: types.Permissions,
     meta: ?types.PermissionsMeta,
+    problems: []const types.PermissionProblem = &.{},
 };
 
 fn isEmptyContainer(node: Node) bool {
@@ -113,9 +114,10 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     };
 
     if (root.get("permissions")) |n| {
-        const parsed = try parsePermissions(n);
+        const parsed = try parsePermissions(allocator, n);
         workflow.permissions = parsed.permissions;
         workflow.permissions_meta = parsed.meta;
+        workflow.permission_problems = parsed.problems;
     }
 
     if (root.get("env")) |n| {
@@ -318,9 +320,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     }
 
     if (m.get("permissions")) |n| {
-        const parsed = try parsePermissions(n);
+        const parsed = try parsePermissions(ctx.allocator, n);
         job.permissions = parsed.permissions;
         job.permissions_meta = parsed.meta;
+        job.permission_problems = parsed.problems;
     }
     if (m.get("env")) |n| {
         try recordEmpty(&empty, ctx.allocator, "env", n);
@@ -523,7 +526,10 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     return step;
 }
 
-fn parsePermissions(node: Node) ParseError!ParsedPermissions {
+fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedPermissions {
+    var problems = std.ArrayList(types.PermissionProblem){};
+    errdefer problems.deinit(allocator);
+
     switch (node) {
         .scalar => |s| {
             var perms = types.Permissions{ .value_span = s.span };
@@ -531,25 +537,61 @@ fn parsePermissions(node: Node) ParseError!ParsedPermissions {
                 perms.read_all = true;
             } else if (std.mem.eql(u8, s.value, "write-all")) {
                 perms.write_all = true;
+            } else {
+                try problems.append(allocator, .{
+                    .kind = .invalid_all,
+                    .text = s.value,
+                    .span = s.span,
+                });
             }
-            return .{ .permissions = perms, .meta = null };
+            return .{
+                .permissions = perms,
+                .meta = null,
+                .problems = try problems.toOwnedSlice(allocator),
+            };
         },
         .mapping => |m| {
             var perms = types.Permissions{ .value_span = m.span };
             var meta = types.PermissionsMeta{};
             for (m.entries) |entry| {
-                // parsePermissionLevel only accepts scalars, so the value span
-                // for `meta` is always available alongside the level.
-                const level = parsePermissionLevel(entry.value) orelse continue;
+                const level = parsePermissionLevel(entry.value);
+                var known_scope = false;
                 inline for (types.permission_scopes) |field| {
                     if (std.mem.eql(u8, entry.key.value, comptime types.permissionScopeKey(field))) {
-                        @field(perms, field) = level;
-                        @field(meta, field) = entry.value.scalar.span;
+                        known_scope = true;
+                        // parsePermissionLevel only accepts scalars, so the
+                        // value span for `meta` is always available alongside
+                        // the level.
+                        if (level) |lvl| {
+                            @field(perms, field) = lvl;
+                            @field(meta, field) = entry.value.scalar.span;
+                        }
                         break;
                     }
                 }
+                if (!known_scope) {
+                    try problems.append(allocator, .{
+                        .kind = .unknown_scope,
+                        .text = entry.key.value,
+                        .span = entry.key.span,
+                    });
+                } else if (level == null) {
+                    try problems.append(allocator, .{
+                        .kind = .invalid_level,
+                        .text = switch (entry.value) {
+                            .scalar => |s| s.value,
+                            else => "",
+                        },
+                        .scope = entry.key.value,
+                        .span = entry.value.getSpan(),
+                    });
+                }
             }
-            return .{ .permissions = perms, .meta = meta };
+            return .{
+                .permissions = perms,
+                .meta = meta,
+                .problems = try problems.toOwnedSlice(allocator),
+            };
         },
         else => return error.InvalidValue,
     }
@@ -956,17 +998,31 @@ test "parseTrigger records key spans for empty filter values" {
 }
 
 test "parsePermissions read-all" {
-    const parsed = try parsePermissions(mkScalar("read-all"));
+    const parsed = try parsePermissions(testing.allocator, mkScalar("read-all"));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(parsed.permissions.read_all);
     try testing.expect(!parsed.permissions.write_all);
     try testing.expect(parsed.meta == null);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
 }
 
 test "parsePermissions write-all" {
-    const parsed = try parsePermissions(mkScalar("write-all"));
+    const parsed = try parsePermissions(testing.allocator, mkScalar("write-all"));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(parsed.permissions.write_all);
     try testing.expect(!parsed.permissions.read_all);
     try testing.expect(parsed.meta == null);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
+}
+
+test "parsePermissions reports an invalid all-scopes value" {
+    const parsed = try parsePermissions(testing.allocator, mkScalar("read"));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expect(!parsed.permissions.read_all);
+    try testing.expect(!parsed.permissions.write_all);
+    try testing.expectEqual(@as(usize, 1), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.invalid_all, parsed.problems[0].kind);
+    try testing.expectEqualStrings("read", parsed.problems[0].text);
 }
 
 test "parsePermissions individual scopes" {
@@ -976,7 +1032,9 @@ test "parsePermissions individual scopes" {
         .{ .key = mkScalarS("issues"), .value = mkScalar("none"), .span = mkSpan() },
     };
 
-    const parsed = try parsePermissions(mkMapping(&entries));
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.contents.?);
     try testing.expectEqual(types.PermissionLevel.write, parsed.permissions.pull_requests.?);
     try testing.expectEqual(types.PermissionLevel.none, parsed.permissions.issues.?);
@@ -1556,25 +1614,60 @@ test "parseJob with env and concurrency and with" {
     try testing.expectEqual(types.PermissionLevel.read, job.permissions.?.contents.?);
 }
 
-test "parsePermissions ignores invalid permission level" {
+test "parsePermissions reports invalid permission levels" {
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("contents"), .value = mkScalar("execute"), .span = mkSpan() },
         .{ .key = mkScalarS("issues"), .value = mkScalar("admin"), .span = mkSpan() },
         .{ .key = mkScalarS("pull-requests"), .value = mkScalar("read"), .span = mkSpan() },
     };
 
-    const parsed = try parsePermissions(mkMapping(&entries));
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(parsed.permissions.contents == null);
     try testing.expect(parsed.permissions.issues == null);
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.pull_requests.?);
+
+    try testing.expectEqual(@as(usize, 2), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.invalid_level, parsed.problems[0].kind);
+    try testing.expectEqualStrings("execute", parsed.problems[0].text);
+    try testing.expectEqualStrings("contents", parsed.problems[0].scope);
+    try testing.expectEqualStrings("admin", parsed.problems[1].text);
+    try testing.expectEqualStrings("issues", parsed.problems[1].scope);
+}
+
+test "parsePermissions reports an unknown scope" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("content"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 1), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.unknown_scope, parsed.problems[0].kind);
+    try testing.expectEqualStrings("content", parsed.problems[0].text);
+}
+
+test "parsePermissions accepts artifact-metadata and models" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("artifact-metadata"), .value = mkScalar("read"), .span = mkSpan() },
+        .{ .key = mkScalarS("models"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.artifact_metadata.?);
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.models.?);
 }
 
 test "parsePermissions with empty mapping" {
     var entries = [_]yaml.MappingEntry{};
-    const parsed = try parsePermissions(mkMapping(&entries));
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(!parsed.permissions.read_all);
     try testing.expect(!parsed.permissions.write_all);
     try testing.expect(parsed.permissions.contents == null);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
 }
 
 test "parseWorkflow records empty sections for SYN003" {

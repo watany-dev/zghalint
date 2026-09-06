@@ -38,6 +38,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
+| `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `clean.yml` | A well-formed workflow: nothing may fire |
 

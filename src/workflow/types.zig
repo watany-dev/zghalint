@@ -34,6 +34,7 @@ pub const PermissionLevel = enum {
 
 pub const Permissions = struct {
     actions: ?PermissionLevel = null,
+    artifact_metadata: ?PermissionLevel = null,
     attestations: ?PermissionLevel = null,
     checks: ?PermissionLevel = null,
     contents: ?PermissionLevel = null,
@@ -41,6 +42,7 @@ pub const Permissions = struct {
     discussions: ?PermissionLevel = null,
     id_token: ?PermissionLevel = null,
     issues: ?PermissionLevel = null,
+    models: ?PermissionLevel = null,
     packages: ?PermissionLevel = null,
     pages: ?PermissionLevel = null,
     pull_requests: ?PermissionLevel = null,
@@ -58,6 +60,7 @@ pub const Permissions = struct {
 /// Used by PERM001 autofix to target the value of a specific scope key.
 pub const PermissionsMeta = struct {
     actions: ?yaml_types.Span = null,
+    artifact_metadata: ?yaml_types.Span = null,
     attestations: ?yaml_types.Span = null,
     checks: ?yaml_types.Span = null,
     contents: ?yaml_types.Span = null,
@@ -65,6 +68,7 @@ pub const PermissionsMeta = struct {
     discussions: ?yaml_types.Span = null,
     id_token: ?yaml_types.Span = null,
     issues: ?yaml_types.Span = null,
+    models: ?yaml_types.Span = null,
     packages: ?yaml_types.Span = null,
     pages: ?yaml_types.Span = null,
     pull_requests: ?yaml_types.Span = null,
@@ -89,6 +93,35 @@ pub fn permissionScopeKey(comptime field_name: []const u8) []const u8 {
         return &key;
     }
 }
+
+/// `permission_scopes` spelled as YAML keys (`_` replaced by `-`), for
+/// runtime lookups such as PERM003's did-you-mean search.
+pub const permission_scope_keys: []const []const u8 = blk: {
+    var keys: [permission_scopes.len][]const u8 = undefined;
+    for (permission_scopes, 0..) |field, i| keys[i] = permissionScopeKey(field);
+    const frozen = keys;
+    break :blk &frozen;
+};
+
+pub const PermissionProblemKind = enum {
+    /// A mapping key that is not one of `permission_scopes`.
+    unknown_scope,
+    /// A mapping value that is not `read` / `write` / `none`.
+    invalid_level,
+    /// A scalar `permissions:` that is not `read-all` / `write-all`.
+    invalid_all,
+};
+
+/// A `permissions:` entry the parser could not map onto `Permissions` (PERM003).
+/// `text` is the offending token as written: the key for `unknown_scope`, the
+/// value for `invalid_level` and `invalid_all`. `scope` names the key the bad
+/// value belongs to and is empty for the other kinds.
+pub const PermissionProblem = struct {
+    kind: PermissionProblemKind,
+    text: []const u8,
+    scope: []const u8 = "",
+    span: yaml_types.Span,
+};
 
 pub const Concurrency = struct {
     group: []const u8,
@@ -305,6 +338,8 @@ pub const Job = struct {
     needs_spans: []const yaml_types.Span = &.{},
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
+    /// `permissions:` entries rejected during parsing (PERM003).
+    permission_problems: []const PermissionProblem = &.{},
     steps: []const Step = &.{},
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
@@ -340,6 +375,8 @@ pub const Workflow = struct {
     on: Trigger,
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
+    /// `permissions:` entries rejected during parsing (PERM003).
+    permission_problems: []const PermissionProblem = &.{},
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
