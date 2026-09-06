@@ -13,63 +13,75 @@ const Fix = diagnostics_mod.Fix;
 const Span = yaml_types.Span;
 
 const LabelStatus = enum {
-    retired,
+    /// Currently offered by GitHub (or a self-hosted convention label).
+    current,
     deprecated,
+    retired,
 
     /// A retired label makes the run fail outright; a deprecated one still works.
     fn severity(self: LabelStatus) Severity {
         return switch (self) {
             .retired => .@"error",
-            .deprecated => .warning,
+            .deprecated, .current => .warning,
         };
     }
 
     fn message(self: LabelStatus) []const u8 {
         return switch (self) {
             .retired => "runs-on label is retired and the workflow will fail to start",
-            .deprecated => "runs-on label is deprecated and scheduled for retirement",
+            .deprecated, .current => "runs-on label is deprecated and scheduled for retirement",
         };
     }
 };
 
-const DeprecatedLabel = struct {
+/// Every `runs-on` label zghalint recognises, in one pile: RUNNER001 reports
+/// the retired/deprecated ones, RUNNER002 treats membership here (plus the
+/// user's own `runner.labels`) as the definition of "known".
+const KnownLabel = struct {
     label: []const u8,
-    status: LabelStatus,
-    replacement: []const u8,
+    status: LabelStatus = .current,
+    /// Only meaningful for deprecated/retired labels.
+    replacement: []const u8 = "",
 };
 
-const deprecated_labels = [_]DeprecatedLabel{
-    .{
-        .label = "ubuntu-18.04",
-        .status = .retired,
-        .replacement = "ubuntu-22.04",
-    },
-    .{
-        .label = "ubuntu-20.04",
-        .status = .retired,
-        .replacement = "ubuntu-22.04",
-    },
-    .{
-        .label = "macos-11",
-        .status = .retired,
-        .replacement = "macos-13",
-    },
-    .{
-        .label = "macos-12",
-        .status = .retired,
-        .replacement = "macos-13",
-    },
-    .{
-        .label = "windows-2019",
-        .status = .deprecated,
-        .replacement = "windows-2022",
-    },
+const known_labels = [_]KnownLabel{
+    // GitHub-hosted, currently offered.
+    .{ .label = "ubuntu-latest" },
+    .{ .label = "ubuntu-24.04" },
+    .{ .label = "ubuntu-22.04" },
+    .{ .label = "ubuntu-24.04-arm" },
+    .{ .label = "ubuntu-22.04-arm" },
+    .{ .label = "windows-latest" },
+    .{ .label = "windows-2025" },
+    .{ .label = "windows-2022" },
+    .{ .label = "windows-11-arm" },
+    .{ .label = "macos-latest" },
+    .{ .label = "macos-26" },
+    .{ .label = "macos-15" },
+    .{ .label = "macos-14" },
+    .{ .label = "macos-13" },
+    // Self-hosted convention labels (GitHub adds these automatically).
+    .{ .label = "self-hosted" },
+    .{ .label = "linux" },
+    .{ .label = "windows" },
+    .{ .label = "macos" },
+    .{ .label = "x64" },
+    .{ .label = "x86" },
+    .{ .label = "arm" },
+    .{ .label = "arm64" },
+    // Withdrawn or on the way out.
+    .{ .label = "ubuntu-18.04", .status = .retired, .replacement = "ubuntu-22.04" },
+    .{ .label = "ubuntu-20.04", .status = .retired, .replacement = "ubuntu-22.04" },
+    .{ .label = "macos-11", .status = .retired, .replacement = "macos-13" },
+    .{ .label = "macos-12", .status = .retired, .replacement = "macos-13" },
+    .{ .label = "windows-2019", .status = .deprecated, .replacement = "windows-2022" },
 };
 
 fn checkDeprecatedRunner(job: *const Job, diag_list: *DiagnosticList) void {
     const runs_on = job.runs_on orelse return;
 
-    for (deprecated_labels) |entry| {
+    for (known_labels) |entry| {
+        if (entry.status == .current) continue;
         if (!std.mem.eql(u8, runs_on, entry.label)) continue;
 
         const span = job.runs_on_value_span orelse job.span;
