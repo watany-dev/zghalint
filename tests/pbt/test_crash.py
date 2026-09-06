@@ -12,6 +12,7 @@ from tests.pbt.strategies import (
     random_text,
     yaml_like_text,
     expression_text,
+    deeply_nested_expression,
 )
 
 # Subprocess-based tests: disable deadline, moderate example count.
@@ -85,3 +86,18 @@ def test_no_crash_on_expression_in_workflow(zghalint_bin, expr):
     )
     result = _write_and_lint(zghalint_bin, workflow)
     _assert_no_crash(result, f"expression: {safe_expr[:80]}")
+
+
+@given(workflow=deeply_nested_expression())
+@PBT_SETTINGS
+def test_no_crash_on_deeply_nested_expression(zghalint_bin, workflow):
+    """Deeply nested `${{ }}` must be rejected, not overflow the stack (#170).
+
+    Silently accepting the expression is the other failure mode the depth cap
+    can regress into, so the diagnostic itself is part of the assertion.
+    """
+    result = _write_and_lint(zghalint_bin, workflow)
+    _assert_no_crash(result, "deeply nested expression")
+    assert "EXPR001" in result.stdout, (
+        f"expected EXPR001 for a depth-capped expression, got: {result.stdout[:500]}"
+    )

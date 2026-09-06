@@ -242,6 +242,11 @@ def workflow_with_perm002(draw: st.DrawFn) -> str:
         "some-org/some-action@a5ac7e51b41094c92402da3b24376905380afc29",
         "another-org/tool@a5ac7e51b41094c92402da3b24376905380afc29",
     ]))
+    # A block-scalar `runs-on:` used to make the fix land inside `steps:` (#172).
+    runs_on = draw(st.sampled_from([
+        f"    runs-on: {runner}\n",
+        f"    runs-on: |\n      {runner}\n",
+    ]))
     return (
         "name: CI\n"
         "on: push\n"
@@ -250,7 +255,7 @@ def workflow_with_perm002(draw: st.DrawFn) -> str:
         "  cancel-in-progress: true\n"
         "jobs:\n"
         "  build:\n"
-        f"    runs-on: {runner}\n"
+        f"{runs_on}"
         "    timeout-minutes: 10\n"
         "    steps:\n"
         f"      - uses: {action}\n"
@@ -522,4 +527,64 @@ def workflow_with_plain_scalar_if(draw: st.DrawFn) -> str:
         "      - name: guarded\n"
         f"        if: {func}({context}, '{needle}')\n"
         "        run: echo ok\n"
+    )
+
+
+@st.composite
+def workflow_with_flow_with(draw: st.DrawFn) -> str:
+    """Generate a checkout step whose `with:` has no safe append anchor.
+
+    SEC018 fires on every variant, but the flow collections, block scalar and
+    empty `with:` all broke the `with:` append autofix before #171.
+    """
+    with_block = draw(st.sampled_from([
+        "        with: {fetch-depth: 0}\n",
+        "        with:\n          sparse-checkout: [a, b]\n",
+        "        with:\n          sparse-checkout: |\n            a\n            b\n",
+        "        with: {}\n",
+        "        with:\n",
+    ]))
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "concurrency:\n"
+        "  group: ci\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        "      - name: Checkout\n"
+        "        uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
+        f"{with_block}"
+    )
+
+
+@st.composite
+def deeply_nested_expression(draw: st.DrawFn) -> str:
+    """Generate a workflow whose `${{ }}` nests far past the parser depth cap.
+
+    Recursive-descent expression parsing used to overflow the stack on inputs
+    like these (#170); the parser now rejects them with EXPR001 instead.
+    """
+    depth = draw(st.integers(min_value=300, max_value=5000))
+    kind = draw(st.sampled_from(["paren", "call", "not", "index"]))
+    if kind == "paren":
+        expr = "(" * depth + "1" + ")" * depth
+    elif kind == "call":
+        expr = "fromJSON(" * depth + "1" + ")" * depth
+    elif kind == "not":
+        expr = "!" * depth + "true"
+    else:
+        expr = "github" + "[0]" * depth
+    return (
+        "name: test\n"
+        "on: push\n"
+        "jobs:\n"
+        "  j:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        f"      - run: echo '${{{{ {expr} }}}}'\n"
     )

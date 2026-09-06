@@ -43,6 +43,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
+| `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
 | `clean.yml` | A well-formed workflow: nothing may fire |
 
 Network-backed rules (SC003–SC006, SC008) stay offline in tests, so fixtures

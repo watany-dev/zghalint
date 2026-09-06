@@ -97,12 +97,14 @@ pub fn insertMappingEntryBlock(
 - anchor: `Workflow.concurrency_insertion_byte`（`src/workflow/parser.zig:60`、`on:` エントリの `full_span.end_byte`）
 - indent: `Workflow.top_level_indent`（= 0）
 - `concurrency_insertion_byte == null` のとき fix は null（`on:` を含まない不正 workflow 想定、実行到達しない）
+- `full_span.end_byte` は値がブロックスカラー（`on: |`）の場合に次の兄弟キー行まで飲み込んでいたため、挿入が `jobs:` の内側に落ちていた（#172）。`src/yaml/parser.zig` の `blockEntryFullSpan` でブロックスカラーを特別扱いして修正済み
 
 ### PERM002
 
 - anchor: `Job.permissions_insertion_byte`（`src/workflow/parser.zig:292`、`runs-on:` または `uses:` の `full_span.end_byte`）
 - indent: `Job.job_indent - 1`（1-based column → 0-based 空白数）
 - `permissions_insertion_byte == null` または `job_indent == 0` のとき fix は null
+- BP005 と同じく、`runs-on: |` のようなブロックスカラー値では anchor が `steps:` を越えてしまい、`permissions:` が step リストの中に挿入されていた（#172）
 
 ### DEP001
 

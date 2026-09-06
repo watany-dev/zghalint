@@ -176,9 +176,7 @@ pub const Tokenizer = struct {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
-        self.pos += 1;
-        self.line += 1;
-        self.column = 1;
+        self.consumeNewline();
         return .{
             .kind = .newline,
             .start = start,
@@ -206,14 +204,13 @@ pub const Tokenizer = struct {
             if (quote == '"' and self.source[self.pos] == '\\') {
                 self.advance();
                 if (self.pos < self.source.len) {
-                    self.advance();
+                    // `\` + 改行は YAML の行継続。改行ごと食べるので行カウンタも進める。
+                    if (self.source[self.pos] == '\n') self.consumeNewline() else self.advance();
                 }
                 continue;
             }
             if (self.source[self.pos] == '\n') {
-                self.pos += 1;
-                self.line += 1;
-                self.column = 1;
+                self.consumeNewline();
                 continue;
             }
             self.advance();
@@ -242,15 +239,11 @@ pub const Tokenizer = struct {
             const saved_pos = self.pos;
             const saved_line = self.line;
             const saved_col = self.column;
-            self.pos += 1;
-            self.line += 1;
-            self.column = 1;
+            self.consumeNewline();
 
             while (self.pos < self.source.len) {
                 if (self.source[self.pos] == '\n') {
-                    self.pos += 1;
-                    self.line += 1;
-                    self.column = 1;
+                    self.consumeNewline();
                     continue;
                 }
                 if (self.source[self.pos] == ' ') {
@@ -269,9 +262,7 @@ pub const Tokenizer = struct {
         }
 
         while (self.pos < self.source.len and self.source[self.pos] == '\n') {
-            self.pos += 1;
-            self.line += 1;
-            self.column = 1;
+            self.consumeNewline();
 
             var indent: u32 = 0;
             while (self.pos + indent < self.source.len and self.source[self.pos + indent] == ' ') {
@@ -350,6 +341,12 @@ pub const Tokenizer = struct {
     fn advance(self: *Tokenizer) void {
         self.pos += 1;
         self.column += 1;
+    }
+
+    fn consumeNewline(self: *Tokenizer) void {
+        self.pos += 1;
+        self.line += 1;
+        self.column = 1;
     }
 
     fn skipWhitespace(self: *Tokenizer) void {
@@ -744,4 +741,24 @@ test "tokenizer flow entry comma" {
     _ = tokenizer.next();
     const comma = tokenizer.next();
     try std.testing.expectEqual(TokenKind.flow_entry, comma.kind);
+}
+test "tokenizer counts the line after a `\\` line continuation inside a double-quoted scalar" {
+    var tokenizer = Tokenizer.init("\"a \\\nb\"\nx");
+    _ = tokenizer.next();
+    const scalar = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, scalar.kind);
+    try std.testing.expectEqualStrings("\"a \\\nb\"", scalar.slice(tokenizer.source));
+    _ = tokenizer.next();
+    const after = tokenizer.next();
+    try std.testing.expectEqualStrings("x", after.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 3), after.line);
+}
+test "tokenizer counts an escaped backslash followed by a newline only once" {
+    var tokenizer = Tokenizer.init("\"a\\\\\nb\"\nx");
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    const after = tokenizer.next();
+    try std.testing.expectEqualStrings("x", after.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 3), after.line);
 }

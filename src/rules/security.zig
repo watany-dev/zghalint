@@ -1062,6 +1062,10 @@ fn buildPersistCredentialsFalseFix(
     const has_persist = if (step.with) |w| w.get("persist-credentials") != null else false;
     if (has_persist) return null;
 
+    // `with: {}` / `with:` parses to a null `with` while the key is still in
+    // source, so inserting a `with:` block would leave the step with two (#171).
+    if (step.with == null and util.hasEmptySection(step.empty_sections, "with")) return null;
+
     // uses_key_col is 1-based; parent aligns at col - 1 spaces, child at col + 1.
     const edits = if (step.with == null)
         fix_builder.insertWithEntry(alloc, step.uses_value_end_byte orelse return null, col, "persist-credentials", "false")
@@ -3865,6 +3869,64 @@ test "SEC015: fix inserts into existing with: block" {
     }
 }
 
+test "SEC015: no fix when the with: anchor is unavailable (#171)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("fetch-depth", "0") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .with = with,
+            .uses_key_col = 8,
+            .uses_value_end_byte = 50,
+        },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC015").?;
+    try testing.expect(diag.fix == null);
+}
+
+test "SEC015: no fix when with: is present but empty (#171)" {
+    const empty = [_]workflow_types.EmptySection{.{ .name = "with", .span = yaml.Span.point(1, 1, 0) }};
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/checkout@v4"),
+            .uses_key_col = 8,
+            .uses_value_end_byte = 50,
+            .empty_sections = &empty,
+        },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC015").?;
+    try testing.expect(diag.fix == null);
+}
+
+test "SEC015: applyFixes leaves a flow with: untouched under plain --fix (#171)" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with: {fetch-depth: 0}
+        \\      - uses: actions/upload-artifact@v4
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkArtipacked }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
 test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("persist-credentials", "true") catch unreachable;
@@ -4051,6 +4113,57 @@ test "SEC018: with exists without persist-credentials triggers with fix" {
     const diag = findDiagnostic(&list, "SEC018").?;
     try testing.expect(diag.fix != null);
     try testing.expect(diag.fix.?.safety == .unsafe);
+}
+
+test "SEC018: no fix when the with: anchor is unavailable (#171)" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    with_map.put("fetch-depth", "0") catch unreachable;
+    defer with_map.deinit();
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .with = with_map,
+        .uses_key_col = 8,
+        .uses_value_end_byte = 50,
+    });
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC018").?;
+    try testing.expect(diag.fix == null);
+    try testing.expect(diag.fix_hint != null);
+}
+
+test "SEC018: no fix when with: is present but empty (#171)" {
+    const empty = [_]workflow_types.EmptySection{.{ .name = "with", .span = yaml.Span.point(1, 1, 0) }};
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/checkout@v4"),
+        .uses_key_col = 8,
+        .uses_value_end_byte = 50,
+        .empty_sections = &empty,
+    });
+    defer list.deinit();
+
+    const diag = findDiagnostic(&list, "SEC018").?;
+    try testing.expect(diag.fix == null);
+    try testing.expect(diag.fix_hint != null);
+}
+
+test "SEC018: applyFixes leaves a flow with: untouched (#171)" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with: {fetch-depth: 0}
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkCheckoutPersistCredentials }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
 }
 
 test "SEC018: persist-credentials: true triggers without fix" {
