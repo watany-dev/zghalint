@@ -199,6 +199,61 @@ pub const WorkflowCallInputProblem = struct {
     span: yaml_types.Span,
 };
 
+/// The `type:` values `workflow_dispatch` accepts. `workflow_call` uses the
+/// narrower `CallableInputType`: `choice` and `environment` are dispatch-only,
+/// because only the manual run form can render a picker.
+pub const DispatchInputType = enum {
+    string,
+    boolean,
+    number,
+    choice,
+    environment,
+
+    pub fn fromString(s: []const u8) ?DispatchInputType {
+        const map = std.StaticStringMap(DispatchInputType).initComptime(.{
+            .{ "string", .string },
+            .{ "boolean", .boolean },
+            .{ "number", .number },
+            .{ "choice", .choice },
+            .{ "environment", .environment },
+        });
+        return map.get(s);
+    }
+
+    pub fn name(self: DispatchInputType) []const u8 {
+        return @tagName(self);
+    }
+};
+
+pub const DispatchInputDef = struct {
+    name: []const u8,
+    name_span: yaml_types.Span,
+    /// Null when `type:` is absent (GitHub defaults to `string`) or invalid.
+    input_type: ?DispatchInputType = null,
+    type_span: ?yaml_types.Span = null,
+    options: []const []const u8 = &.{},
+    default_value: ?[]const u8 = null,
+    default_span: ?yaml_types.Span = null,
+};
+
+pub const WorkflowDispatchInputProblemKind = enum {
+    invalid_type,
+    missing_options,
+    empty_options,
+    options_without_choice,
+    default_not_in_options,
+    default_type_mismatch,
+};
+
+pub const WorkflowDispatchInputProblem = struct {
+    kind: WorkflowDispatchInputProblemKind,
+    input_name: []const u8,
+    /// Invalid type name, offending default value, or declared type name,
+    /// depending on `kind`. Empty when the message needs no second value.
+    detail: []const u8,
+    span: yaml_types.Span,
+};
+
 pub const EventType = enum {
     push,
     pull_request,
@@ -254,6 +309,8 @@ pub const EventConfig = struct {
     schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
+    workflow_dispatch_inputs: []const DispatchInputDef = &.{},
+    workflow_dispatch_input_problems: []const WorkflowDispatchInputProblem = &.{},
 };
 
 pub const Trigger = struct {

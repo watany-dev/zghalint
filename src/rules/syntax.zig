@@ -579,6 +579,78 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
+fn workflowDispatchInputMessage(
+    alloc: std.mem.Allocator,
+    problem: workflow_types.WorkflowDispatchInputProblem,
+) ?[]const u8 {
+    return switch (problem.kind) {
+        .invalid_type => std.fmt.allocPrint(
+            alloc,
+            "invalid input type \"{s}\" for workflow_dispatch input \"{s}\". available types are \"string\", \"boolean\", \"number\", \"choice\" and \"environment\"",
+            .{ problem.detail, problem.input_name },
+        ) catch null,
+        .missing_options => std.fmt.allocPrint(
+            alloc,
+            "\"options\" is required for workflow_dispatch input \"{s}\" of type \"choice\"",
+            .{problem.input_name},
+        ) catch null,
+        .empty_options => std.fmt.allocPrint(
+            alloc,
+            "\"options\" of workflow_dispatch input \"{s}\" is empty",
+            .{problem.input_name},
+        ) catch null,
+        .options_without_choice => std.fmt.allocPrint(
+            alloc,
+            "\"options\" is only available for type \"choice\", but workflow_dispatch input \"{s}\" has type \"{s}\"",
+            .{ problem.input_name, problem.detail },
+        ) catch null,
+        .default_not_in_options => std.fmt.allocPrint(
+            alloc,
+            "default \"{s}\" of workflow_dispatch input \"{s}\" is not included in its \"options\"",
+            .{ problem.detail, problem.input_name },
+        ) catch null,
+        .default_type_mismatch => std.fmt.allocPrint(
+            alloc,
+            "default of workflow_dispatch input \"{s}\" must be a {s} for type \"{s}\"",
+            .{ problem.input_name, valueWordForType(problem.detail), problem.detail },
+        ) catch null,
+    };
+}
+
+fn valueWordForType(type_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, type_name, "boolean")) return "bool";
+    if (std.mem.eql(u8, type_name, "number")) return "number";
+    return "string";
+}
+
+fn dispatchInputFixHint(kind: workflow_types.WorkflowDispatchInputProblemKind) []const u8 {
+    return switch (kind) {
+        .invalid_type => "use `string`, `boolean`, `number`, `choice`, or `environment`",
+        .missing_options => "add an `options:` list, or drop `type: choice`",
+        .empty_options => "list at least one value under `options:`",
+        .options_without_choice => "remove `options:`, or set `type: choice`",
+        .default_not_in_options => "use one of the listed options as the default, or add it to `options:`",
+        .default_type_mismatch => "write the default as the declared type, unquoted",
+    };
+}
+
+fn checkWorkflowDispatchInputs(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.on.events) |event| {
+        if (event.event != .workflow_dispatch) continue;
+        for (event.workflow_dispatch_input_problems) |problem| {
+            const message = workflowDispatchInputMessage(alloc, problem) orelse continue;
+            list.append(.{
+                .rule_id = "SYN017",
+                .severity = .@"error",
+                .message = message,
+                .span = problem.span,
+                .fix_hint = dispatchInputFixHint(problem.kind),
+            }) catch return;
+        }
+    }
+}
+
 fn checkGlobFilters(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.on.events) |event| {
         const filter = event.filter orelse continue;
@@ -709,6 +781,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkScheduleTimezone,
+    },
+    .{
+        .id = "SYN017",
+        .name = "workflow-dispatch-inputs",
+        .description = "workflow_dispatch input declares an invalid type, options, or default",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkWorkflowDispatchInputs,
     },
 };
 
@@ -2931,6 +3011,131 @@ test "SYN016: IANA names and expression values are clean" {
     ;
 
     var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn017(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkWorkflowDispatchInputs(&wf, &list);
+    return list;
+}
+
+test "SYN017: invalid workflow_dispatch inputs from the issue example" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      env:
+        \\        type: choice
+        \\        default: staging
+        \\        options: [dev, prod]
+        \\      verbose:
+        \\        type: boolean
+        \\        default: "yes"
+        \\      level:
+        \\        type: enum
+        \\      target:
+        \\        type: choice
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 4), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"staging\"") != null);
+    try testing.expectEqual(@as(usize, 6), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "must be a bool for type \"boolean\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(2).message, "invalid input type \"enum\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(3).message, "\"options\" is required") != null);
+}
+
+test "SYN017: options outside type choice and an empty options list are reported" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      name:
+        \\        type: string
+        \\        options: [a, b]
+        \\      pick:
+        \\        type: choice
+        \\        options: []
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "only available for type \"choice\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "is empty") != null);
+}
+
+test "SYN017: number default and untyped inputs" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      retries:
+        \\        type: number
+        \\        default: many
+        \\      note:
+        \\        description: free text
+        \\        default: hello
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "must be a number for type \"number\"") != null);
+}
+
+test "SYN017: valid workflow_dispatch inputs are clean" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      env:
+        \\        type: choice
+        \\        default: dev
+        \\        options: [dev, staging, prod]
+        \\      verbose:
+        \\        type: boolean
+        \\        default: false
+        \\      retries:
+        \\        type: number
+        \\        default: 3
+        \\      target:
+        \\        type: environment
+        \\        default: production
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());

@@ -218,7 +218,13 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
                         config.workflow_call_input_problems = parsed.problems;
                     }
                 },
-                .workflow_dispatch => {},
+                .workflow_dispatch => {
+                    if (m.get("inputs")) |inputs_node| {
+                        const parsed = try parseWorkflowDispatchInputs(allocator, inputs_node);
+                        config.workflow_dispatch_inputs = parsed.inputs;
+                        config.workflow_dispatch_input_problems = parsed.problems;
+                    }
+                },
                 else => {
                     config.filter = try parseEventFilter(allocator, m);
                 },
@@ -419,6 +425,165 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
         .inputs = try inputs.toOwnedSlice(allocator),
         .problems = try problems.toOwnedSlice(allocator),
     };
+}
+
+const ParsedWorkflowDispatchInputs = struct {
+    inputs: []const types.DispatchInputDef,
+    problems: []const types.WorkflowDispatchInputProblem,
+};
+
+fn defaultMatchesDispatchInputType(input_type: types.DispatchInputType, node: Node) bool {
+    return switch (input_type) {
+        .boolean => parseYamlBool(node) != null,
+        .number => isYamlNumber(node),
+        .string, .choice, .environment => isYamlScalar(node),
+    };
+}
+
+fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowDispatchInputs {
+    const inputs_mapping = switch (node) {
+        .mapping => |m| m,
+        else => return .{ .inputs = &.{}, .problems = &.{} },
+    };
+
+    var inputs = std.ArrayList(types.DispatchInputDef){};
+    errdefer inputs.deinit(allocator);
+    var problems = std.ArrayList(types.WorkflowDispatchInputProblem){};
+    errdefer problems.deinit(allocator);
+
+    for (inputs_mapping.entries) |entry| {
+        const input_name = entry.key.value;
+        const input_mapping = switch (entry.value) {
+            .mapping => |m| m,
+            else => continue,
+        };
+
+        var def = types.DispatchInputDef{
+            .name = input_name,
+            .name_span = entry.key.span,
+        };
+
+        if (input_mapping.get("type")) |type_node| {
+            def.type_span = type_node.getSpan();
+            const type_name = switch (type_node) {
+                .scalar => |sc| sc.value,
+                else => "",
+            };
+            if (types.DispatchInputType.fromString(type_name)) |parsed_type| {
+                def.input_type = parsed_type;
+            } else {
+                try problems.append(allocator, .{
+                    .kind = .invalid_type,
+                    .input_name = input_name,
+                    .detail = type_name,
+                    .span = type_node.getSpan(),
+                });
+            }
+        }
+
+        const options_node = input_mapping.get("options");
+        if (options_node) |on| {
+            // A non-sequence `options:` is a shape error for SYN004, not a
+            // parse failure: leaving the list empty keeps the workflow
+            // readable and still reports the option problems below.
+            switch (on) {
+                .sequence, .scalar => def.options = (try parseStringArrayWithSpans(allocator, on)).values,
+                else => {},
+            }
+        }
+
+        if (input_mapping.get("default")) |default_node| {
+            switch (default_node) {
+                .scalar => |sc| {
+                    def.default_value = sc.value;
+                    def.default_span = sc.span;
+                },
+                else => {},
+            }
+        }
+
+        // An invalid `type:` already has its own diagnostic; the rules below
+        // would only restate it against a type GitHub never resolved.
+        if (def.input_type) |input_type| {
+            try appendDispatchInputProblems(
+                allocator,
+                &problems,
+                def,
+                input_type,
+                options_node,
+                input_mapping.get("default"),
+                entry.value.getSpan(),
+            );
+        }
+
+        try inputs.append(allocator, def);
+    }
+
+    return .{
+        .inputs = try inputs.toOwnedSlice(allocator),
+        .problems = try problems.toOwnedSlice(allocator),
+    };
+}
+
+fn appendDispatchInputProblems(
+    allocator: std.mem.Allocator,
+    problems: *std.ArrayList(types.WorkflowDispatchInputProblem),
+    def: types.DispatchInputDef,
+    input_type: types.DispatchInputType,
+    options_node: ?Node,
+    default_node: ?Node,
+    input_span: yaml.Span,
+) ParseError!void {
+    if (input_type == .choice) {
+        if (options_node) |on| {
+            if (def.options.len == 0) {
+                try problems.append(allocator, .{
+                    .kind = .empty_options,
+                    .input_name = def.name,
+                    .detail = "",
+                    .span = on.getSpan(),
+                });
+            }
+        } else {
+            try problems.append(allocator, .{
+                .kind = .missing_options,
+                .input_name = def.name,
+                .detail = "",
+                .span = def.type_span orelse input_span,
+            });
+        }
+    } else if (options_node) |on| {
+        try problems.append(allocator, .{
+            .kind = .options_without_choice,
+            .input_name = def.name,
+            .detail = input_type.name(),
+            .span = on.getSpan(),
+        });
+    }
+
+    const default = default_node orelse return;
+
+    if (!defaultMatchesDispatchInputType(input_type, default)) {
+        try problems.append(allocator, .{
+            .kind = .default_type_mismatch,
+            .input_name = def.name,
+            .detail = input_type.name(),
+            .span = default.getSpan(),
+        });
+        return;
+    }
+
+    if (input_type != .choice or def.options.len == 0) return;
+    const default_value = def.default_value orelse return;
+    for (def.options) |option| {
+        if (std.mem.eql(u8, option, default_value)) return;
+    }
+    try problems.append(allocator, .{
+        .kind = .default_not_in_options,
+        .input_name = def.name,
+        .detail = default_value,
+        .span = def.default_span orelse default.getSpan(),
+    });
 }
 
 fn parseFilterPatternList(allocator: std.mem.Allocator, node: ?Node) ParseError!types.FilterPatternList {

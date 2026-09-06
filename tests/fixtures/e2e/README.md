@@ -41,6 +41,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
 | `syn016-schedule-timezone.yml` | #72: `schedule` `timezone` names outside the IANA database |
+| `syn017-workflow-dispatch-inputs.yml` | #73: `workflow_dispatch` input type, `options`, and `default` mismatches |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |

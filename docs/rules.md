@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **70 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **71 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -219,6 +219,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
 | SYN016 | invalid-timezone | error | `schedule` `timezone` is not a name in the IANA time zone database |
+| SYN017 | workflow-dispatch-inputs | error | `workflow_dispatch` input declares an invalid `type`, misuses `options`, or has a `default` that does not fit |
 
 ### SYN002 duplicate-key
 
@@ -400,6 +401,54 @@ on:
 ```
 
 A `timezone` built from a `${{ }}` expression is not checked.
+
+---
+
+### SYN017 workflow-dispatch-inputs
+
+`workflow_dispatch` inputs have a small type system that GitHub enforces when
+the run form is rendered:
+
+- `type:` must be `string`, `boolean`, `number`, `choice`, or `environment`
+- `type: choice` requires a non-empty `options:` list, and `options:` is
+  meaningless for any other type
+- `default:` must be one of the `options:` for a choice, a bool for `boolean`,
+  and a number for `number`
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        default: staging       # error: not included in "options"
+        options: [dev, prod]
+      verbose:
+        type: boolean
+        default: "yes"         # error: must be a bool
+      level:
+        type: enum             # error: invalid input type
+      target:
+        type: choice           # error: "options" is required
+```
+
+Valid examples:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        default: dev
+        options: [dev, staging, prod]
+      verbose:
+        type: boolean
+        default: false
+```
+
+An input with no `type:` defaults to `string` and is not reported. Reusable
+workflow inputs use a different type system and are checked by RW001.
 
 ---
 
