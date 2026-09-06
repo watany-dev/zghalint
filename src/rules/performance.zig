@@ -1248,6 +1248,12 @@ test "PERF001: fixture harness applies expected fix" {
             .ctx = .{ .node_cache = .npm },
         },
         .{
+            .name = "setup-node-null-with",
+            .input_path = "tests/fixtures/perf001-cache/setup-node-null-with/input.yml",
+            .expected_path = null,
+            .ctx = .{ .node_cache = .npm },
+        },
+        .{
             .name = "setup-uv-disabled",
             .input_path = "tests/fixtures/perf001-cache/setup-uv-disabled/input.yml",
             .expected_path = null,

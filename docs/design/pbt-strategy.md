@@ -20,18 +20,19 @@ zghalint の品質保証戦略として **Property-Based Testing (PBT)** を採�
 ## 2. 既存 PBT の現状サマリ
 
 PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されている。
-合計 1,043 行・31 個の `@given` テストで 6 カテゴリをカバーする。
+合計 1,731 行・42 個の `@given` テストで 6 カテゴリをカバーする。
 
 | ファイル | 行 | テスト数 | 主な不変条件 | 状態 |
 |---|---:|---:|---|---|
-| `tests/pbt/strategies.py` | 381 | – | 5 段階のジェネレータ + Phase 2 全 6 ルール専用誘発 strategy (BP004 / BP005 / DEP001 / PERF001 / PERM001 / PERM002) + 回帰用 strategy (`workflow_with_flow_with` #171 / `deeply_nested_expression` #170、`workflow_with_perm002` は ブロックスカラー `runs-on:` #172 を含む) | OK |
-| `tests/pbt/conftest.py` | 115 | – | ReleaseSafe ビルド・subprocess 実行・config 書き出し | OK |
-| `tests/pbt/test_crash.py` | 87 | 4 | 任意入力で signal 終了しない | OK |
-| `tests/pbt/test_determinism.py` | 73 | – | 同一入力 → 同一出力 | OK |
+| `tests/pbt/strategies.py` | 590 | – | 5 段階のジェネレータ + Phase 2 全 6 ルール専用誘発 strategy (BP004 / BP005 / DEP001 / PERF001 / PERM001 / PERM002) + 回帰用 strategy (`workflow_with_flow_with` #171 / `deeply_nested_expression` #170、`workflow_with_perm002` は ブロックスカラー `runs-on:` #172 を含む) | OK |
+| `tests/pbt/conftest.py` | 126 | – | ReleaseSafe ビルド・subprocess 実行・config 書き出し | OK |
+| `tests/pbt/test_crash.py` | 103 | 5 | 任意入力で signal 終了しない | OK |
+| `tests/pbt/test_determinism.py` | 73 | 4 | 同一入力 → 同一出力 | OK |
 | `tests/pbt/test_monotonicity.py` | 119 | 3 | 問題追加で診断数が減らない / disable で増えない | OK |
-| `tests/pbt/test_autofix_idempotency.py` | 344 | 8 | `--fix` / `--fix-unsafe` 冪等・出力再 lint 可 | OK |
-| `tests/pbt/test_security_detection.py` | 87 | 3 | SEC001/002/003 を必ず検出 | OK |
-| `tests/pbt/test_output_consistency.py` | 212 | – | JSON/SARIF スキーマ・summary 算術 | OK |
+| `tests/pbt/test_autofix_idempotency.py` | 365 | 10 | `--fix` / `--fix-unsafe` 冪等・出力再 lint 可 | OK |
+| `tests/pbt/test_security_detection.py` | 87 | 5 | SEC001/002/003 を必ず検出 | OK |
+| `tests/pbt/test_plain_scalar.py` | 56 | 2 | プレーンスカラーの `run:` / `if:` を取りこぼさない (#131) | OK |
+| `tests/pbt/test_output_consistency.py` | 212 | 11 | JSON/SARIF スキーマ・summary 算術 | OK |
 
 **実行設定**: `max_examples=50` (autofix のみ 30), `deadline=None`,
 `HealthCheck.too_slow` 抑制。subprocess 実行のため上限 50 例。

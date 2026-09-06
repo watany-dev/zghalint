@@ -174,6 +174,7 @@ def test_unsafe_fix_reduces_diagnostics_dependabot(zghalint_bin, content):
     workflow_with_perm001_individual_write(),
     workflow_with_bp004(),
     workflow_with_perf001_setup_go(),
+    workflow_with_flow_with(),
 ))
 @PBT_SETTINGS
 def test_double_unsafe_fix_is_idempotent_workflow(zghalint_bin, content):
@@ -220,7 +221,7 @@ def test_double_unsafe_fix_is_idempotent_dependabot(zghalint_bin, content):
         _cleanup_dependabot(path)
 
 
-@given(content=st.one_of(workflow_yaml(), workflow_with_flow_with()))
+@given(content=workflow_yaml())
 @PBT_SETTINGS
 def test_fixed_file_is_still_parseable(zghalint_bin, content):
     """After --fix, the output file must still be lint-able (no crash)."""
@@ -232,6 +233,24 @@ def test_fixed_file_is_still_parseable(zghalint_bin, content):
         assert result.returncode >= 0, (
             f"Re-lint after --fix signal-terminated: returncode={result.returncode}"
         )
+    finally:
+        os.unlink(path)
+
+
+@given(content=workflow_with_flow_with())
+@PBT_SETTINGS
+def test_unfixable_with_block_is_left_alone(zghalint_bin, content):
+    """A `with:` with no safe append anchor must survive --fix-unsafe verbatim (#171).
+
+    These steps still fire SEC018, so a rule that rewrites them anyway would
+    produce a `with:` block that no longer parses.
+    """
+    path = write_temp_workflow(content)
+    try:
+        run_zghalint(zghalint_bin, "--fix-unsafe", path)
+        with open(path) as f:
+            after = f.read()
+        assert after == content, "--fix-unsafe rewrote a with: block it cannot anchor"
     finally:
         os.unlink(path)
 
