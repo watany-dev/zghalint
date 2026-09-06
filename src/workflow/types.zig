@@ -357,6 +357,8 @@ pub const Job = struct {
     empty_sections: []const EmptySection = &.{},
     /// Reusable workflow reference (mutually exclusive with steps)
     uses: ?[]const u8 = null,
+    /// Span of the job-level `uses:` scalar value (for DEP003).
+    uses_value_span: ?yaml_types.Span = null,
     with: ?StringMap = null,
     secrets: ?SecretsConfig = null,
     /// Column (1-based) at which this job's child keys are indented.

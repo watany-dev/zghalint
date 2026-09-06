@@ -143,12 +143,29 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 
 ## Dependency Rules (DEP)
 
-Validate Dependabot configuration files (`dependabot.yml`).
+Validate Dependabot configuration files (`dependabot.yml`) and the format of
+action / reusable workflow references.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | DEP001 | dependabot-cooldown | info | Dependabot updates should configure a cooldown period to avoid excessive PRs |
 | DEP002 | dependabot-execution | warning | `insecure-external-code-execution: allow` is a supply chain attack risk |
+| DEP003 | uses-format | error | `uses:` is not a supported action reference (step) or reusable workflow call (job) |
+
+### DEP003 で受理される形式
+
+ステップの `uses:`:
+
+- `{owner}/{repo}@{ref}` / `{owner}/{repo}/{path}@{ref}` — `@ref` は必須
+- `./{path}` — ローカルアクション（`@ref` を付けられない）
+- `docker://{image}`
+
+ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
+
+- `{owner}/{repo}/.github/workflows/{file}.yml@{ref}`
+- `./.github/workflows/{file}.yml` — `@ref` を付けられない
+
+`uses:` の値が `${{ }}` を含む場合は実行時にしか決まらないため報告しない。
 
 ## Runner Rules (RUNNER)
 

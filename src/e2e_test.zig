@@ -161,7 +161,7 @@ test "E2E: fixtures produce the declared diagnostics" {
         "SEC007",    "SEC008",  "SEC018",  "SC001",   "SC002",   "EXPR001",
         "EXPR002",   "SYN001",  "SYN004",  "SYN005",  "BP001",   "BP002",
         "BP005",     "PERF001", "PERF002", "PERM001", "PERM002", "PERM003",
-        "RUNNER001",
+        "RUNNER001", "DEP003",
     };
     for (must_cover) |rule_id| {
         if (covered.get(rule_id) == null) {
