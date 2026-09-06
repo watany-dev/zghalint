@@ -59,6 +59,15 @@ pub fn findByName(comptime T: type, items: []const T, name: []const u8) ?*const 
     return &items[idx];
 }
 
+/// GitHub Actions function names are case-insensitive; the catalog table keeps
+/// canonical camelCase spellings but lookup accepts any ASCII casing (#161).
+pub fn findByNameAsciiCaseInsensitive(comptime T: type, items: []const T, name: []const u8) ?*const T {
+    for (items) |*item| {
+        if (std.ascii.eqlIgnoreCase(name, item.name)) return item;
+    }
+    return null;
+}
+
 pub fn findProp(ty: TypeRef, name: []const u8) ?TypeRef {
     const prop = findByName(Prop, ty.props, name) orelse return null;
     return prop.ty;

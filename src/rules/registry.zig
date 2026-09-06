@@ -11,6 +11,7 @@ const dependabot = @import("dependabot.zig");
 const runner = @import("runner.zig");
 const syntax = @import("syntax.zig");
 const uses = @import("uses.zig");
+const reusable_workflow = @import("reusable_workflow.zig");
 
 pub const all_rules = security.security_rules ++
     best_practices.rules ++
@@ -20,4 +21,5 @@ pub const all_rules = security.security_rules ++
     dependabot.rules ++
     runner.rules ++
     syntax.rules ++
-    uses.rules;
+    uses.rules ++
+    reusable_workflow.rules;

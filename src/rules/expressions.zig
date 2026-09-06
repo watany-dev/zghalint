@@ -1626,6 +1626,11 @@ test "validate: unknown function" {
     try expectSingleRule("unknownFunc()", "EXPR004");
 }
 
+test "validate: function names are case-insensitive" {
+    try expectNoDiagnostics("Contains(github.ref, 'refs/heads/main')");
+    try expectNoDiagnostics("TOJSON(github.event)");
+}
+
 test "validate: case() is a known function" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -2172,6 +2177,18 @@ test "checkStep EXPR007: if condition always false (wrapped)" {
     defer list.deinit();
 
     checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkJob EXPR007: if condition always false" {
+    const job = Job{
+        .id = "deploy",
+        .if_condition = "false",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkJob(&job, &list);
     try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
 }
 
