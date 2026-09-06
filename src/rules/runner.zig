@@ -224,8 +224,8 @@ fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
     const runs_on = job.runs_on orelse return;
     if (runs_on.len == 0) return;
 
-    // `runs-on: ${{ matrix.os }}` needs matrix expansion (SYN018); until then
-    // an expression is out of scope rather than unknown.
+    // `runs-on: ${{ matrix.os }}` needs matrix expansion, tracked in #210;
+    // until then an expression is out of scope rather than unknown.
     if (std.mem.indexOf(u8, runs_on, "${{") != null) return;
     if (isKnownLabel(runs_on)) return;
 

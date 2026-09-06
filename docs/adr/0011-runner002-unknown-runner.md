@@ -56,8 +56,8 @@ actionlint の `self-hosted-runner.labels` に相当する。ルールは config
 
 ### D5. 式は当面スキップする
 
-`runs-on: ${{ matrix.os }}` の検証には matrix 展開（SYN018）が必要なため、
-第一段階では `${{` を含む値を対象外とする。
+`runs-on: ${{ matrix.os }}` の検証には matrix 展開が必要なため、第一段階では
+`${{` を含む値を対象外とする。第二段階は #210 で追う。
 
 ### D6. severity は error
 

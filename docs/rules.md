@@ -206,7 +206,7 @@ RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知の
 - 既知ラベルに接尾辞が付いたもの（`ubuntu-latest-4-cores` などの larger runner）
 - `self-hosted` / `linux` / `x64` などの慣用ラベル
 - 既知ラベルから遠く、`ubuntu-` / `windows-` / `macos-` でも始まらない独自ラベル（`gpu-box` など）
-- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は SYN018 待ち）
+- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は #210 で対応予定）
 
 既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
 提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
