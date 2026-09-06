@@ -123,7 +123,6 @@ fn combinedMessage(buf: *[combined_msg_len]u8, diag: Diagnostic) []const u8 {
 fn truncateUtf8(s: []const u8, max_len: usize) []const u8 {
     if (s.len <= max_len) return s;
     var end = max_len;
-    // Back off over continuation bytes (10xxxxxx) to the preceding boundary.
     while (end > 0 and (s[end] & 0xC0) == 0x80) end -= 1;
     return s[0..end];
 }

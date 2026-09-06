@@ -469,8 +469,6 @@ const github_env_targets = [_][]const u8{
     "GITHUB_PATH",
 };
 
-/// Length of the write operator at `i` (`>>`, `>`, or `tee [-a|--append]`),
-/// or null when `i` does not start one.
 fn githubEnvWriteOperatorLen(s: []const u8, i: usize) ?usize {
     if (s[i] == '>') {
         return if (i + 1 < s.len and s[i + 1] == '>') 2 else 1;

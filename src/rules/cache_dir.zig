@@ -25,8 +25,6 @@ fn openUnder(allocator: Allocator, env_var: []const u8, comptime sub_path: []con
     return dir.makeOpenPath(sub_path, .{}) catch null;
 }
 
-/// Writes `data` to `dir/name`, replacing any previous content.
-///
 /// Refuses to write through a symlink planted in the cache directory: a
 /// same-user attacker could otherwise redirect the write to an arbitrary
 /// path. `atomicFile` writes a sibling temp file and renames it over the

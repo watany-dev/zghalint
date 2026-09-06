@@ -58,9 +58,6 @@ fn writeSanitized(writer: anytype, s: []const u8) !void {
     }
 }
 
-/// The well-formed UTF-8 sequence at the start of `s`, or null when the lead
-/// byte is invalid, the sequence is truncated, or it does not decode
-/// (overlong form, surrogate, out of range).
 fn decodeUtf8(s: []const u8) ?struct { len: usize, cp: u21 } {
     const len = std.unicode.utf8ByteSequenceLength(s[0]) catch return null;
     if (len > s.len) return null;
