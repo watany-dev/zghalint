@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **59 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **63 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -38,6 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:` |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
+| SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 
 ### SEC002 / SEC008 vs. SEC006
@@ -53,6 +54,27 @@ SEC006 does not report ref-shaped inputs (`github.head_ref`,
 `.head.repo.default_branch`, `github.event.workflow_run.head_branch`) or label
 names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
 — is a common routing idiom. They stay untrusted for SEC002 and SEC008.
+
+### SEC021 vs. SEC005 / SEC009
+
+All three report the same shape — `actions/checkout` fed a ref the attacker
+picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
+`workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
+`repository_dispatch`, `issues`, `issue_comment`, `discussion` and
+`discussion_comment`.
+
+A workflow can declare several of those triggers at once, so ownership is
+decided per value rather than per workflow: SEC021 stays quiet on exactly the
+`with.ref` values SEC005 or SEC009 already reports, and no other. Skipping the
+whole workflow would hide a `ref` fed from a comment body just because
+`pull_request_target` also appears in `on:`, and would hide `with.repository`
+entirely, since neither of the other two rules looks at it.
+
+SEC021 reads the dispatch payloads (`github.event.inputs.*`,
+`github.event.client_payload.*`) and the free text of an issue, comment or
+discussion. The bare `inputs.*` shorthand counts too, except in a workflow that
+also declares `workflow_call`: there it names what a caller passes, and
+analysing callers is out of scope.
 
 ### SEC022 vs. SEC006
 
@@ -105,7 +127,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
 | BP002 | missing-step-name | info | Step is missing a `name` field |
 | BP003 | deprecated-action-version | warning | Using a known deprecated action version |
-| BP004 | cross-platform-shell | warning | Run step without `shell` in a Windows-targeting job |
+| BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
@@ -138,18 +160,35 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR004 | unknown-function | error | Unknown function name |
 | EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments |
 | EXPR006 | unsound-contains | warning | `contains()` uses substring matching which may match unintended values |
-| EXPR007 | unsound-condition | warning | Bare literal as operand in logical operator is always truthy |
+| EXPR007 | unsound-condition | warning | Bare literal in logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 
 ## Dependency Rules (DEP)
 
-Validate Dependabot configuration files (`dependabot.yml`).
+Validate Dependabot configuration files (`dependabot.yml`) and the format of
+action / reusable workflow references.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | DEP001 | dependabot-cooldown | info | Dependabot updates should configure a cooldown period to avoid excessive PRs |
 | DEP002 | dependabot-execution | warning | `insecure-external-code-execution: allow` is a supply chain attack risk |
+| DEP003 | uses-format | error | `uses:` is not a supported action reference (step) or reusable workflow call (job) |
+
+### DEP003 で受理される形式
+
+ステップの `uses:`:
+
+- `{owner}/{repo}@{ref}` / `{owner}/{repo}/{path}@{ref}` — `@ref` は必須
+- `./{path}` — ローカルアクション（`@ref` を付けられない）
+- `docker://{image}`
+
+ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
+
+- `{owner}/{repo}/.github/workflows/{file}.yml@{ref}`
+- `./.github/workflows/{file}.yml` — `@ref` を付けられない
+
+`uses:` の値が `${{ }}` を含む場合は実行時にしか決まらないため報告しない。
 
 ## Runner Rules (RUNNER)
 

@@ -132,6 +132,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
 
     if (root.get("defaults")) |n| {
         try recordEmpty(&empty, allocator, "defaults", n);
+        workflow.defaults = parseDefaults(n);
     }
 
     try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys, &.{schema.workflow_on_key_alias});
@@ -268,6 +269,12 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
     job.uses = m.getScalar("uses");
+    if (m.get("uses")) |n| {
+        switch (n) {
+            .scalar => |s| job.uses_value_span = s.span,
+            else => {},
+        }
+    }
 
     var empty = std.ArrayList(types.EmptySection){};
     defer empty.deinit(ctx.allocator);
@@ -376,7 +383,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
     if (m.get("outputs")) |n| try recordEmpty(&empty, ctx.allocator, "outputs", n);
-    if (m.get("defaults")) |n| try recordEmpty(&empty, ctx.allocator, "defaults", n);
+    if (m.get("defaults")) |n| {
+        try recordEmpty(&empty, ctx.allocator, "defaults", n);
+        job.defaults = parseDefaults(n);
+    }
 
     if (ctx.unknown_collector) |c| {
         try c.checkMapping(m, "job", &schema.job_keys, &.{});
@@ -396,6 +406,23 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
 
     job.empty_sections = try empty.toOwnedSlice(ctx.allocator);
     return job;
+}
+
+fn parseDefaults(node: Node) ?types.Defaults {
+    const m = switch (node) {
+        .mapping => |mp| mp,
+        else => return null,
+    };
+    const run_node = m.get("run") orelse return null;
+    const run_mapping = switch (run_node) {
+        .mapping => |mp| mp,
+        else => return null,
+    };
+    const shell_node = run_mapping.get("shell") orelse return null;
+    return switch (shell_node) {
+        .scalar => |s| .{ .run_shell = s.value, .run_shell_span = s.span },
+        else => null,
+    };
 }
 
 fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
@@ -430,7 +457,15 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     step.name = m.getScalar("name");
     step.run = m.getScalar("run");
-    step.shell = m.getScalar("shell");
+    if (m.get("shell")) |n| {
+        switch (n) {
+            .scalar => |s| {
+                step.shell = s.value;
+                step.shell_value_span = s.span;
+            },
+            else => {},
+        }
+    }
     step.if_condition = m.getScalar("if");
     if (m.get("if")) |n| {
         switch (n) {
@@ -1257,6 +1292,71 @@ test "parseJob captures runs_on_value_span for scalar runs-on" {
 
     const span = wf.jobs[0].runs_on_value_span.?;
     try testing.expectEqualStrings("ubuntu-20.04", source[span.start_byte..span.end_byte]);
+}
+
+test "parseDefaults captures defaults.run.shell at workflow and job level" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\defaults:
+        \\  run:
+        \\    shell: bash
+        \\jobs:
+        \\  build:
+        \\    runs-on: windows-latest
+        \\    defaults:
+        \\      run:
+        \\        shell: pwsh
+        \\    steps:
+        \\      - run: echo hi
+        \\        shell: cmd
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    try testing.expectEqualStrings("bash", wf.defaults.?.run_shell);
+    const wf_span = wf.defaults.?.run_shell_span;
+    try testing.expectEqualStrings("bash", source[wf_span.start_byte..wf_span.end_byte]);
+
+    try testing.expectEqualStrings("pwsh", wf.jobs[0].defaults.?.run_shell);
+
+    const step_span = wf.jobs[0].steps[0].shell_value_span.?;
+    try testing.expectEqualStrings("cmd", source[step_span.start_byte..step_span.end_byte]);
+}
+
+test "parseDefaults leaves defaults null when run.shell is absent" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\defaults:
+        \\  run:
+        \\    working-directory: ./src
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    try testing.expect(wf.defaults == null);
+    try testing.expect(wf.jobs[0].defaults == null);
+    try testing.expect(wf.jobs[0].steps[0].shell_value_span == null);
 }
 
 test "parseJob leaves runs_on_value_span null for missing runs-on" {

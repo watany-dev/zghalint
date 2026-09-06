@@ -126,6 +126,14 @@ pub const Concurrency = struct {
     group: []const u8,
 };
 
+/// `defaults:` at workflow or job level. Only `run.shell` is modelled, since
+/// that is all any rule needs so far; the whole struct is absent unless that
+/// key is present with a scalar value.
+pub const Defaults = struct {
+    run_shell: []const u8,
+    run_shell_span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
+};
+
 /// Key spans for the mutually exclusive `EventFilter` entries. A non-null
 /// field means the key appeared in the source, which the value arrays alone
 /// cannot express (`branches: []` yields an empty array but is still present).
@@ -158,6 +166,8 @@ pub const EventType = enum {
     release,
     issues,
     issue_comment,
+    discussion,
+    discussion_comment,
     create,
     delete,
     fork,
@@ -177,6 +187,8 @@ pub const EventType = enum {
             .{ "release", .release },
             .{ "issues", .issues },
             .{ "issue_comment", .issue_comment },
+            .{ "discussion", .discussion },
+            .{ "discussion_comment", .discussion_comment },
             .{ "create", .create },
             .{ "delete", .delete },
             .{ "fork", .fork },
@@ -266,6 +278,8 @@ pub const Step = struct {
     uses: ?ActionRef = null,
     run: ?[]const u8 = null,
     shell: ?[]const u8 = null,
+    /// Span of the `shell:` scalar value (for BP004 diagnostics).
+    shell_value_span: ?yaml_types.Span = null,
     with: ?StringMap = null,
     /// Value spans and styles of the `with:` entries (for diagnostics that
     /// scan a `with:` value, e.g. SEC003/SEC005/SEC011).
@@ -352,11 +366,14 @@ pub const Job = struct {
     timeout_minutes_specified: bool = false,
     strategy: ?Strategy = null,
     concurrency: ?Concurrency = null,
+    defaults: ?Defaults = null,
     container: ?Container = null,
     services: []const Service = &.{},
     empty_sections: []const EmptySection = &.{},
     /// Reusable workflow reference (mutually exclusive with steps)
     uses: ?[]const u8 = null,
+    /// Span of the job-level `uses:` scalar value (for DEP003).
+    uses_value_span: ?yaml_types.Span = null,
     with: ?StringMap = null,
     secrets: ?SecretsConfig = null,
     /// Column (1-based) at which this job's child keys are indented.
@@ -381,6 +398,7 @@ pub const Workflow = struct {
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},
     concurrency: ?Concurrency = null,
+    defaults: ?Defaults = null,
     jobs: []const Job,
     empty_sections: []const EmptySection = &.{},
     unknown_keys: []const schema.UnknownKey = &.{},
@@ -414,6 +432,8 @@ test "EventType.fromString known events" {
     try std.testing.expectEqual(EventType.workflow_dispatch, EventType.fromString("workflow_dispatch"));
     try std.testing.expectEqual(EventType.workflow_call, EventType.fromString("workflow_call"));
     try std.testing.expectEqual(EventType.release, EventType.fromString("release"));
+    try std.testing.expectEqual(EventType.discussion, EventType.fromString("discussion"));
+    try std.testing.expectEqual(EventType.discussion_comment, EventType.fromString("discussion_comment"));
 }
 
 test "EventType.fromString unknown event" {
