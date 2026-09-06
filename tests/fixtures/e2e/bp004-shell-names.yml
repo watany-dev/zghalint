@@ -1,0 +1,37 @@
+# zghalint:expect BP004@21 BP004@24 BP004@34
+# zghalint:forbid BP001 BP002 BP005
+name: shell names
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: shell-names
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Windows-only shell on a Linux runner
+        run: echo hi
+        shell: cmd
+      - name: Typo in the shell name
+        run: echo hi
+        shell: bash4
+      - name: Custom shells are accepted
+        run: echo hi
+        shell: 'perl {0}'
+  win:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: sh is unavailable on Windows
+        run: echo hi
+        shell: sh
+      - name: pwsh is available everywhere
+        run: echo hi
+        shell: pwsh

@@ -105,7 +105,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
 | BP002 | missing-step-name | info | Step is missing a `name` field |
 | BP003 | deprecated-action-version | warning | Using a known deprecated action version |
-| BP004 | cross-platform-shell | warning | Run step without `shell` in a Windows-targeting job |
+| BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
