@@ -1,0 +1,18 @@
+# zghalint:expect SYN016@7 SYN016@9
+# zghalint:forbid SYN014
+name: schedule timezone checks
+on:
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Tokio'
+    - cron: '0 9 * * *'
+      timezone: 'JST'
+    - cron: '0 10 * * *'
+      timezone: 'Asia/Tokyo'
+    - cron: '0 11 * * *'
+      timezone: UTC
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

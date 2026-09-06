@@ -1,0 +1,28 @@
+# zghalint:expect SYN017@8 SYN017@12 SYN017@14 SYN017@16 SYN017@19
+name: workflow_dispatch input checks
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        default: staging
+        options: [dev, prod]
+      verbose:
+        type: boolean
+        default: "yes"
+      level:
+        type: enum
+      target:
+        type: choice
+      note:
+        type: string
+        options: [a, b]
+      ok:
+        type: choice
+        default: dev
+        options: [dev, prod]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

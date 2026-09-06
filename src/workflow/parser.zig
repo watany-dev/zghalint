@@ -218,7 +218,13 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
                         config.workflow_call_input_problems = parsed.problems;
                     }
                 },
-                .workflow_dispatch => {},
+                .workflow_dispatch => {
+                    if (m.get("inputs")) |inputs_node| {
+                        const parsed = try parseWorkflowDispatchInputs(allocator, inputs_node);
+                        config.workflow_dispatch_inputs = parsed.inputs;
+                        config.workflow_dispatch_input_problems = parsed.problems;
+                    }
+                },
                 else => {
                     config.filter = try parseEventFilter(allocator, m);
                 },
@@ -250,10 +256,20 @@ fn parseScheduleEntries(allocator: std.mem.Allocator, seq: yaml.Sequence) ParseE
             else => continue,
         };
         if (cron_scalar.value.len == 0) continue;
-        try entries.append(allocator, .{
+        var entry = types.ScheduleEntry{
             .cron = cron_scalar.value,
             .cron_span = cron_scalar.span,
-        });
+        };
+        if (mapping.get("timezone")) |tz_node| {
+            switch (tz_node) {
+                .scalar => |s| {
+                    entry.timezone = s.value;
+                    entry.timezone_span = s.span;
+                },
+                else => {},
+            }
+        }
+        try entries.append(allocator, entry);
     }
 
     return try entries.toOwnedSlice(allocator);
@@ -282,25 +298,28 @@ fn callableInputTypeName(input_type: types.CallableInputType) []const u8 {
 fn parseYamlBool(node: Node) ?bool {
     return switch (node) {
         .scalar => |s| blk: {
-            if (std.mem.eql(u8, s.value, "true")) break :blk true;
-            if (std.mem.eql(u8, s.value, "false")) break :blk false;
+            // YAML 1.2 core schema: only these six spellings resolve to a
+            // bool. `yes` / `on` are YAML 1.1 and stay strings on GitHub.
+            if (std.mem.eql(u8, s.value, "true") or std.mem.eql(u8, s.value, "True") or std.mem.eql(u8, s.value, "TRUE")) break :blk true;
+            if (std.mem.eql(u8, s.value, "false") or std.mem.eql(u8, s.value, "False") or std.mem.eql(u8, s.value, "FALSE")) break :blk false;
             break :blk null;
         },
         else => null,
     };
 }
 
+fn isYamlNumber(node: Node) bool {
+    return switch (node) {
+        .scalar => |s| if (std.fmt.parseFloat(f64, s.value)) |_| true else |_| false,
+        else => false,
+    };
+}
+
 fn defaultMatchesCallableInputType(input_type: types.CallableInputType, node: Node) bool {
     return switch (input_type) {
         .boolean => parseYamlBool(node) != null,
-        .number => switch (node) {
-            .scalar => |s| if (std.fmt.parseFloat(f64, s.value)) |_| true else |_| false,
-            else => false,
-        },
-        .string => switch (node) {
-            .scalar => true,
-            else => false,
-        },
+        .number => isYamlNumber(node),
+        .string => node == .scalar,
     };
 }
 
@@ -404,6 +423,178 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
         .inputs = try inputs.toOwnedSlice(allocator),
         .problems = try problems.toOwnedSlice(allocator),
     };
+}
+
+const ParsedWorkflowDispatchInputs = struct {
+    inputs: []const types.DispatchInputDef,
+    problems: []const types.WorkflowDispatchInputProblem,
+};
+
+fn defaultMatchesDispatchInputType(input_type: types.DispatchInputType, node: Node) bool {
+    return switch (input_type) {
+        .boolean => parseYamlBool(node) != null,
+        .number => isYamlNumber(node),
+        .string, .choice, .environment => node == .scalar,
+    };
+}
+
+/// GitHub accepts only a sequence of scalars here. Anything else yields no
+/// values rather than a parse error, so a malformed `options:` surfaces as an
+/// empty option list instead of aborting the whole file.
+fn collectOptionValues(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
+    var values = std.ArrayList([]const u8){};
+    errdefer values.deinit(allocator);
+    if (node == .sequence) {
+        for (node.sequence.items) |item| {
+            switch (item) {
+                .scalar => |sc| try values.append(allocator, sc.value),
+                else => {},
+            }
+        }
+    }
+    return values.toOwnedSlice(allocator);
+}
+
+fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowDispatchInputs {
+    const inputs_mapping = switch (node) {
+        .mapping => |m| m,
+        else => return .{ .inputs = &.{}, .problems = &.{} },
+    };
+
+    var inputs = std.ArrayList(types.DispatchInputDef){};
+    errdefer inputs.deinit(allocator);
+    var problems = std.ArrayList(types.WorkflowDispatchInputProblem){};
+    errdefer problems.deinit(allocator);
+
+    for (inputs_mapping.entries) |entry| {
+        const input_name = entry.key.value;
+        const input_mapping = switch (entry.value) {
+            .mapping => |m| m,
+            else => continue,
+        };
+
+        var def = types.DispatchInputDef{
+            .name = input_name,
+            .name_span = entry.key.span,
+        };
+
+        var type_invalid = false;
+        if (input_mapping.get("type")) |type_node| {
+            def.type_span = type_node.getSpan();
+            const type_name = switch (type_node) {
+                .scalar => |sc| sc.value,
+                else => "",
+            };
+            if (types.DispatchInputType.fromString(type_name)) |parsed_type| {
+                def.input_type = parsed_type;
+            } else {
+                type_invalid = true;
+                try problems.append(allocator, .{
+                    .kind = .invalid_type,
+                    .input_name = input_name,
+                    .detail = type_name,
+                    .span = type_node.getSpan(),
+                });
+            }
+        }
+
+        const options_node = input_mapping.get("options");
+        if (options_node) |on| def.options = try collectOptionValues(allocator, on);
+
+        const default_node = input_mapping.get("default");
+        if (default_node) |dn| {
+            switch (dn) {
+                .scalar => |sc| {
+                    def.default_value = sc.value;
+                    def.default_span = sc.span;
+                },
+                else => {},
+            }
+        }
+
+        // An invalid `type:` already has its own diagnostic; the checks below
+        // would only restate it against a type GitHub never resolved. An
+        // absent `type:` is not that case — GitHub defaults it to `string`.
+        if (!type_invalid) {
+            try appendDispatchInputProblems(
+                allocator,
+                &problems,
+                def,
+                def.input_type orelse .string,
+                options_node,
+                default_node,
+                entry.value.getSpan(),
+            );
+        }
+
+        try inputs.append(allocator, def);
+    }
+
+    return .{
+        .inputs = try inputs.toOwnedSlice(allocator),
+        .problems = try problems.toOwnedSlice(allocator),
+    };
+}
+
+fn appendDispatchInputProblems(
+    allocator: std.mem.Allocator,
+    problems: *std.ArrayList(types.WorkflowDispatchInputProblem),
+    def: types.DispatchInputDef,
+    input_type: types.DispatchInputType,
+    options_node: ?Node,
+    default_node: ?Node,
+    input_span: yaml.Span,
+) ParseError!void {
+    if (input_type == .choice) {
+        if (options_node) |on| {
+            if (def.options.len == 0) {
+                try problems.append(allocator, .{
+                    .kind = .empty_options,
+                    .input_name = def.name,
+                    .detail = "",
+                    .span = on.getSpan(),
+                });
+            }
+        } else {
+            try problems.append(allocator, .{
+                .kind = .missing_options,
+                .input_name = def.name,
+                .detail = "",
+                .span = def.type_span orelse input_span,
+            });
+        }
+    } else if (options_node) |on| {
+        try problems.append(allocator, .{
+            .kind = .options_without_choice,
+            .input_name = def.name,
+            .detail = @tagName(input_type),
+            .span = on.getSpan(),
+        });
+    }
+
+    const default = default_node orelse return;
+
+    if (!defaultMatchesDispatchInputType(input_type, default)) {
+        try problems.append(allocator, .{
+            .kind = .default_type_mismatch,
+            .input_name = def.name,
+            .detail = @tagName(input_type),
+            .span = default.getSpan(),
+        });
+        return;
+    }
+
+    if (input_type != .choice or def.options.len == 0) return;
+    const default_value = def.default_value orelse return;
+    for (def.options) |option| {
+        if (std.mem.eql(u8, option, default_value)) return;
+    }
+    try problems.append(allocator, .{
+        .kind = .default_not_in_options,
+        .input_name = def.name,
+        .detail = default_value,
+        .span = def.default_span orelse default.getSpan(),
+    });
 }
 
 fn parseFilterPatternList(allocator: std.mem.Allocator, node: ?Node) ParseError!types.FilterPatternList {
@@ -1258,6 +1449,26 @@ test "parseTrigger schedule entries capture cron spans" {
     try testing.expectEqual(@as(usize, 1), trigger.events[0].schedules.len);
     try testing.expectEqualStrings("0 0 * * *", trigger.events[0].schedules[0].cron);
     try testing.expectEqual(@as(usize, 40), trigger.events[0].schedules[0].cron_span.start_byte);
+    try testing.expect(trigger.events[0].schedules[0].timezone == null);
+}
+
+test "parseTrigger schedule entries capture the timezone and its span" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var cron_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("cron"), .value = mkScalarStyled("0 0 * * *", .single_quoted, mkSpanBytes(40, 51)), .span = mkSpan() },
+        .{ .key = mkScalarS("timezone"), .value = mkScalarStyled("Asia/Tokyo", .single_quoted, mkSpanBytes(70, 82)), .span = mkSpan() },
+    };
+    var schedule_items = [_]Node{mkMapping(&cron_entries)};
+    var trigger_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("schedule"), .value = mkSequence(&schedule_items), .span = mkSpan() },
+    };
+
+    const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
+    const entry = trigger.events[0].schedules[0];
+    try testing.expectEqualStrings("Asia/Tokyo", entry.timezone.?);
+    try testing.expectEqual(@as(usize, 70), entry.timezone_span.?.start_byte);
 }
 
 test "parseTrigger records key spans for empty filter values" {
