@@ -1,0 +1,35 @@
+# zghalint:expect SYN018@15 SYN018@16 SYN018@20
+# zghalint:forbid SYN018@31 SYN018@32
+name: duplicate matrix value
+on: [push]
+concurrency: ci
+permissions:
+  contents: read
+jobs:
+  duplicated:
+    name: Duplicated axes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-latest, macos-latest]
+        node: [18, 20, 18]
+        include:
+          - os: ubuntu-latest
+            node: 18
+          - node: 18
+            os: ubuntu-latest
+    steps:
+      - name: Report
+        run: echo hi
+  distinct:
+    name: Distinct axes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20]
+    steps:
+      - name: Report
+        run: echo hi

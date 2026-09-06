@@ -218,6 +218,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
+| SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis |
 
 ### SYN002 duplicate-key
 
@@ -369,6 +370,36 @@ on:
     branches: [main, releases/**, v[0-9].*]
     paths: [src/**/*.zig, '!src/vendor/**']
 ```
+
+### SYN018 duplicate-matrix-value
+
+A value repeated in a `strategy.matrix` axis adds no combination the earlier one
+does not already cover, so a mistyped axis looks exactly like the matrix the
+author intended.
+
+```yaml
+strategy:
+  matrix:
+    os: [ubuntu-latest, ubuntu-latest, macos-latest]   # warning: duplicate value "ubuntu-latest"
+    node: [18, 20, 18]                                 # warning: duplicate value "18"
+```
+
+`include` and `exclude` are checked the same way. Their entries are mappings, so
+they are compared structurally: quoting style and key order do not hide a
+duplicate.
+
+```yaml
+strategy:
+  matrix:
+    include:
+      - os: ubuntu-latest
+        node: 18
+      - node: 18            # warning: duplicate entry in matrix "include"
+        os: ubuntu-latest
+```
+
+A matrix built from an expression (`matrix: ${{ fromJSON(...) }}`) has no
+literal values to compare and is skipped.
 
 ---
 
