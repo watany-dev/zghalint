@@ -182,7 +182,7 @@ pub const WorkflowCallInputProblemKind = enum {
 pub const WorkflowCallInputProblem = struct {
     kind: WorkflowCallInputProblemKind,
     input_name: []const u8,
-    /// Type name or offending default token, depending on `kind`.
+    /// Invalid type name, or declared type name for `default_type_mismatch`.
     detail: []const u8,
     span: yaml_types.Span,
 };
