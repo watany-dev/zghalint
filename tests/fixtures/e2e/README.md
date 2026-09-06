@@ -38,6 +38,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `sec022-workflow-run-branch-gate.yml` | #143 repro: `head_branch` gate on a `workflow_run` job |
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
+| `expr010-step-refs.yml` | EXPR010: unknown / misspelled / forward `steps.<id>` references |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
