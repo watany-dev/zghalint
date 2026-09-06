@@ -1,14 +1,14 @@
 ---
-name: post-work
+name: wrapup
 description: >
   Post-work review gate. Run after a task's implementation is done and before
   handing it off: correctness review, over-engineering review, take in only the
   findings worth taking, then sweep comments. Fire when the user invokes
-  /post-work or says "作業後レビュー", "post-work", "仕上げて", or when an
+  /wrapup or says "作業後レビュー", "wrapup", "仕上げて", or when an
   implementation task is finished and about to be committed or pushed.
 ---
 
-# post-work
+# wrapup
 
 実装が終わった後の仕上げ。レビュー2本を回し、**有用な指摘だけ**を取り込み、
 最後にコメントを掃除する。
