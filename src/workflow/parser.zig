@@ -423,10 +423,6 @@ fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping) ParseError![
 /// what is there and stays quiet about what is not.
 fn parseActivityTypes(allocator: std.mem.Allocator, node: ?Node) ParseError!types.FilterPatternList {
     const n = node orelse return .{};
-    switch (n) {
-        .scalar, .sequence => {},
-        else => return .{},
-    }
     const parsed = parseStringArrayWithSpans(allocator, n) catch |err| switch (err) {
         error.InvalidValue => return .{},
         else => return err,

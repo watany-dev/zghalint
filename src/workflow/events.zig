@@ -14,6 +14,18 @@ const pull_request_filters = &[_][]const u8{ "branches", "branches-ignore", "pat
 /// `workflow_run` filters on the branch of the *triggering* run only.
 const workflow_run_filters = &[_][]const u8{ "branches", "branches-ignore" };
 
+/// Every ref/path filter GitHub defines, which is exactly the set `push`
+/// accepts. Lets a caller tell a filter written under the wrong event apart
+/// from a key that is no filter at all.
+pub const filter_names = push_filters;
+
+pub fn isFilter(name: []const u8) bool {
+    for (filter_names) |filter| {
+        if (std.mem.eql(u8, filter, name)) return true;
+    }
+    return false;
+}
+
 /// `pull_request` and `pull_request_target` carry the same activity types.
 const pull_request_types = &[_][]const u8{
     "assigned",           "auto_merge_disabled", "auto_merge_enabled", "closed",
@@ -48,16 +60,22 @@ pub const EventSpec = struct {
         return types.len > 0;
     }
 
-    pub fn acceptsFilter(self: EventSpec, name: []const u8) bool {
+    /// True when the event reads `key`, whether as `types`, a filter, or one of
+    /// its own keys such as `workflow_call`'s `inputs`.
+    pub fn accepts(self: EventSpec, key: []const u8) bool {
+        if (std.mem.eql(u8, key, "types")) return self.acceptsTypes();
         for (self.filters) |filter| {
-            if (std.mem.eql(u8, filter, name)) return true;
+            if (std.mem.eql(u8, filter, key)) return true;
+        }
+        for (self.extra_keys) |extra| {
+            if (std.mem.eql(u8, extra, key)) return true;
         }
         return false;
     }
 
     /// Every key the event may carry, for "unknown key" reporting and for the
     /// edit-distance suggestion that goes with it.
-    pub fn keyCandidates(self: EventSpec, buf: *[16][]const u8) []const []const u8 {
+    pub fn keyCandidates(self: EventSpec, buf: *[max_event_keys][]const u8) []const []const u8 {
         var n: usize = 0;
         if (self.acceptsTypes()) {
             buf[n] = "types";
@@ -121,6 +139,7 @@ pub const events = [_]EventSpec{
     .{ .name = "pull_request", .activity_types = pull_request_types, .filters = pull_request_filters },
     .{ .name = "pull_request_review", .activity_types = &.{ "dismissed", "edited", "submitted" } },
     .{ .name = "pull_request_review_comment", .activity_types = created_edited_deleted },
+    .{ .name = "pull_request_review_thread", .activity_types = &.{ "resolved", "unresolved" } },
     .{ .name = "pull_request_target", .activity_types = pull_request_types, .filters = pull_request_filters },
     .{ .name = "push", .filters = push_filters },
     .{ .name = "registry_package", .activity_types = &.{ "published", "updated" } },
@@ -142,6 +161,17 @@ pub const events = [_]EventSpec{
         .filters = workflow_run_filters,
         .extra_keys = &.{"workflows"},
     },
+};
+
+/// Widest `keyCandidates` result in the table, so a caller's buffer cannot be
+/// outgrown by a later table entry.
+pub const max_event_keys = blk: {
+    var widest: usize = 0;
+    for (events) |spec| {
+        const n = @as(usize, @intFromBool(spec.acceptsTypes())) + spec.filters.len + spec.extra_keys.len;
+        if (n > widest) widest = n;
+    }
+    break :blk widest;
 };
 
 /// The names alone, for edit-distance suggestions on an unknown trigger.
@@ -203,20 +233,35 @@ test "acceptsTypes distinguishes the three table shapes" {
 }
 
 test "filters are event specific" {
-    try std.testing.expect(find("push").?.acceptsFilter("tags"));
-    try std.testing.expect(!find("pull_request").?.acceptsFilter("tags"));
-    try std.testing.expect(find("pull_request").?.acceptsFilter("branches"));
-    try std.testing.expect(find("workflow_run").?.acceptsFilter("branches-ignore"));
-    try std.testing.expect(!find("workflow_run").?.acceptsFilter("paths"));
-    try std.testing.expect(!find("issues").?.acceptsFilter("branches"));
+    try std.testing.expect(find("push").?.accepts("tags"));
+    try std.testing.expect(!find("pull_request").?.accepts("tags"));
+    try std.testing.expect(find("pull_request").?.accepts("branches"));
+    try std.testing.expect(find("workflow_run").?.accepts("branches-ignore"));
+    try std.testing.expect(!find("workflow_run").?.accepts("paths"));
+    try std.testing.expect(!find("issues").?.accepts("branches"));
+}
+
+test "accepts covers types and event specific keys" {
+    try std.testing.expect(find("issues").?.accepts("types"));
+    try std.testing.expect(!find("push").?.accepts("types"));
+    try std.testing.expect(find("workflow_call").?.accepts("secrets"));
+    try std.testing.expect(find("workflow_run").?.accepts("workflows"));
+    try std.testing.expect(!find("push").?.accepts("workflows"));
+}
+
+test "isFilter knows every filter name and nothing else" {
+    try std.testing.expect(isFilter("branches-ignore"));
+    try std.testing.expect(isFilter("paths"));
+    try std.testing.expect(!isFilter("types"));
+    try std.testing.expect(!isFilter("workflows"));
 }
 
 test "keyCandidates covers types, filters and extras" {
-    var buf: [16][]const u8 = undefined;
+    var buf: [max_event_keys][]const u8 = undefined;
     const push_keys = find("push").?.keyCandidates(&buf);
     try std.testing.expectEqual(@as(usize, 6), push_keys.len);
 
-    var call_buf: [16][]const u8 = undefined;
+    var call_buf: [max_event_keys][]const u8 = undefined;
     const call_keys = find("workflow_call").?.keyCandidates(&call_buf);
     try std.testing.expectEqualStrings("inputs", call_keys[0]);
     try std.testing.expectEqual(@as(usize, 3), call_keys.len);

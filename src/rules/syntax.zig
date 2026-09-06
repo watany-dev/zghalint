@@ -411,17 +411,17 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-/// `"a", "b", "c"` — the available-names list every SYN010/SYN011 hint ends
-/// with. Falls back to the bare count when the arena cannot take the string.
-fn quotedNameList(alloc: std.mem.Allocator, names: []const []const u8) ?[]const u8 {
-    var out = std.ArrayList(u8){};
-    defer out.deinit(alloc);
-    for (names, 0..) |name, i| {
-        out.appendSlice(alloc, if (i == 0) "\"" else ", \"") catch return null;
-        out.appendSlice(alloc, name) catch return null;
-        out.append(alloc, '"') catch return null;
-    }
-    return out.toOwnedSlice(alloc) catch null;
+/// `<prefix> a, b, c` — the shape every SYN010/SYN011 hint takes. Returns
+/// `fallback` when there is nothing to list, or when the arena is exhausted.
+fn availableHint(
+    alloc: std.mem.Allocator,
+    prefix: []const u8,
+    names: []const []const u8,
+    fallback: []const u8,
+) []const u8 {
+    if (names.len == 0) return fallback;
+    const list = std.mem.join(alloc, ", ", names) catch return fallback;
+    return std.fmt.allocPrint(alloc, "{s} {s}", .{ prefix, list }) catch fallback;
 }
 
 /// SYN010/SYN011 both trust the trigger table, so an event the table does not
@@ -455,7 +455,6 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
         // A null table means the names are the caller's to choose
         // (`repository_dispatch`), so only the key itself is validated above.
         const known = spec.activity_types orelse continue;
-        const available = quotedNameList(alloc, known);
 
         for (event.activity_types.values, 0..) |value, i| {
             if (std.mem.indexOf(u8, value, "${{") != null) continue;
@@ -484,32 +483,15 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
                     event.activity_types.spans[i]
                 else
                     event.name_span,
-                .fix_hint = if (available) |names|
-                    std.fmt.allocPrint(alloc, "available types are {s}", .{names}) catch
-                        "use one of the activity types this event defines"
-                else
+                .fix_hint = availableHint(
+                    alloc,
+                    "available types are",
+                    known,
                     "use one of the activity types this event defines",
+                ),
             }) catch return;
         }
     }
-}
-
-/// Every filter name, so a key that is a filter for *some* event can be told
-/// apart from an outright misspelling.
-const all_filter_names = [_][]const u8{
-    "branches",
-    "branches-ignore",
-    "paths",
-    "paths-ignore",
-    "tags",
-    "tags-ignore",
-};
-
-fn isFilterName(name: []const u8) bool {
-    for (all_filter_names) |filter| {
-        if (std.mem.eql(u8, filter, name)) return true;
-    }
-    return false;
 }
 
 fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
@@ -517,25 +499,15 @@ fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.on.events) |event| {
         const spec = knownEventSpec(event) orelse continue;
 
-        var candidate_buf: [16][]const u8 = undefined;
+        var candidate_buf: [workflow_events.max_event_keys][]const u8 = undefined;
         const candidates = spec.keyCandidates(&candidate_buf);
 
         for (event.config_keys) |key| {
             // `types` is SYN010's to judge, availability included.
             if (std.mem.eql(u8, key.name, "types")) continue;
+            if (spec.accepts(key.name)) continue;
 
-            var accepted = false;
-            for (candidates) |candidate| {
-                if (std.mem.eql(u8, candidate, key.name)) accepted = true;
-            }
-            if (accepted) continue;
-
-            if (isFilterName(key.name)) {
-                const available = if (spec.filters.len == 0)
-                    null
-                else
-                    quotedNameList(alloc, spec.filters);
-
+            if (workflow_events.isFilter(key.name)) {
                 list.append(.{
                     .rule_id = "SYN011",
                     .severity = .@"error",
@@ -545,23 +517,28 @@ fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
                         .{ key.name, event.name },
                     ) catch "this filter is not available for this event",
                     .span = key.span,
-                    .fix_hint = if (available) |names|
-                        std.fmt.allocPrint(alloc, "this event accepts only {s}", .{names}) catch
-                            "remove this filter; it never narrows when the workflow runs"
-                    else
+                    .fix_hint = availableHint(
+                        alloc,
+                        "this event accepts only",
+                        spec.filters,
                         "remove this filter; this event accepts no ref or path filters",
+                    ),
                 }) catch return;
                 continue;
             }
 
             var suffix_buf: [64]u8 = undefined;
-            const suffix = if (util.didYouMean(key.name, candidates)) |s|
+            const suggestion = util.didYouMean(key.name, candidates);
+            const suffix = if (suggestion) |s|
                 std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
             else
                 "";
-            // "filter" reads wrong for `workflow_call`, whose keys are inputs
-            // and secrets rather than ref filters.
-            const noun = if (spec.filters.len == 0) "key" else "filter";
+            // "filter" reads wrong for a key that is not one: `workflows` under
+            // `workflow_run`, or `inputs` under `workflow_call`.
+            const noun = if (suggestion) |s|
+                if (workflow_events.isFilter(s)) "filter" else "key"
+            else
+                "key";
 
             list.append(.{
                 .rule_id = "SYN011",
@@ -572,11 +549,12 @@ fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
                     .{ noun, key.name, event.name, suffix },
                 ) catch "unknown event configuration key",
                 .span = key.span,
-                .fix_hint = if (quotedNameList(alloc, candidates)) |names|
-                    std.fmt.allocPrint(alloc, "this event accepts only {s}", .{names}) catch
-                        "remove this key; the event does not read it"
-                else
+                .fix_hint = availableHint(
+                    alloc,
+                    "this event accepts only",
+                    candidates,
                     "remove this key; the event does not read it",
+                ),
             }) catch return;
         }
     }
@@ -2779,7 +2757,7 @@ test "SYN010: a type with no near match still lists the available names" {
         "invalid activity type \"everything\" for \"watch\" event",
         diags.get(0).message,
     );
-    try testing.expectEqualStrings("available types are \"started\"", diags.get(0).fix_hint.?);
+    try testing.expectEqualStrings("available types are started", diags.get(0).fix_hint.?);
 }
 
 test "SYN010: `types` on an event without activity types is reported" {
@@ -2896,7 +2874,7 @@ test "SYN011: pull_request rejects tags but keeps branches" {
         diags.get(0).message,
     );
     try testing.expectEqualStrings(
-        "this event accepts only \"branches\", \"branches-ignore\", \"paths\", \"paths-ignore\"",
+        "this event accepts only branches, branches-ignore, paths, paths-ignore",
         diags.get(0).fix_hint.?,
     );
 }
@@ -2952,6 +2930,56 @@ test "SYN011: a misspelled key is reported with a suggestion" {
     try testing.expectEqualStrings(
         "unknown key \"inptus\" for \"workflow_dispatch\" event. did you mean \"inputs\"?",
         diags.get(1).message,
+    );
+}
+
+test "SYN011: an event with no keys at all gets a hint that lists nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  fork:
+        \\    brancehs: [main]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "unknown key \"brancehs\" for \"fork\" event",
+        diags.get(0).message,
+    );
+    try testing.expectEqualStrings(
+        "remove this key; the event does not read it",
+        diags.get(0).fix_hint.?,
+    );
+}
+
+test "SYN011: a misspelled non-filter key is not called a filter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  workflow_run:
+        \\    workflowss: [CI]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    // `workflow_run` does take filters, so the noun has to come from the
+    // suggestion rather than from the event.
+    try testing.expectEqualStrings(
+        "unknown key \"workflowss\" for \"workflow_run\" event. did you mean \"workflows\"?",
+        diags.get(0).message,
     );
 }
 
