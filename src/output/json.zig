@@ -49,10 +49,31 @@ fn writeDiagnosticJson(writer: *std.Io.Writer, diag: Diagnostic) !void {
 
 /// Same encoding as `std.json.Stringify` with default options: only `"`,
 /// `\` and C0 controls are escaped, and non-ASCII bytes pass through as-is.
-/// Runs between escapes are emitted with a single `writeAll`, so a string
-/// that needs no escaping (the common case) costs one scan and one copy.
+///
+/// A file path or message can carry bytes that are not valid UTF-8, and a
+/// JSON string may only hold Unicode, so each such byte becomes U+FFFD —
+/// without it the document would not parse.
 fn writeJsonString(writer: *std.Io.Writer, s: []const u8) !void {
     try writer.writeByte('"');
+    if (std.unicode.utf8ValidateSlice(s)) {
+        try writeJsonChars(writer, s);
+    } else {
+        var i: usize = 0;
+        while (i < s.len) {
+            const len: usize = std.unicode.utf8ByteSequenceLength(s[i]) catch 0;
+            if (len == 0 or i + len > s.len or !std.unicode.utf8ValidateSlice(s[i..][0..len])) {
+                try writer.writeAll("\\ufffd");
+                i += 1;
+                continue;
+            }
+            try writeJsonChars(writer, s[i..][0..len]);
+            i += len;
+        }
+    }
+    try writer.writeByte('"');
+}
+
+fn writeJsonChars(writer: *std.Io.Writer, s: []const u8) !void {
     var run_start: usize = 0;
     for (s, 0..) |c, i| {
         const escape = switch (c) {
@@ -75,7 +96,6 @@ fn writeJsonString(writer: *std.Io.Writer, s: []const u8) !void {
         run_start = i + 1;
     }
     try writer.writeAll(s[run_start..]);
-    try writer.writeByte('"');
 }
 
 const Span = @import("../yaml/types.zig").Span;
@@ -234,6 +254,36 @@ test "renderJson passes multi-byte UTF-8 through unescaped" {
 
     try renderJson(&out.writer, list, 1);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"message\":\"ワークフロー 🚀\"") != null);
+}
+
+test "renderJson replaces bytes that are not valid UTF-8" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    // A file name can hold any byte the filesystem accepts, but a JSON
+    // string may only hold Unicode — the output must still parse.
+    try list.append(.{
+        .rule_id = "E1",
+        .severity = .@"error",
+        .message = "lone continuation \x9b and a truncated \xe3\x81",
+        .file = "b\xffad.yml",
+        .span = Span.point(1, 1, 0),
+    });
+
+    try renderJson(&out.writer, list, 1);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
+    defer parsed.deinit();
+
+    const diag = parsed.value.object.get("diagnostics").?.array.items[0].object;
+    try std.testing.expectEqualStrings("b\u{fffd}ad.yml", diag.get("file").?.string);
+    try std.testing.expectEqualStrings(
+        "lone continuation \u{fffd} and a truncated \u{fffd}\u{fffd}",
+        diag.get("message").?.string,
+    );
 }
 
 test "renderJson output parses as JSON" {
