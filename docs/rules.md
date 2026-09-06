@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **69 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **70 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -198,6 +198,19 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
+| RUNNER002 | unknown-runner | error | `runs-on` label is not a known GitHub-hosted runner (typos leave the job queued forever) |
+
+RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知のラベル」だけを報告する。
+セルフホストのフリートは列挙しようがないため、以下は報告しない:
+
+- 既知ラベルに接尾辞が付いたもの（`ubuntu-latest-4-cores` などの larger runner）
+- `self-hosted` / `linux` / `x64` などの慣用ラベル
+- 既知ラベルから遠く、`ubuntu-` / `windows-` / `macos-` でも始まらない独自ラベル（`gpu-box` など）
+- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は SYN018 待ち）
+
+既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
+提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
+`runner.labels` に列挙すれば既知として扱われる。
 
 ## Syntax Rules (SYN)
 

@@ -41,6 +41,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
+| `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |

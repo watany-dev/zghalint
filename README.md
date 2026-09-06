@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **69 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **70 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 
@@ -143,9 +143,10 @@ invalid permission levels.
 Dependabot cooldown configuration, insecure external code execution settings,
 `uses:` reference format for actions and reusable workflow calls.
 
-### Runner (1 rule)
+### Runner (2 rules)
 
-Deprecated or retired `runs-on:` label detection.
+Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
+detection (typos such as `ubunut-latest`).
 
 ### Syntax (13 rules)
 
@@ -173,6 +174,13 @@ rules:
   PERF001:
     node_cache_manager: pnpm     # one of: npm, yarn, pnpm
     python_cache_manager: poetry # one of: pip, pipenv, poetry
+
+# RUNNER002 knows the GitHub-hosted runner labels but not your self-hosted
+# fleet. List the labels it should accept as known.
+runner:
+  labels:
+    - ubuntu-nvidia
+    - build-box
 
 # Ignore specific files
 ignore:
