@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zghalint = @import("zghalint");
 const Config = zghalint.Config;
 const OutputFormat = zghalint.OutputFormat;
@@ -31,7 +32,7 @@ const CliArgs = struct {
     }
 };
 
-fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
+fn parseArgs(allocator: std.mem.Allocator, stderr: *std.Io.Writer) !CliArgs {
     var raw_args = std.ArrayList([]const u8){};
     defer raw_args.deinit(allocator);
 
@@ -43,31 +44,23 @@ fn parseArgs(allocator: std.mem.Allocator) !CliArgs {
         try raw_args.append(allocator, arg);
     }
 
-    return parseArgsSlice(allocator, raw_args.items);
+    return parseArgsSlice(allocator, raw_args.items, stderr);
 }
 
-fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliArgs {
-    var args = CliArgs{ .files = .{}, .allocator = allocator };
+const ArgError = error{
+    UnknownOption,
+    MissingOptionValue,
+    InvalidOptionValue,
+    OutOfMemory,
+};
 
-    for (argv) |arg| {
-        if (std.mem.eql(u8, arg, "--")) break;
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            args.show_help = true;
-        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
-            args.show_version = true;
-        } else if (std.mem.eql(u8, arg, "--config")) {
-            // Match the current permissive behavior: missing values are ignored.
-            // The slice walker below advances over consumed option values.
-        } else if (std.mem.eql(u8, arg, "--format")) {
-            // handled in indexed loop below
-        } else if (std.mem.eql(u8, arg, "--color")) {
-            // handled in indexed loop below
-        } else if (std.mem.eql(u8, arg, "--offline") or std.mem.eql(u8, arg, "--quick")) {
-            args.offline = true;
-        } else if (std.mem.eql(u8, arg, "--no-cache")) {
-            args.no_cache = true;
-        }
-    }
+/// Unknown options, options without a value, and unrecognised enum values are
+/// rejected instead of being ignored: a typo such as `--fmt sarif` must not
+/// silently fall back to another format, and `--config --fix` must not eat
+/// `--fix` as the config path.
+fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr: *std.Io.Writer) ArgError!CliArgs {
+    var args = CliArgs{ .files = .{}, .allocator = allocator };
+    errdefer args.deinit();
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
@@ -79,39 +72,52 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8) !CliAr
             }
             break;
         }
-        if (std.mem.eql(u8, arg, "--config")) {
-            if (i + 1 < argv.len) {
-                i += 1;
-                args.config_path = argv[i];
-            }
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            args.show_help = true;
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            args.show_version = true;
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            args.config_path = try optionValue(argv, &i, stderr);
         } else if (std.mem.eql(u8, arg, "--format")) {
-            if (i + 1 < argv.len) {
-                i += 1;
-                args.format = OutputFormat.fromString(argv[i]);
-            }
+            const value = try optionValue(argv, &i, stderr);
+            args.format = OutputFormat.fromString(value) orelse return invalidValue(arg, value, stderr);
         } else if (std.mem.eql(u8, arg, "--color")) {
-            if (i + 1 < argv.len) {
-                i += 1;
-                args.color = ColorMode.fromString(argv[i]);
-            }
+            const value = try optionValue(argv, &i, stderr);
+            args.color = ColorMode.fromString(value) orelse return invalidValue(arg, value, stderr);
+        } else if (std.mem.eql(u8, arg, "--offline") or std.mem.eql(u8, arg, "--quick")) {
+            args.offline = true;
+        } else if (std.mem.eql(u8, arg, "--no-cache")) {
+            args.no_cache = true;
         } else if (std.mem.eql(u8, arg, "--fix")) {
             args.fix_mode = .safe;
         } else if (std.mem.eql(u8, arg, "--fix-unsafe")) {
             args.fix_mode = .all;
-        } else if (!std.mem.eql(u8, arg, "--help") and
-            !std.mem.eql(u8, arg, "-h") and
-            !std.mem.eql(u8, arg, "--version") and
-            !std.mem.eql(u8, arg, "-v") and
-            !std.mem.eql(u8, arg, "--offline") and
-            !std.mem.eql(u8, arg, "--quick") and
-            !std.mem.eql(u8, arg, "--no-cache") and
-            !std.mem.startsWith(u8, arg, "-"))
-        {
+        } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
+            stderr.print("error: unknown option '{s}' (see --help)\n", .{arg}) catch {};
+            return error.UnknownOption;
+        } else {
             try args.files.append(allocator, arg);
         }
     }
 
     return args;
+}
+
+/// A value that itself looks like an option is treated as missing so a
+/// dropped argument cannot silently swallow the next flag.
+fn optionValue(argv: []const []const u8, i: *usize, stderr: *std.Io.Writer) ArgError![]const u8 {
+    const option = argv[i.*];
+    if (i.* + 1 >= argv.len or std.mem.startsWith(u8, argv[i.* + 1], "-")) {
+        stderr.print("error: option '{s}' requires a value\n", .{option}) catch {};
+        return error.MissingOptionValue;
+    }
+    i.* += 1;
+    return argv[i.*];
+}
+
+fn invalidValue(option: []const u8, value: []const u8, stderr: *std.Io.Writer) ArgError {
+    stderr.print("error: invalid value '{s}' for option '{s}'\n", .{ value, option }) catch {};
+    return error.InvalidOptionValue;
 }
 
 fn printHelp(writer: anytype) !void {
@@ -135,6 +141,12 @@ fn printHelp(writer: anytype) !void {
         \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
         \\  -h, --help        Show this help
         \\  -v, --version     Show version
+        \\
+        \\Exit codes:
+        \\  0  no error-severity diagnostics
+        \\  1  at least one error-severity diagnostic
+        \\  2  a file or the config could not be read or parsed, invalid arguments,
+        \\     or a --fix write failed
         \\
     );
 }
@@ -174,17 +186,36 @@ fn readSourceFile(
     file_path: []const u8,
     stderr: *std.Io.Writer,
 ) ?[]u8 {
+    // stat before open: opening a FIFO for reading blocks until a writer
+    // appears, so the kind check cannot come after openFile.
+    const stat = std.fs.cwd().statFile(file_path) catch |err| {
+        stderr.print("error: cannot open '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
+        return null;
+    };
+    if (stat.kind != .file) {
+        stderr.print("error: '{s}' is not a regular file\n", .{file_path}) catch {};
+        return null;
+    }
+
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        stderr.print("error: cannot open '{s}': {}\n", .{ file_path, err }) catch {};
+        stderr.print("error: cannot open '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
         return null;
     };
     defer file.close();
 
     return file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-        stderr.print("error: cannot read '{s}': {}\n", .{ file_path, err }) catch {};
+        stderr.print("error: cannot read '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
         return null;
     };
 }
+
+/// Errors that `lintFile` / `lintDependabotFile` have already reported on
+/// stderr; the caller only has to record that the run cannot be trusted.
+const LintFileError = error{
+    UnreadableFile,
+    YamlParseError,
+    WorkflowParseError,
+};
 
 /// `appendOwning` is required because `diag_list`'s fix arena dies with the
 /// caller's frame; `Fix.edits` would otherwise dangle.
@@ -208,12 +239,9 @@ fn lintDependabotFile(
     file_path: []const u8,
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
+    stderr: *std.Io.Writer,
 ) !void {
-    var stderr_buf: [1024]u8 = undefined;
-    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
-    const stderr = &stderr_bw.interface;
-
-    const source = readSourceFile(allocator, file_path, stderr) orelse return;
+    const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -224,7 +252,7 @@ fn lintDependabotFile(
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
-        return;
+        return error.YamlParseError;
     };
 
     var diag_list = zghalint.DiagnosticList.init(allocator);
@@ -273,16 +301,55 @@ fn prefetchNetworkData(
     ) catch return;
 }
 
-fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8) !Config {
+/// A config that exists but cannot be read or parsed is an error, not a
+/// silent fallback to defaults: the run would otherwise drop the user's
+/// severity overrides and report a clean result.
+fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8, stderr: *std.Io.Writer) !Config {
     const path = config_path orelse zghalint.config.defaultConfigPath() orelse return Config.init(allocator);
 
-    const file = std.fs.cwd().openFile(path, .{}) catch return Config.init(allocator);
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        stderr.print("error: cannot open config '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
+        return err;
+    };
     defer file.close();
 
-    const source = file.readToEndAlloc(allocator, 1024 * 1024) catch return Config.init(allocator);
+    const source = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
+        stderr.print("error: cannot read config '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
+        return err;
+    };
     defer allocator.free(source);
 
-    return zghalint.config.parseConfig(allocator, source) catch return Config.init(allocator);
+    return zghalint.config.parseConfig(allocator, source) catch |err| {
+        stderr.print("error: invalid config '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
+        return err;
+    };
+}
+
+/// `--fix` re-reads each file and applies offsets computed during the lint
+/// pass, so a path listed twice (`a.yml ./a.yml`) would apply the same edits
+/// to already-rewritten content. Returned entries borrow from `files`.
+fn dedupeFiles(allocator: std.mem.Allocator, files: []const []const u8) ![]const []const u8 {
+    var seen = std.StringHashMap(void).init(allocator);
+    defer {
+        var keys = seen.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        seen.deinit();
+    }
+
+    var unique = std.ArrayList([]const u8){};
+    errdefer unique.deinit(allocator);
+
+    for (files) |file_path| {
+        const key = std.fs.cwd().realpathAlloc(allocator, file_path) catch try allocator.dupe(u8, file_path);
+        const entry = try seen.getOrPut(key);
+        if (entry.found_existing) {
+            allocator.free(key);
+            continue;
+        }
+        try unique.append(allocator, file_path);
+    }
+
+    return unique.toOwnedSlice(allocator);
 }
 
 fn lintFile(
@@ -290,12 +357,9 @@ fn lintFile(
     file_path: []const u8,
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
+    stderr: *std.Io.Writer,
 ) !void {
-    var stderr_buf: [1024]u8 = undefined;
-    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
-    const stderr = &stderr_bw.interface;
-
-    const source = readSourceFile(allocator, file_path, stderr) orelse return;
+    const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -306,12 +370,12 @@ fn lintFile(
 
     const yaml_node = yaml_parser.parse() catch {
         stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
-        return;
+        return error.YamlParseError;
     };
 
-    const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch {
-        stderr.print("{s}: workflow parse error\n", .{file_path}) catch {};
-        return;
+    const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch |err| {
+        stderr.print("{s}: workflow parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+        return error.WorkflowParseError;
     };
 
     zghalint.rules.security.setRepoVisibility(config.repo_visibility);
@@ -369,6 +433,7 @@ fn applyFixesForFile(
 
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
+    const stat = try file.stat();
     const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
     defer allocator.free(source);
 
@@ -382,7 +447,13 @@ fn applyFixesForFile(
     // the destination was swapped to a symlink between our check and now,
     // the symlink is replaced — the link target is never written through.
     var write_buf: [4096]u8 = undefined;
-    var af = try std.fs.cwd().atomicFile(file_path, .{ .write_buffer = &write_buf });
+    // rename(2) replaces the inode, so the new file must carry the original
+    // permission bits or an executable / group-readable workflow would be
+    // reset to the umask default.
+    var af = try std.fs.cwd().atomicFile(file_path, .{
+        .write_buffer = &write_buf,
+        .mode = if (builtin.os.tag == .windows) std.fs.File.default_mode else stat.mode & 0o7777,
+    });
     defer af.deinit();
     try af.file_writer.interface.writeAll(result.content);
     try af.finish();
@@ -432,11 +503,9 @@ pub fn main() !u8 {
     var stderr_buf: [1024]u8 = undefined;
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
+    defer stderr.flush() catch {};
 
-    var cli_args = parseArgs(allocator) catch {
-        stderr.writeAll("error: failed to parse arguments\n") catch {};
-        return 2;
-    };
+    var cli_args = parseArgs(allocator, stderr) catch return 2;
     defer cli_args.deinit();
 
     if (cli_args.show_help) {
@@ -451,10 +520,7 @@ pub fn main() !u8 {
         return 0;
     }
 
-    var config = loadConfig(allocator, cli_args.config_path) catch {
-        stderr.writeAll("error: failed to load config\n") catch {};
-        return 2;
-    };
+    var config = loadConfig(allocator, cli_args.config_path, stderr) catch return 2;
     defer config.deinit();
 
     if (cli_args.format) |fmt| config.output_format = fmt;
@@ -466,7 +532,7 @@ pub fn main() !u8 {
         of.deinit(allocator);
     };
 
-    const files = if (cli_args.files.items.len > 0)
+    const requested_files = if (cli_args.files.items.len > 0)
         cli_args.files.items
     else blk: {
         owned_files = collectDefaultFiles(allocator) catch {
@@ -475,6 +541,12 @@ pub fn main() !u8 {
         };
         break :blk owned_files.?.items;
     };
+
+    const files = dedupeFiles(allocator, requested_files) catch {
+        stderr.writeAll("error: out of memory\n") catch {};
+        return 2;
+    };
+    defer allocator.free(files);
 
     if (files.len == 0) {
         stderr.writeAll("No workflow files found.\n") catch {};
@@ -518,17 +590,22 @@ pub fn main() !u8 {
     var all_diags = zghalint.DiagnosticList.init(allocator);
     defer all_diags.deinit();
 
+    // A file that could not be read or parsed produced no diagnostics, so a
+    // clean report would be a false negative; such runs exit 2 instead.
+    var had_fatal = false;
+    var unlinted_count: usize = 0;
+
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
-        if (isDependabotFile(file_path)) {
-            lintDependabotFile(allocator, file_path, &config, &all_diags) catch {
-                stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
-            };
-        } else {
-            lintFile(allocator, file_path, &config, &all_diags) catch {
-                stderr.print("error: internal error while linting '{s}'\n", .{file_path}) catch {};
-            };
-        }
+        const lint_result = if (isDependabotFile(file_path))
+            lintDependabotFile(allocator, file_path, &config, &all_diags, stderr)
+        else
+            lintFile(allocator, file_path, &config, &all_diags, stderr);
+        // lintFile / lintDependabotFile already reported the reason on stderr.
+        lint_result catch {
+            had_fatal = true;
+            unlinted_count += 1;
+        };
     }
 
     if (cli_args.fix_mode != .off) {
@@ -537,15 +614,19 @@ pub fn main() !u8 {
         for (files) |file_path| {
             if (config.isIgnored(file_path)) continue;
             const fixed = applyFixesForFile(allocator, file_path, &all_diags, include_unsafe) catch |err| {
-                try stderr.print("error: failed to apply fixes to '{s}': {}\n", .{ file_path, err });
+                stderr.print("error: failed to apply fixes to '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
+                had_fatal = true;
                 continue;
             };
             total_fixed += fixed;
         }
         if (total_fixed > 0) {
-            try stderr.print("Applied {d} fix(es).\n", .{total_fixed});
+            stderr.print("Applied {d} fix(es).\n", .{total_fixed}) catch {};
         }
     }
+
+    // Errors go out before the report so a CI log shows the cause first.
+    stderr.flush() catch {};
 
     all_diags.sort();
 
@@ -566,6 +647,12 @@ pub fn main() !u8 {
     if (config.output_format != .terminal) stdout.writeAll("\n") catch return 2;
     try stdout.flush();
 
+    // The rendered summary only covers files that were actually linted; make
+    // the partial result explicit so "No issues found." is not misread.
+    if (unlinted_count > 0) {
+        stderr.print("error: {d} file(s) could not be linted; results above are incomplete\n", .{unlinted_count}) catch {};
+    }
+    if (had_fatal) return 2;
     if (hasErrors(&all_diags)) return 1;
     return 0;
 }
@@ -621,7 +708,8 @@ test "printHelp outputs usage text" {
 
 test "parseArgsSlice parses offline flag" {
     const argv = [_][]const u8{ "--offline", ".github/workflows/ci.yml" };
-    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &argv, &discard.writer);
     defer args.deinit();
 
     try std.testing.expect(args.offline);
@@ -631,7 +719,8 @@ test "parseArgsSlice parses offline flag" {
 
 test "parseArgsSlice parses no-cache flag" {
     const argv = [_][]const u8{ "--no-cache", ".github/workflows/ci.yml" };
-    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &argv, &discard.writer);
     defer args.deinit();
 
     try std.testing.expect(args.no_cache);
@@ -641,7 +730,8 @@ test "parseArgsSlice parses no-cache flag" {
 
 test "parseArgsSlice parses quick flag" {
     const argv = [_][]const u8{ "--quick", ".github/workflows/ci.yml" };
-    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &argv, &discard.writer);
     defer args.deinit();
 
     try std.testing.expect(args.offline);
@@ -659,7 +749,8 @@ test "parseArgsSlice parses config and format options" {
         "never",
         "--fix-unsafe",
     };
-    var args = try parseArgsSlice(std.testing.allocator, &argv);
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &argv, &discard.writer);
     defer args.deinit();
 
     try std.testing.expectEqualStrings(".zghalint.yml", args.config_path.?);
@@ -669,7 +760,8 @@ test "parseArgsSlice parses config and format options" {
 }
 
 test "parseArgsSlice treats everything after -- as files" {
-    var args = try parseArgsSlice(std.testing.allocator, &.{ "--offline", "--", "--fix-unsafe", "-h", "a.yml" });
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--offline", "--", "--fix-unsafe", "-h", "a.yml" }, &discard.writer);
     defer args.deinit();
     try std.testing.expect(args.offline);
     try std.testing.expect(!args.show_help);
@@ -678,4 +770,45 @@ test "parseArgsSlice treats everything after -- as files" {
     try std.testing.expectEqualStrings("--fix-unsafe", args.files.items[0]);
     try std.testing.expectEqualStrings("-h", args.files.items[1]);
     try std.testing.expectEqualStrings("a.yml", args.files.items[2]);
+}
+
+test "parseArgsSlice rejects an unknown option" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    try std.testing.expectError(error.UnknownOption, parseArgsSlice(std.testing.allocator, &.{ "--fmt", "json" }, &discard.writer));
+}
+
+test "parseArgsSlice rejects an invalid --format value" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    try std.testing.expectError(error.InvalidOptionValue, parseArgsSlice(std.testing.allocator, &.{ "--format", "bogus" }, &discard.writer));
+}
+
+test "parseArgsSlice does not consume a flag as an option value" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    try std.testing.expectError(error.MissingOptionValue, parseArgsSlice(std.testing.allocator, &.{ "--config", "--fix" }, &discard.writer));
+    try std.testing.expectError(error.MissingOptionValue, parseArgsSlice(std.testing.allocator, &.{"--config"}, &discard.writer));
+}
+
+test "parseArgsSlice reports the offending argument" {
+    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer out.deinit();
+    try std.testing.expectError(error.UnknownOption, parseArgsSlice(std.testing.allocator, &.{"--nope"}, &out.writer));
+    try std.testing.expectEqualStrings("error: unknown option '--nope' (see --help)\n", out.written());
+}
+
+test "dedupeFiles keeps the first spelling of a repeated path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "a.yml", .data = "" });
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+    const direct = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "a.yml" });
+    defer std.testing.allocator.free(direct);
+    const dotted = try std.fs.path.join(std.testing.allocator, &.{ dir_path, ".", "a.yml" });
+    defer std.testing.allocator.free(dotted);
+
+    const files = try dedupeFiles(std.testing.allocator, &.{ direct, dotted, direct, "missing.yml", "missing.yml" });
+    defer std.testing.allocator.free(files);
+    try std.testing.expectEqual(@as(usize, 2), files.len);
+    try std.testing.expectEqualStrings(direct, files[0]);
+    try std.testing.expectEqualStrings("missing.yml", files[1]);
 }

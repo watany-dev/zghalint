@@ -98,8 +98,15 @@ runs:
           EXE=".exe"
         fi
 
+        # The default config path is optional; only a config that exists is
+        # passed, since a missing explicit --config is an error.
+        CONFIG_ARGS=()
+        if [ -f "$INPUT_CONFIG" ]; then
+          CONFIG_ARGS=(--config "$INPUT_CONFIG")
+        fi
+
         # $INPUT_PATHS is intentionally unquoted: it is a glob that the shell
         # expands. `--` keeps a path that begins with `-` from being read as
         # an option.
         # shellcheck disable=SC2086
-        "./zghalint$EXE" --config "$INPUT_CONFIG" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS
+        "./zghalint$EXE" "${CONFIG_ARGS[@]}" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS
