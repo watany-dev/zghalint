@@ -57,6 +57,15 @@ SEC005 / SEC009 と同様に `check_workflow = &checkUntrustedCheckoutRef` と�
 
 ### 2. 重複抑制は早期 return で行う
 
+> **実装時の変更（#134）**: 下記のワークフロー単位 early return は採用しなかった。
+> `on: [pull_request_target, issue_comment]` のように複数トリガーを持つ場合、
+> SEC005 が見ない ref まで丸ごと落ちて偽陰性になるため。実装は **値単位**で、
+> SEC005 / SEC009 が実際に報告する `with.ref` の値だけをスキップする
+> (`ownedByNeighbourRule`)。`with.repository` はどちらのルールも見ないため
+> スキップ対象外。
+
+#### 当初案
+
 ```zig
 fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
     if (hasPRTargetTrigger(wf)) return;       // SEC005 の領域

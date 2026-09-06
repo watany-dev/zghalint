@@ -114,17 +114,22 @@ fn fallbackCwd(allocator: std.mem.Allocator) ![]const u8 {
 pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     // `root` is usually absolute but may be the "." fallback, which
     // `openDirAbsolute` would reject (assert) rather than open.
-    var dir = std.fs.cwd().openDir(root, .{}) catch {
+    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch {
         return Context{};
     };
     defer dir.close();
+
+    // One getdents sweep instead of one `access` syscall per candidate.
+    const present = scanRoot(&dir);
 
     var node_found = std.ArrayList([]const u8){};
     defer node_found.deinit(allocator);
     var node_manager_set = std.EnumSet(NodeCache).initEmpty();
 
-    for (node_lockfiles) |entry| {
-        dir.access(entry.name, .{}) catch continue;
+    // Iterated in table order so an ambiguity hint lists lockfiles
+    // deterministically regardless of directory iteration order.
+    for (node_lockfiles, 0..) |entry, i| {
+        if (!present.node.isSet(i)) continue;
         try node_found.append(allocator, entry.name);
         node_manager_set.insert(entry.manager);
     }
@@ -133,26 +138,15 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     defer python_found.deinit(allocator);
     var python_manager_set = std.EnumSet(PythonCache).initEmpty();
 
-    for (python_lockfiles) |entry| {
-        dir.access(entry.name, .{}) catch continue;
+    for (python_lockfiles, 0..) |entry, i| {
+        if (!present.python.isSet(i)) continue;
         try python_found.append(allocator, entry.name);
         python_manager_set.insert(entry.manager);
     }
 
-    const go_sum_present = blk: {
-        dir.access("go.sum", .{}) catch break :blk false;
-        break :blk true;
-    };
-
-    const bun_lockfile_present = blk: {
-        if (dir.access("bun.lock", .{})) |_| break :blk true else |_| {}
-        if (dir.access("bun.lockb", .{})) |_| break :blk true else |_| {}
-        break :blk false;
-    };
-
     var ctx = Context{
-        .go_sum_present = go_sum_present,
-        .bun_lockfile_present = bun_lockfile_present,
+        .go_sum_present = present.go_sum,
+        .bun_lockfile_present = present.bun,
     };
 
     const node_unique = node_manager_set.count();
@@ -172,6 +166,49 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     }
 
     return ctx;
+}
+
+/// Which of the probed candidates exist in the workspace root. Bit `i`
+/// corresponds to index `i` of the matching lockfile table.
+const RootEntries = struct {
+    node: std.StaticBitSet(node_lockfiles.len) = std.StaticBitSet(node_lockfiles.len).initEmpty(),
+    python: std.StaticBitSet(python_lockfiles.len) = std.StaticBitSet(python_lockfiles.len).initEmpty(),
+    go_sum: bool = false,
+    bun: bool = false,
+};
+
+fn scanRoot(dir: *std.fs.Dir) RootEntries {
+    var present: RootEntries = .{};
+
+    var it = dir.iterate();
+    while (true) {
+        // A half-read directory could hide one lockfile of an ambiguous pair and
+        // turn the hint into a confident wrong answer, so a failed sweep reports
+        // nothing rather than what it managed to collect.
+        const entry = (it.next() catch return .{}) orelse break;
+
+        for (node_lockfiles, 0..) |candidate, i| {
+            if (matches(dir, entry, candidate.name)) present.node.set(i);
+        }
+        for (python_lockfiles, 0..) |candidate, i| {
+            if (matches(dir, entry, candidate.name)) present.python.set(i);
+        }
+        if (matches(dir, entry, "go.sum")) present.go_sum = true;
+        if (matches(dir, entry, "bun.lock") or matches(dir, entry, "bun.lockb")) present.bun = true;
+    }
+
+    return present;
+}
+
+/// A listing reports dangling symlinks and non-regular entries that the
+/// previous `access` probe rejected, so a matching name is only accepted once
+/// it is known to resolve to something readable.
+fn matches(dir: *std.fs.Dir, entry: std.fs.Dir.Entry, candidate: []const u8) bool {
+    if (!std.mem.eql(u8, entry.name, candidate)) return false;
+    if (entry.kind == .file) return true;
+    if (entry.kind != .sym_link) return false;
+    dir.access(entry.name, .{}) catch return false;
+    return true;
 }
 
 fn dupeLockfiles(allocator: std.mem.Allocator, names: []const []const u8) ![]const []const u8 {
@@ -332,6 +369,62 @@ test "detectFromRoot leaves bun_lockfile_present false without bun lockfile" {
 
     const ctx = try detectFromRoot(testing.allocator, abs);
     try testing.expect(!ctx.bun_lockfile_present);
+}
+
+test "detectFromRoot ignores a directory named like a lockfile" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("yarn.lock");
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.node_cache == null);
+}
+
+test "detectFromRoot ignores a dangling symlink named like a lockfile" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.symLink("nowhere", "package-lock.json", .{}) catch return error.SkipZigTest;
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.node_cache == null);
+}
+
+test "detectFromRoot follows a symlink that resolves to a lockfile" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "real.json", .data = "{}" });
+    tmp.dir.symLink("real.json", "package-lock.json", .{}) catch return error.SkipZigTest;
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expectEqual(NodeCache.npm, ctx.node_cache.?);
+}
+
+test "detectFromRoot ambiguity list follows table order, not directory order" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Written yarn-first so a directory-order-dependent implementation would
+    // produce the reversed list.
+    try tmp.dir.writeFile(.{ .sub_path = "yarn.lock", .data = "" });
+    try tmp.dir.writeFile(.{ .sub_path = "package-lock.json", .data = "{}" });
+
+    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(abs);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const ctx = try detectFromRoot(arena.allocator(), abs);
+    try testing.expectEqual(@as(usize, 2), ctx.ambiguous_node_lockfiles.len);
+    try testing.expectEqualStrings("package-lock.json", ctx.ambiguous_node_lockfiles[0]);
+    try testing.expectEqualStrings("yarn.lock", ctx.ambiguous_node_lockfiles[1]);
 }
 
 test "detectFromRoot returns empty Context for missing dir" {

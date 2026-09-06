@@ -34,6 +34,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
 | `security-misc.yml` | SEC003 / SEC005 / SEC006 / SEC007 / SEC008 / SC002 |
 | `sec006-condition-scope.yml` | #138 repro: ref/label routing in `if:` must not fire SEC006 |
+| `sec021-untrusted-checkout-ref.yml` | #134 repro: checkout ref from an `issue_comment` body |
 | `sec022-workflow-run-branch-gate.yml` | #143 repro: `head_branch` gate on a `workflow_run` job |
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |

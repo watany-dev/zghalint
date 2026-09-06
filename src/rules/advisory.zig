@@ -176,36 +176,36 @@ fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Adviso
     return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
-fn loadFromDiskCache(allocator: Allocator) ![]const Advisory {
-    var dir = getCacheDir(allocator) orelse return error.CacheMiss;
-    defer dir.close();
+fn readCacheFile(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
+    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
+    defer file.close();
+    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
+    return deserializeAdvisories(allocator, body);
+}
+
+fn loadFromDiskCache(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
     if (!isCacheFresh(dir)) return error.CacheStale;
-    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
-    defer file.close();
-    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
-    return deserializeAdvisories(allocator, body);
+    return readCacheFile(allocator, dir);
 }
 
-fn loadFromDiskCacheIgnoreAge(allocator: Allocator) ![]const Advisory {
-    var dir = getCacheDir(allocator) orelse return error.CacheMiss;
-    defer dir.close();
-    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
-    defer file.close();
-    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
-    return deserializeAdvisories(allocator, body);
-}
-
+/// The cache directory is opened once and shared by both read attempts;
+/// reopening it per attempt doubled the startup syscalls of a stale-cache run.
 fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
-    if (is_offline) {
-        return loadFromDiskCache(allocator) catch
-            loadFromDiskCacheIgnoreAge(allocator) catch
-            null;
+    var dir_opt = getCacheDir(allocator);
+    defer if (dir_opt) |*d| d.close();
+
+    if (dir_opt) |dir| {
+        if (loadFromDiskCache(allocator, dir)) |advisories| return advisories else |_| {}
     }
 
-    return loadFromDiskCache(allocator) catch
-        fetchAndParse(allocator) catch
-        loadFromDiskCacheIgnoreAge(allocator) catch
-        null;
+    if (!is_offline) {
+        if (fetchAndParse(allocator)) |advisories| return advisories else |_| {}
+    }
+
+    if (dir_opt) |dir| {
+        return readCacheFile(allocator, dir) catch null;
+    }
+    return null;
 }
 
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
