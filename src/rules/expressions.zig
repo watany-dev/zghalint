@@ -202,14 +202,24 @@ pub const ExprNode = struct {
     /// Relative to the expression source, not the workflow file.
     start_byte: u32 = 0,
     end_byte: u32 = 0,
+    /// Longest child chain below this node (leaves are 0). Every walker over
+    /// the tree recurses once per level, so the parser caps it.
+    height: u16 = 0,
 };
 
 pub const ParseError = error{
     UnexpectedToken,
     EmptyExpression,
     UnclosedParen,
+    MaxDepthExceeded,
     OutOfMemory,
 };
+
+/// Upper bound on both parser recursion (nested `(`, `!`, call arguments)
+/// and the height of the resulting tree (which a left-associative operator
+/// chain grows by one per operator). Real workflow expressions stay far
+/// below this; the cap keeps hostile input from overflowing the stack.
+pub const max_expr_depth: u16 = 256;
 
 fn isOrOp(tok: ExprToken) bool {
     return tok.kind == .logical_op and std.mem.eql(u8, tok.value, "||");
@@ -228,6 +238,7 @@ pub const ExprParser = struct {
     current: ExprToken,
     allocator: std.mem.Allocator,
     error_message: ?[]const u8 = null,
+    depth: u16 = 0,
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) ExprParser {
         var tokenizer = ExprTokenizer.init(source);
@@ -241,6 +252,28 @@ pub const ExprParser = struct {
 
     fn advance(self: *ExprParser) void {
         self.current = self.tokenizer.next();
+    }
+
+    fn enter(self: *ExprParser) ParseError!void {
+        if (self.depth >= max_expr_depth) {
+            self.error_message = "expression nested too deeply";
+            return ParseError.MaxDepthExceeded;
+        }
+        self.depth += 1;
+    }
+
+    fn leave(self: *ExprParser) void {
+        self.depth -= 1;
+    }
+
+    fn heightAbove(self: *ExprParser, children: []const ExprNode) ParseError!u16 {
+        var max: u16 = 0;
+        for (children) |child| max = @max(max, child.height);
+        if (max >= max_expr_depth) {
+            self.error_message = "expression nested too deeply";
+            return ParseError.MaxDepthExceeded;
+        }
+        return max + 1;
     }
 
     pub fn parse(self: *ExprParser) ParseError!ExprNode {
@@ -287,6 +320,7 @@ pub const ExprParser = struct {
                 .children = children,
                 .start_byte = children[0].start_byte,
                 .end_byte = children[1].end_byte,
+                .height = try self.heightAbove(children),
             };
         }
         return left;
@@ -297,6 +331,8 @@ pub const ExprParser = struct {
             const op = self.current.value;
             const op_start = self.current.pos;
             self.advance();
+            try self.enter();
+            defer self.leave();
             const operand = try self.parseUnary();
             const children = try self.allocator.alloc(ExprNode, 1);
             children[0] = operand;
@@ -306,6 +342,7 @@ pub const ExprParser = struct {
                 .children = children,
                 .start_byte = @intCast(op_start),
                 .end_byte = operand.end_byte,
+                .height = try self.heightAbove(children),
             };
         }
         return self.parsePrimary();
@@ -334,6 +371,8 @@ pub const ExprParser = struct {
             },
             .open_paren => {
                 self.advance();
+                try self.enter();
+                defer self.leave();
                 const inner = try self.parseOr();
                 if (self.current.kind != .close_paren) {
                     self.error_message = "missing closing parenthesis";
@@ -374,6 +413,8 @@ pub const ExprParser = struct {
 
     fn parseFunctionCall(self: *ExprParser, name: []const u8, name_start: usize) ParseError!ExprNode {
         self.advance();
+        try self.enter();
+        defer self.leave();
         var args = std.ArrayList(ExprNode){};
 
         if (self.current.kind != .close_paren) {
@@ -400,6 +441,7 @@ pub const ExprParser = struct {
             .children = children,
             .start_byte = @intCast(name_start),
             .end_byte = @intCast(close_paren_pos + 1),
+            .height = try self.heightAbove(children),
         };
     }
 
@@ -473,6 +515,7 @@ pub fn validateExpression(
             ParseError.EmptyExpression => "empty expression in ${{ }}",
             ParseError.UnclosedParen => parser.error_message orelse "unclosed parenthesis",
             ParseError.UnexpectedToken => parser.error_message orelse "invalid expression syntax",
+            ParseError.MaxDepthExceeded => "expression nested too deeply",
             ParseError.OutOfMemory => "out of memory parsing expression",
         };
         list.append(.{
@@ -588,7 +631,7 @@ fn validateFunctionCall(
     parent: ?*const ExprNode,
 ) void {
     const name = node.value;
-    const arg_count: u8 = @intCast(node.children.len);
+    const arg_count = node.children.len;
 
     if (catalog.lookupFunction(name)) |sig| {
         if (arg_count < sig.min_args or arg_count > sig.max_args) {
@@ -1662,6 +1705,75 @@ test "validate: empty expression" {
     validateExpression(std.testing.allocator, "", Span.point(1, 1, 0), &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
+}
+
+test "parser: rejects deeply nested parentheses" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = ("(" ** 100000) ++ "a" ++ (")" ** 100000);
+    var parser = ExprParser.init(arena.allocator(), src);
+    try std.testing.expectError(ParseError.MaxDepthExceeded, parser.parse());
+}
+
+test "parser: rejects deeply nested negation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = ("!" ** 200000) ++ "a";
+    var parser = ExprParser.init(arena.allocator(), src);
+    try std.testing.expectError(ParseError.MaxDepthExceeded, parser.parse());
+}
+
+test "parser: rejects deeply nested function calls" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = ("contains(" ** 50000) ++ "a" ++ (")" ** 50000);
+    var parser = ExprParser.init(arena.allocator(), src);
+    try std.testing.expectError(ParseError.MaxDepthExceeded, parser.parse());
+}
+
+test "parser: rejects an operator chain taller than max_expr_depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "a" ++ (" || a" ** 200000);
+    var parser = ExprParser.init(arena.allocator(), src);
+    try std.testing.expectError(ParseError.MaxDepthExceeded, parser.parse());
+}
+
+test "parser: accepts nesting and chains well below the cap" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const nested = ("(" ** 64) ++ "github.sha" ++ (")" ** 64);
+    var p1 = ExprParser.init(arena.allocator(), nested);
+    _ = try p1.parse();
+
+    const chain = "github.sha" ++ (" || github.sha" ** 64);
+    var p2 = ExprParser.init(arena.allocator(), chain);
+    const node = try p2.parse();
+    try std.testing.expectEqual(@as(u16, 64), node.height);
+}
+
+test "validate: too deeply nested expression is reported as EXPR001" {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const src = ("!" ** 1000) ++ "a";
+    validateExpression(std.testing.allocator, src, Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings("EXPR001", list.get(0).rule_id);
+    try std.testing.expectEqualStrings("expression nested too deeply", list.get(0).message);
+}
+
+test "validate: a call with more than 255 arguments does not trap" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    // 301 arguments: the count must stay a usize, not be truncated to u8.
+    const src = "format('x'" ++ (", 'y'" ** 300) ++ ")";
+    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    try std.testing.expect(list.len() > 0);
+    try std.testing.expectEqualStrings("EXPR005", list.get(0).rule_id);
 }
 
 test "validate: syntax error unclosed paren" {

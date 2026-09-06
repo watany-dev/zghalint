@@ -129,6 +129,7 @@ fn matchShasInRefs(
 
     var annotated_shas: [64][]const u8 = undefined;
     var annotated_count: usize = 0;
+    var annotated_overflow = false;
 
     var unresolved = targets.len;
 
@@ -145,6 +146,8 @@ fn matchShasInRefs(
             if (annotated_count < annotated_shas.len) {
                 annotated_shas[annotated_count] = obj_sha;
                 annotated_count += 1;
+            } else {
+                annotated_overflow = true;
             }
         }
     }
@@ -154,12 +157,13 @@ fn matchShasInRefs(
     for (annotated_shas[0..annotated_count]) |tag_sha| {
         if (unresolved == 0) break;
         const commit_sha = dereferenceAnnotatedTag(allocator, owner, repo, tag_sha) catch continue;
+        defer allocator.free(commit_sha);
         unresolved -= markMatches(commit_sha, targets, out);
     }
 
-    // A full page means the listing may be truncated, so an absent SHA cannot
-    // be distinguished from one on a page we never fetched.
-    if (items.len >= 100) return;
+    // Annotated tags that were never dereferenced, or a possibly truncated
+    // page, mean "no match" cannot be asserted.
+    if (annotated_overflow or items.len >= 100) return;
 
     for (out) |*res| {
         if (res.* != .has_tag) res.* = .no_tag;
@@ -200,14 +204,18 @@ fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []cons
 
     if (resp.status != .ok) return error.HttpError;
 
-    return parseTagObject(resp.body);
+    return parseTagObject(allocator, resp.body);
 }
 
-fn parseTagObject(body: []const u8) RestError![]const u8 {
-    var buf: [4096]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
+/// Returns the dereferenced commit SHA, owned by the caller. The parsed JSON
+/// itself is transient: a real tag object (tagger, message, signature) is
+/// several KiB, so it is parsed in a scratch arena rather than a fixed
+/// stack buffer.
+fn parseTagObject(allocator: Allocator, body: []const u8) RestError![]const u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
-    const root = std.json.parseFromSliceLeaky(std.json.Value, fba.allocator(), body, .{}) catch return error.JsonParseError;
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), body, .{}) catch return error.JsonParseError;
 
     const obj = json_util.asObject(root) orelse return error.UnexpectedFormat;
     const inner = json_util.objField(obj, "object") orelse return error.UnexpectedFormat;
@@ -215,7 +223,8 @@ fn parseTagObject(body: []const u8) RestError![]const u8 {
     const obj_type = json_util.stringField(inner, "type") orelse return error.UnexpectedFormat;
     if (!std.mem.eql(u8, obj_type, "commit")) return error.UnexpectedFormat;
 
-    return json_util.stringField(inner, "sha") orelse error.UnexpectedFormat;
+    const sha = json_util.stringField(inner, "sha") orelse return error.UnexpectedFormat;
+    return allocator.dupe(u8, sha);
 }
 
 pub fn queryRefStatus(allocator: Allocator, owner: []const u8, repo: []const u8, ref: []const u8) RefStatus {
@@ -348,13 +357,31 @@ test "parseArchivedField: malformed JSON" {
 
 test "parseTagObject: extracts inner commit sha" {
     const body = "{\"object\": {\"sha\": \"abc123\", \"type\": \"commit\"}}";
-    const sha = try parseTagObject(body);
+    const sha = try parseTagObject(testing.allocator, body);
+    defer testing.allocator.free(sha);
     try testing.expectEqualStrings("abc123", sha);
 }
 
 test "parseTagObject: rejects nested tag" {
     const body = "{\"object\": {\"sha\": \"abc\", \"type\": \"tag\"}}";
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(testing.allocator, body));
+}
+
+test "parseTagObject: handles a realistically sized tag object" {
+    // A signed release tag carries a multi-KiB message plus signature; the
+    // parser must not depend on a small fixed buffer.
+    const message = "release notes " ** 600;
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"sha\":\"tag0000000000000000000000000000000000000\",\"tag\":\"v9.9.9\",\"message\":\"{s}\",\"tagger\":{{\"name\":\"bot\",\"email\":\"bot@example.com\",\"date\":\"2024-01-01T00:00:00Z\"}},\"object\":{{\"sha\":\"c0ffee0000000000000000000000000000000000\",\"type\":\"commit\"}},\"verification\":{{\"verified\":true,\"signature\":\"{s}\"}}}}",
+        .{ message, message },
+    );
+    defer testing.allocator.free(body);
+    try testing.expect(body.len > 8192);
+
+    const sha = try parseTagObject(testing.allocator, body);
+    defer testing.allocator.free(sha);
+    try testing.expectEqualStrings("c0ffee0000000000000000000000000000000000", sha);
 }
 
 test "matchShaInRefs: lightweight tag match" {
@@ -397,28 +424,28 @@ test "parseArchivedField: non-bool archived returns UnexpectedFormat" {
 }
 
 test "parseTagObject: malformed JSON returns error" {
-    try testing.expectError(error.JsonParseError, parseTagObject("not json"));
+    try testing.expectError(error.JsonParseError, parseTagObject(testing.allocator, "not json"));
 }
 
 test "parseTagObject: missing object field returns error" {
     const body =
         \\{"tag":"v1.0.0"}
     ;
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(testing.allocator, body));
 }
 
 test "parseTagObject: non-object inner 'object' returns error" {
     const body =
         \\{"tag":"v1","object":"not-an-object"}
     ;
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(testing.allocator, body));
 }
 
 test "parseTagObject: inner missing sha returns error" {
     const body =
         \\{"tag":"v1","object":{"type":"commit"}}
     ;
-    try testing.expectError(error.UnexpectedFormat, parseTagObject(body));
+    try testing.expectError(error.UnexpectedFormat, parseTagObject(testing.allocator, body));
 }
 
 test "matchShaInRefs: invalid JSON returns unknown" {
@@ -537,6 +564,32 @@ test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" 
         if (i != 0) try buf.append(testing.allocator, ',');
         try buf.writer(testing.allocator).print(
             "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
+            .{ i, i },
+        );
+    }
+    try buf.append(testing.allocator, ']');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = matchShaInRefs(arena.allocator(), buf.items, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
+    try testing.expectEqual(TagResolution.unknown, result);
+}
+
+test "matchShaInRefs: more annotated tags than can be dereferenced -> unknown" {
+    const engine = @import("engine.zig");
+    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer engine.clearNetworkDeadline();
+
+    // 65 annotated tags on a single (non-full) page: the 65th is never
+    // dereferenced, so "no tag" must not be asserted.
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    try buf.append(testing.allocator, '[');
+    var i: usize = 0;
+    while (i < 65) : (i += 1) {
+        if (i != 0) try buf.append(testing.allocator, ',');
+        try buf.writer(testing.allocator).print(
+            "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"tag\"}}}}",
             .{ i, i },
         );
     }

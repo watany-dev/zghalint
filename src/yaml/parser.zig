@@ -267,7 +267,13 @@ pub const Parser = struct {
         return Node{ .sequence = .{ .items = owned_items, .span = start_span } };
     }
 
+    /// Flow collections recurse through this without passing `parseNode`, so
+    /// the depth guard is applied here as well.
     fn parseFlowValue(self: *Parser) ParseError!Node {
+        if (self.depth >= max_parse_depth) return error.MaxDepthExceeded;
+        self.depth += 1;
+        defer self.depth -= 1;
+
         self.skipNewlinesAndComments();
 
         if (self.current.kind == .flow_mapping_start) {
@@ -587,6 +593,37 @@ test "parse rejects input nested past max_parse_depth" {
 
     var parser = Parser.init(arena.allocator(), buf.items);
     try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
+}
+
+test "parse rejects flow collections nested past max_parse_depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const levels = @as(usize, max_parse_depth) + 16;
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    try buf.appendSlice(std.testing.allocator, "a: ");
+    try buf.appendNTimes(std.testing.allocator, '[', levels);
+    try buf.appendNTimes(std.testing.allocator, ']', levels);
+
+    var parser = Parser.init(arena.allocator(), buf.items);
+    try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
+
+    buf.clearRetainingCapacity();
+    try buf.appendSlice(std.testing.allocator, "a: ");
+    for (0..levels) |_| try buf.appendSlice(std.testing.allocator, "{k: ");
+    try buf.appendNTimes(std.testing.allocator, '}', levels);
+
+    var parser2 = Parser.init(arena.allocator(), buf.items);
+    try std.testing.expectError(error.MaxDepthExceeded, parser2.parse());
+}
+
+test "parse accepts moderately nested flow collections" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: [[1, 2], {b: [3, {c: 4}]}]");
+    _ = try parser.parse();
 }
 
 test "parse terminates on an unclosed flow sequence running into block content" {

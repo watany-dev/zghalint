@@ -85,6 +85,7 @@ test {
     _ = @import("rules/prefetch.zig");
     _ = @import("rules/graphql.zig");
     _ = @import("rules/disk_cache.zig");
+    _ = @import("rules/cache_dir.zig");
     _ = @import("rules/rest_fallback.zig");
     _ = @import("rules/json_util.zig");
     _ = @import("rules/data/compromised_actions.zig");
