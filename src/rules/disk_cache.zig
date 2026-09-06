@@ -45,7 +45,9 @@ pub const CachedRepo = struct {
     impostor: []const ImpostorEntry = &.{},
 };
 
-fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
+/// Callers that touch more than one repo open the directory once and pass it
+/// to `loadFromDir` / `saveToDir`, rather than paying an open per repo.
+pub fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
     if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME")) |xdg| {
         defer allocator.free(xdg);
         var dir = std.fs.openDirAbsolute(xdg, .{}) catch return null;

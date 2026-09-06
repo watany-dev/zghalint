@@ -395,6 +395,10 @@ fn initWorkspaceContext(
     files: []const []const u8,
     config: *const Config,
 ) void {
+    // PERF001 is the sole consumer of the probe, so a disabled rule makes the
+    // repo-root walk and the directory scan pure startup cost.
+    if (!config.isRuleEnabled("PERF001")) return;
+
     const hint = if (files.len > 0) files[0] else ".";
     const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch return;
     var ctx = zghalint.workspace.detectFromRoot(arena, root) catch zghalint.workspace.Context{};
