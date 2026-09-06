@@ -2226,17 +2226,13 @@ test "with_last_entry_end_byte is set only for an inline scalar in a block with:
         const wf = try parseWorkflow(alloc, try yp.parse());
         const anchor = wf.jobs[0].steps[0].with_last_entry_end_byte;
 
-        if (case.anchored_after) |tail| {
-            const end = std.mem.indexOf(u8, source, tail).? + tail.len;
-            testing.expectEqual(@as(?usize, end), anchor) catch |err| {
-                std.debug.print("case '{s}'\n", .{case.name});
-                return err;
-            };
-        } else {
-            testing.expectEqual(@as(?usize, null), anchor) catch |err| {
-                std.debug.print("case '{s}'\n", .{case.name});
-                return err;
-            };
-        }
+        const expected: ?usize = if (case.anchored_after) |tail|
+            std.mem.indexOf(u8, source, tail).? + tail.len
+        else
+            null;
+        testing.expectEqual(expected, anchor) catch |err| {
+            std.debug.print("case '{s}'\n", .{case.name});
+            return err;
+        };
     }
 }
