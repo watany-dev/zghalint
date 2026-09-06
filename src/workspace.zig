@@ -112,7 +112,9 @@ fn fallbackCwd(allocator: std.mem.Allocator) ![]const u8 {
 /// Strings in the returned Context's `ambiguous_*_lockfiles` are allocated in
 /// `allocator`, so callers pair this with an arena that lives for the lint run.
 pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
-    var dir = std.fs.openDirAbsolute(root, .{}) catch {
+    // `root` is usually absolute but may be the "." fallback, which
+    // `openDirAbsolute` would reject (assert) rather than open.
+    var dir = std.fs.cwd().openDir(root, .{}) catch {
         return Context{};
     };
     defer dir.close();
