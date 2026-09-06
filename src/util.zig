@@ -61,6 +61,30 @@ pub fn levenshteinDistance(a: []const u8, b: []const u8) usize {
     return prev[b.len];
 }
 
+/// The nearest `candidates` entry within edit distance 2, or null when the
+/// input matches one exactly or two candidates tie for nearest.
+pub fn didYouMean(key: []const u8, candidates: []const []const u8) ?[]const u8 {
+    const max_dist: usize = 2;
+    var best: ?[]const u8 = null;
+    var best_dist: usize = std.math.maxInt(usize);
+    var ties: usize = 0;
+
+    for (candidates) |candidate| {
+        const dist = levenshteinDistance(key, candidate);
+        if (dist == 0 or dist > max_dist) continue;
+        if (dist < best_dist) {
+            best = candidate;
+            best_dist = dist;
+            ties = 1;
+        } else if (dist == best_dist) {
+            ties += 1;
+        }
+    }
+
+    if (ties != 1) return null;
+    return best;
+}
+
 test "levenshteinDistance basic cases" {
     try std.testing.expectEqual(@as(usize, 0), levenshteinDistance("abc", "abc"));
     try std.testing.expectEqual(@as(usize, 1), levenshteinDistance("chekout", "checkout"));
