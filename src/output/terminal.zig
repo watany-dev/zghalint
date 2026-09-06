@@ -30,32 +30,42 @@ fn severityColor(sev: Severity) []const u8 {
 /// and Unicode bidi embedding/override/isolate controls become `\u{XXXX}`;
 /// bytes that are not valid UTF-8 become `\xHH`. Tab is preserved for
 /// source alignment, and every other code point is copied through intact.
+/// Bytes that pass through untouched are accumulated into a run and flushed
+/// with a single `writeAll`; only the rare escaped code point costs a writer
+/// call. A string with nothing to escape — almost every message — is one
+/// scan and one copy instead of one `writeByte` per byte.
 fn writeSanitized(writer: anytype, s: []const u8) !void {
     var i: usize = 0;
+    var run_start: usize = 0;
     while (i < s.len) {
         const c = s[i];
         if (c < 0x80) {
             if (c == '\t' or (c >= 0x20 and c != 0x7f)) {
-                try writer.writeByte(c);
-            } else {
-                try writer.print("\\x{x:0>2}", .{c});
+                i += 1;
+                continue;
             }
+            try writer.writeAll(s[run_start..i]);
+            try writer.print("\\x{x:0>2}", .{c});
             i += 1;
+            run_start = i;
             continue;
         }
 
         const seq = decodeUtf8(s[i..]) orelse {
+            try writer.writeAll(s[run_start..i]);
             try writer.print("\\x{x:0>2}", .{c});
             i += 1;
+            run_start = i;
             continue;
         };
         if (isInvisibleControl(seq.cp)) {
+            try writer.writeAll(s[run_start..i]);
             try writer.print("\\u{{{x:0>4}}}", .{seq.cp});
-        } else {
-            try writer.writeAll(s[i .. i + seq.len]);
+            run_start = i + seq.len;
         }
         i += seq.len;
     }
+    try writer.writeAll(s[run_start..]);
 }
 
 fn decodeUtf8(s: []const u8) ?struct { len: usize, cp: u21 } {
@@ -82,7 +92,7 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !voi
     const reset = if (use_color) Color.reset else "";
     const gray = if (use_color) Color.gray else "";
 
-    try writer.print("{s}", .{bold});
+    try writer.writeAll(bold);
     try writeSanitized(writer, file_str);
     try writer.print(":{d}:{d}:{s} {s}{s}[{s}]{s}: ", .{
         diag.span.start_line,
