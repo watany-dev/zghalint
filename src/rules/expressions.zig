@@ -627,6 +627,18 @@ fn validateFunctionCall(
         }
     }
 
+    if (std.mem.eql(u8, name, "format") and node.children.len >= 1) {
+        if (node.children[0].kind == .string_literal) {
+            checkFormatPlaceholders(
+                allocator,
+                node.children[0].value,
+                node.children.len - 1,
+                span,
+                list,
+            );
+        }
+    }
+
     for (node.children) |*child| {
         validateNode(allocator, child, span, list, expr_base_byte, node);
     }
@@ -772,6 +784,115 @@ fn literalInteriorIsClean(lit_value: []const u8) bool {
     if (lit_value.len < 2) return true;
     const interior = lit_value[1 .. lit_value.len - 1];
     return std.mem.indexOfScalar(u8, interior, '\'') == null;
+}
+
+fn decodeExprStringLiteral(allocator: std.mem.Allocator, lit: []const u8) ?[]const u8 {
+    if (lit.len < 2 or lit[0] != '\'') return null;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 1;
+    while (i < lit.len) {
+        if (lit[i] == '\'') {
+            if (i + 1 < lit.len and lit[i + 1] == '\'') {
+                out.append(allocator, '\'') catch return null;
+                i += 2;
+                continue;
+            }
+            if (i + 1 == lit.len) return out.toOwnedSlice(allocator) catch null;
+            return null;
+        }
+        out.append(allocator, lit[i]) catch return null;
+        i += 1;
+    }
+    return null;
+}
+
+fn checkFormatPlaceholders(
+    allocator: std.mem.Allocator,
+    format_lit: []const u8,
+    data_arg_count: usize,
+    span: Span,
+    list: *DiagnosticList,
+) void {
+    const decoded = decodeExprStringLiteral(allocator, format_lit) orelse return;
+
+    var used: std.DynamicBitSetUnmanaged = .{};
+    used.resize(allocator, data_arg_count, false) catch return;
+    defer used.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < decoded.len) {
+        const c = decoded[i];
+        if (c == '{') {
+            if (i + 1 < decoded.len and decoded[i + 1] == '{') {
+                i += 2;
+                continue;
+            }
+            const start = i + 1;
+            var j = start;
+            while (j < decoded.len and std.ascii.isDigit(decoded[j])) j += 1;
+            if (j > start and j < decoded.len and decoded[j] == '}') {
+                const index = std.fmt.parseInt(usize, decoded[start..j], 10) catch {
+                    list.append(.{
+                        .rule_id = "EXPR008",
+                        .severity = .@"error",
+                        .message = "format() format string has an invalid placeholder index",
+                        .span = span,
+                    }) catch return;
+                    return;
+                };
+                if (index >= data_arg_count) {
+                    const msg = std.fmt.allocPrint(
+                        allocator,
+                        "format() placeholder '{{{d}}}' is out of range; only {d} data argument(s) provided",
+                        .{ index, data_arg_count },
+                    ) catch "format() placeholder is out of range";
+                    list.append(.{
+                        .rule_id = "EXPR008",
+                        .severity = .@"error",
+                        .message = msg,
+                        .span = span,
+                    }) catch return;
+                } else {
+                    used.set(index);
+                }
+                i = j + 1;
+                continue;
+            }
+            list.append(.{
+                .rule_id = "EXPR008",
+                .severity = .@"error",
+                .message = "format() format string has an unclosed '{'",
+                .span = span,
+            }) catch return;
+            return;
+        }
+        if (c == '}') {
+            if (i + 1 < decoded.len and decoded[i + 1] == '}') {
+                i += 2;
+                continue;
+            }
+            list.append(.{
+                .rule_id = "EXPR008",
+                .severity = .@"error",
+                .message = "format() format string has a stray '}'",
+                .span = span,
+            }) catch return;
+            return;
+        }
+        i += 1;
+    }
+
+    for (0..data_arg_count) |idx| {
+        if (used.isSet(idx)) continue;
+        const msg = std.fmt.allocPrint(allocator, "format() argument {d} is unused", .{idx + 1}) catch
+            "format() argument is unused";
+        list.append(.{
+            .rule_id = "EXPR008",
+            .severity = .warning,
+            .message = msg,
+            .span = span,
+        }) catch return;
+    }
 }
 
 /// `anchor` maps offsets inside `text` back to source positions so each
@@ -1703,6 +1824,26 @@ test "validate: hashFiles with multiple args" {
 
 test "validate: format with multiple args" {
     try expectNoDiagnostics("format('{0}-{1}', github.ref, github.sha)");
+}
+
+test "validate EXPR008: format placeholder out of range" {
+    try expectSingleRule("format('{0} {1}', github.sha)", "EXPR008");
+}
+
+test "validate EXPR008: format unused argument" {
+    try expectSingleRule("format('{0}', github.sha, github.ref)", "EXPR008");
+}
+
+test "validate EXPR008: format unclosed brace" {
+    try expectSingleRule("format('{0} {', github.sha)", "EXPR008");
+}
+
+test "validate EXPR008: format escaped braces are valid" {
+    try expectNoDiagnostics("format('{{literal}} {0}', github.sha)");
+}
+
+test "validate EXPR008: no check when format string is not a literal" {
+    try expectNoDiagnostics("format(github.event, github.sha)");
 }
 
 test "validate: nested function calls" {
