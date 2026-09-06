@@ -24,7 +24,7 @@ PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されてい�
 
 | ファイル | 行 | テスト数 | 主な不変条件 | 状態 |
 |---|---:|---:|---|---|
-| `tests/pbt/strategies.py` | 381 | – | 5 段階のジェネレータ + Phase 2 全 6 ルール専用誘発 strategy (BP004 / BP005 / DEP001 / PERF001 / PERM001 / PERM002) | OK |
+| `tests/pbt/strategies.py` | 381 | – | 5 段階のジェネレータ + Phase 2 全 6 ルール専用誘発 strategy (BP004 / BP005 / DEP001 / PERF001 / PERM001 / PERM002) + 回帰用 strategy (`workflow_with_flow_with` #171 / `deeply_nested_expression` #170、`workflow_with_perm002` は ブロックスカラー `runs-on:` #172 を含む) | OK |
 | `tests/pbt/conftest.py` | 115 | – | ReleaseSafe ビルド・subprocess 実行・config 書き出し | OK |
 | `tests/pbt/test_crash.py` | 87 | 4 | 任意入力で signal 終了しない | OK |
 | `tests/pbt/test_determinism.py` | 73 | – | 同一入力 → 同一出力 | OK |
@@ -49,7 +49,7 @@ detection を直接保証しているのは **5 種 (45%)**。
 | ルールモジュール | PBT 対象 | 備考 |
 |---|:---:|---|
 | `security.zig` (SEC001/002/003) | ✅ | `test_security_detection.py` |
-| `expressions.zig` | ❌ | 1,667 行・既存単体テスト 190+ |
+| `expressions.zig` | (部分) | detection は単体テスト 190+。`deeply_nested_expression` でネスト深度のクラッシュ耐性のみ PBT 対象 (#170) |
 | `permissions.zig` (PERM001 / PERM002) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
 | `best_practices.zig` (BP004 / BP005) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
 | `performance.zig` (PERF001 setup-go) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
