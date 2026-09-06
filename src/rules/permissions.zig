@@ -488,6 +488,39 @@ test "PERM002: autofix inserts permissions block after runs-on" {
     );
 }
 
+test "PERM002: fix lands before the next key when runs-on is a block scalar (#172)" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: |
+        \\      ubuntu-latest
+        \\    steps:
+        \\      - uses: some-org/some-action@v1
+        \\
+    ;
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkJobPermissions }, true);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: |
+        \\      ubuntu-latest
+        \\    permissions:
+        \\      contents: read
+        \\    steps:
+        \\      - uses: some-org/some-action@v1
+        \\
+    ,
+        result.content,
+    );
+}
+
 test "PERM002: multiple jobs get fixes applied in back-to-front order" {
     const source =
         \\name: CI

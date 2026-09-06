@@ -242,6 +242,11 @@ def workflow_with_perm002(draw: st.DrawFn) -> str:
         "some-org/some-action@a5ac7e51b41094c92402da3b24376905380afc29",
         "another-org/tool@a5ac7e51b41094c92402da3b24376905380afc29",
     ]))
+    # A block-scalar `runs-on:` used to make the fix land inside `steps:` (#172).
+    runs_on = draw(st.sampled_from([
+        f"    runs-on: {runner}\n",
+        f"    runs-on: |\n      {runner}\n",
+    ]))
     return (
         "name: CI\n"
         "on: push\n"
@@ -250,7 +255,7 @@ def workflow_with_perm002(draw: st.DrawFn) -> str:
         "  cancel-in-progress: true\n"
         "jobs:\n"
         "  build:\n"
-        f"    runs-on: {runner}\n"
+        f"{runs_on}"
         "    timeout-minutes: 10\n"
         "    steps:\n"
         f"      - uses: {action}\n"

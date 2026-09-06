@@ -2149,3 +2149,32 @@ test "parseStep captures run/uses/with source metadata" {
     // The `run:` span starts at the `|` indicator, one line above the content.
     try testing.expectEqual(@as(u32, 10), run_step.run_meta.?.value_span.start_line);
 }
+
+test "top-level permissions anchor clears an on: block scalar (#172)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      x:
+        \\        description: |
+        \\          a long description
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const anchor = wf.permissions_insertion_byte.?;
+    try testing.expectEqualStrings("jobs:\n", source[anchor .. anchor + "jobs:\n".len]);
+}
