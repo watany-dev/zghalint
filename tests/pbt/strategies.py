@@ -560,3 +560,31 @@ def workflow_with_flow_with(draw: st.DrawFn) -> str:
         "        uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
         f"{with_block}"
     )
+
+
+@st.composite
+def deeply_nested_expression(draw: st.DrawFn) -> str:
+    """Generate a workflow whose `${{ }}` nests far past the parser depth cap.
+
+    Recursive-descent expression parsing used to overflow the stack on inputs
+    like these (#170); the parser now rejects them with EXPR001 instead.
+    """
+    depth = draw(st.integers(min_value=300, max_value=5000))
+    kind = draw(st.sampled_from(["paren", "call", "not", "index"]))
+    if kind == "paren":
+        expr = "(" * depth + "1" + ")" * depth
+    elif kind == "call":
+        expr = "fromJSON(" * depth + "1" + ")" * depth
+    elif kind == "not":
+        expr = "!" * depth + "true"
+    else:
+        expr = "github" + "[0]" * depth
+    return (
+        "name: test\n"
+        "on: push\n"
+        "jobs:\n"
+        "  j:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        f"      - run: echo '${{{{ {expr} }}}}'\n"
+    )
