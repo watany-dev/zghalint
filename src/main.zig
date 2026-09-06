@@ -503,7 +503,10 @@ pub fn main() !u8 {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var stdout_buf: [4096]u8 = undefined;
+    // 64KB: a large workflow set emits megabytes of diagnostics, and a 4KB
+    // buffer turned that into thousands of `write` syscalls (0.94s of sys
+    // time on a 8.4MB terminal render).
+    var stdout_buf: [64 * 1024]u8 = undefined;
     var stdout_bw = std.fs.File.stdout().writer(&stdout_buf);
     const stdout = &stdout_bw.interface;
 
