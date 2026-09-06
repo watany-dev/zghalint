@@ -30,6 +30,13 @@ const ParsedPermissions = struct {
     problems: []const types.PermissionProblem,
 };
 
+fn isInlineScalar(node: Node) bool {
+    return switch (node) {
+        .scalar => |sc| sc.style != .literal and sc.style != .folded,
+        else => false,
+    };
+}
+
 fn isEmptyContainer(node: Node) bool {
     return switch (node) {
         .mapping => |m| m.entries.len == 0,
@@ -692,7 +699,14 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                 .mapping => |with_mapping| {
                     if (with_mapping.entries.len > 0) {
                         const last = with_mapping.entries[with_mapping.entries.len - 1];
-                        step.with_last_entry_end_byte = last.value.getSpan().end_byte;
+                        // Appending after the last entry is only safe when `with:`
+                        // is a block mapping (a flow entry has no full_span) and the
+                        // last value ends where its span says: a flow collection's
+                        // span covers only its opening bracket, and a block scalar
+                        // ends at the start of the next line (#171).
+                        if (last.full_span != null and isInlineScalar(last.value)) {
+                            step.with_last_entry_end_byte = last.value.getSpan().end_byte;
+                        }
                     }
                 },
                 else => {},
@@ -2177,4 +2191,52 @@ test "top-level permissions anchor clears an on: block scalar (#172)" {
 
     const anchor = wf.permissions_insertion_byte.?;
     try testing.expectEqualStrings("jobs:\n", source[anchor .. anchor + "jobs:\n".len]);
+}
+
+test "with_last_entry_end_byte is set only for an inline scalar in a block with: (#171)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    const Case = struct { name: []const u8, with_block: []const u8, anchored_after: ?[]const u8 };
+    const cases = [_]Case{
+        .{ .name = "flow with", .with_block = "        with: {x: y}\n", .anchored_after = null },
+        .{ .name = "flow mapping value", .with_block = "        with:\n          x: {a: b}\n", .anchored_after = null },
+        .{ .name = "flow sequence value", .with_block = "        with:\n          x: [a, b]\n", .anchored_after = null },
+        .{ .name = "block scalar value", .with_block = "        with:\n          x: |\n            a\n", .anchored_after = null },
+        .{ .name = "plain scalar value", .with_block = "        with:\n          x: y\n", .anchored_after = "x: y" },
+        .{ .name = "quoted multi-line value", .with_block = "        with:\n          x: \"a\n            b\"\n", .anchored_after = "b\"" },
+    };
+
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const source = try std.fmt.allocPrint(alloc,
+            \\name: CI
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    steps:
+            \\      - uses: actions/checkout@v4
+            \\{s}
+        , .{case.with_block});
+
+        var yp = yaml_parser_mod.Parser.init(alloc, source);
+        const wf = try parseWorkflow(alloc, try yp.parse());
+        const anchor = wf.jobs[0].steps[0].with_last_entry_end_byte;
+
+        if (case.anchored_after) |tail| {
+            const end = std.mem.indexOf(u8, source, tail).? + tail.len;
+            testing.expectEqual(@as(?usize, end), anchor) catch |err| {
+                std.debug.print("case '{s}'\n", .{case.name});
+                return err;
+            };
+        } else {
+            testing.expectEqual(@as(?usize, null), anchor) catch |err| {
+                std.debug.print("case '{s}'\n", .{case.name});
+                return err;
+            };
+        }
+    }
 }

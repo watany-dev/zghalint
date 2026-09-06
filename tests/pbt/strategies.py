@@ -528,3 +528,35 @@ def workflow_with_plain_scalar_if(draw: st.DrawFn) -> str:
         f"        if: {func}({context}, '{needle}')\n"
         "        run: echo ok\n"
     )
+
+
+@st.composite
+def workflow_with_flow_with(draw: st.DrawFn) -> str:
+    """Generate a checkout step whose `with:` has no safe append anchor.
+
+    SEC018 fires on every variant, but the flow collections, block scalar and
+    empty `with:` all broke the `with:` append autofix before #171.
+    """
+    with_block = draw(st.sampled_from([
+        "        with: {fetch-depth: 0}\n",
+        "        with:\n          sparse-checkout: [a, b]\n",
+        "        with:\n          sparse-checkout: |\n            a\n            b\n",
+        "        with: {}\n",
+        "        with:\n",
+    ]))
+    return (
+        "name: CI\n"
+        "on: push\n"
+        "permissions:\n"
+        "  contents: read\n"
+        "concurrency:\n"
+        "  group: ci\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    timeout-minutes: 10\n"
+        "    steps:\n"
+        "      - name: Checkout\n"
+        "        uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29\n"
+        f"{with_block}"
+    )

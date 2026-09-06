@@ -14,6 +14,7 @@ from tests.pbt.strategies import (
     dependabot_with_dep001,
     workflow_with_bp004,
     workflow_with_bp005,
+    workflow_with_flow_with,
     workflow_with_perf001_setup_go,
     workflow_with_perf001_setup_node,
     workflow_with_perf001_setup_python,
@@ -132,6 +133,7 @@ def _cleanup_dependabot(path: str) -> None:
     workflow_with_perm001_individual_write(),
     workflow_with_bp004(),
     workflow_with_perf001_setup_go(),
+    workflow_with_flow_with(),
 ))
 @PBT_SETTINGS
 def test_unsafe_fix_reduces_diagnostics_workflow(zghalint_bin, content):
@@ -218,7 +220,7 @@ def test_double_unsafe_fix_is_idempotent_dependabot(zghalint_bin, content):
         _cleanup_dependabot(path)
 
 
-@given(content=workflow_yaml())
+@given(content=st.one_of(workflow_yaml(), workflow_with_flow_with()))
 @PBT_SETTINGS
 def test_fixed_file_is_still_parseable(zghalint_bin, content):
     """After --fix, the output file must still be lint-able (no crash)."""

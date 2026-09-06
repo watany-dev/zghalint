@@ -102,6 +102,9 @@ fn buildCacheFix(
             ) orelse continue;
             edits.appendSlice(alloc, appended) catch continue;
         } else {
+            // `with: {}` / `with:` parses to a null `with` while the key is still
+            // in source; inserting another `with:` block would duplicate it (#171).
+            if (util.hasEmptySection(step.empty_sections, "with")) continue;
             const anchor = step.uses_value_end_byte orelse continue;
             const inserted = fix_builder.insertWithEntry(alloc, anchor, col, "cache", cache_value) orelse continue;
             edits.appendSlice(alloc, inserted) catch continue;
@@ -1229,6 +1232,20 @@ test "PERF001: fixture harness applies expected fix" {
             .input_path = "tests/fixtures/perf001-cache/setup-bun-lock/input.yml",
             .expected_path = null,
             .ctx = .{ .bun_lockfile_present = true },
+        },
+        // #171: a flow `with:` has no safe append anchor, and an empty `with:`
+        // would be duplicated by the insertion path.
+        .{
+            .name = "setup-node-flow-with",
+            .input_path = "tests/fixtures/perf001-cache/setup-node-flow-with/input.yml",
+            .expected_path = null,
+            .ctx = .{ .node_cache = .npm },
+        },
+        .{
+            .name = "setup-node-empty-with",
+            .input_path = "tests/fixtures/perf001-cache/setup-node-empty-with/input.yml",
+            .expected_path = null,
+            .ctx = .{ .node_cache = .npm },
         },
         .{
             .name = "setup-uv-disabled",
