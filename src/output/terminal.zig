@@ -44,29 +44,28 @@ fn writeSanitized(writer: anytype, s: []const u8) !void {
             continue;
         }
 
-        const len = std.unicode.utf8ByteSequenceLength(c) catch {
+        const seq = decodeUtf8(s[i..]) orelse {
             try writer.print("\\x{x:0>2}", .{c});
             i += 1;
             continue;
         };
-        if (i + len > s.len) {
-            try writer.print("\\x{x:0>2}", .{c});
-            i += 1;
-            continue;
-        }
-        const seq = s[i .. i + len];
-        const cp = std.unicode.utf8Decode(seq) catch {
-            try writer.print("\\x{x:0>2}", .{c});
-            i += 1;
-            continue;
-        };
-        if (isInvisibleControl(cp)) {
-            try writer.print("\\u{{{x:0>4}}}", .{cp});
+        if (isInvisibleControl(seq.cp)) {
+            try writer.print("\\u{{{x:0>4}}}", .{seq.cp});
         } else {
-            try writer.writeAll(seq);
+            try writer.writeAll(s[i .. i + seq.len]);
         }
-        i += len;
+        i += seq.len;
     }
+}
+
+/// The well-formed UTF-8 sequence at the start of `s`, or null when the lead
+/// byte is invalid, the sequence is truncated, or it does not decode
+/// (overlong form, surrogate, out of range).
+fn decodeUtf8(s: []const u8) ?struct { len: usize, cp: u21 } {
+    const len = std.unicode.utf8ByteSequenceLength(s[0]) catch return null;
+    if (len > s.len) return null;
+    const cp = std.unicode.utf8Decode(s[0..len]) catch return null;
+    return .{ .len = len, .cp = cp };
 }
 
 /// Code points that alter how surrounding text is displayed without being
