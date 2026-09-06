@@ -979,6 +979,164 @@ fn scalarValueStartByte(meta: workflow_types.ScalarValueMeta) ?usize {
     };
 }
 
+const IfConditionShape = enum {
+    bare_expression,
+    single_wrapped_expression,
+    mixed_expression_string,
+};
+
+fn classifyIfConditionShape(if_val: []const u8) IfConditionShape {
+    const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
+    if (std.mem.indexOf(u8, trimmed, "${{") == null) return .bare_expression;
+    if (isSingleWrappedExpression(trimmed)) return .single_wrapped_expression;
+    return .mixed_expression_string;
+}
+
+fn isSingleWrappedExpression(s: []const u8) bool {
+    const trimmed = std.mem.trim(u8, s, " \t\n\r");
+    if (!std.mem.startsWith(u8, trimmed, "${{")) return false;
+    const after_open = trimmed[3..];
+    const close = std.mem.indexOf(u8, after_open, "}}") orelse return false;
+    return std.mem.trim(u8, after_open[close + 2 ..], " \t\n\r").len == 0;
+}
+
+fn wrappedExpressionInner(s: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, s, " \t\n\r");
+    if (!std.mem.startsWith(u8, trimmed, "${{")) return null;
+    const after_open = trimmed[3..];
+    const close = std.mem.indexOf(u8, after_open, "}}") orelse return null;
+    const inner = std.mem.trim(u8, after_open[0..close], " \t\n\r");
+    if (inner.len == 0) return null;
+    return inner;
+}
+
+fn isConstantBooleanExpression(expr: []const u8) ?bool {
+    var parser = ExprParser.init(std.heap.page_allocator, expr);
+    const node = parser.parse() catch return null;
+    if (node.kind != .boolean_literal) return null;
+    return std.mem.eql(u8, node.value, "true");
+}
+
+fn checkIfConstantBoolean(
+    expr: []const u8,
+    span: Span,
+    list: *DiagnosticList,
+) void {
+    const value = isConstantBooleanExpression(expr) orelse return;
+    const msg = if (value)
+        "if condition is always true"
+    else
+        "if condition is always false; this step or job will never run";
+    list.append(.{
+        .rule_id = "EXPR007",
+        .severity = .warning,
+        .message = msg,
+        .span = span,
+        .fix_hint = if (value)
+            "remove the redundant `if:` or use a meaningful condition"
+        else
+            "remove the step or job, or fix the condition",
+    }) catch return;
+}
+
+fn gapIsMergeable(gap: []const u8) bool {
+    for (gap) |c| {
+        switch (c) {
+            ' ', '\t', '\n', '\r', '&', '|', '"', '\'' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+const IfExprBlock = struct {
+    open: usize,
+    close_end: usize,
+    inner: []const u8,
+};
+
+fn findIfExprBlocks(if_val: []const u8) ?[]const IfExprBlock {
+    var blocks: std.ArrayList(IfExprBlock) = .empty;
+    var pos: usize = 0;
+    while (pos + 2 < if_val.len) {
+        if (!(if_val[pos] == '$' and if_val[pos + 1] == '{' and if_val[pos + 2] == '{')) {
+            pos += 1;
+            continue;
+        }
+        const inner_start = pos + 3;
+        const close_rel = std.mem.indexOf(u8, if_val[inner_start..], "}}") orelse return null;
+        const inner_end = inner_start + close_rel;
+        const close_end = inner_end + 2;
+        const inner = std.mem.trim(u8, if_val[inner_start..inner_end], " \t\n\r");
+        if (inner.len == 0) return null;
+        blocks.append(std.heap.page_allocator, .{
+            .open = pos,
+            .close_end = close_end,
+            .inner = inner,
+        }) catch return null;
+        pos = close_end;
+    }
+    if (blocks.items.len == 0) return null;
+    return blocks.toOwnedSlice(std.heap.page_allocator) catch null;
+}
+
+fn buildIfConditionMergeFix(
+    list: *DiagnosticList,
+    if_val: []const u8,
+    base: ?usize,
+) ?Fix {
+    const base_byte = base orelse return null;
+    const blocks = findIfExprBlocks(if_val) orelse return null;
+    if (blocks.len < 2) return null;
+
+    var prev_end: usize = 0;
+    var combined: std.ArrayList(u8) = .empty;
+    const alloc = list.fixAllocator();
+
+    for (blocks, 0..) |block, i| {
+        if (!gapIsMergeable(if_val[prev_end..block.open])) return null;
+        if (i > 0) {
+            const gap = if_val[prev_end..block.open];
+            if (gap.len == 0) return null;
+            combined.appendSlice(alloc, gap) catch return null;
+        }
+        combined.appendSlice(alloc, block.inner) catch return null;
+        prev_end = block.close_end;
+    }
+    if (!gapIsMergeable(if_val[prev_end..])) return null;
+
+    const replacement = std.fmt.allocPrint(alloc, "${{{{ {s} }}}}", .{combined.items}) catch return null;
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{
+        .start_byte = base_byte + blocks[0].open,
+        .end_byte = base_byte + blocks[blocks.len - 1].close_end,
+        .replacement = replacement,
+    };
+    return .{
+        .description = "merge multiple ${{ }} expressions into a single expression",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
+fn checkMixedIfCondition(
+    if_val: []const u8,
+    span: Span,
+    list: *DiagnosticList,
+    base: ?usize,
+) void {
+    const msg = "if condition mixes text with ${{ }} expressions; GitHub stringifies the whole value so it is always truthy";
+    const fix = buildIfConditionMergeFix(list, if_val, base);
+    list.append(.{
+        .rule_id = "EXPR007",
+        .severity = .warning,
+        .message = msg,
+        .span = span,
+        .fix_hint = "use a single ${{ }} expression, e.g. ${{ A && B }} instead of \"${{ A }} && ${{ B }}\"",
+        .fix = fix,
+    }) catch return;
+}
+
 /// GitHub allows the `${{ }}` wrapper to be omitted from `if:`, so a
 /// condition without one is itself a single expression.
 fn checkIfCondition(
@@ -991,15 +1149,27 @@ fn checkIfCondition(
     const if_val = if_condition orelse return;
     const anchor = Anchor.fromMeta(meta, fallback);
     const base: ?usize = if (meta) |m| scalarValueStartByte(m) else null;
-    if (std.mem.indexOf(u8, if_val, "${{") != null) {
-        findAndValidateExpressions(allocator, if_val, anchor, list, base);
-        return;
+    const span = anchor.at(if_val, 0, if_val.len);
+
+    switch (classifyIfConditionShape(if_val)) {
+        .mixed_expression_string => {
+            checkMixedIfCondition(if_val, span, list, base);
+            findAndValidateExpressions(allocator, if_val, anchor, list, base);
+        },
+        .single_wrapped_expression => {
+            findAndValidateExpressions(allocator, if_val, anchor, list, base);
+            const inner = wrappedExpressionInner(if_val) orelse return;
+            checkIfConstantBoolean(inner, span, list);
+        },
+        .bare_expression => {
+            const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
+            if (trimmed.len == 0) return;
+            const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
+            const abs: ?usize = if (base) |b| b + leading else null;
+            validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
+            checkIfConstantBoolean(trimmed, span, list);
+        },
     }
-    const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-    if (trimmed.len == 0) return;
-    const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
-    const abs: ?usize = if (base) |b| b + leading else null;
-    validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
 }
 
 const ByteTracking = enum { track_bytes, no_bytes };
@@ -1972,6 +2142,132 @@ test "checkJob EXPR007: if condition with bare literal" {
 
     checkJob(&job, &list);
     try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: if condition always false (bare)" {
+    const step = Step{
+        .if_condition = "false",
+        .run = "echo never",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: if condition always false (wrapped)" {
+    const step = Step{
+        .if_condition = "${{ false }}",
+        .run = "echo never",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: if condition always true (bare)" {
+    const step = Step{
+        .if_condition = "true",
+        .run = "echo always",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: mixed expression string is always truthy" {
+    const step = Step{
+        .if_condition = "${{ github.event_name == 'push' }} && ${{ github.ref == 'refs/heads/main' }}",
+        .run = "echo always",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: prefix text with expression is always truthy" {
+    const step = Step{
+        .if_condition = "foo ${{ github.event_name == 'push' }}",
+        .run = "echo always",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: no false positive for single wrapped expression" {
+    const step = Step{
+        .if_condition = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+        .run = "echo hi",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(!test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "checkStep EXPR007: no false positive for bare expression" {
+    const step = Step{
+        .if_condition = "github.event_name == 'push'",
+        .run = "echo hi",
+    };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    checkStep(&step, &list);
+    try std.testing.expect(!test_support.hasDiagnostic(&list, "EXPR007"));
+}
+
+test "EXPR007 fix: merges multiple ${{ }} expressions in if condition" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const step = Step{
+        .if_condition = "${{ github.event_name == 'push' }} && ${{ github.ref == 'refs/heads/main' }}",
+        .if_condition_meta = .{
+            .value_span = .{
+                .start_line = 1,
+                .start_col = 5,
+                .end_line = 1,
+                .end_col = 81,
+                .start_byte = 4,
+                .end_byte = 80,
+            },
+            .style = .plain,
+        },
+        .run = "echo always",
+    };
+    checkStep(&step, &list);
+
+    const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
+    try std.testing.expectEqualStrings(
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}",
+        fix.edits[0].replacement,
+    );
+}
+
+test "EXPR007 fix: no fix when mixed if condition has non-operator text" {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    const step = Step{
+        .if_condition = "foo ${{ github.event_name == 'push' }}",
+        .run = "echo always",
+    };
+    checkStep(&step, &list);
+    try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
 test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" {
