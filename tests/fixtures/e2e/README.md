@@ -40,6 +40,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
+| `syn018-duplicate-matrix-value.yml` | #74: repeated values and `include` entries in `strategy.matrix` |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |

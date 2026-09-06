@@ -313,10 +313,25 @@ pub const ActionRef = struct {
     }
 };
 
+/// One axis of `strategy.matrix`, i.e. one entry of the `matrix:` mapping.
+/// `include` and `exclude` are axes too: they carry a sequence of values just
+/// like a regular axis, and the rules that walk axes apply to them unchanged.
+pub const MatrixAxis = struct {
+    name: []const u8,
+    /// Values of the axis, in source order. Empty when the axis value is not a
+    /// sequence (e.g. `os: ${{ fromJSON(...) }}`).
+    values: []const yaml_types.Node = &.{},
+};
+
+pub const Matrix = struct {
+    axes: []const MatrixAxis = &.{},
+};
+
 pub const Strategy = struct {
     fail_fast: bool = true,
     fail_fast_value_span: ?yaml_types.Span = null,
     fail_fast_entry_span: ?yaml_types.Span = null,
+    matrix: ?Matrix = null,
 };
 
 pub const Step = struct {

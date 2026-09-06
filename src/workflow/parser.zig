@@ -900,6 +900,8 @@ fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
                 }
                 strategy.fail_fast_entry_span = entry.full_span;
             }
+        } else if (std.mem.eql(u8, entry.key.value, "matrix")) {
+            strategy.matrix = try parseMatrix(ctx.allocator, entry.value);
         } else if (std.mem.eql(u8, entry.key.value, "max-parallel")) {
             _ = type_validation.checkNumber(
                 entry.value,
@@ -910,6 +912,26 @@ fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
         }
     }
     return strategy;
+}
+
+/// `matrix:` is a mapping of axis name to a sequence of values. A non-mapping
+/// (`matrix: ${{ fromJSON(...) }}`) carries no axes to inspect.
+fn parseMatrix(allocator: std.mem.Allocator, node: Node) ParseError!?types.Matrix {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return null,
+    };
+
+    var axes = try std.ArrayList(types.MatrixAxis).initCapacity(allocator, m.entries.len);
+    for (m.entries) |entry| {
+        const values: []const Node = switch (entry.value) {
+            .sequence => |seq| seq.items,
+            else => &.{},
+        };
+        axes.appendAssumeCapacity(.{ .name = entry.key.value, .values = values });
+    }
+
+    return .{ .axes = try axes.toOwnedSlice(allocator) };
 }
 
 fn parseSecretsConfig(allocator: std.mem.Allocator, node: Node) ParseError!types.SecretsConfig {
@@ -1462,6 +1484,65 @@ test "parseStrategy with fail-fast and max-parallel" {
     var ctx = testCtx(testing.allocator);
     const strategy = try parseStrategy(&ctx, mkMapping(&entries));
     try testing.expect(!strategy.fail_fast);
+}
+
+test "parseWorkflow captures matrix axes and their values" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        include:
+        \\          - os: ubuntu-latest
+        \\            node: 18
+        \\    steps:
+        \\      - run: echo test
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const matrix = wf.jobs[0].strategy.?.matrix.?;
+    try testing.expectEqual(@as(usize, 2), matrix.axes.len);
+    try testing.expectEqualStrings("os", matrix.axes[0].name);
+    try testing.expectEqual(@as(usize, 2), matrix.axes[0].values.len);
+    try testing.expectEqualStrings("macos-latest", matrix.axes[0].values[1].scalar.value);
+    try testing.expectEqualStrings("include", matrix.axes[1].name);
+    try testing.expectEqual(@as(usize, 1), matrix.axes[1].values.len);
+    try testing.expect(matrix.axes[1].values[0] == .mapping);
+}
+
+test "parseWorkflow leaves matrix null when it is an expression" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+        \\    steps:
+        \\      - run: echo test
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expect(wf.jobs[0].strategy.?.matrix == null);
 }
 
 test "parseWorkflow captures removable span for fail-fast entry" {

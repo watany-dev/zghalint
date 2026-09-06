@@ -383,6 +383,43 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
+/// A repeated matrix value produces no new combination, so the extra entry
+/// never yields the job variation the author was reaching for.
+fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
+    const matrix = (job.strategy orelse return).matrix orelse return;
+    const alloc = list.fixAllocator();
+
+    for (matrix.axes) |axis| {
+        for (axis.values, 0..) |value, i| {
+            for (axis.values[0..i]) |prior| {
+                if (!value.eql(prior)) continue;
+
+                // Only a scalar has text worth quoting back: `include` and
+                // `exclude` entries are mappings.
+                const noun: []const u8 = if (value == .scalar) "value" else "entry";
+                const quoted = switch (value) {
+                    .scalar => |s| std.fmt.allocPrint(alloc, " \"{s}\"", .{s.value}) catch "",
+                    else => "",
+                };
+                const prior_span = prior.getSpan();
+
+                list.append(.{
+                    .rule_id = "SYN018",
+                    .severity = .warning,
+                    .message = std.fmt.allocPrint(
+                        alloc,
+                        "duplicate {s}{s} is found in matrix \"{s}\". the same {s} is at line {d}, col {d}",
+                        .{ noun, quoted, axis.name, noun, prior_span.start_line, prior_span.start_col },
+                    ) catch "duplicate value is found in matrix",
+                    .span = value.getSpan(),
+                    .fix_hint = "remove the repeated value; it produces no combination the earlier one does not",
+                }) catch return;
+                break;
+            }
+        }
+    }
+}
+
 fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.on.events) |event| {
@@ -669,6 +706,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkScheduleCronFrequency,
+    },
+    .{
+        .id = "SYN018",
+        .name = "duplicate-matrix-value",
+        .description = "the same value appears more than once in a 'strategy.matrix' axis",
+        .severity = .warning,
+        .category = .syntax,
+        .check_job = &checkDuplicateMatrixValues,
     },
 };
 
@@ -2844,4 +2889,182 @@ test "SYN014/SYN015: valid daily schedule is clean" {
 
     try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
     try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN015"));
+}
+
+fn runSyn018(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    for (wf.jobs) |*job| checkDuplicateMatrixValues(job, &list);
+    return list;
+}
+
+test "SYN018: duplicate scalar values in matrix axes are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, ubuntu-latest, macos-latest]
+        \\        node: [18, 20, 18]
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    const first = diags.get(0);
+    try testing.expectEqualStrings("SYN018", first.rule_id);
+    try testing.expect(first.severity == .warning);
+    try testing.expect(std.mem.indexOf(u8, first.message, "\"ubuntu-latest\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first.message, "matrix \"os\"") != null);
+    try testing.expectEqual(@as(u32, 6), first.span.start_line);
+    try testing.expectEqual(@as(u32, 7), diags.get(1).span.start_line);
+}
+
+test "SYN018: distinct values produce no diagnostic" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        node: [18, 20]
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN018: a value repeated three times reports once per extra occurrence" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        node: [18, 18, 18]
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+}
+
+test "SYN018: quoting style does not hide a duplicate" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, 'ubuntu-latest']
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "SYN018: duplicate include entries are reported as entries" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        include:
+        \\          - os: ubuntu-latest
+        \\            node: 18
+        \\          - node: 18
+        \\            os: ubuntu-latest
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "duplicate entry") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "matrix \"include\"") != null);
+}
+
+test "SYN018: include entries differing in one value are clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        include:
+        \\          - os: ubuntu-latest
+        \\            node: 18
+        \\          - os: ubuntu-latest
+        \\            node: 20
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN018: a matrix built from an expression is skipped" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN018: a job without a strategy is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
 }
