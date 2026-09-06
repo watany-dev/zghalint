@@ -1,7 +1,7 @@
 # A well-formed workflow: the linter must stay quiet on all of these rules.
 # zghalint:forbid SEC001 SEC002 SEC003 SEC004 SEC006 SEC007 SEC018
 # zghalint:forbid SC001 SC002 EXPR001 EXPR002 BP001 BP002 BP005
-# zghalint:forbid PERF001 PERF002 PERM001 RUNNER001
+# zghalint:forbid PERF001 PERF002 PERM001 RUNNER001 BP004
 # zghalint:forbid SYN001 SYN002 SYN003 SYN004 SYN005 SYN006 SYN007 SYN008
 name: clean
 on:

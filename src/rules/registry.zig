@@ -10,6 +10,7 @@ const expressions = @import("expressions.zig");
 const dependabot = @import("dependabot.zig");
 const runner = @import("runner.zig");
 const syntax = @import("syntax.zig");
+const uses = @import("uses.zig");
 
 pub const all_rules = security.security_rules ++
     best_practices.rules ++
@@ -18,4 +19,5 @@ pub const all_rules = security.security_rules ++
     [_]engine.Rule{expressions.expression_rule} ++
     dependabot.rules ++
     runner.rules ++
-    syntax.rules;
+    syntax.rules ++
+    uses.rules;
