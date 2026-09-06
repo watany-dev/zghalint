@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **59 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **63 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -38,6 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:` |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
+| SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 
 ### SEC002 / SEC008 vs. SEC006
@@ -53,6 +54,27 @@ SEC006 does not report ref-shaped inputs (`github.head_ref`,
 `.head.repo.default_branch`, `github.event.workflow_run.head_branch`) or label
 names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
 — is a common routing idiom. They stay untrusted for SEC002 and SEC008.
+
+### SEC021 vs. SEC005 / SEC009
+
+All three report the same shape — `actions/checkout` fed a ref the attacker
+picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
+`workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
+`repository_dispatch`, `issues`, `issue_comment`, `discussion` and
+`discussion_comment`.
+
+A workflow can declare several of those triggers at once, so ownership is
+decided per value rather than per workflow: SEC021 stays quiet on exactly the
+`with.ref` values SEC005 or SEC009 already reports, and no other. Skipping the
+whole workflow would hide a `ref` fed from a comment body just because
+`pull_request_target` also appears in `on:`, and would hide `with.repository`
+entirely, since neither of the other two rules looks at it.
+
+SEC021 reads the dispatch payloads (`github.event.inputs.*`,
+`github.event.client_payload.*`) and the free text of an issue, comment or
+discussion. The bare `inputs.*` shorthand counts too, except in a workflow that
+also declares `workflow_call`: there it names what a caller passes, and
+analysing callers is out of scope.
 
 ### SEC022 vs. SEC006
 

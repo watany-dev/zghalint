@@ -1,0 +1,29 @@
+# zghalint:expect SEC021@19
+# #134: an `issue_comment` job runs against the base repository, so a checkout
+# whose ref comes from the comment body lets any commenter pick the code that
+# runs. The second job pins the ref the repository controls and must stay quiet.
+name: sec021 untrusted checkout ref
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: read
+jobs:
+  deploy-requested-ref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout requested ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.comment.body }}
+          persist-credentials: false
+  deploy-default-ref:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout default ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false

@@ -166,6 +166,8 @@ pub const EventType = enum {
     release,
     issues,
     issue_comment,
+    discussion,
+    discussion_comment,
     create,
     delete,
     fork,
@@ -185,6 +187,8 @@ pub const EventType = enum {
             .{ "release", .release },
             .{ "issues", .issues },
             .{ "issue_comment", .issue_comment },
+            .{ "discussion", .discussion },
+            .{ "discussion_comment", .discussion_comment },
             .{ "create", .create },
             .{ "delete", .delete },
             .{ "fork", .fork },
@@ -428,6 +432,8 @@ test "EventType.fromString known events" {
     try std.testing.expectEqual(EventType.workflow_dispatch, EventType.fromString("workflow_dispatch"));
     try std.testing.expectEqual(EventType.workflow_call, EventType.fromString("workflow_call"));
     try std.testing.expectEqual(EventType.release, EventType.fromString("release"));
+    try std.testing.expectEqual(EventType.discussion, EventType.fromString("discussion"));
+    try std.testing.expectEqual(EventType.discussion_comment, EventType.fromString("discussion_comment"));
 }
 
 test "EventType.fromString unknown event" {
