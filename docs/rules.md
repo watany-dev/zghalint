@@ -61,9 +61,14 @@ All three report the same shape — `actions/checkout` fed a ref the attacker
 picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
 `workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
-`discussion_comment`. A workflow that declares `pull_request_target` or
-`workflow_run` is left entirely to the rule that owns it, so one step is never
-reported twice.
+`discussion_comment`.
+
+A workflow can declare several of those triggers at once, so ownership is
+decided per value rather than per workflow: SEC021 stays quiet on exactly the
+`with.ref` values SEC005 or SEC009 already reports, and no other. Skipping the
+whole workflow would hide a `ref` fed from a comment body just because
+`pull_request_target` also appears in `on:`, and would hide `with.repository`
+entirely, since neither of the other two rules looks at it.
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
 `github.event.client_payload.*`) and the free text of an issue, comment or

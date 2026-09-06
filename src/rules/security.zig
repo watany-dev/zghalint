@@ -601,7 +601,9 @@ fn checkStepCheckoutRefs(
         // `getWithInput` because the runner resolves input names
         // case-insensitively, so `Ref:` reaches the same checkout.
         const input = getWithInput(with_map, name) orelse continue;
-        if (ownedByNeighbourRule(wf, input.value)) continue;
+        // Only `ref` defers: SEC005 / SEC009 never look at `repository`, so
+        // deferring it would leave that input unreported by every rule.
+        if (std.mem.eql(u8, name, "ref") and ownedByNeighbourRule(wf, input.value)) continue;
         if (!containsUntrustedCheckoutContext(input.value, contexts)) continue;
         list.append(.{
             .rule_id = "SEC021",
@@ -2419,6 +2421,13 @@ test "SEC021: workflow_run only defers on the ref SEC009 owns" {
     var list = runCheckoutWith(workflow_run_and_dispatch_trigger, "ref", "${{ github.event.inputs.target }}");
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: pull_request_target does not defer on checkout repository" {
+    var list = runCheckoutWith(pr_target_and_issue_comment_trigger, "repository", "${{ github.event.comment.body }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
     try testing.expect(hasDiagnostic(&list, "SEC021"));
 }
 
