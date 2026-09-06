@@ -13,7 +13,6 @@ const Fix = diagnostics_mod.Fix;
 const Span = yaml_types.Span;
 
 const LabelStatus = enum {
-    /// Currently offered by GitHub (or a self-hosted convention label).
     current,
     deprecated,
     retired,
@@ -43,7 +42,6 @@ const KnownLabel = struct {
     label: []const u8,
     kind: LabelKind = .hosted,
     status: LabelStatus = .current,
-    /// Required for deprecated/retired labels; unused otherwise.
     replacement: []const u8 = "",
 };
 
@@ -59,7 +57,6 @@ const LabelKind = enum {
 };
 
 const known_labels = [_]KnownLabel{
-    // GitHub-hosted, currently offered.
     .{ .label = "ubuntu-latest" },
     .{ .label = "ubuntu-24.04" },
     .{ .label = "ubuntu-22.04" },
@@ -74,7 +71,6 @@ const known_labels = [_]KnownLabel{
     .{ .label = "macos-15" },
     .{ .label = "macos-14" },
     .{ .label = "macos-13" },
-    // Self-hosted convention labels (GitHub adds these automatically).
     .{ .label = "self-hosted", .kind = .convention },
     .{ .label = "linux", .kind = .convention },
     .{ .label = "windows", .kind = .convention },
@@ -83,7 +79,6 @@ const known_labels = [_]KnownLabel{
     .{ .label = "x86", .kind = .convention },
     .{ .label = "arm", .kind = .convention },
     .{ .label = "arm64", .kind = .convention },
-    // Withdrawn or on the way out.
     .{ .label = "ubuntu-18.04", .status = .retired, .replacement = "ubuntu-22.04" },
     .{ .label = "ubuntu-20.04", .status = .retired, .replacement = "ubuntu-22.04" },
     .{ .label = "macos-11", .status = .retired, .replacement = "macos-13" },
@@ -147,8 +142,6 @@ fn eqlLabel(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
 }
 
-/// True for `<base>-<something>`: `ubuntu-latest-4-cores` off `ubuntu-latest`,
-/// `linux-gpu` off the self-hosted `linux`.
 fn hasLabelPrefix(label: []const u8, base: []const u8) bool {
     if (label.len <= base.len + 1) return false;
     if (label[base.len] != '-') return false;
