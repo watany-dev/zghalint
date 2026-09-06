@@ -118,8 +118,8 @@ const ExprSpan = struct {
     match: ExprMatch,
 };
 
-/// An opener with no closing `}}` is skipped and the scan resumes just after
-/// it, so a stray `${{` never swallows the rest of the scalar.
+/// An opener with no closing `}}` ends the scan: no `}}` follows it, so no
+/// later `${{` in the same scalar can be closed either.
 const ExprIter = struct {
     s: []const u8,
     pos: usize = 0,
@@ -128,8 +128,8 @@ const ExprIter = struct {
         while (std.mem.indexOfPos(u8, self.s, self.pos, "${{")) |open| {
             const inner_start = open + 3;
             const close = std.mem.indexOfPos(u8, self.s, inner_start, "}}") orelse {
-                self.pos = open + 1;
-                continue;
+                self.pos = self.s.len;
+                return null;
             };
             self.pos = close + 2;
             return .{
@@ -4330,6 +4330,17 @@ test "BP007: pipe before the downloader is not a match" {
     var list = runStep(.{ .run = "cat list.txt | sh -c 'echo ok'; curl -o out.bin https://example.com/x" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "ExprIter: a run of unclosed ${{ is scanned once" {
+    const body = "${{" ** 20000;
+    var it: ExprIter = .{ .s = body };
+    try testing.expect(it.next() == null);
+
+    var it2: ExprIter = .{ .s = "${{ a ${{ github.event.issue.title }} ${{ tail" };
+    const first = it2.next() orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings(" a ${{ github.event.issue.title ", first.inner);
+    try testing.expect(it2.next() == null);
 }
 
 test "containsCurlWgetPipeShell: long input with many pipes stays linear" {

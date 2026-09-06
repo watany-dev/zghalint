@@ -40,6 +40,10 @@ pub const Tokenizer = struct {
     /// indicators only inside a flow context; in block context they are
     /// ordinary plain-scalar characters (e.g. a `run:` command line).
     flow_depth: u32,
+    /// End of the line on which a `${{` was last found to have no closing
+    /// `}}`. Every later `${{` on that line shares the same (empty) search
+    /// range, so it is skipped without rescanning.
+    expr_unclosed_line_end: usize,
 
     pub fn init(source: []const u8) Tokenizer {
         return .{
@@ -49,6 +53,7 @@ pub const Tokenizer = struct {
             .column = 1,
             .started = false,
             .flow_depth = 0,
+            .expr_unclosed_line_end = 0,
         };
     }
 
@@ -300,11 +305,15 @@ pub const Tokenizer = struct {
         if (self.source[self.pos + 1] != '{' or self.source[self.pos + 2] != '{') return false;
 
         // Unterminated, or closed only on a later line: fall back to normal
-        // plain-scalar scanning.
-        const close = std.mem.indexOfPos(u8, self.source, self.pos + 3, "}}") orelse return false;
-        if (std.mem.indexOfScalarPos(u8, self.source, self.pos + 3, '\n')) |nl| {
-            if (nl < close) return false;
-        }
+        // plain-scalar scanning. The search is confined to the current line
+        // and its negative result is remembered, so a line full of `${{`
+        // costs one pass rather than one pass per occurrence.
+        if (self.pos < self.expr_unclosed_line_end) return false;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, self.pos + 3, '\n') orelse self.source.len;
+        const close = std.mem.indexOfPos(u8, self.source[0..line_end], self.pos + 3, "}}") orelse {
+            self.expr_unclosed_line_end = line_end;
+            return false;
+        };
         while (self.pos < close + 2) self.advance();
         return true;
     }
@@ -431,6 +440,27 @@ test "tokenizer plain scalar keeps an unterminated interpolation in block contex
     _ = tokenizer.next();
     const token = tokenizer.next();
     try std.testing.expectEqualStrings("echo ${{ oops", token.slice(tokenizer.source));
+}
+
+test "tokenizer: a line of unterminated ${{ is scanned in a single pass" {
+    // Each `${{` used to search to end of input for `}}`; with 40k of them on
+    // one line that was quadratic. The whole line must still be one scalar.
+    const body = "run " ++ ("${{" ** 40000);
+    var tokenizer = Tokenizer.init(body);
+    _ = tokenizer.next();
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings(body, token.slice(tokenizer.source));
+}
+
+test "tokenizer: unterminated ${{ on one line does not disable skipping on the next" {
+    var tokenizer = Tokenizer.init("a: ${{ oops\nb: [${{ x, y }}]");
+    var saw_expr_scalar = false;
+    while (true) {
+        const tok = tokenizer.next();
+        if (tok.kind == .eof) break;
+        if (tok.kind == .scalar and std.mem.eql(u8, tok.slice(tokenizer.source), "${{ x, y }}")) saw_expr_scalar = true;
+    }
+    try std.testing.expect(saw_expr_scalar);
 }
 
 test "tokenizer plain scalar stops at an unterminated interpolation in flow context" {
