@@ -172,6 +172,11 @@ jobs:
 Keys that are distinct even when lowercased (for example `FOO` and
 `foo_bar` under `env:`) are not reported.
 
+Job IDs under the top-level `jobs:` mapping are outside the scope of this
+rule: duplicates there are reported by SYN005, which also validates `needs`
+references. This avoids two diagnostics at the same position for a single
+problem.
+
 ### SYN003 empty-section
 
 A section that is present but empty (`{}`, `[]`, or a key with no value) is
