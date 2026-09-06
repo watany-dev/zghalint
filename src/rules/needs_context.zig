@@ -19,7 +19,6 @@ const test_support = @import("../test_support.zig");
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const Job = engine.Job;
-const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml.Span;
 const Anchor = spans.Anchor;
@@ -38,10 +37,18 @@ const NeedsVisitor = struct {
     job: *const Job,
     list: *DiagnosticList,
 
-    /// Leaks the parse arena on purpose, like `expressions.zig`: the engine
-    /// provides no arena and diagnostic messages must outlive this call (#159).
+    /// Diagnostic messages are formatted into the list's own allocator, so
+    /// nothing from the parse tree outlives this call and the arena is freed
+    /// here rather than leaked the way `expressions.zig` has to.
     pub fn onExpression(self: *const NeedsVisitor, expr: []const u8, span: Span) void {
-        var parser = expressions.ExprParser.init(std.heap.page_allocator, expr);
+        // Most expressions never mention `needs`; parsing them would be pure
+        // overhead on a large workflow.
+        if (std.ascii.indexOfIgnoreCase(expr, "needs") == null) return;
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+
+        var parser = expressions.ExprParser.init(arena.allocator(), expr);
         // A malformed expression is EXPR001's to report.
         const node = parser.parse() catch return;
         self.walk(&node, span);
@@ -57,7 +64,8 @@ const NeedsVisitor = struct {
 
     fn checkPath(self: *const NeedsVisitor, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        if (!segmentIsIdent(iter.next(), "needs")) return;
+        const root = identSegment(iter.next()) orelse return;
+        if (!eqlId(root, "needs")) return;
 
         // `needs` alone (`toJSON(needs)`) and computed keys
         // (`needs[matrix.job]`) carry nothing to check.
@@ -77,7 +85,7 @@ const NeedsVisitor = struct {
             self.reportUnknownProperty(job_id, property, span);
             return;
         }
-        if (!std.mem.eql(u8, property, "outputs")) return;
+        if (!eqlId(property, "outputs")) return;
 
         // Outputs of a reusable workflow live in the called file; RW005 owns them.
         if (dep.uses != null) return;
@@ -228,14 +236,9 @@ fn suggestionSuffix(alloc: std.mem.Allocator, name: []const u8, candidates: []co
 
 fn isKnownProperty(name: []const u8) bool {
     for (needs_properties) |known| {
-        if (std.mem.eql(u8, known, name)) return true;
+        if (eqlId(known, name)) return true;
     }
     return false;
-}
-
-fn segmentIsIdent(segment: ?expr_check.Segment, name: []const u8) bool {
-    const ident = identSegment(segment) orelse return false;
-    return std.mem.eql(u8, ident, name);
 }
 
 /// Only plain identifiers are checked: a computed or globbed segment
@@ -310,14 +313,12 @@ fn expectMessage(source: []const u8, needle: []const u8) !void {
     try testing.expectEqual(@as(usize, 1), list.len());
     const diag = list.get(0);
     try testing.expectEqualStrings("EXPR012", diag.rule_id);
-    try testing.expectEqual(diagnostics_severity_error, diag.severity);
+    try testing.expectEqual(engine.Severity.@"error", diag.severity);
     if (std.mem.indexOf(u8, diag.message, needle) == null) {
         std.debug.print("message '{s}' does not contain '{s}'\n", .{ diag.message, needle });
         return error.UnexpectedMessage;
     }
 }
-
-const diagnostics_severity_error = engine.Severity.@"error";
 
 const issue_88_source =
     \\on: push
@@ -461,6 +462,26 @@ test "EXPR012: job IDs and output names match case-insensitively" {
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - run: echo "${{ needs.setup.outputs.version }}"
+        \\
+    );
+}
+
+test "EXPR012: context property names match case-insensitively" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  setup:
+        \\    runs-on: ubuntu-latest
+        \\    outputs:
+        \\      version: '1'
+        \\    steps:
+        \\      - run: echo hi
+        \\  build:
+        \\    needs: [setup]
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ NEEDS.setup.OUTPUTS.version }}"
+        \\      - run: echo "${{ needs.setup.RESULT }}"
         \\
     );
 }
