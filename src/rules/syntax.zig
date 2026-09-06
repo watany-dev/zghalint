@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const glob = @import("glob.zig");
 const workflow_types = @import("../workflow/types.zig");
+const workflow_events = @import("../workflow/events.zig");
 const workflow_parser = @import("../workflow/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
@@ -382,6 +383,34 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
+fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.on.events) |event| {
+        // A name built from an expression is not a literal event name at all.
+        // An empty name is not exempt: `on: ""` triggers nothing either.
+        if (std.mem.indexOf(u8, event.name, "${{") != null) continue;
+        if (workflow_events.isKnown(event.name)) continue;
+
+        var suffix_buf: [64]u8 = undefined;
+        const suffix = if (util.didYouMean(event.name, &workflow_events.trigger_names)) |s|
+            std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+        else
+            "";
+
+        list.append(.{
+            .rule_id = "SYN009",
+            .severity = .@"error",
+            .message = std.fmt.allocPrint(
+                alloc,
+                "unknown Webhook event \"{s}\"{s}",
+                .{ event.name, suffix },
+            ) catch "unknown Webhook event",
+            .span = event.name_span,
+            .fix_hint = "use one of the event names GitHub Actions supports under 'on'",
+        }) catch return;
+    }
+}
+
 /// GitHub Actions rejects a workflow that specifies both halves of a pair.
 const ExclusivePair = struct {
     include: ?Span,
@@ -600,6 +629,14 @@ pub const rules = [_]Rule{
         .severity = .warning,
         .category = .syntax,
         .check_job = &checkDuplicateNeeds,
+    },
+    .{
+        .id = "SYN009",
+        .name = "unknown-event",
+        .description = "'on' names an event GitHub Actions does not support, so the workflow never triggers",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkUnknownEvents,
     },
     .{
         .id = "SYN012",
@@ -2356,6 +2393,158 @@ test "SYN008: distinct job IDs produce no diagnostic" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn009(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    checkUnknownEvents(&wf, list);
+}
+
+test "SYN009: a misspelled event is reported with a suggestion" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  pull_reqeust:
+        \\    types: [opened]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn009(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN009", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expectEqualStrings(
+        "unknown Webhook event \"pull_reqeust\". did you mean \"pull_request\"?",
+        diag.message,
+    );
+    // The diagnostic points at the event key, not at the `on:` line.
+    try testing.expectEqual(@as(u32, 2), diag.span.start_line);
+    try testing.expectEqual(@as(u32, 3), diag.span.start_col);
+}
+
+test "SYN009: an event with no near match is reported without a suggestion" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  push_tag:
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn009(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("unknown Webhook event \"push_tag\"", diags.get(0).message);
+}
+
+test "SYN009: known events are clean in every `on` form" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const sources = [_][]const u8{
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+        ,
+        \\on: [push, merge_group, workflow_dispatch]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+        ,
+        \\on:
+        \\  discussion_comment:
+        \\    types: [created]
+        \\  schedule:
+        \\    - cron: '0 0 * * *'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+        ,
+    };
+
+    for (sources) |source| {
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+        try runSyn009(source, arena.allocator(), &diags);
+        try testing.expectEqual(@as(usize, 0), diags.len());
+    }
+}
+
+test "SYN009: an unknown event in a sequence is reported at its own item" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: [push, puhs]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn009(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "unknown Webhook event \"puhs\". did you mean \"push\"?",
+        diags.get(0).message,
+    );
+    try testing.expectEqual(@as(u32, 1), diags.get(0).span.start_line);
+    try testing.expectEqual(@as(u32, 12), diags.get(0).span.start_col);
+}
+
+test "SYN009: an event name built from an expression is skipped" {
+    const on_events = [_]EventConfig{.{ .event = .other, .name = "${{ inputs.event }}" }};
+    const wf = Workflow{ .on = .{ .events = &on_events }, .jobs = &.{} };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    checkUnknownEvents(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN009: an empty event name is reported" {
+    const on_events = [_]EventConfig{.{ .event = .other, .name = "" }};
+    const wf = Workflow{ .on = .{ .events = &on_events }, .jobs = &.{} };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    checkUnknownEvents(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("unknown Webhook event \"\"", diags.get(0).message);
 }
 
 test "SYN012: branches with branches-ignore is an error" {

@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **68 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **69 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -213,6 +213,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN006 | invalid-id-naming | error | Job ID and step ID must start with a letter or `_` and contain only alphanumeric characters, `-`, or `_` |
 | SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
+| SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
@@ -286,6 +287,36 @@ jobs:
 A key whose name contains a `${{ }}` expression is skipped: the literal text
 is substituted before the runner sees it, so it says nothing about the name
 that finally reaches the environment file.
+
+### SYN009 unknown-event
+
+An event name GitHub does not know is not rejected at parse time: the workflow
+is accepted and then never runs. A typo therefore looks exactly like a workflow
+nobody triggered, so every `on:` key is checked against the list of supported
+triggers.
+
+```yaml
+on:
+  pull_reqeust:        # error: unknown Webhook event "pull_reqeust". did you mean "pull_request"?
+    types: [opened]
+  push_tag:            # error: unknown Webhook event "push_tag"
+```
+
+The check covers all three `on:` forms (`on: push`, `on: [push, fork]`, and the
+mapping form) and is case-sensitive, since GitHub matches trigger names exactly.
+Valid triggers, webhook or not, pass:
+
+```yaml
+on:
+  push:
+  discussion_comment:
+    types: [created]
+  merge_group:
+  workflow_dispatch:
+```
+
+A name containing a `${{ }}` expression is skipped, since the literal text says
+nothing about the name GitHub finally sees.
 
 ### SYN012 exclusive-event-filters
 

@@ -1,0 +1,17 @@
+# zghalint:expect SYN009@5 SYN009@7 SYN009@11
+# zghalint:forbid SYN009@8 SYN009@10
+name: unknown webhook events
+on:
+  pull_reqeust:
+    types: [opened]
+  push_tag:
+  discussion_comment:
+    types: [created]
+  merge_group:
+  wathc:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ok

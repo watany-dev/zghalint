@@ -243,6 +243,11 @@ pub const EventType = enum {
 
 pub const EventConfig = struct {
     event: EventType,
+    /// The trigger name as written, and the span of that token. `EventType`
+    /// collapses every unrecognized name into `.other`, so SYN009 needs the
+    /// source text to validate it and the span to point at it.
+    name: []const u8 = "",
+    name_span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     filter: ?EventFilter = null,
     schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
