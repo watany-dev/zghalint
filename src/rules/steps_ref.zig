@@ -7,10 +7,8 @@
 //! here and hangs off `check_job`: only a job knows its steps *and* their
 //! order, and order is what makes `steps.<id>` valid or not at a given step.
 //!
-//! This is the first of the contextual-typing rules (EXPR010-EXPR014); the
-//! reference-resolution shape here — walk every expression of a step, pick
-//! out the accesses rooted at one context, resolve them against per-job
-//! data — is meant to be shared by the rest.
+//! It is the first of the contextual-typing rules (EXPR010-EXPR014), so the
+//! reference resolution here is written to be shared by the rest.
 
 const std = @import("std");
 const engine = @import("engine.zig");
@@ -62,9 +60,9 @@ fn collectStepIds(job: *const Job, buf: *std.ArrayList(DefinedStep), alloc: std.
 
 const Resolver = struct {
     defined: []const DefinedStep,
-    /// The `defined` ids on their own, so `didYouMean` can take them
-    /// directly. A step declared later cannot be the intended target either,
-    /// but it is still the likeliest typo source, so it stays a candidate.
+    /// Suggestion candidates. A step declared later cannot be the intended
+    /// target either, but it is still the likeliest typo source, so it stays
+    /// in the list.
     ids: []const []const u8,
     /// Index of the step whose expressions are being scanned.
     current: usize,
