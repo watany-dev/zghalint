@@ -67,6 +67,7 @@ test {
     _ = @import("rules/expr_type.zig");
     _ = @import("rules/expr_catalog.zig");
     _ = @import("rules/expr_check.zig");
+    _ = @import("rules/needs_context.zig");
     _ = @import("rules/security.zig");
     _ = @import("rules/performance.zig");
     _ = @import("rules/best_practices.zig");

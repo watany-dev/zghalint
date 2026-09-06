@@ -584,7 +584,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
             job.services = try parseServices(ctx.allocator, n);
         }
     }
-    if (m.get("outputs")) |n| try recordEmpty(&empty, ctx.allocator, "outputs", n);
+    if (m.get("outputs")) |n| {
+        try recordEmpty(&empty, ctx.allocator, "outputs", n);
+        job.outputs = try parseOutputKeys(ctx.allocator, n);
+    }
     if (m.get("defaults")) |n| {
         try recordEmpty(&empty, ctx.allocator, "defaults", n);
         job.defaults = parseDefaults(n);
@@ -1026,6 +1029,19 @@ fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const typ
     };
 
     const keys = try allocator.alloc(types.EnvKey, m.entries.len);
+    for (m.entries, keys) |entry, *key| {
+        key.* = .{ .name = entry.key.value, .span = entry.key.span };
+    }
+    return keys;
+}
+
+fn parseOutputKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.OutputKey {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const keys = try allocator.alloc(types.OutputKey, m.entries.len);
     for (m.entries, keys) |entry, *key| {
         key.* = .{ .name = entry.key.value, .span = entry.key.span };
     }

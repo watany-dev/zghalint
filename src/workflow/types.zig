@@ -21,6 +21,14 @@ pub const EnvKey = struct {
     span: yaml_types.Span,
 };
 
+/// A single key of a job-level `outputs:` mapping, kept so that EXPR012 can
+/// verify `needs.<job>.outputs.<name>` references and point the diagnostic at
+/// the declaring key.
+pub const OutputKey = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 pub const ScalarValueMeta = struct {
     value_span: yaml_types.Span,
     style: yaml_types.ScalarStyle,
@@ -398,6 +406,8 @@ pub const Job = struct {
     needs: []const []const u8 = &.{},
     /// Value spans of `needs` entries, parallel to `needs`. Empty when absent.
     needs_spans: []const yaml_types.Span = &.{},
+    /// Keys of the job-level `outputs:` mapping in source order (for EXPR012).
+    outputs: []const OutputKey = &.{},
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
     /// `permissions:` entries rejected during parsing (PERM003).

@@ -1,0 +1,29 @@
+# zghalint:expect EXPR012@26 EXPR012@27 EXPR012@28
+# zghalint:forbid EXPR002
+name: expr012
+on: push
+permissions: {}
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1" >> "$GITHUB_OUTPUT"
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  build:
+    needs: [setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: needs.setup.result == 'success'
+    steps:
+      - run: echo "${{ needs.setup.outputs.ver }}"
+      - run: echo "${{ needs.lint.result }}"
+      - run: echo "${{ needs.setup.output.version }}"
+      - run: echo "${{ needs.setup.outputs.version }}"

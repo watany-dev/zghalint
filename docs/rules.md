@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **69 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **70 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -163,6 +163,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR007 | unsound-condition | warning | Bare literal in logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR009 | fromjson-literal | error | `fromJSON()` string literal argument must be valid JSON |
+| EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 
 ## Dependency Rules (DEP)
