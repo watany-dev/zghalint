@@ -831,7 +831,15 @@ fn checkFormatPlaceholders(
             var j = start;
             while (j < decoded.len and std.ascii.isDigit(decoded[j])) j += 1;
             if (j > start and j < decoded.len and decoded[j] == '}') {
-                const index = std.fmt.parseInt(usize, decoded[start..j], 10) catch return;
+                const index = std.fmt.parseInt(usize, decoded[start..j], 10) catch {
+                    list.append(.{
+                        .rule_id = "EXPR008",
+                        .severity = .@"error",
+                        .message = "format() format string has an invalid placeholder index",
+                        .span = span,
+                    }) catch return;
+                    return;
+                };
                 if (index >= data_arg_count) {
                     const msg = std.fmt.allocPrint(
                         allocator,
