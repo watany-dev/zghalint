@@ -6,10 +6,9 @@
 
 const std = @import("std");
 const engine = @import("engine.zig");
-const http_client = @import("http_client.zig");
-const json_util = @import("json_util.zig");
 const impostor = @import("impostor.zig");
 const graphql = @import("graphql.zig");
+const rest_fallback = @import("rest_fallback.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -22,7 +21,7 @@ pub const PendingCompare = struct {
     branch_oids: []const graphql.NamedOid,
 };
 
-pub const CompareStatus = enum { reachable, unreachable_, unknown };
+pub const CompareStatus = rest_fallback.CompareStatus;
 
 pub const RefSweepResult = enum { legit, all_unreachable, unknown };
 
@@ -96,7 +95,7 @@ fn classifyImpostorViaCompare(
     pc: PendingCompare,
 ) impostor.CachedResult {
     if (pc.default_branch) |def| {
-        switch (compareRest(scratch, pc.owner, pc.repo, def.name, pc.sha)) {
+        switch (rest_fallback.compareRest(scratch, pc.owner, pc.repo, def.name, pc.sha)) {
             .reachable => return .{
                 .status = .legitimate,
             },
@@ -147,7 +146,7 @@ fn compareAllRefs(
         if (skip) |s| {
             if (std.mem.eql(u8, s.name, r.name)) continue;
         }
-        switch (compareRest(scratch, pc.owner, pc.repo, r.name, pc.sha)) {
+        switch (rest_fallback.compareRest(scratch, pc.owner, pc.repo, r.name, pc.sha)) {
             .reachable => return .legit,
             .unknown => saw_unknown = true,
             .unreachable_ => {},
@@ -155,69 +154,6 @@ fn compareAllRefs(
     }
     if (saw_unknown) return .unknown;
     return .all_unreachable;
-}
-
-/// Any non-200 response or parse failure returns `.unknown` so SC008
-/// fail-closes on uncertainty.
-fn compareRest(
-    scratch: Allocator,
-    owner: []const u8,
-    repo: []const u8,
-    base: []const u8,
-    head: []const u8,
-) CompareStatus {
-    if (!engine.isValidGitHubComponent(owner)) return .unknown;
-    if (!engine.isValidGitHubComponent(repo)) return .unknown;
-    if (!engine.isValidGitRef(base)) return .unknown;
-    if (!engine.isValidSha(head)) return .unknown;
-
-    // Branch/tag names can contain '/' (e.g. "release/v1.0"). Percent-encode
-    // the base segment so the compare endpoint doesn't route those characters
-    // as extra path components and force us into a fail-closed unknown.
-    const base_encoded = percentEncodePathSegment(scratch, base) orelse return .unknown;
-
-    const url = std.fmt.allocPrint(
-        scratch,
-        "https://api.github.com/repos/{s}/{s}/compare/{s}...{s}",
-        .{ owner, repo, base_encoded, head },
-    ) catch return .unknown;
-
-    var resp = http_client.fetchAuthenticatedJson(scratch, url) catch return .unknown;
-    defer resp.deinit();
-
-    if (resp.status != .ok) return .unknown;
-
-    return parseCompareStatus(scratch, resp.body);
-}
-
-fn parseCompareStatus(scratch: Allocator, body: []const u8) CompareStatus {
-    const root = std.json.parseFromSliceLeaky(std.json.Value, scratch, body, .{}) catch return .unknown;
-    const obj = json_util.asObject(root) orelse return .unknown;
-    const status = json_util.stringField(obj, "status") orelse return .unknown;
-    if (std.mem.eql(u8, status, "identical") or std.mem.eql(u8, status, "behind")) {
-        return .reachable;
-    }
-    if (std.mem.eql(u8, status, "ahead") or std.mem.eql(u8, status, "diverged")) {
-        return .unreachable_;
-    }
-    return .unknown;
-}
-
-fn percentEncodePathSegment(scratch: Allocator, s: []const u8) ?[]const u8 {
-    for (s) |c| {
-        if (!isUnreserved(c)) break;
-    } else return s;
-
-    var out: std.Io.Writer.Allocating = .init(scratch);
-    std.Uri.Component.percentEncode(&out.writer, s, isUnreserved) catch return null;
-    return out.written();
-}
-
-fn isUnreserved(c: u8) bool {
-    return switch (c) {
-        'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
-        else => false,
-    };
 }
 
 const testing = std.testing;
@@ -359,29 +295,6 @@ test "classifyImpostorFromGraphql: null pending forces unknown" {
     try testing.expectEqual(impostor.ImpostorStatus.unknown, cached.status);
 }
 
-test "parseCompareStatus: identical and behind are reachable" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    try testing.expectEqual(CompareStatus.reachable, parseCompareStatus(arena.allocator(), "{\"status\":\"identical\"}"));
-    try testing.expectEqual(CompareStatus.reachable, parseCompareStatus(arena.allocator(), "{\"status\":\"behind\"}"));
-}
-
-test "parseCompareStatus: ahead and diverged are unreachable" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    try testing.expectEqual(CompareStatus.unreachable_, parseCompareStatus(arena.allocator(), "{\"status\":\"ahead\"}"));
-    try testing.expectEqual(CompareStatus.unreachable_, parseCompareStatus(arena.allocator(), "{\"status\":\"diverged\"}"));
-}
-
-test "parseCompareStatus: unknown / malformed inputs map to unknown" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    try testing.expectEqual(CompareStatus.unknown, parseCompareStatus(arena.allocator(), "{\"status\":\"weird\"}"));
-    try testing.expectEqual(CompareStatus.unknown, parseCompareStatus(arena.allocator(), "{}"));
-    try testing.expectEqual(CompareStatus.unknown, parseCompareStatus(arena.allocator(), "not-json"));
-    try testing.expectEqual(CompareStatus.unknown, parseCompareStatus(arena.allocator(), "[\"array\"]"));
-}
-
 test "runImpostorCompares: deadline-expired entries all map to unknown" {
     impostor.initImpostor(testing.allocator, false);
     defer impostor.deinitImpostor();
@@ -409,45 +322,4 @@ test "runImpostorCompares: deadline-expired entries all map to unknown" {
     const cached = impostor.lookupCachedImpostorResult("o", "r", "2222222222222222222222222222222222222222") orelse
         return error.TestExpectedNonNull;
     try testing.expectEqual(impostor.ImpostorStatus.unknown, cached.status);
-}
-
-test "compareRest: invalid component arguments fail closed to unknown without network" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "..", "r", "main", "0000000000000000000000000000000000000000"));
-    try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "..", "main", "0000000000000000000000000000000000000000"));
-    try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "r", "../evil", "0000000000000000000000000000000000000000"));
-    try testing.expectEqual(CompareStatus.unknown, compareRest(alloc, "o", "r", "main", "not-a-sha"));
-}
-
-test "percentEncodePathSegment: refs with slashes are encoded" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const out = percentEncodePathSegment(alloc, "release/v1.0").?;
-    try testing.expectEqualStrings("release%2Fv1.0", out);
-}
-
-test "percentEncodePathSegment: plain ref passes through unchanged" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const s = "main";
-    const out = percentEncodePathSegment(alloc, s).?;
-    // Unchanged inputs return the original slice without allocation.
-    try testing.expectEqual(s.ptr, out.ptr);
-    try testing.expectEqualStrings("main", out);
-}
-
-test "percentEncodePathSegment: nested slashes and dots encode correctly" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const out = percentEncodePathSegment(alloc, "feature/foo/bar-1.2_3").?;
-    try testing.expectEqualStrings("feature%2Ffoo%2Fbar-1.2_3", out);
 }

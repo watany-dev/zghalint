@@ -156,6 +156,37 @@ pub const EventFilter = struct {
     spans: EventFilterSpans = .{},
 };
 
+pub const CallableInputType = enum {
+    string,
+    number,
+    boolean,
+};
+
+pub const InputDef = struct {
+    name: []const u8,
+    name_span: yaml_types.Span,
+    input_type: ?CallableInputType = null,
+    type_span: ?yaml_types.Span = null,
+    required: ?bool = null,
+    default_value: ?[]const u8 = null,
+    default_span: ?yaml_types.Span = null,
+};
+
+pub const WorkflowCallInputProblemKind = enum {
+    missing_type,
+    invalid_type,
+    default_type_mismatch,
+    required_with_default,
+};
+
+pub const WorkflowCallInputProblem = struct {
+    kind: WorkflowCallInputProblemKind,
+    input_name: []const u8,
+    /// Type name or offending default token, depending on `kind`.
+    detail: []const u8,
+    span: yaml_types.Span,
+};
+
 pub const EventType = enum {
     push,
     pull_request,
@@ -203,6 +234,8 @@ pub const EventType = enum {
 pub const EventConfig = struct {
     event: EventType,
     filter: ?EventFilter = null,
+    workflow_call_inputs: []const InputDef = &.{},
+    workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
 };
 
 pub const Trigger = struct {
