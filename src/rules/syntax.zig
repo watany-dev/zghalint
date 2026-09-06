@@ -471,6 +471,53 @@ fn reportGlobErrors(
     }
 }
 
+const cron = @import("../workflow/cron.zig");
+
+fn checkScheduleCronSyntax(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.on.events) |event| {
+        if (event.event != .schedule) continue;
+        for (event.schedules) |entry| {
+            _ = cron.Schedule.parse(entry.cron) catch |err| {
+                const detail = cron.Schedule.errorMessage(err);
+                list.append(.{
+                    .rule_id = "SYN014",
+                    .severity = .@"error",
+                    .message = std.fmt.allocPrint(
+                        list.fixAllocator(),
+                        "invalid CRON format \"{s}\" in schedule event: {s}",
+                        .{ entry.cron, detail },
+                    ) catch "invalid CRON format in schedule event",
+                    .span = entry.cron_span,
+                    .fix_hint = "use a 5-field POSIX cron expression (minute hour day month weekday)",
+                }) catch return;
+            };
+        }
+    }
+}
+
+fn checkScheduleCronFrequency(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.on.events) |event| {
+        if (event.event != .schedule) continue;
+        for (event.schedules) |entry| {
+            const sched = cron.Schedule.parse(entry.cron) catch continue;
+            const interval = sched.minIntervalSeconds() orelse continue;
+            if (interval >= 60 * 5) continue;
+
+            list.append(.{
+                .rule_id = "SYN015",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    list.fixAllocator(),
+                    "scheduled job runs too frequently. it runs once per {d} seconds. the shortest interval is once every 5 minutes",
+                    .{interval},
+                ) catch "scheduled job runs too frequently. the shortest interval is once every 5 minutes",
+                .span = entry.cron_span,
+                .fix_hint = "set the minute field so scheduled runs are at least 5 minutes apart",
+            }) catch return;
+        }
+    }
+}
+
 fn checkGlobFilters(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.on.events) |event| {
         const filter = event.filter orelse continue;
@@ -569,6 +616,22 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkGlobFilters,
+    },
+    .{
+        .id = "SYN014",
+        .name = "invalid-cron",
+        .description = "schedule cron expression is not valid POSIX 5-field cron syntax",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkScheduleCronSyntax,
+    },
+    .{
+        .id = "SYN015",
+        .name = "cron-too-frequent",
+        .description = "scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes)",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkScheduleCronFrequency,
     },
 };
 
@@ -2436,6 +2499,16 @@ fn runSyn013(source: []const u8) !DiagnosticList {
     return list;
 }
 
+fn runScheduleRules(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkScheduleCronSyntax(&wf, &list);
+    checkScheduleCronFrequency(&wf, &list);
+    return list;
+}
+
 test "SYN013: unclosed character class in branches" {
     const source =
         \\on:
@@ -2521,4 +2594,65 @@ test "SYN013: rejects ./ path prefix" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "'.' and '..' are not allowed") != null);
+}
+
+test "SYN014: invalid cron expressions are reported" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * *'
+        \\    - cron: '@daily'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN014"));
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN015"));
+}
+
+test "SYN015: schedules shorter than 5 minutes are reported" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '* * * * *'
+        \\    - cron: '*/5 * * * *'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
+    try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "SYN015"));
+    const diag = test_support.findDiagnostic(&diags, "SYN015").?;
+    try testing.expect(std.mem.indexOf(u8, diag.message, "60 seconds") != null);
+}
+
+test "SYN014/SYN015: valid daily schedule is clean" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * * *'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN015"));
 }

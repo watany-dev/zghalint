@@ -40,16 +40,80 @@ pub fn getAuthHeader(allocator: Allocator) ?[]const u8 {
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
 }
 
-pub fn writeStandardHeaders(buf: []std.http.Header, auth_value: ?[]const u8) usize {
-    std.debug.assert(buf.len >= 3);
+pub fn writeStandardHeaders(buf: []std.http.Header) usize {
+    std.debug.assert(buf.len >= 2);
     buf[0] = .{ .name = "Accept", .value = accept_github_json };
     buf[1] = .{ .name = "X-GitHub-Api-Version", .value = api_version };
-    if (auth_value) |auth| {
-        buf[2] = .{ .name = "Authorization", .value = auth };
-        return 3;
-    }
     return 2;
 }
+
+/// The Authorization header goes in `privileged_headers`, which
+/// `std.http.Client` drops when a redirect leaves the original host, so a
+/// token is never forwarded to a third-party origin.
+pub fn authHeaders(buf: *[1]std.http.Header, auth_value: ?[]const u8) []const std.http.Header {
+    const auth = auth_value orelse return &.{};
+    buf[0] = .{ .name = "Authorization", .value = auth };
+    return buf[0..1];
+}
+
+/// Upper bound on a single API response body. GitHub's largest documented
+/// payloads here (100 advisories, a page of refs) are well under 1 MiB;
+/// the cap bounds memory when a misbehaving or redirected server streams
+/// an unbounded body.
+pub const max_response_bytes: usize = 16 * 1024 * 1024;
+
+/// A `std.Io.Writer` that accumulates into an owned buffer and fails the
+/// write (and therefore the fetch) once `limit` bytes would be exceeded.
+pub const BoundedBody = struct {
+    list: std.ArrayListUnmanaged(u8) = .empty,
+    allocator: Allocator,
+    limit: usize,
+    overflowed: bool = false,
+    writer: std.Io.Writer,
+
+    pub fn init(allocator: Allocator, limit: usize) BoundedBody {
+        return .{
+            .allocator = allocator,
+            .limit = limit,
+            .writer = .{ .vtable = &.{ .drain = drain }, .buffer = &.{} },
+        };
+    }
+
+    pub fn deinit(self: *BoundedBody) void {
+        self.list.deinit(self.allocator);
+    }
+
+    pub fn written(self: *BoundedBody) []u8 {
+        return self.list.items;
+    }
+
+    pub fn toOwnedSlice(self: *BoundedBody) error{OutOfMemory}![]u8 {
+        return self.list.toOwnedSlice(self.allocator);
+    }
+
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *BoundedBody = @fieldParentPtr("writer", w);
+        var consumed: usize = 0;
+        for (data[0 .. data.len - 1]) |chunk| {
+            try self.append(chunk);
+            consumed += chunk.len;
+        }
+        const last = data[data.len - 1];
+        for (0..splat) |_| {
+            try self.append(last);
+            consumed += last.len;
+        }
+        return consumed;
+    }
+
+    fn append(self: *BoundedBody, chunk: []const u8) std.Io.Writer.Error!void {
+        if (chunk.len > self.limit - self.list.items.len) {
+            self.overflowed = true;
+            return error.WriteFailed;
+        }
+        self.list.appendSlice(self.allocator, chunk) catch return error.WriteFailed;
+    }
+};
 
 pub const FetchError = error{
     NotInitialized,
@@ -88,32 +152,34 @@ pub fn fetchAuthenticatedJson(
     allocator: Allocator,
     url: []const u8,
 ) FetchedError!FetchedBody {
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    errdefer aw.deinit();
+    var body_sink = BoundedBody.init(allocator, max_response_bytes);
+    errdefer body_sink.deinit();
 
     const auth_value = getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
 
-    var headers_buf: [3]std.http.Header = undefined;
-    const header_count = writeStandardHeaders(&headers_buf, auth_value);
+    var headers_buf: [2]std.http.Header = undefined;
+    const header_count = writeStandardHeaders(&headers_buf);
+    var auth_buf: [1]std.http.Header = undefined;
 
     const result = try fetch(.{
         .location = .{ .url = url },
-        .response_writer = &aw.writer,
+        .response_writer = &body_sink.writer,
         .headers = .{ .user_agent = .{ .override = user_agent } },
         .extra_headers = headers_buf[0..header_count],
+        .privileged_headers = authHeaders(&auth_buf, auth_value),
     });
 
-    const body = try aw.toOwnedSlice();
+    const body = try body_sink.toOwnedSlice();
     return .{ .status = result.status, .body = body, .allocator = allocator };
 }
 
 const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
-test "writeStandardHeaders without auth yields 2 entries" {
+test "writeStandardHeaders yields the 2 unprivileged entries" {
     var buf: [4]std.http.Header = undefined;
-    const count = writeStandardHeaders(&buf, null);
+    const count = writeStandardHeaders(&buf);
     try testing.expectEqual(@as(usize, 2), count);
     try testing.expectEqualStrings("Accept", buf[0].name);
     try testing.expectEqualStrings(accept_github_json, buf[0].value);
@@ -121,12 +187,37 @@ test "writeStandardHeaders without auth yields 2 entries" {
     try testing.expectEqualStrings(api_version, buf[1].value);
 }
 
-test "writeStandardHeaders with auth yields 3 entries" {
-    var buf: [4]std.http.Header = undefined;
-    const count = writeStandardHeaders(&buf, "Bearer ghp_abc");
-    try testing.expectEqual(@as(usize, 3), count);
-    try testing.expectEqualStrings("Authorization", buf[2].name);
-    try testing.expectEqualStrings("Bearer ghp_abc", buf[2].value);
+test "authHeaders: empty without a token, Authorization with one" {
+    var buf: [1]std.http.Header = undefined;
+    try testing.expectEqual(@as(usize, 0), authHeaders(&buf, null).len);
+
+    const with_auth = authHeaders(&buf, "Bearer ghp_abc");
+    try testing.expectEqual(@as(usize, 1), with_auth.len);
+    try testing.expectEqualStrings("Authorization", with_auth[0].name);
+    try testing.expectEqualStrings("Bearer ghp_abc", with_auth[0].value);
+}
+
+test "BoundedBody: accepts up to the limit and fails beyond it" {
+    var sink = BoundedBody.init(testing.allocator, 8);
+    defer sink.deinit();
+
+    try sink.writer.writeAll("abcd");
+    try sink.writer.writeAll("efgh");
+    try testing.expectEqualStrings("abcdefgh", sink.written());
+    try testing.expect(!sink.overflowed);
+
+    try testing.expectError(error.WriteFailed, sink.writer.writeAll("i"));
+    try testing.expect(sink.overflowed);
+    try testing.expectEqualStrings("abcdefgh", sink.written());
+}
+
+test "BoundedBody: splat writes are counted against the limit" {
+    var sink = BoundedBody.init(testing.allocator, 5);
+    defer sink.deinit();
+
+    try sink.writer.splatByteAll('x', 5);
+    try testing.expectEqualStrings("xxxxx", sink.written());
+    try testing.expectError(error.WriteFailed, sink.writer.splatByteAll('y', 1));
 }
 
 test "fetch returns NotInitialized when client not started" {

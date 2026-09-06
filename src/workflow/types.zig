@@ -161,6 +161,11 @@ pub const EventFilter = struct {
     spans: EventFilterSpans = .{},
 };
 
+pub const ScheduleEntry = struct {
+    cron: []const u8,
+    cron_span: yaml_types.Span,
+};
+
 pub const CallableInputType = enum {
     string,
     number,
@@ -239,6 +244,7 @@ pub const EventType = enum {
 pub const EventConfig = struct {
     event: EventType,
     filter: ?EventFilter = null,
+    schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
 };

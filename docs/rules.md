@@ -215,6 +215,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
+| SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
+| SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
 
 ### SYN002 duplicate-key
 

@@ -150,21 +150,23 @@ pub fn batchQuery(
     const body = encodeRequestBody(allocator, query) catch return error.OutOfMemory;
     defer allocator.free(body);
 
-    var aw: std.Io.Writer.Allocating = .init(allocator);
-    defer aw.deinit();
+    var body_sink = http_client.BoundedBody.init(allocator, http_client.max_response_bytes);
+    defer body_sink.deinit();
 
-    var headers_buf: [4]std.http.Header = undefined;
-    var header_count = http_client.writeStandardHeaders(&headers_buf, auth_value);
+    var headers_buf: [3]std.http.Header = undefined;
+    var header_count = http_client.writeStandardHeaders(&headers_buf);
     headers_buf[header_count] = .{ .name = "Content-Type", .value = "application/json" };
     header_count += 1;
+    var auth_buf: [1]std.http.Header = undefined;
 
     const result = http_client.fetch(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = body,
-        .response_writer = &aw.writer,
+        .response_writer = &body_sink.writer,
         .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
+        .privileged_headers = http_client.authHeaders(&auth_buf, auth_value),
     }) catch return error.RequestFailed;
 
     if (result.status == .forbidden or result.status == .too_many_requests) {
@@ -172,10 +174,7 @@ pub fn batchQuery(
     }
     if (result.status != .ok) return error.RequestFailed;
 
-    var response_list = aw.toArrayList();
-    defer response_list.deinit(allocator);
-
-    return parseResponse(allocator, response_list.items, repos) catch |err| switch (err) {
+    return parseResponse(allocator, body_sink.written(), repos) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.RateLimited => error.RateLimited,
         else => error.ParseFailed,
