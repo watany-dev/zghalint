@@ -434,15 +434,19 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-fn globPatternSpan(value_span: Span, err_col: usize) Span {
+fn globPatternSpan(value_span: Span, pat: []const u8, err_col: usize) Span {
     if (err_col == 0) return value_span;
+    // Quoted YAML scalars include delimiters in the span but not in the value.
+    const quoted: u32 = if (value_span.end_byte - value_span.start_byte == pat.len + 2) 1 else 0;
+    const off = quoted + @as(u32, @intCast(err_col - 1));
+    const byte_off = quoted + err_col - 1;
     return .{
         .start_line = value_span.start_line,
-        .start_col = value_span.start_col + @as(u32, @intCast(err_col - 1)),
+        .start_col = value_span.start_col + off,
         .end_line = value_span.start_line,
-        .end_col = value_span.start_col + @as(u32, @intCast(err_col)),
-        .start_byte = value_span.start_byte,
-        .end_byte = value_span.end_byte,
+        .end_col = value_span.start_col + off + 1,
+        .start_byte = value_span.start_byte + byte_off,
+        .end_byte = value_span.start_byte + byte_off + 1,
     };
 }
 
@@ -457,12 +461,11 @@ fn reportGlobErrors(
         const value_span = if (i < patterns.spans.len) patterns.spans[i] else Span.point(1, 1, 0);
         const errs = validate(alloc, pat);
         for (errs) |err| {
-            const msg = alloc.dupe(u8, err.message) catch err.message;
             list.append(.{
                 .rule_id = "SYN013",
                 .severity = .@"error",
-                .message = msg,
-                .span = globPatternSpan(value_span, err.column),
+                .message = err.message,
+                .span = globPatternSpan(value_span, pat, err.column),
             }) catch return;
         }
     }
@@ -2473,6 +2476,7 @@ test "SYN013: + at start of path pattern" {
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings("SYN013", diags.get(0).rule_id);
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "the preceding character must not be special character") != null);
+    try testing.expectEqual(@as(u32, 10), diags.get(0).span.start_col);
 }
 
 test "SYN013: valid filter patterns produce no diagnostic" {
