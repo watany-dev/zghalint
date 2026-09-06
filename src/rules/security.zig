@@ -512,6 +512,94 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
     }) catch return;
 }
 
+/// Contexts an attacker fills in on the SEC021 trigger set: the dispatch
+/// payloads (`inputs` / `client_payload`) and the free text of an issue,
+/// comment or discussion. Entries are segment prefixes (see
+/// `pathMatchesPattern`), so `github.event.inputs` covers every declared input
+/// name without listing them.
+const checkout_ref_untrusted_contexts = [_][]const u8{
+    "github.event.inputs",
+    "github.event.client_payload",
+    "github.event.issue.title",
+    "github.event.issue.body",
+    "github.event.comment.body",
+    "github.event.discussion.title",
+    "github.event.discussion.body",
+    "github.event.discussion_comment.body",
+};
+
+/// The `inputs.*` shorthand names the `workflow_dispatch` inputs only when the
+/// workflow is not also callable; in a `workflow_call` workflow the same root
+/// names what a caller passes, and analysing callers is out of scope.
+const checkout_ref_dispatch_contexts = checkout_ref_untrusted_contexts ++ [_][]const u8{"inputs"};
+
+/// The triggers SEC021 owns: the run is started by data an attacker authors
+/// while the job still runs against the base repository. `pull_request_target`
+/// and `workflow_run` are absent because SEC005 / SEC009 already own them.
+fn hasUntrustedRefTrigger(wf: *const Workflow) bool {
+    for (wf.on.events) |event| {
+        switch (event.event) {
+            .workflow_dispatch,
+            .repository_dispatch,
+            .issues,
+            .issue_comment,
+            .discussion,
+            .discussion_comment,
+            => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
+    // A workflow carrying one of those triggers is reported by the rule that
+    // owns it; firing here as well would double-report the same step.
+    if (wf.hasEvent(.pull_request_target)) return;
+    if (wf.hasEvent(.workflow_run)) return;
+    if (!hasUntrustedRefTrigger(wf)) return;
+
+    const contexts: []const []const u8 = if (wf.hasEvent(.workflow_call))
+        &checkout_ref_untrusted_contexts
+    else
+        &checkout_ref_dispatch_contexts;
+
+    for (wf.jobs) |*job| {
+        for (job.steps) |*step| {
+            checkStepCheckoutRefs(step, contexts, list);
+        }
+    }
+}
+
+fn checkStepCheckoutRefs(step: *const Step, contexts: []const []const u8, list: *DiagnosticList) void {
+    const action_ref = step.uses orelse return;
+    if (!isAction(action_ref, "actions/checkout")) return;
+    const with_map = step.with orelse return;
+
+    for ([_][]const u8{ "ref", "repository" }) |key| {
+        const value = with_map.get(key) orelse continue;
+        if (!containsUntrustedCheckoutContext(value, contexts)) continue;
+        list.append(.{
+            .rule_id = "SEC021",
+            .severity = .@"error",
+            .message = "actions/checkout resolves its ref/repository from untrusted context, letting the triggering user pick the code that runs",
+            .span = withAnchor(step, key).whole(),
+            .fix_hint = "check out a ref the repository controls, or validate the value against an allowlist before passing it to actions/checkout",
+        }) catch return;
+        // One finding per step: `ref` and `repository` fed from the same
+        // payload are one mistake, not two.
+        return;
+    }
+}
+
+fn containsUntrustedCheckoutContext(value: []const u8, contexts: []const []const u8) bool {
+    var it: ExprIter = .{ .s = value };
+    while (it.next()) |e| {
+        if (containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) return true;
+    }
+    return false;
+}
+
 fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList) void {
     if (!wf.hasEvent(.workflow_run)) return;
 
@@ -1509,6 +1597,14 @@ pub const security_rules = [_]Rule{
         .check_workflow = &checkWorkflowRunUntrustedCheckout,
     },
     .{
+        .id = "SEC021",
+        .name = "untrusted-checkout-ref",
+        .description = "actions/checkout ref/repository resolved from untrusted context on dispatch, issue, comment or discussion triggers",
+        .severity = .@"error",
+        .category = .security,
+        .check_workflow = &checkUntrustedCheckoutRef,
+    },
+    .{
         .id = "SEC022",
         .name = "workflow-run-branch-gate",
         .description = "workflow_run job is gated on an attribute of the triggering run that a fork controls",
@@ -2163,6 +2259,129 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
     var list = runJobOn(pr_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+const repository_dispatch_trigger = test_support.makeTrigger(.repository_dispatch);
+const discussion_comment_trigger = test_support.makeTrigger(.discussion_comment);
+const workflow_call_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .workflow_call },
+    .{ .event = .workflow_dispatch },
+} };
+const pr_target_and_issue_comment_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .pull_request_target },
+    .{ .event = .issue_comment },
+} };
+const workflow_run_and_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .workflow_run },
+    .{ .event = .workflow_dispatch },
+} };
+
+/// Runs a single `actions/checkout` step under `on`, with `key: value` in `with:`.
+fn runCheckoutWith(on: Trigger, key: []const u8, value: []const u8) DiagnosticList {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put(key, value) catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    return runJobOn(on, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+}
+
+test "SEC021: workflow_dispatch checkout ref from inputs" {
+    var list = runCheckoutWith(workflow_dispatch_trigger, "ref", "${{ github.event.inputs.target }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+    const d = findDiagnostic(&list, "SEC021").?;
+    try testing.expect(d.severity == .@"error");
+    try testing.expect(d.fix_hint != null);
+    try testing.expect(d.fix == null);
+}
+
+test "SEC021: workflow_dispatch checkout ref from the inputs shorthand" {
+    var list = runCheckoutWith(workflow_dispatch_trigger, "ref", "${{ inputs.target }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: issue_comment checkout ref from issue body" {
+    var list = runCheckoutWith(issue_comment_trigger, "ref", "${{ github.event.issue.body }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: discussion_comment checkout ref from comment body" {
+    var list = runCheckoutWith(discussion_comment_trigger, "ref", "${{ github.event.comment.body }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: repository_dispatch checkout repository from client_payload" {
+    var list = runCheckoutWith(repository_dispatch_trigger, "repository", "${{ github.event.client_payload.repo }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: checkout ref and repository in one step report once" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("ref", "${{ github.event.inputs.target }}") catch unreachable;
+    with.put("repository", "${{ github.event.inputs.repo }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_dispatch_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC021"));
+}
+
+test "SEC021: fixed checkout ref (no false positive)" {
+    var list = runCheckoutWith(workflow_dispatch_trigger, "ref", "main");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: trusted context in checkout ref (no false positive)" {
+    var list = runCheckoutWith(workflow_dispatch_trigger, "ref", "${{ github.sha }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: push trigger is out of scope (no false positive)" {
+    var list = runCheckoutWith(push_trigger, "ref", "${{ github.event.inputs.target }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: reusable workflow inputs shorthand is out of scope (no false positive)" {
+    var list = runCheckoutWith(workflow_call_dispatch_trigger, "ref", "${{ inputs.target }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: non-checkout step (no false positive)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("ref", "${{ github.event.inputs.target }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("some/other-action@v1"), .with = with },
+    };
+    var list = runJobOn(workflow_dispatch_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: pull_request_target defers to SEC005" {
+    var list = runCheckoutWith(pr_target_and_issue_comment_trigger, "ref", "${{ github.head_ref }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: workflow_run defers to SEC009" {
+    var list = runCheckoutWith(workflow_run_and_dispatch_trigger, "ref", "${{ github.event.workflow_run.head_branch }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
 }
 
 fn sec022JobCondition(cond: []const u8) ?Severity {
