@@ -1006,6 +1006,28 @@ pub fn findAndValidateExpressions(
     }
 }
 
+/// Enumerates every `${{ }}` expression in `text` without validating it, so
+/// rules that need workflow-wide context (EXPR012) can reuse the same scan.
+/// `visitor` receives the trimmed expression and its span via
+/// `onExpression(expr, span)`. Unterminated `${{` is left to EXPR001.
+pub fn forEachExpression(text: []const u8, anchor: Anchor, visitor: anytype) void {
+    var pos: usize = 0;
+    while (pos + 2 < text.len) {
+        if (!(text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{')) {
+            pos += 1;
+            continue;
+        }
+        const expr_start = pos + 3;
+        const end_offset = std.mem.indexOf(u8, text[expr_start..], "}}") orelse return;
+        const expr_content = text[expr_start .. expr_start + end_offset];
+        const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
+        if (trimmed.len != 0) {
+            visitor.onExpression(trimmed, anchor.at(text, pos, expr_start + end_offset + 2 - pos));
+        }
+        pos = expr_start + end_offset + 2;
+    }
+}
+
 fn getArenaAllocator() std.mem.Allocator {
     // Leaks on purpose: diagnostic messages must outlive the call and the
     // engine provides no arena (#159).
