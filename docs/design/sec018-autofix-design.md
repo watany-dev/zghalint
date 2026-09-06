@@ -30,11 +30,16 @@
 | `hasPersistCredentialsFalse` | `src/rules/security.zig:1007-1011` | `with.get("persist-credentials") == "false"` 判定。SEC015 から呼ばれている |
 | `buildPersistCredentialsFix` → `buildPersistCredentialsFalseFix` | `src/rules/security.zig:1050-1090` | SEC015 用の挿入 autofix。`with == null` / `with` 存在の 2 分岐を既に実装。SEC018 実装時に description / safety を引数化して共有 helper 化済み |
 | `Step.uses_value_end_byte` | `src/workflow/types.zig:247-278` | `with == null` 時の挿入 anchor |
-| `Step.with_last_entry_end_byte` | `src/workflow/types.zig:247-278` | `with` 存在時の挿入 anchor |
+| `Step.with_last_entry_end_byte` | `src/workflow/types.zig:247-278` | `with` 存在時の挿入 anchor。フロースタイルの `with:`（entry に `full_span` が無い）、または最終 entry の値がフローコレクション／ブロックスカラーのときは null になる（#171） |
 | `Step.uses_key_col` | `src/workflow/types.zig:247-278` | インデント計算用（1-based 列番号） |
 | `fix_builder.appendMappingEntry` | `src/fix/builder.zig` | `with` 存在時に再利用 |
 
-SEC018 は parser 改修を必要としない。YAML parser・workflow parser はそのまま使える。
+`with_last_entry_end_byte` が null のとき、および `with:` キーがソースに存在しつつ空（`with:` / `with: {}` → `Step.with == null` かつ `Step.empty_sections` に `with` を含む）のときは、
+安全な挿入位置が無い／`with:` が二重になるため fix を出さない（診断のみ）。
+
+SEC018 のルール実装自体は parser 改修を必要としないが、上記の anchor を正しく null に
+落とすため workflow parser 側に安全判定を入れている（`src/workflow/parser.zig` の
+`isInlineScalar`）。
 
 ## 設計方針
 

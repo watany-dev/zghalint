@@ -154,7 +154,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| EXPR001 | invalid-syntax | error | Empty expression or syntax error in `${{ }}` |
+| EXPR001 | invalid-syntax | error | Empty expression, syntax error, or nesting deeper than 256 levels in `${{ }}` |
 | EXPR002 | unknown-context | error | Unknown context reference (e.g. `${{ foo.bar }}`) |
 | EXPR003 | unknown-property | warning | Unknown context property at any depth (e.g. `${{ github.unknown }}`, `${{ job.container.i }}`) |
 | EXPR004 | unknown-function | error | Unknown function name |
@@ -214,6 +214,9 @@ Validate the structural correctness of the workflow definition itself.
 | SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+| SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
+| SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
+| SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
 
 ### SYN002 duplicate-key
 
@@ -310,6 +313,31 @@ on:
 
 To exclude patterns while keeping the positive filter, use a negated pattern
 under the positive key (`branches: [main, '!wip/**']`).
+
+### SYN013 invalid-filter-glob
+
+Filter values under `branches`, `tags`, `paths`, and their `-ignore` forms must
+use GitHub Actions glob syntax. Invalid patterns are rejected at workflow
+parse time on GitHub.
+
+```yaml
+on:
+  push:
+    branches:
+      - 'v[1.*'          # error: unclosed [
+    paths:
+      - '+foo'           # error: + must follow a literal character
+      - './src/**'       # error: paths cannot start with ./
+```
+
+Valid examples:
+
+```yaml
+on:
+  push:
+    branches: [main, releases/**, v[0-9].*]
+    paths: [src/**/*.zig, '!src/vendor/**']
+```
 
 ---
 

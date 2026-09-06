@@ -1,4 +1,14 @@
 const std = @import("std");
+const EmptySection = @import("workflow/types.zig").EmptySection;
+
+/// The section key was present in source but empty (`with: {}`, `with:`), so a
+/// rule must not insert a second one of its own.
+pub fn hasEmptySection(sections: []const EmptySection, name: []const u8) bool {
+    for (sections) |section| {
+        if (std.mem.eql(u8, section.name, name)) return true;
+    }
+    return false;
+}
 
 pub fn actionBaseName(raw: []const u8) []const u8 {
     return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
@@ -134,4 +144,12 @@ test "stepNameFromRun trims and caps length" {
     const long = "a" ** 50;
     const result = stepNameFromRun(alloc, long).?;
     try std.testing.expectEqual(@as(usize, 40), result.len);
+}
+
+test "hasEmptySection matches by name" {
+    const yaml_types = @import("yaml/types.zig");
+    const sections = [_]EmptySection{.{ .name = "with", .span = yaml_types.Span.point(1, 1, 0) }};
+    try std.testing.expect(hasEmptySection(&sections, "with"));
+    try std.testing.expect(!hasEmptySection(&sections, "env"));
+    try std.testing.expect(!hasEmptySection(&.{}, "with"));
 }

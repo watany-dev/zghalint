@@ -146,14 +146,24 @@ pub const EventFilterSpans = struct {
     paths_ignore: ?yaml_types.Span = null,
 };
 
+pub const FilterPatternList = struct {
+    values: []const []const u8 = &.{},
+    spans: []const yaml_types.Span = &.{},
+};
+
 pub const EventFilter = struct {
-    branches: []const []const u8 = &.{},
-    branches_ignore: []const []const u8 = &.{},
-    tags: []const []const u8 = &.{},
-    tags_ignore: []const []const u8 = &.{},
-    paths: []const []const u8 = &.{},
-    paths_ignore: []const []const u8 = &.{},
+    branches: FilterPatternList = .{},
+    branches_ignore: FilterPatternList = .{},
+    tags: FilterPatternList = .{},
+    tags_ignore: FilterPatternList = .{},
+    paths: FilterPatternList = .{},
+    paths_ignore: FilterPatternList = .{},
     spans: EventFilterSpans = .{},
+};
+
+pub const ScheduleEntry = struct {
+    cron: []const u8,
+    cron_span: yaml_types.Span,
 };
 
 pub const CallableInputType = enum {
@@ -234,6 +244,7 @@ pub const EventType = enum {
 pub const EventConfig = struct {
     event: EventType,
     filter: ?EventFilter = null,
+    schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
 };

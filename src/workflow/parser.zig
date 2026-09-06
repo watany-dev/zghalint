@@ -30,6 +30,13 @@ const ParsedPermissions = struct {
     problems: []const types.PermissionProblem,
 };
 
+fn isInlineScalar(node: Node) bool {
+    return switch (node) {
+        .scalar => |sc| sc.style != .literal and sc.style != .folded,
+        else => false,
+    };
+}
+
 fn isEmptyContainer(node: Node) bool {
     return switch (node) {
         .mapping => |m| m.entries.len == 0,
@@ -206,17 +213,45 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
                         config.workflow_call_input_problems = parsed.problems;
                     }
                 },
-                // schedule / workflow_dispatch carry no filters
-                .schedule, .workflow_dispatch => {},
+                .workflow_dispatch => {},
                 else => {
                     config.filter = try parseEventFilter(allocator, m);
                 },
             }
         },
-        .sequence, .scalar => {},
+        .sequence => |seq| {
+            if (event_type == .schedule) {
+                config.schedules = try parseScheduleEntries(allocator, seq);
+            }
+        },
+        .scalar => {},
     }
 
     return config;
+}
+
+fn parseScheduleEntries(allocator: std.mem.Allocator, seq: yaml.Sequence) ParseError![]const types.ScheduleEntry {
+    var entries = std.ArrayList(types.ScheduleEntry){};
+    errdefer entries.deinit(allocator);
+
+    for (seq.items) |item| {
+        const mapping = switch (item) {
+            .mapping => |m| m,
+            else => continue,
+        };
+        const cron_node = mapping.get("cron") orelse continue;
+        const cron_scalar = switch (cron_node) {
+            .scalar => |s| s,
+            else => continue,
+        };
+        if (cron_scalar.value.len == 0) continue;
+        try entries.append(allocator, .{
+            .cron = cron_scalar.value,
+            .cron_span = cron_scalar.span,
+        });
+    }
+
+    return try entries.toOwnedSlice(allocator);
 }
 
 const ParsedWorkflowCallInputs = struct {
@@ -366,14 +401,22 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
     };
 }
 
+fn parseFilterPatternList(allocator: std.mem.Allocator, node: ?Node) ParseError!types.FilterPatternList {
+    if (node) |n| {
+        const parsed = try parseStringArrayWithSpans(allocator, n);
+        return .{ .values = parsed.values, .spans = parsed.spans };
+    }
+    return .{};
+}
+
 fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.EventFilter {
     return .{
-        .branches = if (m.get("branches")) |n| try parseStringArray(allocator, n) else &.{},
-        .branches_ignore = if (m.get("branches-ignore")) |n| try parseStringArray(allocator, n) else &.{},
-        .tags = if (m.get("tags")) |n| try parseStringArray(allocator, n) else &.{},
-        .tags_ignore = if (m.get("tags-ignore")) |n| try parseStringArray(allocator, n) else &.{},
-        .paths = if (m.get("paths")) |n| try parseStringArray(allocator, n) else &.{},
-        .paths_ignore = if (m.get("paths-ignore")) |n| try parseStringArray(allocator, n) else &.{},
+        .branches = try parseFilterPatternList(allocator, m.get("branches")),
+        .branches_ignore = try parseFilterPatternList(allocator, m.get("branches-ignore")),
+        .tags = try parseFilterPatternList(allocator, m.get("tags")),
+        .tags_ignore = try parseFilterPatternList(allocator, m.get("tags-ignore")),
+        .paths = try parseFilterPatternList(allocator, m.get("paths")),
+        .paths_ignore = try parseFilterPatternList(allocator, m.get("paths-ignore")),
         .spans = .{
             .branches = m.getKeySpan("branches"),
             .branches_ignore = m.getKeySpan("branches-ignore"),
@@ -692,7 +735,14 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                 .mapping => |with_mapping| {
                     if (with_mapping.entries.len > 0) {
                         const last = with_mapping.entries[with_mapping.entries.len - 1];
-                        step.with_last_entry_end_byte = last.value.getSpan().end_byte;
+                        // Appending after the last entry is only safe when `with:`
+                        // is a block mapping (a flow entry has no full_span) and the
+                        // last value ends where its span says: a flow collection's
+                        // span covers only its opening bracket, and a block scalar
+                        // ends at the start of the next line (#171).
+                        if (last.full_span != null and isInlineScalar(last.value)) {
+                            step.with_last_entry_end_byte = last.value.getSpan().end_byte;
+                        }
                     }
                 },
                 else => {},
@@ -1163,10 +1213,30 @@ test "parseTrigger mapping with filter" {
     const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
     try testing.expectEqual(@as(usize, 1), trigger.events.len);
     try testing.expectEqual(types.EventType.push, trigger.events[0].event);
-    try testing.expectEqual(@as(usize, 1), trigger.events[0].filter.?.branches.len);
-    try testing.expectEqualStrings("main", trigger.events[0].filter.?.branches[0]);
+    try testing.expectEqual(@as(usize, 1), trigger.events[0].filter.?.branches.values.len);
+    try testing.expectEqualStrings("main", trigger.events[0].filter.?.branches.values[0]);
     try testing.expect(trigger.events[0].filter.?.spans.branches != null);
     try testing.expect(trigger.events[0].filter.?.spans.branches_ignore == null);
+}
+
+test "parseTrigger schedule entries capture cron spans" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var cron_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("cron"), .value = mkScalarStyled("0 0 * * *", .single_quoted, mkSpanBytes(40, 51)), .span = mkSpan() },
+    };
+    var schedule_items = [_]Node{mkMapping(&cron_entries)};
+    var trigger_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("schedule"), .value = mkSequence(&schedule_items), .span = mkSpan() },
+    };
+
+    const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
+    try testing.expectEqual(@as(usize, 1), trigger.events.len);
+    try testing.expectEqual(types.EventType.schedule, trigger.events[0].event);
+    try testing.expectEqual(@as(usize, 1), trigger.events[0].schedules.len);
+    try testing.expectEqualStrings("0 0 * * *", trigger.events[0].schedules[0].cron);
+    try testing.expectEqual(@as(usize, 40), trigger.events[0].schedules[0].cron_span.start_byte);
 }
 
 test "parseTrigger records key spans for empty filter values" {
@@ -1184,7 +1254,7 @@ test "parseTrigger records key spans for empty filter values" {
 
     const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
     const spans = trigger.events[0].filter.?.spans;
-    try testing.expectEqual(@as(usize, 0), trigger.events[0].filter.?.paths_ignore.len);
+    try testing.expectEqual(@as(usize, 0), trigger.events[0].filter.?.paths_ignore.values.len);
     try testing.expectEqual(@as(usize, 20), (spans.paths_ignore orelse return error.TestUnexpectedResult).start_byte);
     try testing.expect(spans.paths == null);
 }
@@ -2148,4 +2218,77 @@ test "parseStep captures run/uses/with source metadata" {
     try testing.expectEqual(yaml.ScalarStyle.literal, run_step.run_meta.?.style);
     // The `run:` span starts at the `|` indicator, one line above the content.
     try testing.expectEqual(@as(u32, 10), run_step.run_meta.?.value_span.start_line);
+}
+
+test "top-level permissions anchor clears an on: block scalar (#172)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      x:
+        \\        description: |
+        \\          a long description
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const anchor = wf.permissions_insertion_byte.?;
+    try testing.expectEqualStrings("jobs:\n", source[anchor .. anchor + "jobs:\n".len]);
+}
+
+test "with_last_entry_end_byte is set only for an inline scalar in a block with: (#171)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    const Case = struct { name: []const u8, with_block: []const u8, anchored_after: ?[]const u8 };
+    const cases = [_]Case{
+        .{ .name = "flow with", .with_block = "        with: {x: y}\n", .anchored_after = null },
+        .{ .name = "flow mapping value", .with_block = "        with:\n          x: {a: b}\n", .anchored_after = null },
+        .{ .name = "flow sequence value", .with_block = "        with:\n          x: [a, b]\n", .anchored_after = null },
+        .{ .name = "block scalar value", .with_block = "        with:\n          x: |\n            a\n", .anchored_after = null },
+        .{ .name = "plain scalar value", .with_block = "        with:\n          x: y\n", .anchored_after = "x: y" },
+        .{ .name = "quoted multi-line value", .with_block = "        with:\n          x: \"a\n            b\"\n", .anchored_after = "b\"" },
+    };
+
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const source = try std.fmt.allocPrint(alloc,
+            \\name: CI
+            \\on: push
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    steps:
+            \\      - uses: actions/checkout@v4
+            \\{s}
+        , .{case.with_block});
+
+        var yp = yaml_parser_mod.Parser.init(alloc, source);
+        const wf = try parseWorkflow(alloc, try yp.parse());
+        const anchor = wf.jobs[0].steps[0].with_last_entry_end_byte;
+
+        const expected: ?usize = if (case.anchored_after) |tail|
+            std.mem.indexOf(u8, source, tail).? + tail.len
+        else
+            null;
+        testing.expectEqual(expected, anchor) catch |err| {
+            std.debug.print("case '{s}'\n", .{case.name});
+            return err;
+        };
+    }
 }

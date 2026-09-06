@@ -267,7 +267,13 @@ pub const Parser = struct {
         return Node{ .sequence = .{ .items = owned_items, .span = start_span } };
     }
 
+    /// Flow collections recurse through this without passing `parseNode`, so
+    /// the depth guard is applied here as well.
     fn parseFlowValue(self: *Parser) ParseError!Node {
+        if (self.depth >= max_parse_depth) return error.MaxDepthExceeded;
+        self.depth += 1;
+        defer self.depth -= 1;
+
         self.skipNewlinesAndComments();
 
         if (self.current.kind == .flow_mapping_start) {
@@ -345,24 +351,25 @@ pub const Parser = struct {
         // follow the value itself. Every other shape keeps the key line as the
         // end anchor and differs only in where the entry's bytes stop.
         if (value == .scalar) {
-            var end_byte = value.getSpan().end_byte;
-            while (end_byte < self.source.len and self.source[end_byte] != '\n') {
-                end_byte += 1;
+            const scalar = value.scalar;
+            // A block scalar's span already ends at the start of the line that
+            // closes it (or at EOF), trailing newline included. Scanning on to
+            // the next '\n' from there would swallow the next sibling key line.
+            const is_block = scalar.style == .literal or scalar.style == .folded;
+            var end_byte = scalar.span.end_byte;
+            if (!is_block) {
+                while (end_byte < self.source.len and self.source[end_byte] != '\n') {
+                    end_byte += 1;
+                }
+                if (end_byte < self.source.len) end_byte += 1;
             }
 
-            var end_line = key.span.start_line;
-            var end_col: u32 = @as(u32, @intCast(end_byte - line_start + 1));
-            if (end_byte < self.source.len and self.source[end_byte] == '\n') {
-                end_byte += 1;
-                end_line += 1;
-                end_col = 1;
-            }
-
+            const newlines: u32 = @intCast(std.mem.count(u8, self.source[line_start..end_byte], "\n"));
             return .{
                 .start_line = key.span.start_line,
                 .start_col = 1,
-                .end_line = end_line,
-                .end_col = end_col,
+                .end_line = key.span.start_line + newlines,
+                .end_col = @as(u32, @intCast(end_byte - self.lineStartByte(end_byte) + 1)),
                 .start_byte = line_start,
                 .end_byte = end_byte,
             };
@@ -589,6 +596,37 @@ test "parse rejects input nested past max_parse_depth" {
     try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
 }
 
+test "parse rejects flow collections nested past max_parse_depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const levels = @as(usize, max_parse_depth) + 16;
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    try buf.appendSlice(std.testing.allocator, "a: ");
+    try buf.appendNTimes(std.testing.allocator, '[', levels);
+    try buf.appendNTimes(std.testing.allocator, ']', levels);
+
+    var parser = Parser.init(arena.allocator(), buf.items);
+    try std.testing.expectError(error.MaxDepthExceeded, parser.parse());
+
+    buf.clearRetainingCapacity();
+    try buf.appendSlice(std.testing.allocator, "a: ");
+    for (0..levels) |_| try buf.appendSlice(std.testing.allocator, "{k: ");
+    try buf.appendNTimes(std.testing.allocator, '}', levels);
+
+    var parser2 = Parser.init(arena.allocator(), buf.items);
+    try std.testing.expectError(error.MaxDepthExceeded, parser2.parse());
+}
+
+test "parse accepts moderately nested flow collections" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: [[1, 2], {b: [3, {c: 4}]}]");
+    _ = try parser.parse();
+}
+
 test "parse terminates on an unclosed flow sequence running into block content" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -597,4 +635,81 @@ test "parse terminates on an unclosed flow sequence running into block content" 
     // to append null nodes forever without consuming it.
     var parser = Parser.init(arena.allocator(), "[\nname: CI");
     _ = try parser.parse();
+}
+
+fn entryFullSpanText(source: []const u8, mapping: Mapping, key: []const u8) ?[]const u8 {
+    for (mapping.entries) |entry| {
+        if (!std.mem.eql(u8, entry.key.value, key)) continue;
+        const fs = entry.full_span orelse return null;
+        return source[fs.start_byte..fs.end_byte];
+    }
+    return null;
+}
+
+test "full_span of a block scalar entry stops before the next sibling key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\job:
+        \\  runs-on: |
+        \\    ubuntu-latest
+        \\  steps: []
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.entries[0].value.mapping;
+
+    try std.testing.expectEqualStrings(
+        "  runs-on: |\n    ubuntu-latest\n",
+        entryFullSpanText(source, job, "runs-on").?,
+    );
+}
+
+test "full_span of a block scalar entry at EOF without a trailing newline" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "job:\n  runs-on: |\n    ubuntu-latest";
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.entries[0].value.mapping;
+
+    try std.testing.expectEqualStrings(
+        "  runs-on: |\n    ubuntu-latest",
+        entryFullSpanText(source, job, "runs-on").?,
+    );
+}
+
+test "full_span of a plain scalar entry still covers its whole line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "job:\n  runs-on: ubuntu-latest\n  steps: []\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.entries[0].value.mapping;
+
+    try std.testing.expectEqualStrings(
+        "  runs-on: ubuntu-latest\n",
+        entryFullSpanText(source, job, "runs-on").?,
+    );
+}
+
+test "full_span end_line follows a multi-line quoted scalar" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "job:\n  name: \"a\n    b\"\n  steps: []\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.entries[0].value.mapping;
+
+    // end_line points just past the consumed trailing newline, as it does for
+    // a single-line entry; the value itself ends on line 3.
+    const fs = job.entries[0].full_span.?;
+    try std.testing.expectEqual(@as(u32, 2), fs.start_line);
+    try std.testing.expectEqual(@as(u32, 4), fs.end_line);
+    try std.testing.expectEqualStrings("  name: \"a\n    b\"\n", source[fs.start_byte..fs.end_byte]);
 }

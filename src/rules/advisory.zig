@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
 const http_client = @import("http_client.zig");
 const json_util = @import("json_util.zig");
+const cache_dir = @import("cache_dir.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -100,18 +101,7 @@ const cache_subdir = "zghalint";
 const cache_filename = "advisories-v2.tsv";
 
 fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
-    // XDG_CACHE_HOME is already a cache root; HOME needs the conventional
-    // `.cache` segment appended.
-    if (openCacheSubdir(allocator, "XDG_CACHE_HOME", cache_subdir)) |dir| return dir;
-    return openCacheSubdir(allocator, "HOME", ".cache/" ++ cache_subdir);
-}
-
-fn openCacheSubdir(allocator: Allocator, env_var: []const u8, comptime sub_path: []const u8) ?std.fs.Dir {
-    const base = std.process.getEnvVarOwned(allocator, env_var) catch return null;
-    defer allocator.free(base);
-    var dir = std.fs.openDirAbsolute(base, .{}) catch return null;
-    defer dir.close();
-    return dir.makeOpenPath(sub_path, .{}) catch null;
+    return cache_dir.open(allocator, cache_subdir);
 }
 
 fn isCacheFresh(dir: std.fs.Dir) bool {
@@ -122,23 +112,39 @@ fn isCacheFresh(dir: std.fs.Dir) bool {
 }
 
 fn writeCacheFile(dir: std.fs.Dir, data: []const u8) void {
-    const file = dir.createFile(cache_filename, .{}) catch return;
-    defer file.close();
-    file.writeAll(data) catch {};
+    // Best-effort: a cache that cannot be written is simply not warm.
+    cache_dir.writeFileAtomic(dir, cache_filename, data) catch {};
+}
+
+/// The record and field separators are replaced with spaces so that a
+/// summary containing a tab or newline (the advisory text is server
+/// supplied) cannot split or inject records in the TSV cache.
+fn writeTsvField(writer: *std.Io.Writer, field: []const u8) !void {
+    for (field) |c| {
+        try writer.writeByte(switch (c) {
+            '\t', '\n', '\r' => ' ',
+            else => c,
+        });
+    }
 }
 
 fn serializeAdvisories(allocator: Allocator, advisories: []const Advisory) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
     for (advisories) |adv| {
-        try out.writer.print("{s}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
+        const fields = [_][]const u8{
             adv.ghsa_id,
             adv.action_slug,
             adv.diagnostic_message,
             adv.diagnostic_hint,
             adv.vulnerable_range orelse "",
             adv.patched_version orelse "",
-        });
+        };
+        for (fields, 0..) |field, i| {
+            if (i > 0) try out.writer.writeByte('\t');
+            try writeTsvField(&out.writer, field);
+        }
+        try out.writer.writeByte('\n');
     }
     return out.toOwnedSlice();
 }
@@ -170,36 +176,36 @@ fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Adviso
     return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
-fn loadFromDiskCache(allocator: Allocator) ![]const Advisory {
-    var dir = getCacheDir(allocator) orelse return error.CacheMiss;
-    defer dir.close();
+fn readCacheFile(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
+    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
+    defer file.close();
+    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
+    return deserializeAdvisories(allocator, body);
+}
+
+fn loadFromDiskCache(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
     if (!isCacheFresh(dir)) return error.CacheStale;
-    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
-    defer file.close();
-    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
-    return deserializeAdvisories(allocator, body);
+    return readCacheFile(allocator, dir);
 }
 
-fn loadFromDiskCacheIgnoreAge(allocator: Allocator) ![]const Advisory {
-    var dir = getCacheDir(allocator) orelse return error.CacheMiss;
-    defer dir.close();
-    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
-    defer file.close();
-    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
-    return deserializeAdvisories(allocator, body);
-}
-
+/// The cache directory is opened once and shared by both read attempts;
+/// reopening it per attempt doubled the startup syscalls of a stale-cache run.
 fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
-    if (is_offline) {
-        return loadFromDiskCache(allocator) catch
-            loadFromDiskCacheIgnoreAge(allocator) catch
-            null;
+    var dir_opt = getCacheDir(allocator);
+    defer if (dir_opt) |*d| d.close();
+
+    if (dir_opt) |dir| {
+        if (loadFromDiskCache(allocator, dir)) |advisories| return advisories else |_| {}
     }
 
-    return loadFromDiskCache(allocator) catch
-        fetchAndParse(allocator) catch
-        loadFromDiskCacheIgnoreAge(allocator) catch
-        null;
+    if (!is_offline) {
+        if (fetchAndParse(allocator)) |advisories| return advisories else |_| {}
+    }
+
+    if (dir_opt) |dir| {
+        return readCacheFile(allocator, dir) catch null;
+    }
+    return null;
 }
 
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
@@ -580,6 +586,42 @@ fn runWithAdvisories(advisories: []const Advisory, uses_ref: ?[]const u8) Diagno
     var list = DiagnosticList.init(testing.allocator);
     checkKnownVulnerableAction(&step, &list);
     return list;
+}
+
+test "serializeAdvisories: tabs and newlines in fields cannot split records" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const advisories = [_]Advisory{
+        .{
+            .ghsa_id = "GHSA-aaaa-bbbb-cccc",
+            .action_slug = "evil/action",
+            .vulnerable_range = "< 1.0.0",
+            .patched_version = "1.0.0",
+            .diagnostic_message = "line one\nGHSA-zzzz-zzzz-zzzz\tinjected/action\tx\ty\t\t",
+            .diagnostic_hint = "hint\r\nmore",
+        },
+        .{
+            .ghsa_id = "GHSA-dddd-eeee-ffff",
+            .action_slug = "other/action",
+            .vulnerable_range = null,
+            .patched_version = null,
+            .diagnostic_message = "plain",
+            .diagnostic_hint = "plain hint",
+        },
+    };
+
+    const serialized = try serializeAdvisories(alloc, &advisories);
+    const parsed = try deserializeAdvisories(alloc, serialized);
+
+    try testing.expectEqual(@as(usize, 2), parsed.len);
+    try testing.expectEqualStrings("GHSA-aaaa-bbbb-cccc", parsed[0].ghsa_id);
+    try testing.expectEqualStrings("evil/action", parsed[0].action_slug);
+    try testing.expectEqualStrings("line one GHSA-zzzz-zzzz-zzzz injected/action x y  ", parsed[0].diagnostic_message);
+    try testing.expectEqualStrings("hint  more", parsed[0].diagnostic_hint);
+    try testing.expectEqualStrings("GHSA-dddd-eeee-ffff", parsed[1].ghsa_id);
+    try testing.expect(parsed[1].vulnerable_range == null);
 }
 
 test "SC003: offline mode produces no diagnostics" {

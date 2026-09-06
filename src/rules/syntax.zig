@@ -1,5 +1,6 @@
 const std = @import("std");
 const engine = @import("engine.zig");
+const glob = @import("glob.zig");
 const workflow_types = @import("../workflow/types.zig");
 const workflow_parser = @import("../workflow/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
@@ -433,6 +434,102 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
+fn globPatternSpan(value_span: Span, pat: []const u8, err_col: usize) Span {
+    if (err_col == 0) return value_span;
+    // Quoted YAML scalars include delimiters in the span but not in the value.
+    const quoted: u32 = if (value_span.end_byte - value_span.start_byte == pat.len + 2) 1 else 0;
+    const off = quoted + @as(u32, @intCast(err_col - 1));
+    const byte_off = quoted + err_col - 1;
+    return .{
+        .start_line = value_span.start_line,
+        .start_col = value_span.start_col + off,
+        .end_line = value_span.start_line,
+        .end_col = value_span.start_col + off + 1,
+        .start_byte = value_span.start_byte + byte_off,
+        .end_byte = value_span.start_byte + byte_off + 1,
+    };
+}
+
+fn reportGlobErrors(
+    list: *DiagnosticList,
+    patterns: workflow_types.FilterPatternList,
+    validate: *const fn (std.mem.Allocator, []const u8) []const glob.InvalidGlobPattern,
+) void {
+    const alloc = list.fixAllocator();
+    for (patterns.values, 0..) |pat, i| {
+        if (pat.len == 0) continue;
+        const value_span = if (i < patterns.spans.len) patterns.spans[i] else Span.point(1, 1, 0);
+        const errs = validate(alloc, pat);
+        for (errs) |err| {
+            list.append(.{
+                .rule_id = "SYN013",
+                .severity = .@"error",
+                .message = err.message,
+                .span = globPatternSpan(value_span, pat, err.column),
+            }) catch return;
+        }
+    }
+}
+
+const cron = @import("../workflow/cron.zig");
+
+fn checkScheduleCronSyntax(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.on.events) |event| {
+        if (event.event != .schedule) continue;
+        for (event.schedules) |entry| {
+            _ = cron.Schedule.parse(entry.cron) catch |err| {
+                const detail = cron.Schedule.errorMessage(err);
+                list.append(.{
+                    .rule_id = "SYN014",
+                    .severity = .@"error",
+                    .message = std.fmt.allocPrint(
+                        list.fixAllocator(),
+                        "invalid CRON format \"{s}\" in schedule event: {s}",
+                        .{ entry.cron, detail },
+                    ) catch "invalid CRON format in schedule event",
+                    .span = entry.cron_span,
+                    .fix_hint = "use a 5-field POSIX cron expression (minute hour day month weekday)",
+                }) catch return;
+            };
+        }
+    }
+}
+
+fn checkScheduleCronFrequency(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.on.events) |event| {
+        if (event.event != .schedule) continue;
+        for (event.schedules) |entry| {
+            const sched = cron.Schedule.parse(entry.cron) catch continue;
+            const interval = sched.minIntervalSeconds() orelse continue;
+            if (interval >= 60 * 5) continue;
+
+            list.append(.{
+                .rule_id = "SYN015",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    list.fixAllocator(),
+                    "scheduled job runs too frequently. it runs once per {d} seconds. the shortest interval is once every 5 minutes",
+                    .{interval},
+                ) catch "scheduled job runs too frequently. the shortest interval is once every 5 minutes",
+                .span = entry.cron_span,
+                .fix_hint = "set the minute field so scheduled runs are at least 5 minutes apart",
+            }) catch return;
+        }
+    }
+}
+
+fn checkGlobFilters(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.on.events) |event| {
+        const filter = event.filter orelse continue;
+        reportGlobErrors(list, filter.branches, glob.validateRefGlob);
+        reportGlobErrors(list, filter.branches_ignore, glob.validateRefGlob);
+        reportGlobErrors(list, filter.tags, glob.validateRefGlob);
+        reportGlobErrors(list, filter.tags_ignore, glob.validateRefGlob);
+        reportGlobErrors(list, filter.paths, glob.validatePathGlob);
+        reportGlobErrors(list, filter.paths_ignore, glob.validatePathGlob);
+    }
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "SYN001",
@@ -511,6 +608,30 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkExclusiveFilters,
+    },
+    .{
+        .id = "SYN013",
+        .name = "invalid-filter-glob",
+        .description = "Event filter pattern uses invalid GitHub Actions glob syntax",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkGlobFilters,
+    },
+    .{
+        .id = "SYN014",
+        .name = "invalid-cron",
+        .description = "schedule cron expression is not valid POSIX 5-field cron syntax",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkScheduleCronSyntax,
+    },
+    .{
+        .id = "SYN015",
+        .name = "cron-too-frequent",
+        .description = "scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes)",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkScheduleCronFrequency,
     },
 };
 
@@ -2321,8 +2442,8 @@ test "SYN012: an empty filter value still counts as present" {
     const events = [_]EventConfig{.{
         .event = .push,
         .filter = .{
-            .branches = &.{},
-            .branches_ignore = &.{"wip/**"},
+            .branches = .{},
+            .branches_ignore = .{ .values = &.{"wip/**"} },
             .spans = .{ .branches = Span.point(1, 1, 10), .branches_ignore = Span.point(1, 1, 30) },
         },
     }};
@@ -2367,4 +2488,171 @@ test "SYN012: diagnostic points at the first key when the ignore form comes firs
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqual(@as(usize, 40), diags.get(0).span.start_byte);
+}
+
+fn runSyn013(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkGlobFilters(&wf, &list);
+    return list;
+}
+
+fn runScheduleRules(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkScheduleCronSyntax(&wf, &list);
+    checkScheduleCronFrequency(&wf, &list);
+    return list;
+}
+
+test "SYN013: unclosed character class in branches" {
+    const source =
+        \\on:
+        \\  push:
+        \\    branches:
+        \\      - 'v[1.*'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn013(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("SYN013", diags.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "missing ]") != null);
+}
+
+test "SYN013: + at start of path pattern" {
+    const source =
+        \\on:
+        \\  push:
+        \\    paths:
+        \\      - '+foo'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn013(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("SYN013", diags.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "the preceding character must not be special character") != null);
+    try testing.expectEqual(@as(u32, 10), diags.get(0).span.start_col);
+}
+
+test "SYN013: valid filter patterns produce no diagnostic" {
+    const source =
+        \\on:
+        \\  push:
+        \\    branches:
+        \\      - main
+        \\      - releases/**
+        \\      - v[0-9].*
+        \\    paths:
+        \\      - src/**/*.zig
+        \\      - '!src/vendor/**'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn013(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN013: rejects ./ path prefix" {
+    const source =
+        \\on:
+        \\  push:
+        \\    paths:
+        \\      - './src/**'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn013(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "'.' and '..' are not allowed") != null);
+}
+
+test "SYN014: invalid cron expressions are reported" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * *'
+        \\    - cron: '@daily'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN014"));
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN015"));
+}
+
+test "SYN015: schedules shorter than 5 minutes are reported" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '* * * * *'
+        \\    - cron: '*/5 * * * *'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
+    try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "SYN015"));
+    const diag = test_support.findDiagnostic(&diags, "SYN015").?;
+    try testing.expect(std.mem.indexOf(u8, diag.message, "60 seconds") != null);
+}
+
+test "SYN014/SYN015: valid daily schedule is clean" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * * *'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN015"));
 }

@@ -40,6 +40,10 @@ pub const Tokenizer = struct {
     /// indicators only inside a flow context; in block context they are
     /// ordinary plain-scalar characters (e.g. a `run:` command line).
     flow_depth: u32,
+    /// End of the line on which a `${{` was last found to have no closing
+    /// `}}`. Every later `${{` on that line shares the same (empty) search
+    /// range, so it is skipped without rescanning.
+    expr_unclosed_line_end: usize,
 
     pub fn init(source: []const u8) Tokenizer {
         return .{
@@ -49,6 +53,7 @@ pub const Tokenizer = struct {
             .column = 1,
             .started = false,
             .flow_depth = 0,
+            .expr_unclosed_line_end = 0,
         };
     }
 
@@ -171,9 +176,7 @@ pub const Tokenizer = struct {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
-        self.pos += 1;
-        self.line += 1;
-        self.column = 1;
+        self.consumeNewline();
         return .{
             .kind = .newline,
             .start = start,
@@ -201,14 +204,13 @@ pub const Tokenizer = struct {
             if (quote == '"' and self.source[self.pos] == '\\') {
                 self.advance();
                 if (self.pos < self.source.len) {
-                    self.advance();
+                    // `\` + 改行は YAML の行継続。改行ごと食べるので行カウンタも進める。
+                    if (self.source[self.pos] == '\n') self.consumeNewline() else self.advance();
                 }
                 continue;
             }
             if (self.source[self.pos] == '\n') {
-                self.pos += 1;
-                self.line += 1;
-                self.column = 1;
+                self.consumeNewline();
                 continue;
             }
             self.advance();
@@ -237,15 +239,11 @@ pub const Tokenizer = struct {
             const saved_pos = self.pos;
             const saved_line = self.line;
             const saved_col = self.column;
-            self.pos += 1;
-            self.line += 1;
-            self.column = 1;
+            self.consumeNewline();
 
             while (self.pos < self.source.len) {
                 if (self.source[self.pos] == '\n') {
-                    self.pos += 1;
-                    self.line += 1;
-                    self.column = 1;
+                    self.consumeNewline();
                     continue;
                 }
                 if (self.source[self.pos] == ' ') {
@@ -264,9 +262,7 @@ pub const Tokenizer = struct {
         }
 
         while (self.pos < self.source.len and self.source[self.pos] == '\n') {
-            self.pos += 1;
-            self.line += 1;
-            self.column = 1;
+            self.consumeNewline();
 
             var indent: u32 = 0;
             while (self.pos + indent < self.source.len and self.source[self.pos + indent] == ' ') {
@@ -300,11 +296,15 @@ pub const Tokenizer = struct {
         if (self.source[self.pos + 1] != '{' or self.source[self.pos + 2] != '{') return false;
 
         // Unterminated, or closed only on a later line: fall back to normal
-        // plain-scalar scanning.
-        const close = std.mem.indexOfPos(u8, self.source, self.pos + 3, "}}") orelse return false;
-        if (std.mem.indexOfScalarPos(u8, self.source, self.pos + 3, '\n')) |nl| {
-            if (nl < close) return false;
-        }
+        // plain-scalar scanning. The search is confined to the current line
+        // and its negative result is remembered, so a line full of `${{`
+        // costs one pass rather than one pass per occurrence.
+        if (self.pos < self.expr_unclosed_line_end) return false;
+        const line_end = std.mem.indexOfScalarPos(u8, self.source, self.pos + 3, '\n') orelse self.source.len;
+        const close = std.mem.indexOfPos(u8, self.source[0..line_end], self.pos + 3, "}}") orelse {
+            self.expr_unclosed_line_end = line_end;
+            return false;
+        };
         while (self.pos < close + 2) self.advance();
         return true;
     }
@@ -341,6 +341,12 @@ pub const Tokenizer = struct {
     fn advance(self: *Tokenizer) void {
         self.pos += 1;
         self.column += 1;
+    }
+
+    fn consumeNewline(self: *Tokenizer) void {
+        self.pos += 1;
+        self.line += 1;
+        self.column = 1;
     }
 
     fn skipWhitespace(self: *Tokenizer) void {
@@ -431,6 +437,27 @@ test "tokenizer plain scalar keeps an unterminated interpolation in block contex
     _ = tokenizer.next();
     const token = tokenizer.next();
     try std.testing.expectEqualStrings("echo ${{ oops", token.slice(tokenizer.source));
+}
+
+test "tokenizer: a line of unterminated ${{ is scanned in a single pass" {
+    // Each `${{` used to search to end of input for `}}`; with 40k of them on
+    // one line that was quadratic. The whole line must still be one scalar.
+    const body = "run " ++ ("${{" ** 40000);
+    var tokenizer = Tokenizer.init(body);
+    _ = tokenizer.next();
+    const token = tokenizer.next();
+    try std.testing.expectEqualStrings(body, token.slice(tokenizer.source));
+}
+
+test "tokenizer: unterminated ${{ on one line does not disable skipping on the next" {
+    var tokenizer = Tokenizer.init("a: ${{ oops\nb: [${{ x, y }}]");
+    var saw_expr_scalar = false;
+    while (true) {
+        const tok = tokenizer.next();
+        if (tok.kind == .eof) break;
+        if (tok.kind == .scalar and std.mem.eql(u8, tok.slice(tokenizer.source), "${{ x, y }}")) saw_expr_scalar = true;
+    }
+    try std.testing.expect(saw_expr_scalar);
 }
 
 test "tokenizer plain scalar stops at an unterminated interpolation in flow context" {
@@ -714,4 +741,24 @@ test "tokenizer flow entry comma" {
     _ = tokenizer.next();
     const comma = tokenizer.next();
     try std.testing.expectEqual(TokenKind.flow_entry, comma.kind);
+}
+test "tokenizer counts the line after a `\\` line continuation inside a double-quoted scalar" {
+    var tokenizer = Tokenizer.init("\"a \\\nb\"\nx");
+    _ = tokenizer.next();
+    const scalar = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, scalar.kind);
+    try std.testing.expectEqualStrings("\"a \\\nb\"", scalar.slice(tokenizer.source));
+    _ = tokenizer.next();
+    const after = tokenizer.next();
+    try std.testing.expectEqualStrings("x", after.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 3), after.line);
+}
+test "tokenizer counts an escaped backslash followed by a newline only once" {
+    var tokenizer = Tokenizer.init("\"a\\\\\nb\"\nx");
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    const after = tokenizer.next();
+    try std.testing.expectEqualStrings("x", after.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 3), after.line);
 }
