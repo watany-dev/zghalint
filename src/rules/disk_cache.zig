@@ -11,6 +11,7 @@ const json_util = @import("json_util.zig");
 const graphql = @import("graphql.zig");
 const impostor = @import("impostor.zig");
 const engine = @import("engine.zig");
+const cache_dir = @import("cache_dir.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -46,29 +47,7 @@ pub const CachedRepo = struct {
 };
 
 fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
-    if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME")) |xdg| {
-        defer allocator.free(xdg);
-        var dir = std.fs.openDirAbsolute(xdg, .{}) catch return null;
-        const sub = dir.makeOpenPath(cache_subdir, .{}) catch {
-            dir.close();
-            return null;
-        };
-        dir.close();
-        return sub;
-    } else |_| {}
-
-    if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-        defer allocator.free(home);
-        var dir = std.fs.openDirAbsolute(home, .{}) catch return null;
-        const sub = dir.makeOpenPath(".cache/" ++ cache_subdir, .{}) catch {
-            dir.close();
-            return null;
-        };
-        dir.close();
-        return sub;
-    } else |_| {}
-
-    return null;
+    return cache_dir.open(allocator, cache_subdir);
 }
 
 fn repoFilename(allocator: Allocator, owner: []const u8, repo: []const u8) ![]const u8 {
@@ -320,25 +299,8 @@ pub fn saveToDir(
 
     try js.endObject();
 
-    // Refuse to write through a symlink planted in the cache directory.
-    // A same-user attacker could otherwise redirect the truncate+write to an
-    // arbitrary file path.
-    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (dir.readLink(name, &link_buf)) |_| {
-        return; // caller treats save() as best-effort
-    } else |err| switch (err) {
-        error.NotLink, error.FileNotFound => {},
-        else => return,
-    }
-
-    // Atomically replace the cache file. atomicFile writes to a sibling
-    // tmp file and renames over the destination, which swaps the directory
-    // entry without following any existing symlink at the target path.
-    var write_buf: [4096]u8 = undefined;
-    var af = dir.atomicFile(name, .{ .write_buffer = &write_buf }) catch return;
-    defer af.deinit();
-    af.file_writer.interface.writeAll(doc.written()) catch return;
-    af.finish() catch return;
+    // Best-effort: a cache that cannot be written is simply not warm.
+    cache_dir.writeFileAtomic(dir, name, doc.written()) catch return;
 }
 
 const test_support = @import("../test_support.zig");
