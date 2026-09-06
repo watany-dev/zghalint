@@ -174,9 +174,14 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.head_commit.author.name",
     "github.event.pages",
     "github.event.workflow_run.head_branch",
-    // A fork authors the triggering run's commit, PR list and title.
-    "github.event.workflow_run.head_commit",
-    "github.event.workflow_run.pull_requests",
+    // A fork authors the triggering run's commit message, its PR branch
+    // names and its title. `head_commit.id` / `.timestamp` and
+    // `pull_requests[n].number` are server-generated, so only the free-text
+    // fields are listed.
+    "github.event.workflow_run.head_commit.message",
+    "github.event.workflow_run.head_commit.author.email",
+    "github.event.workflow_run.head_commit.author.name",
+    "github.event.workflow_run.pull_requests.*.head.ref",
     "github.event.workflow_run.display_title",
     // Label names need triage permission to set, so they are a weak injection
     // vector, but they still land verbatim in the shell. Written as a prefix,
@@ -1930,6 +1935,22 @@ test "SEC002: workflow_run head_commit message in run block" {
     try testing.expect(hasDiagnostic(&list, "SEC002"));
 }
 
+test "SEC002: workflow_run pull_requests head.ref in run block" {
+    var list = runStep(.{ .run = "echo \"${{ github.event.workflow_run.pull_requests[0].head.ref }}\"" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: workflow_run server-generated fields are not reported (no false positive)" {
+    var by_id = runStep(.{ .run = "echo \"${{ github.event.workflow_run.head_commit.id }}\"" });
+    defer by_id.deinit();
+    try testing.expect(!hasDiagnostic(&by_id, "SEC002"));
+
+    var by_number = runStep(.{ .run = "echo \"${{ github.event.workflow_run.pull_requests[0].number }}\"" });
+    defer by_number.deinit();
+    try testing.expect(!hasDiagnostic(&by_number, "SEC002"));
+}
+
 test "SEC002: issue labels in run block" {
     var list = runStep(.{ .run = "echo \"${{ github.event.issue.labels[0].name }}\"" });
     defer list.deinit();
@@ -2666,6 +2687,12 @@ test "SEC008: tee -a into GITHUB_ENV" {
 
 test "SEC008: tee --append into GITHUB_PATH" {
     var list = runStep(.{ .run = "echo \"${{ github.head_ref }}\" | tee --append \"$GITHUB_PATH\"" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: bare tee into GITHUB_ENV" {
+    var list = runStep(.{ .run = "echo \"REF=${{ github.head_ref }}\" | tee $GITHUB_ENV" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC008"));
 }

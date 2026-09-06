@@ -327,8 +327,10 @@ fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8, stderr: *s
 
 /// `--fix` re-reads each file and applies offsets computed during the lint
 /// pass, so a path listed twice (`a.yml ./a.yml`) would apply the same edits
-/// to already-rewritten content. Returned entries borrow from `files`.
-fn dedupeFiles(allocator: std.mem.Allocator, files: []const []const u8) ![]const []const u8 {
+/// to already-rewritten content. Ignored spellings are dropped before the
+/// path is resolved, so a symlink to an ignored file is still linted under
+/// its own name. Returned entries borrow from `files`.
+fn dedupeFiles(allocator: std.mem.Allocator, files: []const []const u8, config: *const Config) ![]const []const u8 {
     var seen = std.StringHashMap(void).init(allocator);
     defer {
         var keys = seen.keyIterator();
@@ -340,6 +342,7 @@ fn dedupeFiles(allocator: std.mem.Allocator, files: []const []const u8) ![]const
     errdefer unique.deinit(allocator);
 
     for (files) |file_path| {
+        if (config.isIgnored(file_path)) continue;
         const key = std.fs.cwd().realpathAlloc(allocator, file_path) catch try allocator.dupe(u8, file_path);
         const entry = try seen.getOrPut(key);
         if (entry.found_existing) {
@@ -542,7 +545,7 @@ pub fn main() !u8 {
         break :blk owned_files.?.items;
     };
 
-    const files = dedupeFiles(allocator, requested_files) catch {
+    const files = dedupeFiles(allocator, requested_files, &config) catch {
         stderr.writeAll("error: out of memory\n") catch {};
         return 2;
     };
@@ -806,9 +809,32 @@ test "dedupeFiles keeps the first spelling of a repeated path" {
     const dotted = try std.fs.path.join(std.testing.allocator, &.{ dir_path, ".", "a.yml" });
     defer std.testing.allocator.free(dotted);
 
-    const files = try dedupeFiles(std.testing.allocator, &.{ direct, dotted, direct, "missing.yml", "missing.yml" });
+    const config = Config.init(std.testing.allocator);
+    const files = try dedupeFiles(std.testing.allocator, &.{ direct, dotted, direct, "missing.yml", "missing.yml" }, &config);
     defer std.testing.allocator.free(files);
     try std.testing.expectEqual(@as(usize, 2), files.len);
     try std.testing.expectEqualStrings(direct, files[0]);
     try std.testing.expectEqualStrings("missing.yml", files[1]);
+}
+
+test "dedupeFiles drops ignored spellings before collapsing by real path" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "a.yml", .data = "" });
+    try tmp.dir.symLink("a.yml", "b.yml", .{});
+    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(dir_path);
+    const ignored = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "a.yml" });
+    defer std.testing.allocator.free(ignored);
+    const link = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "b.yml" });
+    defer std.testing.allocator.free(link);
+
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+    try config.ignore_patterns.append(std.testing.allocator, try config.strings_arena.allocator().dupe(u8, ignored));
+
+    const files = try dedupeFiles(std.testing.allocator, &.{ ignored, link }, &config);
+    defer std.testing.allocator.free(files);
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings(link, files[0]);
 }

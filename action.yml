@@ -106,7 +106,10 @@ runs:
         fi
 
         # $INPUT_PATHS is intentionally unquoted: it is a glob that the shell
-        # expands. `--` keeps a path that begins with `-` from being read as
-        # an option.
+        # expands. nullglob drops a pattern that matches nothing (a repository
+        # with only `.yaml` workflows) instead of passing the literal glob as a
+        # missing file. `--` keeps a path that begins with `-` from being read
+        # as an option.
+        shopt -s nullglob
         # shellcheck disable=SC2086
         "./zghalint$EXE" "${CONFIG_ARGS[@]}" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS
