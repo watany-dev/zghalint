@@ -62,8 +62,15 @@ fn collectStepIds(job: *const Job, buf: *std.ArrayList(DefinedStep), alloc: std.
 
 const Resolver = struct {
     defined: []const DefinedStep,
+    /// The `defined` ids on their own, so `didYouMean` can take them
+    /// directly. A step declared later cannot be the intended target either,
+    /// but it is still the likeliest typo source, so it stays a candidate.
+    ids: []const []const u8,
     /// Index of the step whose expressions are being scanned.
     current: usize,
+    /// Backs the expression parse trees, which never outlive a walk;
+    /// diagnostic messages go to the list's own arena instead.
+    alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
     fn find(self: Resolver, id: []const u8) ?DefinedStep {
@@ -72,22 +79,11 @@ const Resolver = struct {
         }
         return null;
     }
-
-    fn suggestId(self: Resolver, id: []const u8, alloc: std.mem.Allocator) ?[]const u8 {
-        var names: std.ArrayList([]const u8) = .empty;
-        defer names.deinit(alloc);
-        for (self.defined) |candidate| {
-            // A step declared later cannot be the intended target either, but
-            // it is still the likeliest typo source, so it stays a candidate.
-            names.append(alloc, candidate.id) catch return null;
-        }
-        return util.didYouMean(id, names.items);
-    }
 };
 
 fn appendUnknownStep(res: Resolver, id: []const u8, span: Span) void {
     const alloc = res.list.fixAllocator();
-    const message = if (res.suggestId(id, alloc)) |s|
+    const message = if (util.didYouMean(id, res.ids)) |s|
         std.fmt.allocPrint(alloc, "step \"{s}\" is not defined in this job. did you mean \"{s}\"?", .{ id, s }) catch return
     else
         std.fmt.allocPrint(alloc, "step \"{s}\" is not defined in this job", .{id}) catch return;
@@ -220,16 +216,10 @@ const Scan = struct {
 
 /// A parse failure is EXPR001's finding; this rule stays silent on it.
 fn scanExpression(res: Resolver, text: []const u8, anchor: Anchor, expr_offset: usize, expr: []const u8) void {
-    var parser = expressions.ExprParser.init(arenaAllocator(), expr);
+    var parser = expressions.ExprParser.init(res.alloc, expr);
     const node = parser.parse() catch return;
     const scan = Scan{ .res = res, .text = text, .anchor = anchor, .expr_offset = expr_offset };
     scan.walk(&node);
-}
-
-/// Mirrors `expressions.getArenaAllocator`: the parse tree only has to
-/// outlive the walk, and the engine hands rules no arena (#159).
-fn arenaAllocator() std.mem.Allocator {
-    return std.heap.page_allocator;
 }
 
 fn scanInterpolatedText(res: Resolver, text: []const u8, anchor: Anchor) void {
@@ -290,14 +280,28 @@ fn scanStep(res: Resolver, step: *const Step) void {
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     if (job.steps.len == 0) return;
 
-    const alloc = arenaAllocator();
-    var defined: std.ArrayList(DefinedStep) = .empty;
-    defer defined.deinit(alloc);
-    collectStepIds(job, &defined, alloc);
-    if (defined.items.len == 0) return;
+    // The engine hands rules no arena (#159), so this one owns the memory the
+    // expression parser needs and frees it as soon as the job is scanned.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
+    var defined: std.ArrayList(DefinedStep) = .empty;
+    collectStepIds(job, &defined, alloc);
+
+    var ids: std.ArrayList([]const u8) = .empty;
+    for (defined.items) |entry| ids.append(alloc, entry.id) catch return;
+
+    // A job where no step carries an `id:` is not skipped: there every
+    // `steps.<id>` reference is certainly undefined.
     for (job.steps, 0..) |*step, index| {
-        scanStep(.{ .defined = defined.items, .current = index, .list = list }, step);
+        scanStep(.{
+            .defined = defined.items,
+            .ids = ids.items,
+            .current = index,
+            .alloc = alloc,
+            .list = list,
+        }, step);
     }
 }
 
@@ -503,14 +507,16 @@ test "EXPR010: bracket access resolves the step id" {
     );
 }
 
-test "EXPR010: an id-less job is left alone" {
-    try expectNoDiagnostics(
+test "EXPR010: a job where no step has an id still resolves references" {
+    try expectMessage(
         \\on: push
         \\jobs:
         \\  build:
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - run: echo "${{ steps.setup.outputs.v }}"
+    ,
+        "step \"setup\" is not defined in this job",
     );
 }
 
