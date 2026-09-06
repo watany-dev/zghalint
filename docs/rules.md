@@ -425,7 +425,7 @@ on:
         options: [dev, prod]
       verbose:
         type: boolean
-        default: "yes"         # error: must be a bool
+        default: "yes"         # error: not a valid "boolean" value
       level:
         type: enum             # error: invalid input type
       target:

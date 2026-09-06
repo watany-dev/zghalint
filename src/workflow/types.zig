@@ -219,10 +219,6 @@ pub const DispatchInputType = enum {
         });
         return map.get(s);
     }
-
-    pub fn name(self: DispatchInputType) []const u8 {
-        return @tagName(self);
-    }
 };
 
 pub const DispatchInputDef = struct {

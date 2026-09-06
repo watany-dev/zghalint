@@ -611,26 +611,9 @@ fn workflowDispatchInputMessage(
         ) catch null,
         .default_type_mismatch => std.fmt.allocPrint(
             alloc,
-            "default of workflow_dispatch input \"{s}\" must be a {s} for type \"{s}\"",
-            .{ problem.input_name, valueWordForType(problem.detail), problem.detail },
+            "default of workflow_dispatch input \"{s}\" is not a valid \"{s}\" value",
+            .{ problem.input_name, problem.detail },
         ) catch null,
-    };
-}
-
-fn valueWordForType(type_name: []const u8) []const u8 {
-    if (std.mem.eql(u8, type_name, "boolean")) return "bool";
-    if (std.mem.eql(u8, type_name, "number")) return "number";
-    return "string";
-}
-
-fn dispatchInputFixHint(kind: workflow_types.WorkflowDispatchInputProblemKind) []const u8 {
-    return switch (kind) {
-        .invalid_type => "use `string`, `boolean`, `number`, `choice`, or `environment`",
-        .missing_options => "add an `options:` list, or drop `type: choice`",
-        .empty_options => "list at least one value under `options:`",
-        .options_without_choice => "remove `options:`, or set `type: choice`",
-        .default_not_in_options => "use one of the listed options as the default, or add it to `options:`",
-        .default_type_mismatch => "write the default as the declared type, unquoted",
     };
 }
 
@@ -645,7 +628,14 @@ fn checkWorkflowDispatchInputs(wf: *const Workflow, list: *DiagnosticList) void 
                 .severity = .@"error",
                 .message = message,
                 .span = problem.span,
-                .fix_hint = dispatchInputFixHint(problem.kind),
+                .fix_hint = switch (problem.kind) {
+                    .invalid_type => "use `string`, `boolean`, `number`, `choice`, or `environment`",
+                    .missing_options => "add an `options:` list, or drop `type: choice`",
+                    .empty_options => "list at least one value under `options:`",
+                    .options_without_choice => "remove `options:`, or set `type: choice`",
+                    .default_not_in_options => "use one of the listed options as the default, or add it to `options:`",
+                    .default_type_mismatch => "write the default as a value of the declared type",
+                },
             }) catch return;
         }
     }
@@ -3054,7 +3044,7 @@ test "SYN017: invalid workflow_dispatch inputs from the issue example" {
     try testing.expectEqual(@as(usize, 4), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"staging\"") != null);
     try testing.expectEqual(@as(usize, 6), diags.get(0).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "must be a bool for type \"boolean\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "is not a valid \"boolean\" value") != null);
     try testing.expect(std.mem.indexOf(u8, diags.get(2).message, "invalid input type \"enum\"") != null);
     try testing.expect(std.mem.indexOf(u8, diags.get(3).message, "\"options\" is required") != null);
 }
@@ -3107,7 +3097,7 @@ test "SYN017: number default and untyped inputs" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "must be a number for type \"number\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "is not a valid \"number\" value") != null);
 }
 
 test "SYN017: valid workflow_dispatch inputs are clean" {
@@ -3139,4 +3129,52 @@ test "SYN017: valid workflow_dispatch inputs are clean" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN017: an untyped input carrying options is still reported" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      env:
+        \\        options: [dev, prod]
+        \\        default: staging
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "only available for type \"choice\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "has type \"string\"") != null);
+}
+
+test "SYN017: a malformed options list does not abort the parse" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      pick:
+        \\        type: choice
+        \\        options:
+        \\          - dev
+        \\          - nested: value
+        \\        default: prod
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"prod\"") != null);
 }

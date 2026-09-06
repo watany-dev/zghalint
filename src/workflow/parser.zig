@@ -313,15 +313,11 @@ fn isYamlNumber(node: Node) bool {
     };
 }
 
-fn isYamlScalar(node: Node) bool {
-    return node == .scalar;
-}
-
 fn defaultMatchesCallableInputType(input_type: types.CallableInputType, node: Node) bool {
     return switch (input_type) {
         .boolean => parseYamlBool(node) != null,
         .number => isYamlNumber(node),
-        .string => isYamlScalar(node),
+        .string => node == .scalar,
     };
 }
 
@@ -436,8 +432,26 @@ fn defaultMatchesDispatchInputType(input_type: types.DispatchInputType, node: No
     return switch (input_type) {
         .boolean => parseYamlBool(node) != null,
         .number => isYamlNumber(node),
-        .string, .choice, .environment => isYamlScalar(node),
+        .string, .choice, .environment => node == .scalar,
     };
+}
+
+/// A malformed `options:` is a shape error for SYN004 to report, not a parse
+/// failure: non-scalar entries are skipped so the rest of the file still lints.
+fn collectOptionValues(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
+    var values = std.ArrayList([]const u8){};
+    errdefer values.deinit(allocator);
+    switch (node) {
+        .sequence => |seq| for (seq.items) |item| {
+            switch (item) {
+                .scalar => |sc| try values.append(allocator, sc.value),
+                else => {},
+            }
+        },
+        .scalar => |sc| try values.append(allocator, sc.value),
+        else => {},
+    }
+    return values.toOwnedSlice(allocator);
 }
 
 fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowDispatchInputs {
@@ -463,6 +477,7 @@ fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseEr
             .name_span = entry.key.span,
         };
 
+        var type_invalid = false;
         if (input_mapping.get("type")) |type_node| {
             def.type_span = type_node.getSpan();
             const type_name = switch (type_node) {
@@ -472,6 +487,7 @@ fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseEr
             if (types.DispatchInputType.fromString(type_name)) |parsed_type| {
                 def.input_type = parsed_type;
             } else {
+                type_invalid = true;
                 try problems.append(allocator, .{
                     .kind = .invalid_type,
                     .input_name = input_name,
@@ -482,15 +498,7 @@ fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseEr
         }
 
         const options_node = input_mapping.get("options");
-        if (options_node) |on| {
-            // A non-sequence `options:` is a shape error for SYN004, not a
-            // parse failure: leaving the list empty keeps the workflow
-            // readable and still reports the option problems below.
-            switch (on) {
-                .sequence, .scalar => def.options = (try parseStringArrayWithSpans(allocator, on)).values,
-                else => {},
-            }
-        }
+        if (options_node) |on| def.options = try collectOptionValues(allocator, on);
 
         if (input_mapping.get("default")) |default_node| {
             switch (default_node) {
@@ -502,14 +510,15 @@ fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseEr
             }
         }
 
-        // An invalid `type:` already has its own diagnostic; the rules below
-        // would only restate it against a type GitHub never resolved.
-        if (def.input_type) |input_type| {
+        // An invalid `type:` already has its own diagnostic; the checks below
+        // would only restate it against a type GitHub never resolved. An
+        // absent `type:` is not that case — GitHub defaults it to `string`.
+        if (!type_invalid) {
             try appendDispatchInputProblems(
                 allocator,
                 &problems,
                 def,
-                input_type,
+                def.input_type orelse .string,
                 options_node,
                 input_mapping.get("default"),
                 entry.value.getSpan(),
@@ -556,7 +565,7 @@ fn appendDispatchInputProblems(
         try problems.append(allocator, .{
             .kind = .options_without_choice,
             .input_name = def.name,
-            .detail = input_type.name(),
+            .detail = @tagName(input_type),
             .span = on.getSpan(),
         });
     }
@@ -567,7 +576,7 @@ fn appendDispatchInputProblems(
         try problems.append(allocator, .{
             .kind = .default_type_mismatch,
             .input_name = def.name,
-            .detail = input_type.name(),
+            .detail = @tagName(input_type),
             .span = default.getSpan(),
         });
         return;
