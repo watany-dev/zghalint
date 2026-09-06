@@ -1,5 +1,3 @@
-//! GitHub Actions filter-pattern glob validation.
-//!
 //! Ported from actionlint's glob.go (MIT License, rhysd/actionlint).
 
 const std = @import("std");
@@ -166,7 +164,7 @@ const GlobValidator = struct {
                         }
                         chars += 2;
                         const start: u8 = inner.?;
-                        _ = self.next(); // eat '-'
+                        _ = self.next();
                         const end_peek = self.peek();
                         if (end_peek == ']') {
                             _ = self.next();
@@ -255,12 +253,10 @@ fn validateGlob(allocator: std.mem.Allocator, pat: []const u8, is_ref: bool) []c
     return v.finish(allocator);
 }
 
-/// Validate a glob pattern for branch or tag filter values.
 pub fn validateRefGlob(allocator: std.mem.Allocator, pat: []const u8) []const InvalidGlobPattern {
     return validateGlob(allocator, pat, true);
 }
 
-/// Validate a glob pattern for path filter values.
 pub fn validatePathGlob(allocator: std.mem.Allocator, pat: []const u8) []const InvalidGlobPattern {
     const trimmed = std.mem.trim(u8, pat, " \t");
     if (!std.mem.eql(u8, pat, trimmed)) {
