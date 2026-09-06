@@ -197,6 +197,7 @@ pub fn replaceScalar(
     };
 
     if (value_span.end_byte < value_span.start_byte) return null;
+    if (value_span.end_byte < quote_offset) return null;
     const content_end = value_span.end_byte - quote_offset;
     const content_start = value_span.start_byte + quote_offset;
     if (content_end < content_start) return null;
