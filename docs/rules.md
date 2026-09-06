@@ -118,6 +118,7 @@ Validate the principle of least privilege in workflow permissions.
 |----|------|----------|-------------|
 | PERM001 | broad-permissions | warning | Overly broad permission scope detected |
 | PERM002 | missing-job-permissions | warning | Job with third-party actions lacks explicit permissions |
+| PERM003 | invalid-permissions | error | Unknown permission scope or invalid permission level |
 
 ## Expression Validation Rules (EXPR)
 

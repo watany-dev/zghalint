@@ -153,28 +153,6 @@ fn checkMapping(
     }
 }
 
-fn findDidYouMean(key: []const u8, expected: []const []const u8) ?[]const u8 {
-    const max_dist: usize = 2;
-    var best: ?[]const u8 = null;
-    var best_dist: usize = std.math.maxInt(usize);
-    var ties: usize = 0;
-
-    for (expected) |candidate| {
-        const dist = util.levenshteinDistance(key, candidate);
-        if (dist == 0 or dist > max_dist) continue;
-        if (dist < best_dist) {
-            best = candidate;
-            best_dist = dist;
-            ties = 1;
-        } else if (dist == best_dist) {
-            ties += 1;
-        }
-    }
-
-    if (ties != 1) return null;
-    return best;
-}
-
 fn formatUnexpectedKeyMessage(
     alloc: std.mem.Allocator,
     uk: UnknownKey,
@@ -200,7 +178,7 @@ fn formatUnexpectedKeyMessage(
 fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.unknown_keys) |uk| {
-        const suggestion = findDidYouMean(uk.key, uk.expected);
+        const suggestion = util.didYouMean(uk.key, uk.expected);
         const message = formatUnexpectedKeyMessage(alloc, uk, suggestion) catch continue;
         list.append(.{
             .rule_id = "SYN001",

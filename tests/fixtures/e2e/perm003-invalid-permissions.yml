@@ -1,0 +1,20 @@
+# zghalint:expect PERM003@7 PERM003@8 PERM003@15
+# zghalint:forbid PERM001
+name: invalid permissions
+on: [push]
+concurrency: ci
+permissions:
+  contents: raed
+  content: read
+  pull-requests: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      isues: read
+      artifact-metadata: read
+      models: read
+    steps:
+      - name: Build
+        run: echo build

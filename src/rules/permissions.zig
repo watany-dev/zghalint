@@ -17,6 +17,7 @@ const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Fix = diagnostics.Fix;
 const spans = @import("spans.zig");
+const util = @import("../util.zig");
 
 fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
@@ -116,6 +117,70 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
     }
 }
 
+fn permissionProblemMessage(
+    alloc: std.mem.Allocator,
+    problem: workflow_types.PermissionProblem,
+) ?[]const u8 {
+    return switch (problem.kind) {
+        .unknown_scope => blk: {
+            var suffix_buf: [64]u8 = undefined;
+            const suffix = if (util.didYouMean(problem.text, workflow_types.permission_scope_keys)) |s|
+                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+            else
+                "";
+            break :blk std.fmt.allocPrint(
+                alloc,
+                "unknown permission scope \"{s}\"{s}",
+                .{ problem.text, suffix },
+            ) catch null;
+        },
+        // An empty `text` means the value was missing or not a scalar, so there
+        // is no level to quote back.
+        .invalid_level => if (problem.text.len == 0) std.fmt.allocPrint(
+            alloc,
+            "missing permission level for \"{s}\". expected \"read\", \"write\" or \"none\"",
+            .{problem.scope},
+        ) catch null else std.fmt.allocPrint(
+            alloc,
+            "invalid permission level \"{s}\" for \"{s}\". expected \"read\", \"write\" or \"none\"",
+            .{ problem.text, problem.scope },
+        ) catch null,
+        .invalid_all => std.fmt.allocPrint(
+            alloc,
+            "invalid permission \"{s}\" for all scopes. expected \"read-all\" or \"write-all\"",
+            .{problem.text},
+        ) catch null,
+    };
+}
+
+fn reportPermissionProblems(
+    problems: []const workflow_types.PermissionProblem,
+    diag_list: *DiagnosticList,
+) void {
+    const alloc = diag_list.fixAllocator();
+    for (problems) |problem| {
+        const message = permissionProblemMessage(alloc, problem) orelse continue;
+        diag_list.append(.{
+            .rule_id = "PERM003",
+            .severity = .@"error",
+            .message = message,
+            .span = problem.span,
+            .fix_hint = switch (problem.kind) {
+                .unknown_scope => "use one of the permission scopes GitHub Actions defines.",
+                .invalid_level => "use 'read', 'write' or 'none' as the permission level.",
+                .invalid_all => "use 'read-all' or 'write-all', or list scopes individually.",
+            },
+        }) catch return;
+    }
+}
+
+fn checkInvalidPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    reportPermissionProblems(wf.permission_problems, diag_list);
+    for (wf.jobs) |job| {
+        reportPermissionProblems(job.permission_problems, diag_list);
+    }
+}
+
 fn buildJobPermissionsFix(list: *DiagnosticList, job: *const Job) ?Fix {
     const insert_byte = job.permissions_insertion_byte orelse return null;
     if (job.job_indent == 0) return null;
@@ -179,6 +244,14 @@ pub const rules = [_]Rule{
         .severity = .warning,
         .category = .permissions,
         .check_job = checkJobPermissions,
+    },
+    .{
+        .id = "PERM003",
+        .name = "invalid-permissions",
+        .description = "Unknown permission scope or invalid permission level",
+        .severity = .@"error",
+        .category = .permissions,
+        .check_workflow = checkInvalidPermissions,
     },
 };
 
@@ -656,4 +729,171 @@ test "PERM001: id-token mixed with other writes produces per-field fixes except 
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "contents: read") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "id-token: write") != null);
+}
+
+fn runInvalidPermissions(alloc: std.mem.Allocator, source: []const u8, diags: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    checkInvalidPermissions(&wf, diags);
+}
+
+test "PERM003: report an invalid permission level" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions:
+        \\  contents: raed
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try std.testing.expectEqualStrings("PERM003", diag.rule_id);
+    try std.testing.expectEqual(diagnostics.Severity.@"error", diag.severity);
+    try std.testing.expectEqualStrings(
+        "invalid permission level \"raed\" for \"contents\". expected \"read\", \"write\" or \"none\"",
+        diag.message,
+    );
+    try std.testing.expectEqual(@as(u32, 4), diag.span.start_line);
+}
+
+test "PERM003: a missing level is reported on the key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions:
+        \\  contents:
+        \\  actions: read
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try std.testing.expectEqualStrings(
+        "missing permission level for \"contents\". expected \"read\", \"write\" or \"none\"",
+        diag.message,
+    );
+    // The key, not the next entry: a null value's span is the following token.
+    try std.testing.expectEqual(@as(u32, 4), diag.span.start_line);
+}
+
+test "PERM003: report an unknown scope with a suggestion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\      content: read
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings(
+        "unknown permission scope \"content\". did you mean \"contents\"?",
+        diags.get(0).message,
+    );
+}
+
+test "PERM003: report an unknown scope without a near match" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions:
+        \\  nonsense: read
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings(
+        "unknown permission scope \"nonsense\"",
+        diags.get(0).message,
+    );
+}
+
+test "PERM003: report an invalid all-scopes value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions: read
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings(
+        "invalid permission \"read\" for all scopes. expected \"read-all\" or \"write-all\"",
+        diags.get(0).message,
+    );
+}
+
+test "PERM003: valid permissions produce no diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions: read-all
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\      contents: read
+        \\      id-token: write
+        \\      artifact-metadata: read
+        \\      models: read
+        \\    steps:
+        \\      - run: echo hi
+        \\  other:
+        \\    runs-on: ubuntu-latest
+        \\    permissions: {}
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
