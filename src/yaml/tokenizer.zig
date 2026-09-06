@@ -204,7 +204,8 @@ pub const Tokenizer = struct {
             if (quote == '"' and self.source[self.pos] == '\\') {
                 self.advance();
                 if (self.pos < self.source.len) {
-                    self.advance();
+                    // `\` + 改行は YAML の行継続。改行ごと食べるので行カウンタも進める。
+                    if (self.source[self.pos] == '\n') self.consumeNewline() else self.advance();
                 }
                 continue;
             }
@@ -740,4 +741,24 @@ test "tokenizer flow entry comma" {
     _ = tokenizer.next();
     const comma = tokenizer.next();
     try std.testing.expectEqual(TokenKind.flow_entry, comma.kind);
+}
+test "tokenizer counts the line after a `\\` line continuation inside a double-quoted scalar" {
+    var tokenizer = Tokenizer.init("\"a \\\nb\"\nx");
+    _ = tokenizer.next();
+    const scalar = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, scalar.kind);
+    try std.testing.expectEqualStrings("\"a \\\nb\"", scalar.slice(tokenizer.source));
+    _ = tokenizer.next();
+    const after = tokenizer.next();
+    try std.testing.expectEqualStrings("x", after.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 3), after.line);
+}
+test "tokenizer counts an escaped backslash followed by a newline only once" {
+    var tokenizer = Tokenizer.init("\"a\\\\\nb\"\nx");
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    const after = tokenizer.next();
+    try std.testing.expectEqualStrings("x", after.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 3), after.line);
 }

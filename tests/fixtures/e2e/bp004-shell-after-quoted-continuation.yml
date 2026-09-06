@@ -1,0 +1,19 @@
+# zghalint:expect BP004@18
+# zghalint:forbid BP001 BP002 BP005
+name: quoted line continuation
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: quoted-continuation
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: "a \
+b"
+        shell: Bash
+        run: echo hi
