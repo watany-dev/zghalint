@@ -94,8 +94,8 @@ pub fn permissionScopeKey(comptime field_name: []const u8) []const u8 {
     }
 }
 
-/// `permission_scopes` spelled as YAML keys (`_` replaced by `-`), for
-/// runtime lookups such as PERM003's did-you-mean search.
+/// `permission_scopes` spelled as YAML keys, for the runtime lookups
+/// `permissionScopeKey`'s comptime signature cannot serve (PERM003).
 pub const permission_scope_keys: []const []const u8 = blk: {
     var keys: [permission_scopes.len][]const u8 = undefined;
     for (permission_scopes, 0..) |field, i| keys[i] = permissionScopeKey(field);
@@ -104,18 +104,17 @@ pub const permission_scope_keys: []const []const u8 = blk: {
 };
 
 pub const PermissionProblemKind = enum {
-    /// A mapping key that is not one of `permission_scopes`.
     unknown_scope,
-    /// A mapping value that is not `read` / `write` / `none`.
     invalid_level,
-    /// A scalar `permissions:` that is not `read-all` / `write-all`.
+    /// `permissions:` given as a scalar other than `read-all` / `write-all`.
     invalid_all,
 };
 
 /// A `permissions:` entry the parser could not map onto `Permissions` (PERM003).
 /// `text` is the offending token as written: the key for `unknown_scope`, the
-/// value for `invalid_level` and `invalid_all`. `scope` names the key the bad
-/// value belongs to and is empty for the other kinds.
+/// value for `invalid_level` and `invalid_all`, and empty when that value was
+/// missing or not a scalar. `scope` names the key a bad value belongs to and is
+/// empty for the other kinds.
 pub const PermissionProblem = struct {
     kind: PermissionProblemKind,
     text: []const u8,
