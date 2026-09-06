@@ -168,6 +168,8 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
             const events = try allocator.alloc(types.EventConfig, 1);
             events[0] = .{
                 .event = types.EventType.fromString(s.value),
+                .name = s.value,
+                .name_span = s.span,
             };
             return .{ .events = events };
         },
@@ -178,6 +180,8 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
                     .scalar => |s| {
                         events[i] = .{
                             .event = types.EventType.fromString(s.value),
+                            .name = s.value,
+                            .name_span = s.span,
                         };
                     },
                     else => return error.InvalidValue,
@@ -189,6 +193,7 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
             const events = try allocator.alloc(types.EventConfig, m.entries.len);
             for (m.entries, 0..) |entry, i| {
                 events[i] = try parseEventConfig(allocator, entry.key.value, entry.value);
+                events[i].name_span = entry.key.span;
             }
             return .{ .events = events };
         },
@@ -198,7 +203,7 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
 
 fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) ParseError!types.EventConfig {
     const event_type = types.EventType.fromString(name);
-    var config = types.EventConfig{ .event = event_type };
+    var config = types.EventConfig{ .event = event_type, .name = name };
 
     switch (node) {
         .null_value => {
