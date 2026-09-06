@@ -300,17 +300,22 @@ fn parseYamlBool(node: Node) ?bool {
     };
 }
 
+fn isYamlNumber(node: Node) bool {
+    return switch (node) {
+        .scalar => |s| if (std.fmt.parseFloat(f64, s.value)) |_| true else |_| false,
+        else => false,
+    };
+}
+
+fn isYamlScalar(node: Node) bool {
+    return node == .scalar;
+}
+
 fn defaultMatchesCallableInputType(input_type: types.CallableInputType, node: Node) bool {
     return switch (input_type) {
         .boolean => parseYamlBool(node) != null,
-        .number => switch (node) {
-            .scalar => |s| if (std.fmt.parseFloat(f64, s.value)) |_| true else |_| false,
-            else => false,
-        },
-        .string => switch (node) {
-            .scalar => true,
-            else => false,
-        },
+        .number => isYamlNumber(node),
+        .string => isYamlScalar(node),
     };
 }
 
