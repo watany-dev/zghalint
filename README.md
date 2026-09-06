@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **70 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **74 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 
@@ -134,9 +134,9 @@ Missing timeouts, step naming, deprecated actions, cross-platform shell, concurr
 Overly broad scopes, missing job-level permissions, unknown scope names and
 invalid permission levels.
 
-### Expression Validation (10 rules)
+### Expression Validation (12 rules)
 
-`${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions.
+`${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions, `steps.<id>` resolution.
 
 ### Dependencies (3 rules)
 
@@ -148,9 +148,9 @@ Dependabot cooldown configuration, insecure external code execution settings,
 Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
 detection (typos such as `ubunut-latest`).
 
-### Syntax (13 rules)
+### Syntax (15 rules)
 
-Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency.
+Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `workflow_dispatch` input definitions.
 
 ## Configuration
 
