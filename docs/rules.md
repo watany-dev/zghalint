@@ -214,6 +214,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
+| SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
+| SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
@@ -317,6 +319,80 @@ on:
 
 A name containing a `${{ }}` expression is skipped, since the literal text says
 nothing about the name GitHub finally sees.
+
+### SYN010 invalid-activity-type
+
+`types:` narrows an event to a list of activity types. A name that is not one of
+them silently drops the event: nothing rejects the workflow, it simply stops
+firing for the activity the author meant.
+
+```yaml
+on:
+  issues:
+    types: [open, closed]    # error: invalid activity type "open" for "issues" event. did you mean "opened"?
+  pull_request:
+    types: [synchronised]    # error: invalid activity type "synchronised" for "pull_request" event. did you mean "synchronize"?
+  push:
+    types: [opened]          # error: "types" is not available for "push" event
+```
+
+The `push` case is the same bug from the other side: an event with no activity
+types at all ignores `types:` entirely, so the filter the author wrote never
+applies.
+
+Two events are exempt from the value check. `repository_dispatch` types are
+chosen by whoever POSTs the dispatch, and `image_version` has no documented
+closed set, so `types:` is accepted there without judging the names. A value
+containing a `${{ }}` expression is skipped for the same reason as in SYN009.
+
+```yaml
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  repository_dispatch:
+    types: [deploy-please]
+```
+
+### SYN011 unavailable-event-filter
+
+`branches`, `tags`, `paths` and their `-ignore` forms only exist for some
+events. Written under an event that does not read them they are not an error to
+GitHub — the workflow just runs on *every* occurrence of the event, which is the
+opposite of the intent.
+
+```yaml
+on:
+  issues:
+    branches: [main]     # error: "branches" filter is not available for "issues" event
+  pull_request:
+    tags: [v*]           # error: "tags" filter is not available for "pull_request" event
+  push:
+    brancehs: [main]     # error: unknown filter "brancehs" for "push" event. did you mean "branches"?
+```
+
+The available sets follow GitHub: `push` takes all six; `pull_request` and
+`pull_request_target` run on a branch so they take the four branch and path
+filters but not `tags`/`tags-ignore`; `workflow_run` takes only `branches` and
+`branches-ignore`; every other event takes none.
+
+The same check covers the non-filter keys an event accepts, so a misspelled
+`inputs` under `workflow_dispatch` is reported too. An event name SYN009 already
+flagged is left alone rather than reported twice.
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths: ['src/**']
+  pull_request:
+    branches-ignore: [wip/**]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+```
 
 ### SYN012 exclusive-event-filters
 

@@ -161,6 +161,13 @@ pub const EventFilter = struct {
     spans: EventFilterSpans = .{},
 };
 
+/// One key written under an event mapping, in source order. SYN011 checks the
+/// names the `EventFilter` struct does not model, so it needs the raw list.
+pub const EventConfigKey = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 pub const ScheduleEntry = struct {
     cron: []const u8,
     cron_span: yaml_types.Span,
@@ -249,6 +256,14 @@ pub const EventConfig = struct {
     name: []const u8 = "",
     name_span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     filter: ?EventFilter = null,
+    /// `types:` values as written, with a span each. SYN010 validates them
+    /// against the event's entry in the trigger table.
+    activity_types: FilterPatternList = .{},
+    /// Span of the `types:` key itself, so SYN010 can point at it for an event
+    /// that has no activity types at all.
+    types_key_span: ?yaml_types.Span = null,
+    /// Every key under the event mapping, whatever the event.
+    config_keys: []const EventConfigKey = &.{},
     schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},

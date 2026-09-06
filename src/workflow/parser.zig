@@ -210,6 +210,10 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
             return config;
         },
         .mapping => |m| {
+            config.config_keys = try collectEventConfigKeys(allocator, m);
+            config.types_key_span = m.getKeySpan("types");
+            config.activity_types = try parseActivityTypes(allocator, m.get("types"));
+
             switch (event_type) {
                 .workflow_call => {
                     if (m.get("inputs")) |inputs_node| {
@@ -404,6 +408,30 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
         .inputs = try inputs.toOwnedSlice(allocator),
         .problems = try problems.toOwnedSlice(allocator),
     };
+}
+
+fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping) ParseError![]const types.EventConfigKey {
+    const keys = try allocator.alloc(types.EventConfigKey, m.entries.len);
+    for (m.entries, 0..) |entry, i| {
+        keys[i] = .{ .name = entry.key.value, .span = entry.key.span };
+    }
+    return keys;
+}
+
+/// `types:` is read for every event, not just the ones with a filter, so an
+/// empty or malformed value must not fail the whole parse: SYN010 reports on
+/// what is there and stays quiet about what is not.
+fn parseActivityTypes(allocator: std.mem.Allocator, node: ?Node) ParseError!types.FilterPatternList {
+    const n = node orelse return .{};
+    switch (n) {
+        .scalar, .sequence => {},
+        else => return .{},
+    }
+    const parsed = parseStringArrayWithSpans(allocator, n) catch |err| switch (err) {
+        error.InvalidValue => return .{},
+        else => return err,
+    };
+    return .{ .values = parsed.values, .spans = parsed.spans };
 }
 
 fn parseFilterPatternList(allocator: std.mem.Allocator, node: ?Node) ParseError!types.FilterPatternList {
