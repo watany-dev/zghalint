@@ -1,0 +1,26 @@
+# zghalint:expect SEC022@14
+# #143 repro: a `workflow_run` job runs with the base repository's secrets, and
+# a fork names its own branches, so `head_branch` gates nobody out. The second
+# job verifies the triggering repository and must stay quiet.
+name: sec022 workflow run branch gate
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  deploy:
+    if: github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Deploy
+        run: ./deploy.sh
+  verified-deploy:
+    if: github.event.workflow_run.head_repository.full_name == github.repository && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Deploy
+        run: ./deploy.sh
