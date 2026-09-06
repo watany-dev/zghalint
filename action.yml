@@ -50,7 +50,17 @@ runs:
           ARCHIVE="zghalint-$OS-$ARCH.tar.gz"
         fi
 
-        curl -fSL "https://github.com/watany-dev/zghalint/releases/download/$VERSION/$ARCHIVE" -o "$ARCHIVE"
+        BASE_URL="https://github.com/watany-dev/zghalint/releases/download/$VERSION"
+        curl -fSL "$BASE_URL/$ARCHIVE" -o "$ARCHIVE"
+        curl -fSL "$BASE_URL/SHA256SUMS" -o SHA256SUMS
+
+        # Verify the archive against the checksums published with the release
+        # so a tampered or truncated download is rejected before extraction.
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum --ignore-missing -c SHA256SUMS
+        else
+          shasum -a 256 --ignore-missing -c SHA256SUMS
+        fi
 
         if [ "$OS" = "windows" ]; then
           unzip -q "$ARCHIVE"
@@ -62,16 +72,24 @@ runs:
         fi
     - name: Run zghalint
       shell: bash
+      # Inputs are passed through the environment instead of being expanded
+      # inside the script; a `${{ }}` expansion in `run:` is a shell
+      # injection vector when the caller derives an input from event data.
+      env:
+        INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OFFLINE: ${{ inputs.offline }}
+        INPUT_FIX: ${{ inputs.fix }}
       run: |
         FIX_FLAG=""
         OFFLINE_FLAG=""
-        if [ "${{ inputs.fix }}" = "safe" ]; then
-          FIX_FLAG="--fix"
-        elif [ "${{ inputs.fix }}" = "unsafe" ]; then
-          FIX_FLAG="--fix-unsafe"
-        fi
+        case "$INPUT_FIX" in
+          safe)   FIX_FLAG="--fix" ;;
+          unsafe) FIX_FLAG="--fix-unsafe" ;;
+        esac
 
-        if [ "${{ inputs.offline }}" = "true" ]; then
+        if [ "$INPUT_OFFLINE" = "true" ]; then
           OFFLINE_FLAG="--offline"
         fi
 
@@ -80,4 +98,8 @@ runs:
           EXE=".exe"
         fi
 
-        "./zghalint$EXE" ${{ inputs.paths }} --config ${{ inputs.config }} --format ${{ inputs.format }} $OFFLINE_FLAG $FIX_FLAG
+        # $INPUT_PATHS is intentionally unquoted: it is a glob that the shell
+        # expands. `--` keeps a path that begins with `-` from being read as
+        # an option.
+        # shellcheck disable=SC2086
+        "./zghalint$EXE" --config "$INPUT_CONFIG" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS
