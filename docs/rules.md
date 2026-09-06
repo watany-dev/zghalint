@@ -139,6 +139,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments |
 | EXPR006 | unsound-contains | warning | `contains()` uses substring matching which may match unintended values |
 | EXPR007 | unsound-condition | warning | Bare literal as operand in logical operator is always truthy |
+| EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 
 ## Dependency Rules (DEP)
