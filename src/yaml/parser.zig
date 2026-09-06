@@ -637,8 +637,6 @@ test "parse terminates on an unclosed flow sequence running into block content" 
     _ = try parser.parse();
 }
 
-/// The `full_span` bytes of the entry named `key` in the top-level mapping's
-/// first nested job-like mapping, for the block-scalar span tests below.
 fn entryFullSpanText(source: []const u8, mapping: Mapping, key: []const u8) ?[]const u8 {
     for (mapping.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, key)) continue;
