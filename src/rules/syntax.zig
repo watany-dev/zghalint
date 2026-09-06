@@ -501,6 +501,7 @@ fn reportGlobErrors(
 }
 
 const cron = @import("../workflow/cron.zig");
+const timezones = @import("../workflow/timezones.zig");
 
 fn checkScheduleCronSyntax(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.on.events) |event| {
@@ -542,6 +543,37 @@ fn checkScheduleCronFrequency(wf: *const Workflow, list: *DiagnosticList) void {
                 ) catch "scheduled job runs too frequently. the shortest interval is once every 5 minutes",
                 .span = entry.cron_span,
                 .fix_hint = "set the minute field so scheduled runs are at least 5 minutes apart",
+            }) catch return;
+        }
+    }
+}
+
+fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.on.events) |event| {
+        if (event.event != .schedule) continue;
+        for (event.schedules) |entry| {
+            const tz = entry.timezone orelse continue;
+            // A name built from an expression is not a literal zone name at all.
+            if (std.mem.indexOf(u8, tz, "${{") != null) continue;
+            if (timezones.isKnown(tz)) continue;
+
+            var suffix_buf: [96]u8 = undefined;
+            const suffix = if (util.didYouMean(tz, &timezones.timezone_names)) |s|
+                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+            else
+                "";
+
+            list.append(.{
+                .rule_id = "SYN016",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "invalid timezone \"{s}\" in schedule event{s}",
+                    .{ tz, suffix },
+                ) catch "invalid timezone in schedule event",
+                .span = entry.timezone_span orelse entry.cron_span,
+                .fix_hint = "use a name from the IANA time zone database, such as \"Asia/Tokyo\" or \"UTC\"",
             }) catch return;
         }
     }
@@ -669,6 +701,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkScheduleCronFrequency,
+    },
+    .{
+        .id = "SYN016",
+        .name = "invalid-timezone",
+        .description = "schedule timezone is not a name in the IANA time zone database",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkScheduleTimezone,
     },
 };
 
@@ -2695,6 +2735,7 @@ fn runScheduleRules(source: []const u8) !DiagnosticList {
     var list = DiagnosticList.init(testing.allocator);
     checkScheduleCronSyntax(&wf, &list);
     checkScheduleCronFrequency(&wf, &list);
+    checkScheduleTimezone(&wf, &list);
     return list;
 }
 
@@ -2844,4 +2885,53 @@ test "SYN014/SYN015: valid daily schedule is clean" {
 
     try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
     try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN015"));
+}
+
+test "SYN016: unknown timezone names are reported" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * * *'
+        \\      timezone: 'Asia/Tokio'
+        \\    - cron: '0 9 * * *'
+        \\      timezone: 'JST'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN016"));
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"Asia/Tokyo\"") != null);
+    try testing.expectEqual(@as(usize, 4), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"JST\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "did you mean") == null);
+}
+
+test "SYN016: IANA names and expression values are clean" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * * *'
+        \\      timezone: 'Asia/Tokyo'
+        \\    - cron: '0 1 * * *'
+        \\      timezone: UTC
+        \\    - cron: '0 2 * * *'
+        \\      timezone: ${{ vars.TZ }}
+        \\    - cron: '0 3 * * *'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
 }

@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **69 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **70 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -218,6 +218,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
+| SYN016 | invalid-timezone | error | `schedule` `timezone` is not a name in the IANA time zone database |
 
 ### SYN002 duplicate-key
 
@@ -369,6 +370,36 @@ on:
     branches: [main, releases/**, v[0-9].*]
     paths: [src/**/*.zig, '!src/vendor/**']
 ```
+
+---
+
+### SYN016 invalid-timezone
+
+`on.schedule[*].timezone` is resolved against the IANA time zone database.
+An abbreviation or a misspelled name is not silently ignored — the schedule
+never fires. Names are case-sensitive.
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Tokio'   # error: did you mean "Asia/Tokyo"?
+    - cron: '0 9 * * *'
+      timezone: 'JST'          # error: not an IANA time zone name
+```
+
+Valid examples:
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Tokyo'
+    - cron: '0 0 * * *'
+      timezone: 'UTC'
+```
+
+A `timezone` built from a `${{ }}` expression is not checked.
 
 ---
 

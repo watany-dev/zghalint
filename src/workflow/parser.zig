@@ -250,10 +250,20 @@ fn parseScheduleEntries(allocator: std.mem.Allocator, seq: yaml.Sequence) ParseE
             else => continue,
         };
         if (cron_scalar.value.len == 0) continue;
-        try entries.append(allocator, .{
+        var entry = types.ScheduleEntry{
             .cron = cron_scalar.value,
             .cron_span = cron_scalar.span,
-        });
+        };
+        if (mapping.get("timezone")) |tz_node| {
+            switch (tz_node) {
+                .scalar => |s| {
+                    entry.timezone = s.value;
+                    entry.timezone_span = s.span;
+                },
+                else => {},
+            }
+        }
+        try entries.append(allocator, entry);
     }
 
     return try entries.toOwnedSlice(allocator);
@@ -1242,6 +1252,26 @@ test "parseTrigger schedule entries capture cron spans" {
     try testing.expectEqual(@as(usize, 1), trigger.events[0].schedules.len);
     try testing.expectEqualStrings("0 0 * * *", trigger.events[0].schedules[0].cron);
     try testing.expectEqual(@as(usize, 40), trigger.events[0].schedules[0].cron_span.start_byte);
+    try testing.expect(trigger.events[0].schedules[0].timezone == null);
+}
+
+test "parseTrigger schedule entries capture the timezone and its span" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var cron_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("cron"), .value = mkScalarStyled("0 0 * * *", .single_quoted, mkSpanBytes(40, 51)), .span = mkSpan() },
+        .{ .key = mkScalarS("timezone"), .value = mkScalarStyled("Asia/Tokyo", .single_quoted, mkSpanBytes(70, 82)), .span = mkSpan() },
+    };
+    var schedule_items = [_]Node{mkMapping(&cron_entries)};
+    var trigger_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("schedule"), .value = mkSequence(&schedule_items), .span = mkSpan() },
+    };
+
+    const trigger = try parseTrigger(arena.allocator(), mkMapping(&trigger_entries));
+    const entry = trigger.events[0].schedules[0];
+    try testing.expectEqualStrings("Asia/Tokyo", entry.timezone.?);
+    try testing.expectEqual(@as(usize, 70), entry.timezone_span.?.start_byte);
 }
 
 test "parseTrigger records key spans for empty filter values" {

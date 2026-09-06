@@ -57,6 +57,7 @@ test {
     _ = @import("workflow/types.zig");
     _ = @import("workflow/parser.zig");
     _ = @import("workflow/events.zig");
+    _ = @import("workflow/timezones.zig");
     _ = @import("workflow/schema.zig");
     _ = @import("workflow/type_validation.zig");
     _ = @import("diagnostics.zig");

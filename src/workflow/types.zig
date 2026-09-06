@@ -164,6 +164,8 @@ pub const EventFilter = struct {
 pub const ScheduleEntry = struct {
     cron: []const u8,
     cron_span: yaml_types.Span,
+    timezone: ?[]const u8 = null,
+    timezone_span: ?yaml_types.Span = null,
 };
 
 pub const CallableInputType = enum {
