@@ -141,6 +141,8 @@ GitHub Actions ワークフローファイルを静的解析し、セキュリ�
 このリポジトリのスキルは `.claude/skills/` に 1 本だけ置き、`.agents/skills`
 （Codex / Cursor が参照）は同ディレクトリへのシンボリックリンクとする。
 
+作業完了時は `wrapup` スキル（レビュー2本 → 取り込み → コメント掃除）を通す。
+
 `ponytail-review`（差分の過剰設計レビュー）と `ponytail-audit`（リポジトリ全体の
 監査）は [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (MIT)
 から vendoring したもの。
