@@ -27,7 +27,8 @@ pub fn collectFixes(
 /// Edits come back sorted by start_byte descending so they can be applied
 /// back-to-front without offset shifting. Overlapping edits are dropped (first
 /// wins by position), as are edits with invalid byte ranges.
-fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: usize) ![]Edit {
+fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []const u8) ![]Edit {
+    const source_len = source.len;
     var total: usize = 0;
     for (fixes) |f| {
         total += f.edits.len;
@@ -42,7 +43,7 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: 
     for (fixes) |f| {
         for (f.edits) |e| {
             if (!isValidEdit(e, source_len)) continue;
-            edits[idx] = e;
+            edits[idx] = snapInsertionToLineEnd(e, source);
             idx += 1;
         }
     }
@@ -73,6 +74,30 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source_len: 
     return allocator.realloc(edits, write_idx);
 }
 
+/// A pure insertion whose replacement opens a new line is meant to land after
+/// the current physical line. Rules anchor it at the end of a value's span,
+/// which stops before a trailing `# comment`; inserting there would carry the
+/// comment onto the new line. For `uses: owner/repo@<sha> # v1.2.3` that
+/// detaches the version tag Dependabot and Renovate read next to the pin.
+fn snapInsertionToLineEnd(e: Edit, source: []const u8) Edit {
+    if (e.start_byte != e.end_byte) return e;
+    if (e.replacement.len == 0 or e.replacement[0] != '\n') return e;
+
+    var i = e.start_byte;
+    while (i < source.len and (source[i] == ' ' or source[i] == '\t')) : (i += 1) {}
+    if (i < source.len and source[i] == '#') {
+        while (i < source.len and source[i] != '\n' and source[i] != '\r') : (i += 1) {}
+    }
+    // Only whitespace or a comment may separate the anchor from the line end;
+    // anything else means the anchor is mid-line and must not move.
+    if (i < source.len and source[i] != '\n' and source[i] != '\r') return e;
+
+    var snapped = e;
+    snapped.start_byte = i;
+    snapped.end_byte = i;
+    return snapped;
+}
+
 /// Invalid edits are dropped by `flattenAndSort` to avoid arithmetic underflow or
 /// out-of-bounds reads in `applyFixes`.
 fn isValidEdit(e: Edit, source_len: usize) bool {
@@ -87,7 +112,7 @@ pub fn applyFixes(
     source: []const u8,
     fixes: []const Fix,
 ) !ApplyResult {
-    const edits = try flattenAndSort(allocator, fixes, source.len);
+    const edits = try flattenAndSort(allocator, fixes, source);
     defer allocator.free(edits);
 
     if (edits.len == 0) {
@@ -373,4 +398,53 @@ test "edit at exact source end (end_byte == source.len) is valid" {
 
     try std.testing.expectEqualStrings("abc!", result.content);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "applyFixes: newline insertion after a value skips the trailing comment" {
+    const allocator = std.testing.allocator;
+    const source = "uses: actions/checkout@abc # v4.2.2\nrun: x";
+    const value_end = std.mem.indexOf(u8, source, " # v4").?;
+    const edits = [_]Edit{.{ .start_byte = value_end, .end_byte = value_end, .replacement = "\nwith:\n  persist-credentials: false" }};
+    const fixes = [_]Fix{.{ .description = "t", .safety = .safe, .edits = &edits }};
+
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings(
+        "uses: actions/checkout@abc # v4.2.2\nwith:\n  persist-credentials: false\nrun: x",
+        result.content,
+    );
+}
+
+test "applyFixes: newline insertion keeps CRLF line ending after the comment" {
+    const allocator = std.testing.allocator;
+    const source = "uses: a@b # v1\r\nrun: x";
+    const value_end = std.mem.indexOf(u8, source, " # v1").?;
+    const edits = [_]Edit{.{ .start_byte = value_end, .end_byte = value_end, .replacement = "\nwith: {}" }};
+    const fixes = [_]Fix{.{ .description = "t", .safety = .safe, .edits = &edits }};
+
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("uses: a@b # v1\nwith: {}\r\nrun: x", result.content);
+}
+
+test "applyFixes: newline insertion does not move past non-comment text" {
+    const allocator = std.testing.allocator;
+    const source = "key: value rest";
+    const edits = [_]Edit{.{ .start_byte = 10, .end_byte = 10, .replacement = "\nnew: 1" }};
+    const fixes = [_]Fix{.{ .description = "t", .safety = .safe, .edits = &edits }};
+
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("key: value\nnew: 1 rest", result.content);
+}
+
+test "applyFixes: replacement edits are never snapped" {
+    const allocator = std.testing.allocator;
+    const source = "a: b # c";
+    const edits = [_]Edit{.{ .start_byte = 3, .end_byte = 4, .replacement = "\nz" }};
+    const fixes = [_]Fix{.{ .description = "t", .safety = .safe, .edits = &edits }};
+
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("a: \nz # c", result.content);
 }
