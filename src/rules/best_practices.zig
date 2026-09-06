@@ -19,8 +19,6 @@ const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
 const FixSafety = diagnostics_mod.FixSafety;
 
-// ── BP001: Missing timeout-minutes ──
-
 fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.timeout_minutes != null or job.timeout_minutes_specified) return;
 
@@ -50,8 +48,6 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
         .fix = fix,
     }) catch return;
 }
-
-// ── BP002: Missing step name ──
 
 fn generateStepName(allocator: std.mem.Allocator, step: *const Step) ?[]const u8 {
     if (step.uses) |ref| {
@@ -102,11 +98,8 @@ fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
     diag_list.append(diag) catch return;
 }
 
-// ── BP003: Deprecated action version ──
-
 const DeprecatedAction = struct {
     action: []const u8,
-    /// Major versions strictly below this are deprecated (`v1` .. `vN-1`).
     deprecated_below: u8,
     replacement: []const u8,
 };
@@ -122,7 +115,7 @@ const deprecated_actions = [_]DeprecatedAction{
     .{ .action = "actions/cache", .deprecated_below = 3, .replacement = "v4" },
 };
 
-/// Major version of a bare `vN` tag (single digit, as every deprecated tag is).
+/// Single digit only, as every deprecated tag is.
 fn majorTag(version: []const u8) ?u8 {
     if (version.len != 2 or version[0] != 'v') return null;
     if (!std.ascii.isDigit(version[1])) return null;
@@ -197,8 +190,6 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     }
 }
 
-// ── BP004: Cross-platform shell not specified ──
-
 fn buildCrossPlatformShellFix(list: *DiagnosticList, step: *const Step) ?Fix {
     const insert_byte = step.shell_insertion_byte orelse return null;
     if (step.span.start_col == 0) return null;
@@ -218,29 +209,157 @@ fn buildCrossPlatformShellFix(list: *DiagnosticList, step: *const Step) ?Fix {
     };
 }
 
-fn checkCrossPlatformShell(job: *const Job, diag_list: *DiagnosticList) void {
-    if (!hasWindowsTarget(job)) return;
+/// `posix` covers every non-Windows runner, since the shell tables only ever
+/// split Windows from the rest. `unknown` is the honest answer for a
+/// self-hosted label, an expression, or a `runs-on` sequence — the OS-specific
+/// half of the check is skipped there.
+const RunnerOs = enum { windows, posix, unknown };
 
-    for (job.steps) |*step| {
-        if (step.run != null and step.shell == null) {
-            diag_list.append(.{
-                .rule_id = "BP004",
-                .severity = .warning,
-                .message = "Step with 'run' does not specify 'shell' in a job targeting Windows. Default shells differ across platforms.",
-                .span = step.span,
-                .fix_hint = "Add 'shell: bash' or 'shell: pwsh' to ensure consistent behavior.",
-                .fix = buildCrossPlatformShellFix(diag_list, step),
-            }) catch return;
+const ShellAvailability = enum { any, windows_only, posix_only };
+
+const KnownShell = struct {
+    name: []const u8,
+    availability: ShellAvailability,
+};
+
+const known_shells = [_]KnownShell{
+    .{ .name = "bash", .availability = .any },
+    .{ .name = "pwsh", .availability = .any },
+    .{ .name = "python", .availability = .any },
+    .{ .name = "sh", .availability = .posix_only },
+    .{ .name = "cmd", .availability = .windows_only },
+    .{ .name = "powershell", .availability = .windows_only },
+};
+
+const valid_shell_list = "'bash', 'pwsh', 'python', 'sh' (non-Windows only), 'cmd' and 'powershell' (Windows only)";
+
+/// Matches an OS keyword only outside `${{ }}`, so `windows-${{ matrix.ver }}`
+/// still resolves to Windows while `${{ matrix.windows_runner }}` does not.
+fn labelHas(runs_on: []const u8, needle: []const u8) bool {
+    var rest = runs_on;
+    while (std.mem.indexOf(u8, rest, "${{")) |open| {
+        if (std.ascii.indexOfIgnoreCase(rest[0..open], needle) != null) return true;
+        const close = std.mem.indexOfPos(u8, rest, open, "}}") orelse return false;
+        rest = rest[close + 2 ..];
+    }
+    return std.ascii.indexOfIgnoreCase(rest, needle) != null;
+}
+
+fn runnerOs(job: *const Job) RunnerOs {
+    const runs_on = job.runs_on orelse return .unknown;
+    if (labelHas(runs_on, "windows")) return .windows;
+    if (labelHas(runs_on, "ubuntu") or labelHas(runs_on, "linux") or labelHas(runs_on, "macos")) return .posix;
+    return .unknown;
+}
+
+/// True for a `shell:` value the name table cannot judge: a custom interpreter
+/// (`perl {0}`) or an expression that only resolves at run time.
+fn isOpaqueShell(shell: []const u8) bool {
+    return shell.len == 0 or
+        std.mem.indexOf(u8, shell, "{0}") != null or
+        std.mem.indexOf(u8, shell, "${{") != null;
+}
+
+fn lookupShell(shell: []const u8) ?KnownShell {
+    for (known_shells) |known| {
+        if (std.mem.eql(u8, known.name, shell)) return known;
+    }
+    return null;
+}
+
+fn checkShellName(shell: []const u8, span: Span, diag_list: *DiagnosticList) void {
+    if (isOpaqueShell(shell)) return;
+    if (lookupShell(shell) != null) return;
+
+    diag_list.append(.{
+        .rule_id = "BP004",
+        .severity = .@"error",
+        .message = std.fmt.allocPrint(
+            diag_list.fixAllocator(),
+            "Unknown shell name '{s}'.",
+            .{shell},
+        ) catch "Unknown shell name.",
+        .span = span,
+        .fix_hint = "Valid shells are " ++ valid_shell_list ++ ", or a custom shell of the form '<command> {0}'.",
+    }) catch return;
+}
+
+/// Unknown names are left to `checkShellName`; this only judges a known shell
+/// against a known runner OS.
+fn checkShellAvailability(shell: []const u8, span: Span, os: RunnerOs, diag_list: *DiagnosticList) void {
+    const known = lookupShell(shell) orelse return;
+
+    const problem: []const u8, const hint: []const u8 = switch (known.availability) {
+        .any => return,
+        .windows_only => if (os == .posix)
+            .{ "is only available on Windows runners", "Use 'bash', 'sh', 'pwsh', or 'python' on a non-Windows runner." }
+        else
+            return,
+        .posix_only => if (os == .windows)
+            .{ "is not available on Windows runners", "Use 'bash', 'pwsh', 'powershell', 'cmd', or 'python' on a Windows runner." }
+        else
+            return,
+    };
+
+    diag_list.append(.{
+        .rule_id = "BP004",
+        .severity = .@"error",
+        .message = std.fmt.allocPrint(
+            diag_list.fixAllocator(),
+            "Shell '{s}' {s}.",
+            .{ shell, problem },
+        ) catch "Shell is not available on this runner.",
+        .span = span,
+        .fix_hint = hint,
+    }) catch return;
+}
+
+fn reportMissingShell(step: *const Step, diag_list: *DiagnosticList) void {
+    diag_list.append(.{
+        .rule_id = "BP004",
+        .severity = .warning,
+        .message = "Step with 'run' does not specify 'shell' in a job targeting Windows. Default shells differ across platforms.",
+        .span = step.span,
+        .fix_hint = "Add 'shell: bash' or 'shell: pwsh' to ensure consistent behavior.",
+        .fix = buildCrossPlatformShellFix(diag_list, step),
+    }) catch return;
+}
+
+fn checkShell(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    if (wf.defaults) |d| checkShellName(d.run_shell, d.run_shell_span, diag_list);
+
+    // A workflow-level default is inherited by every job that does not
+    // override it, so its availability is judged once per runner OS it
+    // actually reaches rather than once per job.
+    var workflow_shell_reaches = std.EnumSet(RunnerOs).initEmpty();
+
+    for (wf.jobs) |*job| {
+        const os = runnerOs(job);
+
+        if (job.defaults) |d| {
+            checkShellName(d.run_shell, d.run_shell_span, diag_list);
+            checkShellAvailability(d.run_shell, d.run_shell_span, os, diag_list);
+        } else if (wf.defaults != null) {
+            workflow_shell_reaches.insert(os);
+        }
+
+        for (job.steps) |*step| {
+            if (step.shell) |shell| {
+                const span = step.shell_value_span orelse step.span;
+                checkShellName(shell, span, diag_list);
+                checkShellAvailability(shell, span, os, diag_list);
+            } else if (step.run != null and os == .windows and job.defaults == null and wf.defaults == null) {
+                reportMissingShell(step, diag_list);
+            }
+        }
+    }
+
+    if (wf.defaults) |d| {
+        for ([_]RunnerOs{ .windows, .posix }) |os| {
+            if (workflow_shell_reaches.contains(os)) checkShellAvailability(d.run_shell, d.run_shell_span, os, diag_list);
         }
     }
 }
-
-fn hasWindowsTarget(job: *const Job) bool {
-    const runs_on = job.runs_on orelse return false;
-    return std.ascii.indexOfIgnoreCase(runs_on, "windows") != null;
-}
-
-// ── BP005: Push trigger without concurrency ──
 
 fn buildPushConcurrencyFix(list: *DiagnosticList, wf: *const Workflow) ?Fix {
     const insert_byte = wf.concurrency_insertion_byte orelse return null;
@@ -280,20 +399,15 @@ pub fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) voi
     }
 }
 
-// ── BP008: Deprecated workflow command in `run:` ──
-
-/// A workflow command GitHub has disabled. The diagnostic message and fix hint
-/// are assembled from these parts at comptime in `checkDeprecatedWorkflowCommand`.
+/// The diagnostic message and fix hint are assembled from these fragments at
+/// comptime in `checkDeprecatedWorkflowCommand`.
 const DeprecatedWorkflowCommand = struct {
-    /// Command name as it appears in the script.
     marker: []const u8,
     /// Clause appended to "GitHub disabled it" — empty, or the CVE reason.
     reason: []const u8,
     /// Completes "so ...".
     effect: []const u8,
-    /// Argument form following `marker` in the deprecated call.
     args: []const u8,
-    /// The file-based form that replaced the command.
     replacement: []const u8,
 };
 
@@ -373,10 +487,10 @@ pub const rules = [_]Rule{
     .{
         .id = "BP004",
         .name = "cross-platform-shell",
-        .description = "Run step without shell in a Windows-targeting job",
+        .description = "Invalid or unavailable 'shell' name, or a run step without shell in a Windows-targeting job",
         .severity = .warning,
         .category = .best_practice,
-        .check_job = checkCrossPlatformShell,
+        .check_workflow = checkShell,
     },
     .{
         .id = "BP005",
@@ -395,8 +509,6 @@ pub const rules = [_]Rule{
         .check_step = checkDeprecatedWorkflowCommand,
     },
 };
-
-// ── Tests ──
 
 test "BP001: detect missing timeout-minutes" {
     const job = Job{ .id = "build" };
@@ -433,12 +545,10 @@ test "BP001: no warning when timeout-minutes key is present but invalid" {
 }
 
 test "BP001: autofix generated with real span" {
-    // Use arena to avoid leaks from fix allocations
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Simulate a job at column 5 (1-based), byte offset 20
     const job = Job{
         .id = "build",
         .span = .{
@@ -463,10 +573,9 @@ test "BP001: autofix generated with real span" {
     try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
 
     const edit = fix.edits[0];
-    // Insertion at start_byte
     try std.testing.expectEqual(@as(usize, 20), edit.start_byte);
     try std.testing.expectEqual(@as(usize, 20), edit.end_byte);
-    // Replacement: "timeout-minutes: 30\n" + 4 spaces (start_col 5 - 1)
+    // 4 trailing spaces = start_col 5 - 1
     try std.testing.expectEqualStrings("timeout-minutes: 30\n    ", edit.replacement);
 }
 
@@ -487,11 +596,8 @@ test "BP001: autofix applied to YAML source" {
 
     try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    // Verify the fixed source contains timeout-minutes
     try std.testing.expect(std.mem.indexOf(u8, result.content, "timeout-minutes: 30") != null);
-    // Verify the original content is preserved
     try std.testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest") != null);
-    // Verify timeout appears before runs-on
     const timeout_pos = std.mem.indexOf(u8, result.content, "timeout-minutes: 30").?;
     const runs_on_pos = std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest").?;
     try std.testing.expect(timeout_pos < runs_on_pos);
@@ -608,7 +714,6 @@ test "BP002: autofix applied to YAML source" {
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "name: Checkout") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4") != null);
-    // name: Checkout must appear before uses:
     const name_pos = std.mem.indexOf(u8, result.content, "name: Checkout").?;
     const uses_pos = std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4").?;
     try std.testing.expect(name_pos < uses_pos);
@@ -726,66 +831,305 @@ test "BP003: autofix applied to YAML source" {
     try std.testing.expect(std.mem.indexOf(u8, result.content, "actions/checkout@v1") == null);
 }
 
+/// BP004 is a workflow-level rule (it needs `defaults.run.shell` from both the
+/// workflow and the job), so its tests wrap their jobs in a bare workflow.
+fn shellTestWorkflow(jobs: []const Job) Workflow {
+    return .{ .on = .{ .events = &.{} }, .jobs = jobs };
+}
+
 test "BP004: detect missing shell with windows runs-on" {
-    const job = Job{
+    const jobs = [_]Job{.{
         .id = "test",
         .runs_on = "windows-latest",
         .steps = &.{
             Step{ .name = "Build", .run = "make build" },
         },
-    };
+    }};
+    const wf = shellTestWorkflow(&jobs);
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkCrossPlatformShell(&job, &diags);
+    checkShell(&wf, &diags);
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqualStrings("BP004", diags.get(0).rule_id);
 }
 
 test "BP004: no warning when shell is specified" {
-    const job = Job{
+    const jobs = [_]Job{.{
         .id = "test",
         .runs_on = "windows-latest",
         .steps = &.{
             Step{ .name = "Build", .run = "make build", .shell = "bash" },
         },
-    };
+    }};
+    const wf = shellTestWorkflow(&jobs);
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkCrossPlatformShell(&job, &diags);
+    checkShell(&wf, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
 test "BP004: no warning without windows" {
-    const job = Job{
+    const jobs = [_]Job{.{
         .id = "test",
         .runs_on = "ubuntu-latest",
         .steps = &.{
             Step{ .name = "Build", .run = "make build" },
         },
-    };
+    }};
+    const wf = shellTestWorkflow(&jobs);
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkCrossPlatformShell(&job, &diags);
+    checkShell(&wf, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "BP004: no fix when shell_insertion_byte is missing" {
-    const job = Job{
+test "BP004: job defaults shell suppresses the missing-shell warning" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "windows-latest",
+        .defaults = .{ .run_shell = "pwsh" },
+        .steps = &.{
+            Step{ .name = "Build", .run = "make build" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: workflow defaults shell suppresses the missing-shell warning" {
+    const jobs = [_]Job{.{
         .id = "test",
         .runs_on = "windows-latest",
         .steps = &.{
             Step{ .name = "Build", .run = "make build" },
         },
-    };
+    }};
+    var wf = shellTestWorkflow(&jobs);
+    wf.defaults = .{ .run_shell = "bash" };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkCrossPlatformShell(&job, &diags);
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: unknown shell name is an error" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "ubuntu-latest",
+        .steps = &.{
+            Step{ .run = "echo hi", .shell = "bash4" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("BP004", diags.get(0).rule_id);
+    try std.testing.expectEqual(diagnostics_mod.Severity.@"error", diags.get(0).severity);
+    try std.testing.expectEqualStrings("Unknown shell name 'bash4'.", diags.get(0).message);
+}
+
+test "BP004: windows-only shell on a linux runner is an error" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "ubuntu-latest",
+        .steps = &.{
+            Step{ .run = "echo hi", .shell = "cmd" },
+            Step{ .run = "echo hi", .shell = "powershell" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+    try std.testing.expectEqualStrings("Shell 'cmd' is only available on Windows runners.", diags.get(0).message);
+}
+
+test "BP004: sh on a windows runner is an error" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "windows-latest",
+        .steps = &.{
+            Step{ .run = "echo hi", .shell = "sh" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("Shell 'sh' is not available on Windows runners.", diags.get(0).message);
+}
+
+test "BP004: sh is accepted on a linux runner and cmd on a windows runner" {
+    const jobs = [_]Job{
+        .{
+            .id = "linux",
+            .runs_on = "ubuntu-latest",
+            .steps = &.{Step{ .run = "echo hi", .shell = "sh" }},
+        },
+        .{
+            .id = "win",
+            .runs_on = "windows-latest",
+            .steps = &.{Step{ .run = "echo hi", .shell = "cmd" }},
+        },
+    };
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: OS-specific check is skipped when runs-on is an expression" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "${{ matrix.os }}",
+        .steps = &.{
+            Step{ .run = "echo hi", .shell = "cmd" },
+            Step{ .run = "echo hi", .shell = "sh" },
+            Step{ .run = "echo hi", .shell = "bash4" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    // Only the unknown name survives; `cmd` and `sh` may both be valid here.
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("Unknown shell name 'bash4'.", diags.get(0).message);
+}
+
+test "BP004: custom shell and expression values are not name-checked" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "ubuntu-latest",
+        .steps = &.{
+            Step{ .run = "echo hi", .shell = "perl {0}" },
+            Step{ .run = "echo hi", .shell = "${{ matrix.shell }}" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: defaults shell names are validated too" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "ubuntu-latest",
+        .defaults = .{ .run_shell = "cmd" },
+        .steps = &.{Step{ .run = "echo hi" }},
+    }};
+    var wf = shellTestWorkflow(&jobs);
+    wf.defaults = .{ .run_shell = "bash4" };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+    try std.testing.expectEqualStrings("Unknown shell name 'bash4'.", diags.get(0).message);
+    try std.testing.expectEqualStrings("Shell 'cmd' is only available on Windows runners.", diags.get(1).message);
+}
+
+test "BP004: a literal OS in an expression label still resolves the runner OS" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "windows-${{ matrix.version }}",
+        .steps = &.{
+            Step{ .run = "echo hi" },
+            Step{ .run = "echo hi", .shell = "sh" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+    try std.testing.expectEqualStrings(
+        "Step with 'run' does not specify 'shell' in a job targeting Windows. Default shells differ across platforms.",
+        diags.get(0).message,
+    );
+    try std.testing.expectEqualStrings("Shell 'sh' is not available on Windows runners.", diags.get(1).message);
+}
+
+test "BP004: an OS name inside an expression does not resolve the runner OS" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "${{ matrix.windows_runner }}",
+        .steps = &.{
+            Step{ .run = "echo hi", .shell = "sh" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: workflow defaults shell is checked against the OS of the jobs it reaches" {
+    const jobs = [_]Job{
+        .{
+            .id = "win",
+            .runs_on = "windows-latest",
+            .steps = &.{Step{ .run = "echo hi" }},
+        },
+        .{
+            .id = "win2",
+            .runs_on = "windows-2022",
+            .steps = &.{Step{ .run = "echo hi" }},
+        },
+    };
+    var wf = shellTestWorkflow(&jobs);
+    wf.defaults = .{ .run_shell = "sh" };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    // Reported once, not once per job inheriting the default.
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("Shell 'sh' is not available on Windows runners.", diags.get(0).message);
+}
+
+test "BP004: workflow defaults shell is not judged against a job that overrides it" {
+    const jobs = [_]Job{.{
+        .id = "win",
+        .runs_on = "windows-latest",
+        .defaults = .{ .run_shell = "pwsh" },
+        .steps = &.{Step{ .run = "echo hi" }},
+    }};
+    var wf = shellTestWorkflow(&jobs);
+    wf.defaults = .{ .run_shell = "sh" };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: no fix when shell_insertion_byte is missing" {
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "windows-latest",
+        .steps = &.{
+            Step{ .name = "Build", .run = "make build" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
 }
 
 test "BP004: attaches unsafe fix when shell_insertion_byte and span are present" {
-    const job = Job{
+    const jobs = [_]Job{.{
         .id = "test",
         .runs_on = "windows-latest",
         .steps = &.{
@@ -802,10 +1146,11 @@ test "BP004: attaches unsafe fix when shell_insertion_byte and span are present"
                 .shell_insertion_byte = 42,
             },
         },
-    };
+    }};
+    const wf = shellTestWorkflow(&jobs);
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkCrossPlatformShell(&job, &diags);
+    checkShell(&wf, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
@@ -828,7 +1173,7 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
         \\
     ;
 
-    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCrossPlatformShell }, true);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .workflow = &checkShell }, true);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
@@ -915,7 +1260,6 @@ test "BP005: fix is null when concurrency_insertion_byte is missing" {
     const wf = Workflow{
         .on = .{ .events = &events },
         .jobs = &.{},
-        // concurrency_insertion_byte left null
     };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
@@ -959,8 +1303,6 @@ test "BP005: autofix inserts block-form concurrency after on: line" {
         result.content,
     );
 }
-
-// ── BP008 tests ──
 
 fn bp008Diags(script: []const u8, diags: *DiagnosticList) void {
     const step = Step{ .run = script };

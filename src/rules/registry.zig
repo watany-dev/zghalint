@@ -1,5 +1,3 @@
-//! The single registry of lint rules.
-//!
 //! The CLI, the SARIF renderer, and the fixture-driven E2E tests all run the
 //! same rule set, so it lives here instead of in `main.zig`.
 
@@ -12,8 +10,8 @@ const expressions = @import("expressions.zig");
 const dependabot = @import("dependabot.zig");
 const runner = @import("runner.zig");
 const syntax = @import("syntax.zig");
+const uses = @import("uses.zig");
 
-/// All lint rules used by the engine and SARIF output.
 pub const all_rules = security.security_rules ++
     best_practices.rules ++
     performance.rules ++
@@ -21,4 +19,5 @@ pub const all_rules = security.security_rules ++
     [_]engine.Rule{expressions.expression_rule} ++
     dependabot.rules ++
     runner.rules ++
-    syntax.rules;
+    syntax.rules ++
+    uses.rules;

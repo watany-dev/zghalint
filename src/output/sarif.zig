@@ -8,8 +8,6 @@ const Rule = engine_mod.Rule;
 
 const schema_url = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json";
 
-/// SARIF severity level mapping.
-/// Maps zghalint Severity to SARIF "level" values.
 fn sarifLevel(sev: Severity) []const u8 {
     return switch (sev) {
         .@"error" => "error",
@@ -19,8 +17,6 @@ fn sarifLevel(sev: Severity) []const u8 {
     };
 }
 
-/// Render diagnostics in SARIF 2.1.0 format.
-/// `rules` are the rule definitions used to populate the tool.driver.rules array.
 pub fn renderSarif(writer: *std.Io.Writer, list: DiagnosticList, rules: []const Rule) !void {
     var js: std.json.Stringify = .{ .writer = writer };
 
@@ -34,7 +30,6 @@ pub fn renderSarif(writer: *std.Io.Writer, list: DiagnosticList, rules: []const 
     try js.beginArray();
     try js.beginObject();
 
-    // -- tool.driver
     try js.objectField("tool");
     try js.beginObject();
     try js.objectField("driver");
@@ -57,7 +52,6 @@ pub fn renderSarif(writer: *std.Io.Writer, list: DiagnosticList, rules: []const 
     try js.endObject();
     try js.endObject();
 
-    // -- results
     try js.objectField("results");
     try js.beginArray();
     for (list.items.items) |diag| {
@@ -131,10 +125,6 @@ fn findRuleIndex(rules: []const Rule, rule_id: []const u8) ?usize {
     return null;
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const Span = @import("../yaml/types.zig").Span;
 const Category = diagnostics.Category;
 
@@ -204,7 +194,6 @@ test "renderSarif with diagnostic" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    // Check SARIF structure
     try std.testing.expect(std.mem.indexOf(u8, output, "\"version\":\"2.1.0\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"SEC002\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":1") != null);
@@ -226,7 +215,6 @@ test "renderSarif rule descriptors" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    // All rules should appear in driver.rules
     try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":\"SEC001\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":\"SEC002\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":\"BP001\"") != null);
@@ -274,7 +262,6 @@ test "renderSarif unknown rule id has no ruleIndex" {
     const output = out.written();
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"UNKNOWN\"") != null);
-    // Should not have ruleIndex for unknown rule
     try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":") == null);
 }
 

@@ -11,7 +11,6 @@ pub const Workflow = workflow_types.Workflow;
 pub const Job = workflow_types.Job;
 pub const Step = workflow_types.Step;
 
-/// A lint rule that can inspect workflows, jobs, and/or steps.
 pub const Rule = struct {
     id: []const u8,
     name: []const u8,
@@ -23,7 +22,6 @@ pub const Rule = struct {
     check_step: ?*const fn (*const Step, *DiagnosticList) void = null,
 };
 
-/// The rule engine: holds a set of rules and runs them against workflows.
 pub const Engine = struct {
     rules: []const Rule,
 
@@ -31,23 +29,19 @@ pub const Engine = struct {
         return .{ .rules = rules };
     }
 
-    /// Run all rules against a workflow, returning collected diagnostics.
     pub fn run(self: Engine, allocator: std.mem.Allocator, workflow: *const Workflow) DiagnosticList {
         var list = DiagnosticList.init(allocator);
 
         for (self.rules) |rule| {
-            // Workflow-level checks
             if (rule.check_workflow) |check_fn| {
                 check_fn(workflow, &list);
             }
 
-            // Job-level checks
             for (workflow.jobs) |*job| {
                 if (rule.check_job) |check_fn| {
                     check_fn(job, &list);
                 }
 
-                // Step-level checks
                 for (job.steps) |*step| {
                     if (rule.check_step) |check_fn| {
                         check_fn(step, &list);
@@ -60,20 +54,15 @@ pub const Engine = struct {
     }
 };
 
-// ============================================================
-// Post-processing: dedupe overlapping SC005/SC008 diagnostics
-// ============================================================
-
 const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
 
-/// Walk `workflow` and drop any SC005 diagnostic whose underlying step
-/// also fired SC008-impostor. Both rules visit steps in identical order
-/// (engine.run iterates `rules` outer, `steps` inner), so the K-th SC005
-/// diagnostic in `list` corresponds to the K-th step that satisfied
-/// SC005's emission condition. We rebuild the same K-th counter here by
-/// re-querying the cached tag resolution + impostor verdict for each
-/// step, then strike the matching SC005 entries from the list.
+/// Both rules visit steps in identical order (engine.run iterates `rules`
+/// outer, `steps` inner), so the K-th SC005 diagnostic in `list` corresponds
+/// to the K-th step that satisfied SC005's emission condition. The same K-th
+/// counter is rebuilt here by re-querying the cached tag resolution +
+/// impostor verdict for each step, then the matching SC005 entries are
+/// struck from the list.
 ///
 /// SC008 is structurally a stricter version of SC005 (impostor implies
 /// no_tag), so this hides the SC005 noise without affecting the case
@@ -103,7 +92,6 @@ pub fn postProcess(
             if (tag_res != .no_tag) continue;
             defer k_sc005 += 1;
 
-            // Same step also flagged as impostor → drop the K-th SC005.
             if (impostor.shaIsCachedImpostor(owner, repo, sha)) {
                 drop.append(allocator, k_sc005) catch return;
             }
@@ -139,35 +127,23 @@ pub fn postProcess(
     list.items.shrinkRetainingCapacity(write);
 }
 
-// ============================================================
-// Network deadline
-// ============================================================
-
 pub var network_deadline_ns: ?i128 = null;
 
-/// Set a deadline for network operations using a timeout duration in nanoseconds.
 pub fn setNetworkDeadline(timeout_ns: i128) void {
     network_deadline_ns = std.time.nanoTimestamp() + timeout_ns;
 }
 
-/// Check if the network deadline has been exceeded.
 pub fn isNetworkDeadlineExceeded() bool {
     const deadline = network_deadline_ns orelse return false;
     return std.time.nanoTimestamp() >= deadline;
 }
 
-/// Clear the network deadline.
 pub fn clearNetworkDeadline() void {
     network_deadline_ns = null;
 }
 
-// ============================================================
-// URL component validation
-// ============================================================
-
-/// Validate that a string is safe for use in GitHub API URL path segments.
-/// Allows: [a-zA-Z0-9._-] (GitHub naming rules for owners, repos, and refs).
-/// Rejects: /, ?, #, \, spaces, control characters, etc.
+/// Guards GitHub API URL path segments; the allowed character set is
+/// GitHub's naming rules for owners, repos, and refs.
 pub fn isValidGitHubComponent(s: []const u8) bool {
     if (s.len == 0 or s.len > 255) return false;
     for (s) |c| {
@@ -176,15 +152,13 @@ pub fn isValidGitHubComponent(s: []const u8) bool {
             else => return false,
         }
     }
-    // Reject "." and any ".." subsequence (path traversal)
+    // "." and ".." would enable path traversal in the URL.
     if (std.mem.eql(u8, s, ".") or std.mem.indexOf(u8, s, "..") != null) return false;
     return true;
 }
 
-/// Validate a Git ref for safe use in GitHub API URL path segments.
-/// Like isValidGitHubComponent but additionally allows '/' for branch refs
-/// (e.g. "feature/foo") and '.' for dot-prefixed components.
-/// Rejects ".." to prevent path traversal (e.g. "../", "foo/../bar").
+/// Like isValidGitHubComponent but also allows '/' because branch refs
+/// (e.g. "feature/foo") contain it.
 pub fn isValidGitRef(s: []const u8) bool {
     if (s.len == 0 or s.len > 255) return false;
     for (s) |c| {
@@ -198,7 +172,6 @@ pub fn isValidGitRef(s: []const u8) bool {
     return true;
 }
 
-/// Validate that a string is a valid hex SHA (40 chars, [0-9a-f]).
 pub fn isValidSha(s: []const u8) bool {
     if (s.len != 40) return false;
     for (s) |c| {
@@ -210,17 +183,11 @@ pub fn isValidSha(s: []const u8) bool {
     return true;
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const Span = @import("../yaml/types.zig").Span;
 const EventConfig = workflow_types.EventConfig;
 const Trigger = workflow_types.Trigger;
 const ActionRef = workflow_types.ActionRef;
 
-// --- Test rules ---
-//
 // The engine only needs to know that each hook is reached, so these stubs fire
 // unconditionally instead of re-implementing real rules; the actual BP/SEC
 // logic is covered where those rules live.
@@ -331,7 +298,6 @@ test "engine returns all expected diagnostics" {
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    // One diagnostic from each of the three hooks.
     try std.testing.expectEqual(@as(usize, 3), list.len());
 }
 
@@ -351,7 +317,6 @@ test "engine with empty workflow" {
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
-    // No jobs or steps, so only the workflow hook fires.
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
 }
@@ -366,8 +331,6 @@ test "rule struct field access" {
     try std.testing.expect(rule.check_job == null);
     try std.testing.expect(rule.check_step == null);
 }
-
-// --- isValidGitHubComponent tests ---
 
 test "isValidGitHubComponent: valid names" {
     try std.testing.expect(isValidGitHubComponent("actions"));
@@ -410,7 +373,6 @@ test "isValidGitHubComponent: rejects dot segments" {
     try std.testing.expect(!isValidGitHubComponent(".."));
     try std.testing.expect(!isValidGitHubComponent("foo..bar"));
     try std.testing.expect(!isValidGitHubComponent("..."));
-    // Single dot within a name is still valid
     try std.testing.expect(isValidGitHubComponent("my.action"));
 }
 
@@ -423,16 +385,12 @@ test "isValidGitHubComponent: allows dot-prefixed names" {
 }
 
 test "isValidGitHubComponent: rejects path traversal with separators" {
-    // / and \ are rejected by character check
     try std.testing.expect(!isValidGitHubComponent("./"));
     try std.testing.expect(!isValidGitHubComponent("../"));
-    // Windows separators
     try std.testing.expect(!isValidGitHubComponent(".\\"));
     try std.testing.expect(!isValidGitHubComponent("..\\"));
     try std.testing.expect(!isValidGitHubComponent("foo\\bar"));
 }
-
-// --- isValidGitRef tests ---
 
 test "isValidGitRef: allows slashes" {
     try std.testing.expect(isValidGitRef("feature/foo"));
@@ -464,13 +422,10 @@ test "isValidGitRef: rejects unsafe chars" {
     try std.testing.expect(!isValidGitRef("ref?query"));
     try std.testing.expect(!isValidGitRef("ref#fragment"));
     try std.testing.expect(!isValidGitRef("ref name"));
-    // Windows separators
     try std.testing.expect(!isValidGitRef("ref\\path"));
     try std.testing.expect(!isValidGitRef(".\\foo"));
     try std.testing.expect(!isValidGitRef("..\\foo"));
 }
-
-// --- isValidSha tests ---
 
 test "isValidSha: valid 40-char hex" {
     try std.testing.expect(isValidSha("a5ac7e51b41094c92402da3b24376905380afc29"));
@@ -488,29 +443,22 @@ test "isValidSha: rejects non-hex chars" {
     try std.testing.expect(!isValidSha("g5ac7e51b41094c92402da3b24376905380afc29"));
 }
 
-// --- Network deadline tests ---
-
 test "isNetworkDeadlineExceeded: no deadline set returns false" {
     clearNetworkDeadline();
     try std.testing.expect(!isNetworkDeadlineExceeded());
 }
 
 test "isNetworkDeadlineExceeded: future deadline returns false" {
-    setNetworkDeadline(60 * std.time.ns_per_s); // 60 seconds
+    setNetworkDeadline(60 * std.time.ns_per_s);
     defer clearNetworkDeadline();
     try std.testing.expect(!isNetworkDeadlineExceeded());
 }
 
 test "isNetworkDeadlineExceeded: past deadline returns true" {
-    // Set a deadline in the past by using a negative timeout
     network_deadline_ns = std.time.nanoTimestamp() - 1;
     defer clearNetworkDeadline();
     try std.testing.expect(isNetworkDeadlineExceeded());
 }
-
-// ============================================================
-// postProcess tests
-// ============================================================
 
 test "postProcess: drops SC005 when same step is impostor" {
     stale_refs.initStaleRefs(std.testing.allocator, false);
@@ -627,14 +575,12 @@ test "postProcess: drops only the matching SC005 entry, not unrelated ones" {
     postProcess(std.testing.allocator, &wf, &list);
 
     try std.testing.expectEqual(@as(usize, 2), list.len());
-    // The remaining SC005 must be the B one (we dropped index 0).
     try std.testing.expectEqualStrings("SC005", list.get(0).rule_id);
     try std.testing.expectEqualStrings("stale-B", list.get(0).message);
     try std.testing.expectEqualStrings("SC008", list.get(1).rule_id);
 }
 
 test "postProcess: no-op when impostor module offline" {
-    // stale_refs offline → lookupCachedTagResult returns null → no drops.
     const steps = [_]Step{.{ .uses = ActionRef.parse("o/r@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }};
     const jobs = [_]Job{.{ .id = "j", .steps = &steps }};
     const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };

@@ -27,6 +27,7 @@ const ParsedStringMap = struct {
 const ParsedPermissions = struct {
     permissions: types.Permissions,
     meta: ?types.PermissionsMeta,
+    problems: []const types.PermissionProblem,
 };
 
 fn isEmptyContainer(node: Node) bool {
@@ -43,7 +44,6 @@ fn recordEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allo
     try list.append(allocator, .{ .name = name, .span = node.getSpan() });
 }
 
-/// `workflow_dispatch` / `workflow_call` nested maps (`inputs`, `outputs`, `secrets`).
 fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, node: Node) !void {
     const mapping = switch (node) {
         .mapping => |m| m,
@@ -68,7 +68,6 @@ fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator:
     }
 }
 
-/// Parse a YAML AST Node into a Workflow struct
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
     var type_mismatches = std.ArrayList(type_validation.TypeMismatch){};
     errdefer type_mismatches.deinit(allocator);
@@ -115,9 +114,10 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     };
 
     if (root.get("permissions")) |n| {
-        const parsed = try parsePermissions(n);
+        const parsed = try parsePermissions(allocator, n);
         workflow.permissions = parsed.permissions;
         workflow.permissions_meta = parsed.meta;
+        workflow.permission_problems = parsed.problems;
     }
 
     if (root.get("env")) |n| {
@@ -132,6 +132,7 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
 
     if (root.get("defaults")) |n| {
         try recordEmpty(&empty, allocator, "defaults", n);
+        workflow.defaults = parseDefaults(n);
     }
 
     try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys, &.{schema.workflow_on_key_alias});
@@ -140,8 +141,6 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     workflow.unknown_keys = try unknown_collector.toOwnedSlice();
     workflow.empty_sections = try empty.toOwnedSlice(allocator);
 
-    // Compute insertion anchors for top-level `permissions:` / `concurrency:`
-    // directly after the `on:` entry line.
     for (root.entries) |entry| {
         const name = entry.key.value;
         if (std.mem.eql(u8, name, "on") or std.mem.eql(u8, name, "true")) {
@@ -156,11 +155,9 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     return workflow;
 }
 
-/// Parse the `on:` trigger field
 fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigger {
     switch (node) {
         .scalar => |s| {
-            // on: push
             const events = try allocator.alloc(types.EventConfig, 1);
             events[0] = .{
                 .event = types.EventType.fromString(s.value),
@@ -168,7 +165,6 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
             return .{ .events = events };
         },
         .sequence => |seq| {
-            // on: [push, pull_request]
             const events = try allocator.alloc(types.EventConfig, seq.items.len);
             for (seq.items, 0..) |item, i| {
                 switch (item) {
@@ -183,7 +179,6 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
             return .{ .events = events };
         },
         .mapping => |m| {
-            // on: { push: { branches: [main] }, pull_request: ... }
             const events = try allocator.alloc(types.EventConfig, m.entries.len);
             for (m.entries, 0..) |entry, i| {
                 events[i] = try parseEventConfig(allocator, entry.key.value, entry.value);
@@ -200,7 +195,6 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
 
     switch (node) {
         .null_value => {
-            // on: { push: } — no config
             return config;
         },
         .mapping => |m| {
@@ -275,6 +269,12 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
     job.uses = m.getScalar("uses");
+    if (m.get("uses")) |n| {
+        switch (n) {
+            .scalar => |s| job.uses_value_span = s.span,
+            else => {},
+        }
+    }
 
     var empty = std.ArrayList(types.EmptySection){};
     defer empty.deinit(ctx.allocator);
@@ -327,9 +327,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     }
 
     if (m.get("permissions")) |n| {
-        const parsed = try parsePermissions(n);
+        const parsed = try parsePermissions(ctx.allocator, n);
         job.permissions = parsed.permissions;
         job.permissions_meta = parsed.meta;
+        job.permission_problems = parsed.problems;
     }
     if (m.get("env")) |n| {
         try recordEmpty(&empty, ctx.allocator, "env", n);
@@ -382,7 +383,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
     if (m.get("outputs")) |n| try recordEmpty(&empty, ctx.allocator, "outputs", n);
-    if (m.get("defaults")) |n| try recordEmpty(&empty, ctx.allocator, "defaults", n);
+    if (m.get("defaults")) |n| {
+        try recordEmpty(&empty, ctx.allocator, "defaults", n);
+        job.defaults = parseDefaults(n);
+    }
 
     if (ctx.unknown_collector) |c| {
         try c.checkMapping(m, "job", &schema.job_keys, &.{});
@@ -402,6 +406,23 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
 
     job.empty_sections = try empty.toOwnedSlice(ctx.allocator);
     return job;
+}
+
+fn parseDefaults(node: Node) ?types.Defaults {
+    const m = switch (node) {
+        .mapping => |mp| mp,
+        else => return null,
+    };
+    const run_node = m.get("run") orelse return null;
+    const run_mapping = switch (run_node) {
+        .mapping => |mp| mp,
+        else => return null,
+    };
+    const shell_node = run_mapping.get("shell") orelse return null;
+    return switch (shell_node) {
+        .scalar => |s| .{ .run_shell = s.value, .run_shell_span = s.span },
+        else => null,
+    };
 }
 
 fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
@@ -436,7 +457,15 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     step.name = m.getScalar("name");
     step.run = m.getScalar("run");
-    step.shell = m.getScalar("shell");
+    if (m.get("shell")) |n| {
+        switch (n) {
+            .scalar => |s| {
+                step.shell = s.value;
+                step.shell_value_span = s.span;
+            },
+            else => {},
+        }
+    }
     step.if_condition = m.getScalar("if");
     if (m.get("if")) |n| {
         switch (n) {
@@ -444,7 +473,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             else => {},
         }
     }
-    // Capture `run:` value span and the insertion anchor for a sibling `shell:`.
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
         switch (entry.value) {
@@ -459,7 +487,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         break;
     }
 
-    // Parse uses: and capture span info for autofix
     if (m.get("uses")) |uses_node| {
         switch (uses_node) {
             .scalar => |s| {
@@ -499,7 +526,6 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             ctx.allocator,
         );
     }
-    // Parse with: and capture last entry's value end byte for autofix
     var empty = std.ArrayList(types.EmptySection){};
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
@@ -535,7 +561,10 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     return step;
 }
 
-fn parsePermissions(node: Node) ParseError!ParsedPermissions {
+fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedPermissions {
+    var problems = std.ArrayList(types.PermissionProblem){};
+    errdefer problems.deinit(allocator);
+
     switch (node) {
         .scalar => |s| {
             var perms = types.Permissions{ .value_span = s.span };
@@ -543,25 +572,64 @@ fn parsePermissions(node: Node) ParseError!ParsedPermissions {
                 perms.read_all = true;
             } else if (std.mem.eql(u8, s.value, "write-all")) {
                 perms.write_all = true;
+            } else {
+                try problems.append(allocator, .{
+                    .kind = .invalid_all,
+                    .text = s.value,
+                    .span = s.span,
+                });
             }
-            return .{ .permissions = perms, .meta = null };
+            return .{
+                .permissions = perms,
+                .meta = null,
+                .problems = try problems.toOwnedSlice(allocator),
+            };
         },
         .mapping => |m| {
             var perms = types.Permissions{ .value_span = m.span };
             var meta = types.PermissionsMeta{};
             for (m.entries) |entry| {
-                // parsePermissionLevel only accepts scalars, so the value span
-                // for `meta` is always available alongside the level.
-                const level = parsePermissionLevel(entry.value) orelse continue;
+                const level = parsePermissionLevel(entry.value);
+                var known_scope = false;
                 inline for (types.permission_scopes) |field| {
                     if (std.mem.eql(u8, entry.key.value, comptime types.permissionScopeKey(field))) {
-                        @field(perms, field) = level;
-                        @field(meta, field) = entry.value.scalar.span;
+                        known_scope = true;
+                        // parsePermissionLevel only accepts scalars, so the
+                        // value span for `meta` is always available alongside
+                        // the level.
+                        if (level) |lvl| {
+                            @field(perms, field) = lvl;
+                            @field(meta, field) = entry.value.scalar.span;
+                        }
                         break;
                     }
                 }
+                if (!known_scope) {
+                    try problems.append(allocator, .{
+                        .kind = .unknown_scope,
+                        .text = entry.key.value,
+                        .span = entry.key.span,
+                    });
+                } else if (level == null) {
+                    // A null value's span is the *next* token, so a non-scalar
+                    // value is reported on the key instead.
+                    const text: []const u8, const span: yaml.Span = switch (entry.value) {
+                        .scalar => |s| .{ s.value, s.span },
+                        else => .{ "", entry.key.span },
+                    };
+                    try problems.append(allocator, .{
+                        .kind = .invalid_level,
+                        .text = text,
+                        .scope = entry.key.value,
+                        .span = span,
+                    });
+                }
             }
-            return .{ .permissions = perms, .meta = meta };
+            return .{
+                .permissions = perms,
+                .meta = meta,
+                .problems = try problems.toOwnedSlice(allocator),
+            };
         },
         else => return error.InvalidValue,
     }
@@ -713,7 +781,6 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
     return services;
 }
 
-/// Values only; callers that need the scalar spans use `parseStringMapWithMeta`.
 fn parseStringMap(allocator: std.mem.Allocator, node: Node) ParseError!types.StringMap {
     return (try parseStringMapWithMeta(allocator, node)).values;
 }
@@ -741,7 +808,6 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
     return .{ .values = values, .meta = meta };
 }
 
-/// Collect every key of an `env:` mapping with the span of its key token.
 /// Unlike `parseStringMapWithMeta`, no entry is dropped: SYN007 must see keys
 /// whose value is not a scalar, and duplicated keys, to validate their names.
 fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.EnvKey {
@@ -793,10 +859,6 @@ fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const
     return (try parseStringArrayWithSpans(allocator, node)).values;
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
 
@@ -842,7 +904,6 @@ test "parseWorkflow minimal" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Build: { name: CI, on: push, jobs: { build: { runs-on: ubuntu-latest, steps: [{ run: echo hi }] } } }
     var step_entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("run"), .value = mkScalar("echo hi"), .span = mkSpan() },
     };
@@ -975,17 +1036,31 @@ test "parseTrigger records key spans for empty filter values" {
 }
 
 test "parsePermissions read-all" {
-    const parsed = try parsePermissions(mkScalar("read-all"));
+    const parsed = try parsePermissions(testing.allocator, mkScalar("read-all"));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(parsed.permissions.read_all);
     try testing.expect(!parsed.permissions.write_all);
     try testing.expect(parsed.meta == null);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
 }
 
 test "parsePermissions write-all" {
-    const parsed = try parsePermissions(mkScalar("write-all"));
+    const parsed = try parsePermissions(testing.allocator, mkScalar("write-all"));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(parsed.permissions.write_all);
     try testing.expect(!parsed.permissions.read_all);
     try testing.expect(parsed.meta == null);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
+}
+
+test "parsePermissions reports an invalid all-scopes value" {
+    const parsed = try parsePermissions(testing.allocator, mkScalar("read"));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expect(!parsed.permissions.read_all);
+    try testing.expect(!parsed.permissions.write_all);
+    try testing.expectEqual(@as(usize, 1), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.invalid_all, parsed.problems[0].kind);
+    try testing.expectEqualStrings("read", parsed.problems[0].text);
 }
 
 test "parsePermissions individual scopes" {
@@ -995,7 +1070,9 @@ test "parsePermissions individual scopes" {
         .{ .key = mkScalarS("issues"), .value = mkScalar("none"), .span = mkSpan() },
     };
 
-    const parsed = try parsePermissions(mkMapping(&entries));
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.contents.?);
     try testing.expectEqual(types.PermissionLevel.write, parsed.permissions.pull_requests.?);
     try testing.expectEqual(types.PermissionLevel.none, parsed.permissions.issues.?);
@@ -1217,6 +1294,71 @@ test "parseJob captures runs_on_value_span for scalar runs-on" {
     try testing.expectEqualStrings("ubuntu-20.04", source[span.start_byte..span.end_byte]);
 }
 
+test "parseDefaults captures defaults.run.shell at workflow and job level" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\defaults:
+        \\  run:
+        \\    shell: bash
+        \\jobs:
+        \\  build:
+        \\    runs-on: windows-latest
+        \\    defaults:
+        \\      run:
+        \\        shell: pwsh
+        \\    steps:
+        \\      - run: echo hi
+        \\        shell: cmd
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    try testing.expectEqualStrings("bash", wf.defaults.?.run_shell);
+    const wf_span = wf.defaults.?.run_shell_span;
+    try testing.expectEqualStrings("bash", source[wf_span.start_byte..wf_span.end_byte]);
+
+    try testing.expectEqualStrings("pwsh", wf.jobs[0].defaults.?.run_shell);
+
+    const step_span = wf.jobs[0].steps[0].shell_value_span.?;
+    try testing.expectEqualStrings("cmd", source[step_span.start_byte..step_span.end_byte]);
+}
+
+test "parseDefaults leaves defaults null when run.shell is absent" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\defaults:
+        \\  run:
+        \\    working-directory: ./src
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    try testing.expect(wf.defaults == null);
+    try testing.expect(wf.jobs[0].defaults == null);
+    try testing.expect(wf.jobs[0].steps[0].shell_value_span == null);
+}
+
 test "parseJob leaves runs_on_value_span null for missing runs-on" {
     const yaml_parser_mod = @import("../yaml/parser.zig");
 
@@ -1305,7 +1447,6 @@ test "parseStep captures if_condition_meta" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    // Simulate `if: contains(github.ref, 'main')` where the value starts at byte 4.
     const if_value_span = mkSpanBytes(4, 32);
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("run"), .value = mkScalar("echo"), .span = mkSpan() },
@@ -1576,27 +1717,60 @@ test "parseJob with env and concurrency and with" {
     try testing.expectEqual(types.PermissionLevel.read, job.permissions.?.contents.?);
 }
 
-test "parsePermissions ignores invalid permission level" {
+test "parsePermissions reports invalid permission levels" {
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("contents"), .value = mkScalar("execute"), .span = mkSpan() },
         .{ .key = mkScalarS("issues"), .value = mkScalar("admin"), .span = mkSpan() },
         .{ .key = mkScalarS("pull-requests"), .value = mkScalar("read"), .span = mkSpan() },
     };
 
-    const parsed = try parsePermissions(mkMapping(&entries));
-    // Invalid levels should be skipped (orelse continue)
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(parsed.permissions.contents == null);
     try testing.expect(parsed.permissions.issues == null);
-    // Valid level should be set
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.pull_requests.?);
+
+    try testing.expectEqual(@as(usize, 2), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.invalid_level, parsed.problems[0].kind);
+    try testing.expectEqualStrings("execute", parsed.problems[0].text);
+    try testing.expectEqualStrings("contents", parsed.problems[0].scope);
+    try testing.expectEqualStrings("admin", parsed.problems[1].text);
+    try testing.expectEqualStrings("issues", parsed.problems[1].scope);
+}
+
+test "parsePermissions reports an unknown scope" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("content"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 1), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.unknown_scope, parsed.problems[0].kind);
+    try testing.expectEqualStrings("content", parsed.problems[0].text);
+}
+
+test "parsePermissions accepts artifact-metadata and models" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("artifact-metadata"), .value = mkScalar("read"), .span = mkSpan() },
+        .{ .key = mkScalarS("models"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.artifact_metadata.?);
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.models.?);
 }
 
 test "parsePermissions with empty mapping" {
     var entries = [_]yaml.MappingEntry{};
-    const parsed = try parsePermissions(mkMapping(&entries));
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
     try testing.expect(!parsed.permissions.read_all);
     try testing.expect(!parsed.permissions.write_all);
     try testing.expect(parsed.permissions.contents == null);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
 }
 
 test "parseWorkflow records empty sections for SYN003" {

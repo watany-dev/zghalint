@@ -17,19 +17,14 @@ const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
 const Fix = diagnostics_mod.Fix;
 
-/// How PERF001 should reason about a given setup action's caching.
-///
-/// - `.with_cache_input`: action exposes a `cache:` input taking a package
-///   manager name. Warn when the input is absent and no sibling
-///   `actions/cache` step compensates.
-/// - `.bun_independent`: action has no `cache:` input. Warn when no sibling
-///   `actions/cache` step is present. Autofix unavailable.
-/// - `.uv_independent`: action has built-in caching enabled by default via
-///   `enable-cache: auto`. Warn only when the user explicitly disabled it
-///   with `enable-cache: "false"`.
+/// - `.with_cache_input`: the action exposes a `cache:` input taking a
+///   package manager name.
+/// - `.bun_independent`: setup-bun has no `cache:` input, so only a sibling
+///   `actions/cache` step counts and no autofix is possible.
+/// - `.uv_independent`: setup-uv caches by default (`enable-cache: auto`), so
+///   only an explicit `enable-cache: "false"` is a finding.
 const SetupKind = enum { with_cache_input, bun_independent, uv_independent };
 
-/// Actions that set up language runtimes and support caching.
 const CacheableSetup = struct {
     setup_action: []const u8,
     cache_key: []const u8,
@@ -73,11 +68,6 @@ const cacheable_setups = [_]CacheableSetup{
     },
 };
 
-// ── PERF001: Cache not used ──
-
-/// Build a PERF001 fix that inserts `cache: <cache_value>` into every step of
-/// `job` that matches `setup_action`. Returns null if no edit is applicable
-/// (no span info, existing cache entry, etc.).
 fn buildCacheFix(
     diag_list: *DiagnosticList,
     job: *const Job,
@@ -128,14 +118,11 @@ fn buildCacheFix(
     };
 }
 
-/// Dispatch fix building for a setup action based on workspace context.
-/// Returns a tuple of (optional Fix, optional extra fix_hint suffix).
 const DispatchResult = struct {
     fix: ?Fix,
     hint_extra: ?[]const u8,
 };
 
-/// setup actions whose cache manager is inferred from a lockfile probe.
 /// `manager` / `ambiguous` name the `workspace.Context` fields to read.
 const InferredCacheSetup = struct {
     action: []const u8,
@@ -229,9 +216,6 @@ fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
-/// PERF001 for one setup action. The step scan and the diagnostic are shared;
-/// `ca.kind` only decides what counts as "already cached" and how the fix hint
-/// is enriched.
 fn checkCacheableSetup(
     comptime ca: CacheableSetup,
     job: *const Job,
@@ -306,8 +290,6 @@ fn checkCacheableSetup(
     }) catch return;
 }
 
-// ── PERF002: Redundant checkout ──
-
 fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
     var checkout_without_path_count: u32 = 0;
     // Report on the first redundant checkout — the second one, since a single
@@ -337,8 +319,6 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
         }) catch return;
     }
 }
-
-// ── PERF003: fail-fast disabled ──
 
 fn buildFailFastDisabledFix(diag_list: *DiagnosticList, entry_span: Span) ?Fix {
     const edits = fix_builder.deleteMappingEntry(
@@ -399,8 +379,6 @@ pub const rules = [_]Rule{
         .check_job = checkFailFastDisabled,
     },
 };
-
-// ── Tests ──
 
 test "PERF001: detect missing cache for setup-node" {
     const job = Job{

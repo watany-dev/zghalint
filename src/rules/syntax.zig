@@ -15,8 +15,6 @@ const Node = yaml_types.Node;
 const Mapping = yaml_types.Mapping;
 const UnknownKey = workflow_types.UnknownKey;
 
-// ── SYN003: Empty mapping / sequence sections ──
-
 /// The 13 section names all produce the same sentence, so format it instead of
 /// keeping a lookup table of identical strings.
 fn emptySectionMessage(list: *DiagnosticList, section: []const u8) []const u8 {
@@ -53,11 +51,35 @@ fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
     checkEmptySections(step.empty_sections, list);
 }
 
-// ── SYN002: Case-insensitive duplicate YAML keys ──
-
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const root = wf.yaml_root orelse return;
-    walkDuplicateKeys(root, "workflow", null, list);
+    walkDuplicateKeys(root, "workflow", null, workflowJobsEntries(root), list);
+}
+
+/// Job ID uniqueness belongs to SYN005, which reports the same duplicate at the
+/// same position and additionally validates `needs` references (issue #136).
+/// SYN002 therefore descends into the workflow's `jobs:` mapping without
+/// reporting its own keys. Identity decides, not the section name: a mapping
+/// that merely happens to be named `jobs` (under `with:`, say) is still checked,
+/// and so is a second root-level `jobs:` key, which the parser never reads.
+fn workflowJobsEntries(root: Node) ?[]const yaml_types.MappingEntry {
+    const mapping = switch (root) {
+        .mapping => |m| m,
+        else => return null,
+    };
+    for (mapping.entries) |entry| {
+        if (!std.mem.eql(u8, entry.key.value, "jobs")) continue;
+        return switch (entry.value) {
+            .mapping => |jobs| jobs.entries,
+            else => null,
+        };
+    }
+    return null;
+}
+
+fn isSameEntries(entries: []const yaml_types.MappingEntry, other: ?[]const yaml_types.MappingEntry) bool {
+    const skip = other orelse return false;
+    return entries.ptr == skip.ptr and entries.len == skip.len;
 }
 
 fn sectionForMappingChild(parent_section: []const u8, key: []const u8, value: Node) []const u8 {
@@ -69,69 +91,66 @@ fn sectionForMappingChild(parent_section: []const u8, key: []const u8, value: No
     };
 }
 
-fn walkDuplicateKeys(node: Node, section: []const u8, parent_key: ?[]const u8, list: *DiagnosticList) void {
+fn walkDuplicateKeys(
+    node: Node,
+    section: []const u8,
+    parent_key: ?[]const u8,
+    skip: ?[]const yaml_types.MappingEntry,
+    list: *DiagnosticList,
+) void {
     switch (node) {
-        .mapping => |m| checkMapping(m, section, list),
+        .mapping => |m| checkMapping(m, section, skip, list),
         .sequence => |s| {
             const item_section = if (parent_key) |pk|
                 (if (std.ascii.eqlIgnoreCase(pk, "steps")) "step" else section)
             else
                 section;
             for (s.items) |item| {
-                walkDuplicateKeys(item, item_section, parent_key, list);
+                walkDuplicateKeys(item, item_section, parent_key, skip, list);
             }
         },
         else => {},
     }
 }
 
-fn checkMapping(mapping: Mapping, section: []const u8, list: *DiagnosticList) void {
-    for (mapping.entries, 0..) |entry, i| {
-        for (mapping.entries[0..i]) |earlier| {
-            if (!std.ascii.eqlIgnoreCase(earlier.key.value, entry.key.value)) continue;
-            const message = std.fmt.allocPrint(
-                list.fixAllocator(),
-                "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
-                .{ entry.key.value, section, earlier.key.span.start_line, earlier.key.span.start_col },
-            ) catch return;
+fn reportDuplicateKey(
+    earlier_entries: []const yaml_types.MappingEntry,
+    entry: yaml_types.MappingEntry,
+    section: []const u8,
+    list: *DiagnosticList,
+) void {
+    for (earlier_entries) |earlier| {
+        if (!std.ascii.eqlIgnoreCase(earlier.key.value, entry.key.value)) continue;
+        const message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
+            .{ entry.key.value, section, earlier.key.span.start_line, earlier.key.span.start_col },
+        ) catch return;
 
-            list.append(.{
-                .rule_id = "SYN002",
-                .severity = .@"error",
-                .message = message,
-                .span = entry.key.span,
-                .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
-            }) catch return;
-            break;
-        }
-
-        const child_section = sectionForMappingChild(section, entry.key.value, entry.value);
-        walkDuplicateKeys(entry.value, child_section, entry.key.value, list);
+        list.append(.{
+            .rule_id = "SYN002",
+            .severity = .@"error",
+            .message = message,
+            .span = entry.key.span,
+            .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
+        }) catch return;
+        return;
     }
 }
 
-// ── SYN001: Unknown mapping keys ──
+fn checkMapping(
+    mapping: Mapping,
+    section: []const u8,
+    skip: ?[]const yaml_types.MappingEntry,
+    list: *DiagnosticList,
+) void {
+    const report = !isSameEntries(mapping.entries, skip);
+    for (mapping.entries, 0..) |entry, i| {
+        if (report) reportDuplicateKey(mapping.entries[0..i], entry, section, list);
 
-fn findDidYouMean(key: []const u8, expected: []const []const u8) ?[]const u8 {
-    const max_dist: usize = 2;
-    var best: ?[]const u8 = null;
-    var best_dist: usize = std.math.maxInt(usize);
-    var ties: usize = 0;
-
-    for (expected) |candidate| {
-        const dist = util.levenshteinDistance(key, candidate);
-        if (dist == 0 or dist > max_dist) continue;
-        if (dist < best_dist) {
-            best = candidate;
-            best_dist = dist;
-            ties = 1;
-        } else if (dist == best_dist) {
-            ties += 1;
-        }
+        const child_section = sectionForMappingChild(section, entry.key.value, entry.value);
+        walkDuplicateKeys(entry.value, child_section, entry.key.value, skip, list);
     }
-
-    if (ties != 1) return null;
-    return best;
 }
 
 fn formatUnexpectedKeyMessage(
@@ -159,7 +178,7 @@ fn formatUnexpectedKeyMessage(
 fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.unknown_keys) |uk| {
-        const suggestion = findDidYouMean(uk.key, uk.expected);
+        const suggestion = util.didYouMean(uk.key, uk.expected);
         const message = formatUnexpectedKeyMessage(alloc, uk, suggestion) catch continue;
         list.append(.{
             .rule_id = "SYN001",
@@ -169,8 +188,6 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
         }) catch continue;
     }
 }
-
-// ── SYN004: Mapping value type validation ──
 
 fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
@@ -189,8 +206,6 @@ fn checkMappingValueTypes(wf: *const Workflow, list: *DiagnosticList) void {
         }) catch return;
     }
 }
-
-// ── SYN006: Invalid job ID / step ID naming ──
 
 fn isValidId(id: []const u8) bool {
     if (id.len == 0) return true;
@@ -233,8 +248,6 @@ fn checkInvalidStepId(step: *const Step, diag_list: *DiagnosticList) void {
     const id = step.id orelse return;
     reportInvalidId(diag_list, "step", id, (step.id_value_span orelse step.span));
 }
-
-// ── SYN005: Duplicated job ID / step ID (case-insensitive) ──
 
 fn reportDuplicateId(
     list: *DiagnosticList,
@@ -296,8 +309,6 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
     }
 }
 
-// ── SYN007: Invalid environment variable name ──
-
 fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
     for (env_keys) |key| {
         if (key.name.len == 0) {
@@ -349,8 +360,6 @@ fn checkStepEnvNames(step: *const Step, list: *DiagnosticList) void {
     checkEnvNames(step.env_keys, list);
 }
 
-// ── SYN008: Duplicated job ID in `needs` ──
-
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     for (job.needs, 0..) |dep, i| {
         // Job IDs are case-insensitive in GitHub Actions. Report on the second
@@ -372,9 +381,6 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
-// ── SYN012: Mutually exclusive event filters ──
-
-/// One `<filter>` / `<filter>-ignore` pair as it appears in a single event.
 /// GitHub Actions rejects a workflow that specifies both halves of a pair.
 const ExclusivePair = struct {
     include: ?Span,
@@ -507,10 +513,6 @@ pub const rules = [_]Rule{
         .check_workflow = &checkExclusiveFilters,
     },
 };
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
@@ -1139,8 +1141,8 @@ test "SYN003: secrets inherit and scalar container are not empty sections" {
     try expectSyn003(diags, &.{});
 }
 
-/// Run SYN004 over `source`. The workflow lives in an arena that is released
-/// before returning; the diagnostics only borrow string literals.
+/// The workflow lives in an arena released before returning; the diagnostics
+/// only borrow string literals.
 fn runSyn004(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1348,7 +1350,6 @@ test "SYN006: parse-then-check points at the job key, step id, and needs value" 
     try testing.expect(std.mem.startsWith(u8, diags.get(2).message, "invalid job ID \"1-build\""));
 }
 
-/// Run SYN012's exclusive-filter check over a workflow with just these events.
 fn runOn(events: []const EventConfig) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = events }, .jobs = &.{} };
     var list = DiagnosticList.init(testing.allocator);
@@ -1356,7 +1357,6 @@ fn runOn(events: []const EventConfig) DiagnosticList {
     return list;
 }
 
-/// Run SYN008's duplicate-needs check over a job with just this `needs` list.
 fn runOnNeeds(needs: []const []const u8) DiagnosticList {
     const job = Job{ .id = "test", .runs_on = "ubuntu-latest", .needs = needs };
     var diags = DiagnosticList.init(testing.allocator);
@@ -1369,7 +1369,7 @@ fn collectDuplicateKeyDiagnostics(source: []const u8, diags: *DiagnosticList) !v
     defer arena.deinit();
     var parser = yaml_parser.Parser.init(arena.allocator(), source);
     const node = try parser.parse();
-    walkDuplicateKeys(node, "workflow", null, diags);
+    walkDuplicateKeys(node, "workflow", null, workflowJobsEntries(node), diags);
 }
 
 test "SYN002: duplicated steps key is reported" {
@@ -1510,7 +1510,7 @@ test "SYN002: flow mapping duplicates are reported" {
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "env") != null);
 }
 
-test "SYN002: duplicate job IDs are reported in jobs section" {
+test "SYN002: duplicate job IDs are left to SYN005" {
     const source =
         \\on: push
         \\jobs:
@@ -1529,8 +1529,80 @@ test "SYN002: duplicate job IDs are reported in jobs section" {
 
     try collectDuplicateKeyDiagnostics(source, &diags);
 
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN002: a mapping named jobs outside the workflow root is still checked" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: ./.github/actions/run
+        \\        with:
+        \\          jobs:
+        \\            build: a
+        \\            BUILD: b
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "jobs") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"BUILD\"") != null);
+}
+
+test "SYN002: a jobs mapping nested in a root sequence is still checked" {
+    const source =
+        \\on: push
+        \\x:
+        \\  - jobs:
+        \\      a: 1
+        \\      A: 2
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"A\"") != null);
+}
+
+test "SYN002: a second root-level jobs mapping is still checked" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\jobs:
+        \\  other:
+        \\    runs-on: ubuntu-latest
+        \\  OTHER:
+        \\    runs-on: ubuntu-latest
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try collectDuplicateKeyDiagnostics(source, &diags);
+
+    // The duplicate `jobs:` key itself, plus the job IDs SYN005 cannot reach
+    // because the parser only reads the first `jobs:` mapping.
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"jobs\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"OTHER\"") != null);
 }
 
 test "SYN002: a job named env is still a job section" {
@@ -1715,7 +1787,6 @@ test "SYN004: mapping value type validation" {
     }
 }
 
-/// Run SYN005's duplicate-job-ID check over a workflow with just these jobs.
 fn runOnDuplicateJobIds(jobs: []const Job) DiagnosticList {
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = jobs };
     var diags = DiagnosticList.init(testing.allocator);
@@ -1723,7 +1794,6 @@ fn runOnDuplicateJobIds(jobs: []const Job) DiagnosticList {
     return diags;
 }
 
-/// Run SYN006's duplicate-step-ID check over a job with just these steps.
 fn runOnDuplicateStepIds(steps: []const Step) DiagnosticList {
     const job = Job{ .id = "build", .runs_on = "ubuntu-latest", .steps = steps };
     var diags = DiagnosticList.init(testing.allocator);
@@ -1924,14 +1994,16 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
     var diags = eng.run(alloc, &wf);
     defer diags.deinit();
 
-    var syn005_count: usize = 0;
+    // Job ID duplicates belong to SYN005 alone, so the whole diagnostic list is
+    // exactly the four expected duplicates (see issue #136).
+    try testing.expectEqual(@as(usize, 4), diags.len());
+
     var step_exact = false;
     var step_case = false;
     var job_exact = false;
     var job_case = false;
     for (diags.items.items) |d| {
-        if (!std.mem.eql(u8, d.rule_id, "SYN005")) continue;
-        syn005_count += 1;
+        try testing.expectEqualStrings("SYN005", d.rule_id);
         if (std.mem.eql(u8, d.message, "step ID \"setup\" duplicates. previously defined at line 6. step ID must be unique within a job. note that step ID is case insensitive")) {
             step_exact = true;
             try testing.expectEqual(@as(u32, 8), d.span.start_line);
@@ -1949,7 +2021,6 @@ test "SYN005: end-to-end duplicate job and step IDs from YAML source" {
             try testing.expectEqual(@as(u32, 16), d.span.start_line);
         }
     }
-    try testing.expectEqual(@as(usize, 4), syn005_count);
     try testing.expect(step_exact);
     try testing.expect(step_case);
     try testing.expect(job_exact);

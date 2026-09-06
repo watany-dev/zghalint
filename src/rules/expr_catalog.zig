@@ -1,5 +1,3 @@
-//! Interned catalog of builtin contexts and function signatures.
-//!
 //! Single source of truth for EXPR002 (context names), EXPR003 (properties)
 //! and EXPR004/EXPR005 (function names and arity).
 //! See `docs/adr/0009-expr-static-typecheck.md` (D2, D3).
@@ -15,8 +13,6 @@ const any = &t.type_any;
 const string = &t.type_string;
 const number = &t.type_number;
 const boolean = &t.type_bool;
-
-// --- github ---
 
 /// `github.event` is a loose object on purpose: no per-event payload schema
 /// is shipped (ADR D3). Unknown keys resolve to `any` and never warn.
@@ -76,8 +72,6 @@ pub const github: Type = .{
     },
 };
 
-// --- runner ---
-
 pub const runner: Type = .{
     .kind = .object,
     .shape = .strict,
@@ -91,8 +85,6 @@ pub const runner: Type = .{
         .{ .name = "tool_cache", .ty = string },
     },
 };
-
-// --- job ---
 
 const job_container: Type = .{
     .kind = .object,
@@ -126,8 +118,6 @@ pub const job: Type = .{
     },
 };
 
-// --- strategy ---
-
 /// Loose on purpose: actionlint keeps unknown strategy keys as `any`.
 pub const strategy: Type = .{
     .kind = .object,
@@ -140,10 +130,8 @@ pub const strategy: Type = .{
     },
 };
 
-// --- contexts awaiting a workflow overlay (T4) ---
-
 /// `steps` / `matrix` / `needs` / `inputs` / `jobs` stay loose until the
-/// contextual overlay is wired in; strictness before then would be a
+/// contextual overlay is wired in (#129); strictness before then would be a
 /// false positive.
 pub const loose_context: Type = .{ .kind = .object, .shape = .loose };
 
@@ -165,19 +153,14 @@ const contexts = [_]ContextEntry{
     .{ .name = "vars", .ty = &t.type_map_string },
 };
 
-/// Returns null for an unknown context name (EXPR002).
 pub fn lookupContext(name: []const u8) ?TypeRef {
     const ctx = t.findByName(ContextEntry, &contexts, name) orelse return null;
     return ctx.ty;
 }
 
-// ============================================================
-// Function signatures
-// ============================================================
-
 /// One entry per function: every overload of a GitHub Actions function shares
 /// a return type, so only the accepted argument count varies. Argument types
-/// are EXPR018's job and are not modelled here.
+/// are EXPR018's job (#162) and are not modelled here.
 pub const FuncSig = struct {
     name: []const u8,
     min_args: u8,
@@ -186,8 +169,7 @@ pub const FuncSig = struct {
 };
 
 /// Sorted by name. Lookup is case-sensitive, matching the current EXPR004
-/// behaviour (actionlint is case-insensitive; changing that is a separate
-/// compatibility decision).
+/// behaviour (actionlint is case-insensitive; #161 tracks that decision).
 const functions = [_]FuncSig{
     .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },
@@ -204,14 +186,9 @@ const functions = [_]FuncSig{
     .{ .name = "toJSON", .min_args = 1, .max_args = 1, .ret = string },
 };
 
-/// Returns null for an unknown function name (EXPR004).
 pub fn lookupFunction(name: []const u8) ?*const FuncSig {
     return t.findByName(FuncSig, &functions, name);
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 fn isSorted(comptime T: type, items: []const T) bool {
     var i: usize = 1;

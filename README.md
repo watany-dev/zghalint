@@ -111,11 +111,11 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **58 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **60 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
-### Security (20 rules)
+### Security (21 rules)
 
-Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, and more.
+Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, fork-controlled `workflow_run` gates, and more.
 
 ### Supply Chain (7 rules)
 
@@ -129,17 +129,19 @@ Missing caching, redundant checkout, fail-fast disabled.
 
 Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection, deprecated workflow commands.
 
-### Permissions (2 rules)
+### Permissions (3 rules)
 
-Overly broad scopes, missing job-level permissions.
+Overly broad scopes, missing job-level permissions, unknown scope names and
+invalid permission levels.
 
 ### Expression Validation (8 rules)
 
 `${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions.
 
-### Dependencies (2 rules)
+### Dependencies (3 rules)
 
-Dependabot cooldown configuration, insecure external code execution settings.
+Dependabot cooldown configuration, insecure external code execution settings,
+`uses:` reference format for actions and reusable workflow calls.
 
 ### Runner (1 rule)
 

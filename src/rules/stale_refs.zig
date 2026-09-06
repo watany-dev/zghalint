@@ -12,29 +12,15 @@ const spans = @import("spans.zig");
 const Step = workflow_types.Step;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
-// ============================================================
-// Types
-// ============================================================
-
 /// Re-exported from `rest_fallback.zig` so callers and tests that imported
 /// `stale_refs.TagResolution` keep working. The canonical definition lives
 /// alongside the REST resolver to avoid a circular import.
 pub const TagResolution = rest_fallback.TagResolution;
 
-// ============================================================
-// Module-level cache
-// ============================================================
-
-/// Maps "owner/repo@sha" -> TagResolution.
 /// null means offline mode.
 var tag_cache: ?std.StringHashMap(TagResolution) = null;
 var stale_refs_arena: ?std.heap.ArenaAllocator = null;
 
-// ============================================================
-// Public API
-// ============================================================
-
-/// Initialize stale-ref checker. Lazy: only sets up cache; API calls happen per-lookup.
 pub fn initStaleRefs(backing_allocator: Allocator, offline: bool) void {
     if (offline) return;
     stale_refs_arena = std.heap.ArenaAllocator.init(backing_allocator);
@@ -43,7 +29,6 @@ pub fn initStaleRefs(backing_allocator: Allocator, offline: bool) void {
     }
 }
 
-/// Release all memory.
 pub fn deinitStaleRefs() void {
     if (stale_refs_arena) |*arena| {
         arena.deinit();
@@ -52,16 +37,12 @@ pub fn deinitStaleRefs() void {
     tag_cache = null;
 }
 
-/// Returns `true` if stale-refs is live (non-offline) so a prefetcher can
-/// decide whether to issue network requests for it.
 pub fn isActive() bool {
     return tag_cache != null;
 }
 
-/// Look up the cached tag resolution for `(owner, repo, sha)`. Returns
-/// `null` if the cache is offline or has no entry. Exposed so engine
-/// post-processing can decide whether SC005 actually fired for a step
-/// when deciding to dedupe overlapping SC008 verdicts.
+/// Exposed so engine post-processing can tell whether SC005 actually fired
+/// for a step when deciding to dedupe overlapping SC008 verdicts.
 pub fn lookupCachedTagResult(
     owner: []const u8,
     repo: []const u8,
@@ -73,8 +54,6 @@ pub fn lookupCachedTagResult(
     return cache.get(key);
 }
 
-/// Pre-populate the tag resolution cache. Used by the prefetch orchestrator
-/// to install batched GraphQL/REST results before the engine runs.
 pub fn setCachedTagResult(
     owner: []const u8,
     repo: []const u8,
@@ -87,9 +66,8 @@ pub fn setCachedTagResult(
     tag_cache.?.put(key, resolution) catch return;
 }
 
-/// Rule check function for SC005.
 pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
-    var cache = &(tag_cache orelse return); // null => offline, skip
+    var cache = &(tag_cache orelse return);
     const action_ref = step.uses orelse return;
     if (!action_ref.is_pinned) return;
     if (action_ref.is_local or action_ref.is_docker) return;
@@ -118,10 +96,6 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
 const ActionRef = workflow_types.ActionRef;
@@ -134,14 +108,8 @@ const security = @import("security.zig");
 
 const hasDiagnostic = test_support.hasDiagnostic;
 
-// -- Check function tests (using mock cache) --
-// -- Check function tests (using mock cache) --
-
 const TagCacheEntry = struct { key: []const u8, resolution: TagResolution };
 
-/// Run SC005 over a one-step workflow whose step `uses` the given ref, or runs a
-/// shell command when it is null, with `entries` preloaded into the tag cache.
-/// A null `entries` reproduces offline mode, where there is no cache at all.
 /// Module state is saved and restored so tests stay independent of each other.
 /// Diagnostics only borrow string literals, so the arena can go away here.
 fn runWithTagCache(entries: ?[]const TagCacheEntry, uses_ref: ?[]const u8) DiagnosticList {
@@ -244,7 +212,6 @@ test "SC005: offline mode (null cache) produces no diagnostic" {
 }
 
 test "SC005: invalid owner characters rejected" {
-    // URL-unsafe owner should be silently rejected.
     var list = runWithTagCache(&.{}, "evil?org/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     defer list.deinit();
 

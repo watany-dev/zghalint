@@ -10,21 +10,16 @@ pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
 /// offending token; they point at the head of the file.
 pub const workflow_head = Span.point(1, 1, 0);
 
-/// Span of a step's `uses:` value, or the step itself when the parser did not
-/// capture it (e.g. a non-scalar `uses:`). Shared by every rule that reports a
-/// finding about the referenced action.
+/// Falls back to the step span because the parser leaves `uses_value_span`
+/// unset for a non-scalar `uses:`.
 pub fn usesSpan(step: *const workflow_types.Step) Span {
     return step.uses_value_span orelse step.span;
 }
 
-/// Anchor for text scanned out of a step's `run:` body.
 pub fn runAnchor(step: *const workflow_types.Step) Anchor {
     return Anchor.fromMeta(step.run_meta, step.span);
 }
 
-/// Byte offset of the first character of a scalar's parsed `value` within the
-/// source, derived from the scalar's token span.
-///
 /// The YAML parser stores the *token* span on every scalar, but `value` is a
 /// sub-slice of that token: quoted scalars drop the surrounding quotes and
 /// block scalars (`|` / `>`) drop the indicator line. Mirrors
@@ -47,11 +42,9 @@ fn contentStartByte(token: Span, style: ScalarStyle, value: []const u8) usize {
 
 const Pos = struct { line: u32, col: u32 };
 
-/// Source position of the first character of a scalar's parsed `value`.
-/// Block scalars start on the line after the `|` / `>` indicator, at column 1
-/// (the leading indentation is part of `value`, so the value's first byte is
-/// the first byte of that line). Quoted scalars start one column after the
-/// opening quote; plain scalars start at the token itself.
+/// Block scalars start on the line after the `|` / `>` indicator at column 1
+/// because the leading indentation is part of `value`, so the value's first
+/// byte is the first byte of that line.
 fn contentOrigin(token: Span, style: ScalarStyle) Pos {
     return switch (style) {
         .literal, .folded => .{ .line = token.start_line + 1, .col = 1 },
@@ -60,9 +53,6 @@ fn contentOrigin(token: Span, style: ScalarStyle) Pos {
     };
 }
 
-/// Anchor for diagnostics raised while scanning the text of a single YAML
-/// scalar (a `run:` body, an `if:` condition, a `with:` value, …).
-///
 /// `scalar` is the scalar's token span when the parser captured it; `fallback`
 /// is the enclosing step / job span used when it did not, so a diagnostic
 /// always carries a usable position instead of `0:0`.
@@ -76,12 +66,10 @@ pub const Anchor = struct {
         return .{ .fallback = fallback };
     }
 
-    /// Span covering the whole scalar (or the fallback when it is unknown).
     pub fn whole(self: Anchor) Span {
         return self.scalar orelse self.fallback;
     }
 
-    /// Span of `value[offset .. offset + len]` in the source.
     pub fn at(self: Anchor, value: []const u8, offset: usize, len: usize) Span {
         const token = self.scalar orelse return self.fallback;
         const start_off = @min(offset, value.len);
@@ -116,10 +104,6 @@ fn advance(line: u32, col: u32, text: []const u8) Pos {
     }
     return .{ .line = l, .col = c };
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 test "Anchor.at without a scalar span falls back to the step span" {
     const fallback = Span.point(4, 7, 30);
@@ -169,7 +153,7 @@ test "Anchor.at on a quoted scalar skips the opening quote" {
 test "Anchor.at on a block scalar resolves the matching content line" {
     // run: |
     //   echo one
-    //   echo ${{ github.head_ref }}
+    //   echo two
     const value = "  echo one\n  echo two\n";
     const token = Span{
         .start_line = 6,

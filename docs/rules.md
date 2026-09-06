@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **58 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **59 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -38,6 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:` |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
+| SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 
 ### SEC002 / SEC008 vs. SEC006
 
@@ -52,6 +53,24 @@ SEC006 does not report ref-shaped inputs (`github.head_ref`,
 `.head.repo.default_branch`, `github.event.workflow_run.head_branch`) or label
 names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
 — is a common routing idiom. They stay untrusted for SEC002 and SEC008.
+
+### SEC022 vs. SEC006
+
+`github.event.workflow_run.head_branch` is one of those ref-shaped inputs, so
+SEC006 stays quiet on it — but in a `workflow_run` workflow the same comparison
+is not routing. That workflow runs with the base repository's secrets, and a
+fork picks its own branch names, so `if: github.event.workflow_run.head_branch
+== 'main'` is a gate the attacker walks through. SEC022 covers exactly that
+case: `on: workflow_run` only, and only for the attributes the fork authors
+(`head_branch`, `head_commit.message` / `.author` / `.committer`,
+`display_title`). A condition that also verifies the triggering repository —
+`github.event.workflow_run.head_repository.full_name == github.repository`, or
+`github.event.workflow_run.event == 'push'` — is sound, and is not reported.
+The anchor must be an equality check: `head_repository.full_name !=
+github.repository` selects the fork runs rather than excluding them, and
+`head_repository.fork == true` is a fork-only gate, so neither counts. Values
+that name one immutable commit — `head_sha`, `head_commit.id` — are never
+reported. A trust check on the job covers the steps inside it.
 
 ## Supply Chain Security Rules (SC)
 
@@ -86,7 +105,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
 | BP002 | missing-step-name | info | Step is missing a `name` field |
 | BP003 | deprecated-action-version | warning | Using a known deprecated action version |
-| BP004 | cross-platform-shell | warning | Run step without `shell` in a Windows-targeting job |
+| BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
@@ -99,6 +118,7 @@ Validate the principle of least privilege in workflow permissions.
 |----|------|----------|-------------|
 | PERM001 | broad-permissions | warning | Overly broad permission scope detected |
 | PERM002 | missing-job-permissions | warning | Job with third-party actions lacks explicit permissions |
+| PERM003 | invalid-permissions | error | Unknown permission scope or invalid permission level |
 
 ## Expression Validation Rules (EXPR)
 
@@ -123,12 +143,29 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 
 ## Dependency Rules (DEP)
 
-Validate Dependabot configuration files (`dependabot.yml`).
+Validate Dependabot configuration files (`dependabot.yml`) and the format of
+action / reusable workflow references.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | DEP001 | dependabot-cooldown | info | Dependabot updates should configure a cooldown period to avoid excessive PRs |
 | DEP002 | dependabot-execution | warning | `insecure-external-code-execution: allow` is a supply chain attack risk |
+| DEP003 | uses-format | error | `uses:` is not a supported action reference (step) or reusable workflow call (job) |
+
+### DEP003 で受理される形式
+
+ステップの `uses:`:
+
+- `{owner}/{repo}@{ref}` / `{owner}/{repo}/{path}@{ref}` — `@ref` は必須
+- `./{path}` — ローカルアクション（`@ref` を付けられない）
+- `docker://{image}`
+
+ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
+
+- `{owner}/{repo}/.github/workflows/{file}.yml@{ref}`
+- `./.github/workflows/{file}.yml` — `@ref` を付けられない
+
+`uses:` の値が `${{ }}` を含む場合は実行時にしか決まらないため報告しない。
 
 ## Runner Rules (RUNNER)
 
@@ -171,6 +208,11 @@ jobs:
 
 Keys that are distinct even when lowercased (for example `FOO` and
 `foo_bar` under `env:`) are not reported.
+
+Job IDs under the top-level `jobs:` mapping are outside the scope of this
+rule: duplicates there are reported by SYN005, which also validates `needs`
+references. This avoids two diagnostics at the same position for a single
+problem.
 
 ### SYN003 empty-section
 

@@ -9,8 +9,8 @@ pub const CompromisedAction = struct {
     disclosed: []const u8,
 };
 
-/// `{"v1", "v2", ... "v<last>"}` — the tj-actions advisory covers every major
-/// tag, so generate them instead of listing 45 literals.
+/// The tj-actions advisory covers every major tag, so generate them instead
+/// of listing 45 literals.
 fn majorTagRange(comptime first: u8, comptime last: u8) [last - first + 1][]const u8 {
     @setEvalBranchQuota(10_000);
     var out: [last - first + 1][]const u8 = undefined;
@@ -48,8 +48,6 @@ pub const compromised_actions = [_]CompromisedAction{
         .disclosed = "2025-03-11",
     },
 };
-
-// ── Integrity tests ──
 
 fn isHexLower(s: []const u8) bool {
     for (s) |c| {

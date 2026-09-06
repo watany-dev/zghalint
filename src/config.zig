@@ -42,9 +42,7 @@ pub const RuleOverride = struct {
     enabled: bool = true,
 };
 
-/// PERF001-specific overrides that force a cache manager value regardless of
-/// the lockfile probe result. Populated from `rules.PERF001.node_cache_manager`
-/// / `python_cache_manager` in .zghalint.yml.
+/// Forces a cache manager regardless of the lockfile probe result.
 pub const Perf001Override = struct {
     node_cache_manager: ?workspace.NodeCache = null,
     python_cache_manager: ?workspace.PythonCache = null,
@@ -105,7 +103,6 @@ pub const ConfigError = error{
     OutOfMemory,
 };
 
-/// Parse a .zghalint.yml config from source text.
 pub fn parseConfig(allocator: std.mem.Allocator, source: []const u8) ConfigError!Config {
     var yaml_arena = std.heap.ArenaAllocator.init(allocator);
     defer yaml_arena.deinit();
@@ -131,7 +128,6 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
     // Config-owned arena so the Config can outlive the source buffer.
     const strings = config.strings_arena.allocator();
 
-    // Parse "rules" section
     if (root.get("rules")) |rules_node| {
         switch (rules_node) {
             .mapping => |m| {
@@ -166,7 +162,6 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         }
     }
 
-    // Parse "ignore" section
     if (root.get("ignore")) |ignore_node| {
         switch (ignore_node) {
             .sequence => |seq| {
@@ -184,7 +179,6 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         }
     }
 
-    // Parse "output" section
     if (root.get("output")) |output_node| {
         switch (output_node) {
             .mapping => |m| {
@@ -203,7 +197,6 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         }
     }
 
-    // Parse "repo_visibility" top-level key
     if (root.getScalar("repo_visibility")) |vis_str| {
         if (Visibility.fromString(vis_str)) |v| {
             config.repo_visibility = v;
@@ -223,7 +216,6 @@ fn parseBool(s: []const u8) bool {
     return true;
 }
 
-/// Simple glob matching supporting '*' wildcards.
 fn matchGlob(pattern: []const u8, str: []const u8) bool {
     var pi: usize = 0;
     var si: usize = 0;
@@ -254,17 +246,12 @@ fn matchGlob(pattern: []const u8, str: []const u8) bool {
     return pi == pattern.len;
 }
 
-/// Path of the default config file when it exists in the current working
-/// directory. No upward search is performed.
+/// No upward search is performed.
 pub fn defaultConfigPath() ?[]const u8 {
     const path = ".zghalint.yml";
     std.fs.cwd().access(path, .{}) catch return null;
     return path;
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 test "parse empty config" {
     var config = try parseConfig(std.testing.allocator, "");
@@ -366,21 +353,17 @@ test "isRuleEnabled returns true by default" {
 }
 
 test "glob matching" {
-    // Simple wildcard
     try std.testing.expect(matchGlob("*.yml", "ci.yml"));
     try std.testing.expect(matchGlob("*.yml", "test.yml"));
     try std.testing.expect(!matchGlob("*.yml", "ci.yaml"));
 
-    // Prefix wildcard
     try std.testing.expect(matchGlob("legacy-*", "legacy-deploy.yml"));
     try std.testing.expect(!matchGlob("legacy-*", "ci.yml"));
 
-    // Middle wildcard
     try std.testing.expect(matchGlob("*.workflows/*.yml", ".github/workflows/ci.yml") == false);
     try std.testing.expect(matchGlob(".github/workflows/legacy-*.yml", ".github/workflows/legacy-deploy.yml"));
     try std.testing.expect(!matchGlob(".github/workflows/legacy-*.yml", ".github/workflows/ci.yml"));
 
-    // Exact match
     try std.testing.expect(matchGlob("ci.yml", "ci.yml"));
     try std.testing.expect(!matchGlob("ci.yml", "cd.yml"));
 }
@@ -457,7 +440,6 @@ test "rule override with enabled only" {
     defer config.deinit();
 
     try std.testing.expect(!config.isRuleEnabled("BP001"));
-    // No severity override, should return default
     try std.testing.expectEqual(Severity.warning, config.getEffectiveSeverity("BP001", .warning));
 }
 
@@ -505,7 +487,6 @@ test "isIgnored with no patterns returns false" {
 test "parse config with non-mapping root (sequence) returns error" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // A YAML sequence as root should return InvalidConfig
     const result = parseConfig(arena.allocator(), "- item1\n- item2");
     try std.testing.expectError(ConfigError.InvalidConfig, result);
 }
@@ -513,7 +494,6 @@ test "parse config with non-mapping root (sequence) returns error" {
 test "parse config with scalar root returns error" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // A bare scalar as root should return InvalidConfig
     const result = parseConfig(arena.allocator(), "just_a_string");
     try std.testing.expectError(ConfigError.InvalidConfig, result);
 }
@@ -578,9 +558,7 @@ test "getEffectiveSeverity with override that has no severity set" {
     var config = Config.init(std.testing.allocator);
     defer config.deinit();
 
-    // Add override with enabled=true but no severity
     try config.rule_overrides.put("MY_RULE", .{ .severity = null, .enabled = true });
-    // Should return the default severity
     try std.testing.expectEqual(Severity.warning, config.getEffectiveSeverity("MY_RULE", .warning));
 }
 
@@ -589,7 +567,6 @@ test "config outlives source buffer (rule override)" {
     const src = try alloc.dupe(u8, "rules:\n  SEC001:\n    enabled: false\n");
     defer alloc.free(src);
 
-    // Simulates main.loadConfig: parse from a buffer that is freed before return.
     var config = try parseConfigFromFreedSource(alloc, src);
     defer config.deinit();
 

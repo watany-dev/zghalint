@@ -1,5 +1,3 @@
-//! Helpers shared by the inline test blocks across the codebase.
-//!
 //! Nothing here is used by the linter at runtime; the module exists so the
 //! same fixture-building and assertion code isn't re-typed in every rules file.
 
@@ -20,8 +18,6 @@ const EventConfig = workflow_types.EventConfig;
 const EventType = workflow_types.EventType;
 const Trigger = workflow_types.Trigger;
 
-// ── Diagnostic assertions ──
-
 pub fn hasDiagnostic(list: *const DiagnosticList, rule_id: []const u8) bool {
     return findDiagnostic(list, rule_id) != null;
 }
@@ -41,18 +37,12 @@ pub fn findDiagnostic(list: *const DiagnosticList, rule_id: []const u8) ?Diagnos
     return null;
 }
 
-// ── Workflow fixtures ──
-
-/// A workflow with no `on:` events at all.
 pub const empty_trigger = Trigger{ .events = &.{} };
 
-/// A single-event `on:` trigger.
 pub fn makeTrigger(comptime ev: EventType) Trigger {
     const events = &[_]EventConfig{.{ .event = ev }};
     return .{ .events = events };
 }
-
-// ── Span / node fixtures ──
 
 /// A span whose line/column are meaningless but whose byte range is real —
 /// enough for rules that only look at byte offsets.
@@ -67,23 +57,16 @@ pub fn dummySpan(start_byte: usize, end_byte: usize) Span {
     };
 }
 
-/// A plain scalar node at the start of the document.
 pub fn mkScalar(value: []const u8) Node {
     return .{ .scalar = .{ .value = value, .style = .plain, .span = Span.point(1, 1, 0) } };
 }
 
-// ── Workflow parsing ──
-
-/// Parse `source` into a `Workflow` allocated from `allocator` — which must
-/// outlive the result, so tests pass an arena's allocator.
+/// `allocator` must outlive the result, so tests pass an arena's allocator.
 pub fn parseWorkflowSource(allocator: std.mem.Allocator, source: []const u8) !workflow_types.Workflow {
     var yp = yaml_parser.Parser.init(allocator, source);
     return workflow_parser.parseWorkflow(allocator, try yp.parse());
 }
 
-// ── Autofix harness ──
-
-/// A single rule check function, at whichever level it runs.
 pub const Check = union(enum) {
     workflow: *const fn (*const workflow_types.Workflow, *DiagnosticList) void,
     job: *const fn (*const workflow_types.Job, *DiagnosticList) void,
@@ -92,17 +75,11 @@ pub const Check = union(enum) {
     document: *const fn (Node, *DiagnosticList) void,
 };
 
-/// The rewritten source plus the counts autofix tests assert on.
 pub const FixOutcome = struct {
-    /// Source after every fix was applied. Owned by the caller.
     content: []const u8,
-    /// Edits the fix engine actually applied.
     edits_applied: usize,
-    /// Diagnostics the check produced, fixable or not.
     diagnostic_count: usize,
-    /// How many of those carried a fix.
     fix_count: usize,
-    /// Safety of the first fix, when there was one.
     first_safety: ?diagnostics.FixSafety,
 
     pub fn deinit(self: FixOutcome, allocator: std.mem.Allocator) void {
@@ -110,11 +87,6 @@ pub const FixOutcome = struct {
     }
 };
 
-/// Parse `source`, run `check` over every workflow / job / step in it, and apply
-/// the fixes the resulting diagnostics carry — the end-to-end path a rule's
-/// autofix takes through the CLI. `include_unsafe` is `--fix-unsafe`: with it
-/// off, only fixes marked safe are applied.
-///
 /// Diagnostics and their fix strings live in an arena that dies here; the fix
 /// engine copies what it needs into the returned `content`.
 pub fn lintAndFix(
@@ -155,20 +127,16 @@ pub fn lintAndFix(
     };
 }
 
-// ── Environment ──
-
 const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
 const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
 
-/// Overrides one environment variable for the duration of a test and restores
-/// whatever the process had before, so tests leave process state untouched.
-/// Requires libc, which the test binaries link.
+/// Restores whatever the process had before, so tests leave process state
+/// untouched. Requires libc, which the test binaries link.
 pub const EnvGuard = struct {
     allocator: std.mem.Allocator,
     name: [:0]const u8,
     saved: ?[:0]u8,
 
-    /// Set `name` to `value`, or unset it when `value` is null.
     pub fn set(allocator: std.mem.Allocator, name: [:0]const u8, value: ?[:0]const u8) !EnvGuard {
         const previous = std.process.getEnvVarOwned(allocator, name) catch null;
         defer if (previous) |p| allocator.free(p);
@@ -182,7 +150,6 @@ pub const EnvGuard = struct {
         return .{ .allocator = allocator, .name = name, .saved = saved };
     }
 
-    /// Point `name` at `dir`'s real path for the lifetime of the guard.
     /// `setenv` copies the value, so the temporary path buffers can go away here.
     pub fn setDir(allocator: std.mem.Allocator, name: [:0]const u8, dir: std.fs.Dir) !EnvGuard {
         const path = try dir.realpathAlloc(allocator, ".");

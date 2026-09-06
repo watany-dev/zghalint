@@ -13,10 +13,6 @@ const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
-// ============================================================
-// Advisory data types
-// ============================================================
-
 pub const Advisory = struct {
     ghsa_id: []const u8,
     action_slug: []const u8,
@@ -32,30 +28,20 @@ const Semver = struct {
     patch: u32,
 };
 
-// ============================================================
-// Module-level advisory cache
-// ============================================================
-
 var advisory_cache: ?[]const Advisory = null;
 var advisory_arena: ?std.heap.ArenaAllocator = null;
 var is_offline: bool = true;
 var fetched: bool = false;
 
-// ============================================================
-// Public API
-// ============================================================
-
-/// Cache validity duration: 24 hours (in seconds).
 const cache_max_age_s: i64 = 24 * 60 * 60;
 
-/// Initialize advisory check. The actual HTTP fetch is deferred until the
-/// first call to checkKnownVulnerableAction() to avoid blocking startup.
+/// The HTTP fetch is deferred until the first call to
+/// checkKnownVulnerableAction() to avoid blocking startup.
 pub fn initAdvisories(backing_allocator: Allocator, offline: bool) void {
     advisory_arena = std.heap.ArenaAllocator.init(backing_allocator);
     is_offline = offline;
 }
 
-/// Release advisory memory.
 pub fn deinitAdvisories() void {
     if (advisory_arena) |*arena| {
         arena.deinit();
@@ -66,14 +52,10 @@ pub fn deinitAdvisories() void {
     fetched = false;
 }
 
-/// Eagerly load the advisory database (fresh disk cache -> network fallback).
-/// Safe to call multiple times; subsequent calls are no-ops.
 pub fn prefetch() void {
     ensureLoaded();
 }
 
-/// Load the advisory database once per process. Both the eager `prefetch` and
-/// the lazy first rule invocation funnel through here.
 fn ensureLoaded() void {
     if (fetched) return;
     fetched = true;
@@ -81,7 +63,6 @@ fn ensureLoaded() void {
     advisory_cache = loadAdvisories(arena.allocator());
 }
 
-/// Rule check function for SC003.
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
     ensureLoaded();
 
@@ -95,10 +76,8 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
     for (advisories) |adv| {
         if (!slugMatches(adv.action_slug, owner, repo)) continue;
 
-        // Check version if ref is available
         if (action_ref.ref) |ref| {
             if (!action_ref.is_pinned) {
-                // Tag ref: try semver comparison
                 if (adv.vulnerable_range) |range| {
                     if (!isVersionVulnerable(ref, range)) continue;
                 }
@@ -117,10 +96,6 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
     }
 }
 
-// ============================================================
-// Disk cache
-// ============================================================
-
 const cache_subdir = "zghalint";
 const cache_filename = "advisories-v2.tsv";
 
@@ -131,8 +106,6 @@ fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
     return openCacheSubdir(allocator, "HOME", ".cache/" ++ cache_subdir);
 }
 
-/// `$<env_var>/<sub_path>`, created if missing. Null when the variable is unset
-/// or any step of the open fails.
 fn openCacheSubdir(allocator: Allocator, env_var: []const u8, comptime sub_path: []const u8) ?std.fs.Dir {
     const base = std.process.getEnvVarOwned(allocator, env_var) catch return null;
     defer allocator.free(base);
@@ -154,8 +127,6 @@ fn writeCacheFile(dir: std.fs.Dir, data: []const u8) void {
     file.writeAll(data) catch {};
 }
 
-/// One tab-separated line per advisory; absent optional fields are empty.
-/// `deserializeAdvisories` is the exact inverse.
 fn serializeAdvisories(allocator: Allocator, advisories: []const Advisory) ![]const u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
@@ -231,10 +202,6 @@ fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
         null;
 }
 
-// ============================================================
-// HTTP fetch
-// ============================================================
-
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
 
 fn fetchAndParse(allocator: Allocator) ![]const Advisory {
@@ -245,7 +212,6 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
 
     const advisories = try parseAdvisories(allocator, resp.body);
 
-    // Write parsed advisories to disk cache in compact TSV format
     if (serializeAdvisories(allocator, advisories)) |serialized| {
         if (getCacheDir(allocator)) |dir_val| {
             var dir_mut = dir_val;
@@ -256,10 +222,6 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
 
     return advisories;
 }
-
-// ============================================================
-// JSON parsing
-// ============================================================
 
 fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
     const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch return error.JsonParseError;
@@ -318,10 +280,6 @@ fn getJsonStringFromObj(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return json_util.stringField(nested, "identifier");
 }
 
-// ============================================================
-// Slug matching
-// ============================================================
-
 fn slugMatches(advisory_slug: []const u8, owner: []const u8, repo: []const u8) bool {
     const slash_pos = std.mem.indexOfScalar(u8, advisory_slug, '/') orelse return false;
     const adv_owner = advisory_slug[0..slash_pos];
@@ -329,19 +287,13 @@ fn slugMatches(advisory_slug: []const u8, owner: []const u8, repo: []const u8) b
     return std.mem.eql(u8, adv_owner, owner) and std.mem.eql(u8, adv_repo, repo);
 }
 
-// ============================================================
-// Semver parsing and comparison
-// ============================================================
-
 fn parseSemver(ref: []const u8) ?Semver {
     var s = ref;
-    // Strip leading 'v' or 'V'
     if (s.len > 0 and (s[0] == 'v' or s[0] == 'V')) {
         s = s[1..];
     }
     if (s.len == 0) return null;
 
-    // "4", "4.1" and "4.1.2" are all accepted; missing components read as 0.
     var parts = std.mem.splitScalar(u8, s, '.');
     var out = [_]u32{ 0, 0, 0 };
     for (&out, 0..) |*slot, i| {
@@ -356,7 +308,6 @@ fn parseSemver(ref: []const u8) ?Semver {
     return .{ .major = out[0], .minor = out[1], .patch = out[2] };
 }
 
-/// Length of the leading run of ASCII digits in `s`.
 fn digitPrefixLen(s: []const u8) usize {
     for (s, 0..) |c, i| {
         if (!std.ascii.isDigit(c)) return i;
@@ -412,27 +363,20 @@ fn satisfiesConstraint(ver: Semver, constraint: Constraint) bool {
     };
 }
 
-/// Check if a ref version falls within a vulnerable range.
-/// Returns true if the version IS vulnerable (or if we can't determine).
+/// Unparseable refs or ranges are treated as vulnerable (conservative).
 pub fn isVersionVulnerable(ref: []const u8, range: []const u8) bool {
-    const ver = parseSemver(ref) orelse return true; // Can't parse -> conservatively vulnerable
+    const ver = parseSemver(ref) orelse return true;
 
     // Split range on comma for AND conditions (e.g., ">= 2.0.0, < 2.3.1")
     var iter = std.mem.splitScalar(u8, range, ',');
     while (iter.next()) |part| {
-        const constraint = parseConstraint(part) orelse return true; // Can't parse -> conservatively vulnerable
-        if (!satisfiesConstraint(ver, constraint)) return false; // One constraint not met -> not in vulnerable range
+        const constraint = parseConstraint(part) orelse return true;
+        if (!satisfiesConstraint(ver, constraint)) return false;
     }
-    return true; // All constraints met -> vulnerable
+    return true;
 }
 
-// ============================================================
-// Tests
-// ============================================================
-
 const testing = std.testing;
-
-// --- Semver parsing tests ---
 
 test "parseSemver: v1.2.3" {
     const v = parseSemver("v1.2.3").?;
@@ -476,8 +420,6 @@ test "parseSemver: invalid string" {
     try testing.expect(parseSemver("abc.def.ghi") == null);
 }
 
-// --- Semver comparison tests ---
-
 test "semverCompare: equal" {
     const a = Semver{ .major = 1, .minor = 2, .patch = 3 };
     const b = Semver{ .major = 1, .minor = 2, .patch = 3 };
@@ -498,8 +440,6 @@ test "semverCompare: less than" {
         .{ .major = 1, .minor = 2, .patch = 4 },
     ) == .lt);
 }
-
-// --- Version vulnerability tests ---
 
 test "isVersionVulnerable: < 1.0.0" {
     try testing.expect(isVersionVulnerable("v0.9.0", "< 1.0.0"));
@@ -529,8 +469,6 @@ test "isVersionVulnerable: unparseable range is conservatively vulnerable" {
     try testing.expect(isVersionVulnerable("v1.0.0", "invalid"));
 }
 
-// --- Slug matching tests ---
-
 test "slugMatches: exact match" {
     try testing.expect(slugMatches("actions/checkout", "actions", "checkout"));
 }
@@ -546,8 +484,6 @@ test "slugMatches: different owner" {
 test "slugMatches: no slash in slug" {
     try testing.expect(!slugMatches("noslash", "no", "slash"));
 }
-
-// --- JSON parsing tests ---
 
 test "parseAdvisories: valid response" {
     const json_input =
@@ -607,8 +543,6 @@ test "parseAdvisories: multiple vulnerabilities" {
     try testing.expectEqualStrings("owner/action-b", result[1].action_slug);
 }
 
-// --- Check function tests ---
-/// The advisory every SC003 test mocks: `evil/action` is vulnerable below 1.0.0.
 const mock_advisories = [_]Advisory{.{
     .ghsa_id = "GHSA-test-1234",
     .action_slug = "evil/action",
@@ -618,7 +552,6 @@ const mock_advisories = [_]Advisory{.{
     .diagnostic_hint = "update to version 1.0.0 or later",
 }};
 
-/// The same advisory without version bounds, so every version is vulnerable.
 const unbounded_advisories = [_]Advisory{blk: {
     var a = mock_advisories[0];
     a.vulnerable_range = null;
@@ -626,10 +559,7 @@ const unbounded_advisories = [_]Advisory{blk: {
     break :blk a;
 }};
 
-/// Run SC003 over a single step that `uses` the given ref, or runs a shell
-/// command when it is null, against `advisories`. The advisory data is already
-/// fetched and the linter is online. Module state is saved and restored so
-/// tests stay independent of each other.
+/// Module state is saved and restored so tests stay independent of each other.
 fn runWithAdvisories(advisories: []const Advisory, uses_ref: ?[]const u8) DiagnosticList {
     const prev_cache = advisory_cache;
     const prev_offline = is_offline;
@@ -739,7 +669,6 @@ test "SC003: lazy fetch with deadline exceeded produces no diagnostics" {
         advisory_arena = prev_arena;
     }
 
-    // Set a past deadline so fetchAndParse returns immediately
     engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
     defer engine.clearNetworkDeadline();
 
@@ -747,8 +676,6 @@ test "SC003: lazy fetch with deadline exceeded produces no diagnostics" {
     var list = DiagnosticList.init(testing.allocator);
     defer list.deinit();
     checkKnownVulnerableAction(&step, &list);
-    // fetchAndParse should fail due to deadline, cache stays null, no diagnostics
     try testing.expectEqual(@as(usize, 0), list.len());
-    // fetched flag should be set even on failure
     try testing.expect(fetched);
 }

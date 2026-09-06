@@ -1,6 +1,5 @@
 const std = @import("std");
 
-/// Source location span for diagnostics
 pub const Span = struct {
     start_line: u32,
     start_col: u32,
@@ -29,7 +28,6 @@ pub const ScalarStyle = enum {
     folded,
 };
 
-/// A YAML value node
 pub const Node = union(enum) {
     scalar: Scalar,
     sequence: Sequence,
@@ -70,7 +68,6 @@ pub const Mapping = struct {
     entries: []MappingEntry,
     span: Span,
 
-    /// Look up a value by key name
     pub fn get(self: Mapping, key: []const u8) ?Node {
         for (self.entries) |entry| {
             if (std.mem.eql(u8, entry.key.value, key)) {
@@ -92,7 +89,6 @@ pub const Mapping = struct {
         return null;
     }
 
-    /// Get a scalar value by key name
     pub fn getScalar(self: Mapping, key: []const u8) ?[]const u8 {
         if (self.get(key)) |node| {
             switch (node) {
@@ -103,10 +99,6 @@ pub const Mapping = struct {
         return null;
     }
 };
-
-// ============================================================
-// Tests
-// ============================================================
 
 test "span point" {
     const span = Span.point(1, 1, 0);

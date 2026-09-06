@@ -1,16 +1,13 @@
-//! Small accessors over `std.json.Value`.
-//!
 //! GitHub's REST and GraphQL payloads are read defensively: a key that is
 //! missing and a key whose value has the wrong type are both "not usable
-//! here". These helpers collapse the `get` + `switch` pair that every such
-//! read would otherwise repeat into a single optional.
+//! here", so every accessor collapses the `get` + `switch` pair into a
+//! single optional.
 
 const std = @import("std");
 
 const Value = std.json.Value;
 const ObjectMap = std.json.ObjectMap;
 
-/// The value as an object, or null when it is any other JSON type.
 pub fn asObject(value: Value) ?ObjectMap {
     return switch (value) {
         .object => |o| o,
@@ -18,7 +15,6 @@ pub fn asObject(value: Value) ?ObjectMap {
     };
 }
 
-/// The value as a string, or null when it is any other JSON type.
 pub fn asString(value: Value) ?[]const u8 {
     return switch (value) {
         .string => |s| s,
@@ -26,7 +22,6 @@ pub fn asString(value: Value) ?[]const u8 {
     };
 }
 
-/// The value as an array's items, or null when it is any other JSON type.
 pub fn asArray(value: Value) ?[]const Value {
     return switch (value) {
         .array => |a| a.items,
@@ -34,7 +29,6 @@ pub fn asArray(value: Value) ?[]const Value {
     };
 }
 
-/// The value as a bool, or null when it is any other JSON type.
 pub fn asBool(value: Value) ?bool {
     return switch (value) {
         .bool => |b| b,
@@ -57,10 +51,6 @@ pub fn arrayField(obj: ObjectMap, key: []const u8) ?[]const Value {
 pub fn boolField(obj: ObjectMap, key: []const u8) ?bool {
     return asBool(obj.get(key) orelse return null);
 }
-
-// ============================================================
-// Tests
-// ============================================================
 
 const testing = std.testing;
 
