@@ -639,6 +639,12 @@ fn validateFunctionCall(
         }
     }
 
+    if (std.mem.eql(u8, name, "fromJSON") and node.children.len == 1) {
+        if (node.children[0].kind == .string_literal) {
+            checkFromJsonLiteral(allocator, node.children[0].value, span, list);
+        }
+    }
+
     for (node.children) |*child| {
         validateNode(allocator, child, span, list, expr_base_byte, node);
     }
@@ -893,6 +899,28 @@ fn checkFormatPlaceholders(
             .span = span,
         }) catch return;
     }
+}
+
+fn jsonLiteralIsValid(allocator: std.mem.Allocator, text: []const u8) bool {
+    _ = std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch return false;
+    return true;
+}
+
+fn checkFromJsonLiteral(
+    allocator: std.mem.Allocator,
+    lit: []const u8,
+    span: Span,
+    list: *DiagnosticList,
+) void {
+    const decoded = decodeExprStringLiteral(allocator, lit) orelse return;
+    if (jsonLiteralIsValid(allocator, decoded)) return;
+    list.append(.{
+        .rule_id = "EXPR009",
+        .severity = .@"error",
+        .message = "fromJSON() argument is not valid JSON",
+        .span = span,
+        .fix_hint = "pass a valid JSON string literal to fromJSON()",
+    }) catch return;
 }
 
 /// `anchor` maps offsets inside `text` back to source positions so each
@@ -2837,6 +2865,22 @@ test "EXPR017: bool is not orderable" {
 // operands (and non-orderable operands for < > <= >=) are.
 test "EXPR017: array compared to a scalar" {
     try expectSingleRule("fromJSON('[1,2]') == 'x'", "EXPR017");
+}
+
+test "validate EXPR009: fromJSON invalid object literal" {
+    try expectSingleRule("fromJSON('{invalid}')", "EXPR009");
+}
+
+test "validate EXPR009: fromJSON trailing comma in array" {
+    try expectSingleRule("fromJSON('[\"ubuntu-latest\", \"macos-latest\",]')", "EXPR009");
+}
+
+test "validate EXPR009: fromJSON valid array literal" {
+    try expectNoDiagnostics("fromJSON('[\"ubuntu-latest\", \"macos-latest\"]')");
+}
+
+test "validate EXPR009: fromJSON skips non-literal argument" {
+    try expectNoDiagnostics("fromJSON(needs.setup.outputs.matrix)");
 }
 
 test "EXPR017: map value compared to number is allowed" {
