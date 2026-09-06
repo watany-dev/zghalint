@@ -193,7 +193,7 @@ fn addPart(
 
     if (std.mem.eql(u8, base, "*")) {
         if (step == 1) field.is_star = true;
-        try setRange(field, min, max, step, min, max, names);
+        try setRange(field, min, max, step, min, max);
         return;
     }
 
@@ -202,7 +202,7 @@ fn addPart(
         const start = try parseToken(base[0..idx], min, max, names);
         const end = try parseToken(base[idx + 1 ..], min, max, names);
         if (start > end) return error.RangeStartAfterEnd;
-        try setRange(field, start, end, step, min, max, names);
+        try setRange(field, start, end, step, min, max);
         return;
     }
 
@@ -215,14 +215,12 @@ fn setRange(
     start: u8,
     end: u8,
     step: u32,
-    min: u8,
-    max: u8,
-    names: ?[]const []const u8,
+    field_min: u8,
+    field_max: u8,
 ) Schedule.ParseError!void {
-    _ = names;
     var value: u32 = start;
     while (true) {
-        try setValue(field, @intCast(value), min, max);
+        try setValue(field, @intCast(value), field_min, field_max);
         if (value >= end) return;
         const next = value + step;
         if (next > end) return;
@@ -320,5 +318,10 @@ test "minIntervalSeconds every four minutes is too frequent" {
 
 test "minIntervalSeconds comma list in minute field" {
     const sched = try Schedule.parse("0,1,2 * * * *");
+    try testing.expectEqual(@as(?u64, 60), sched.minIntervalSeconds());
+}
+
+test "minIntervalSeconds wildcard minute with stepped hour matches actionlint" {
+    const sched = try Schedule.parse("* */3 * * *");
     try testing.expectEqual(@as(?u64, 60), sched.minIntervalSeconds());
 }
