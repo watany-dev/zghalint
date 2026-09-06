@@ -102,8 +102,12 @@ pub fn prefetchAllWithOptions(
 
     // Persisted only now that the impostor cache is fully populated.
     // Failures are non-fatal (best-effort warm-run hint).
-    for (pending_persist.items) |res| {
-        persistRepoResult(scratch, res);
+    if (pending_persist.items.len > 0) {
+        var cache_dir = disk_cache.openCacheDir(scratch);
+        defer if (cache_dir) |*d| d.close();
+        for (pending_persist.items) |res| {
+            persistRepoResult(scratch, res, cache_dir);
+        }
     }
 }
 
@@ -196,6 +200,12 @@ fn applyDiskCache(
 ) usize {
     var hits: usize = 0;
 
+    // Opened once for the whole sweep: `disk_cache.load` resolves and opens
+    // the cache directory per call, which is a per-repo open on a path that
+    // never changes during a run.
+    var cache_dir = disk_cache.openCacheDir(scratch) orelse return hits;
+    defer cache_dir.close();
+
     // Iterate over a stable snapshot because `sets` is mutated while iterating.
     var repo_keys = std.ArrayList([]const u8){};
     defer repo_keys.deinit(scratch);
@@ -207,7 +217,7 @@ fn applyDiskCache(
         const owner = val_ptr.owner;
         const repo = val_ptr.repo;
 
-        const entry = disk_cache.load(scratch, owner, repo) orelse continue;
+        const entry = disk_cache.loadFromDir(cache_dir, scratch, owner, repo) orelse continue;
         hits += applyCacheEntry(sets, repo_key, owner, repo, entry, active);
     }
 
@@ -287,7 +297,9 @@ fn applyCacheEntry(
 /// SC008 verdicts are read back out of the impostor module's cache, so
 /// callers must run `runImpostorCompares` first if step3/4 results are
 /// expected on disk.
-fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult) void {
+/// `dir` lets a caller persisting several repos reuse one cache-directory
+/// handle; `null` resolves and opens it for this single entry.
+fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult, dir: ?std.fs.Dir) void {
     if (res.missing) return;
     const entry: disk_cache.CachedRepo = .{
         .cached_at = std.time.timestamp(),
@@ -307,7 +319,11 @@ fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult) void {
             break :blk list.toOwnedSlice(scratch) catch &.{};
         },
     };
-    disk_cache.save(scratch, res.owner, res.repo, entry) catch return;
+    if (dir) |d| {
+        disk_cache.saveToDir(d, scratch, res.owner, res.repo, entry) catch return;
+    } else {
+        disk_cache.save(scratch, res.owner, res.repo, entry) catch return;
+    }
 }
 
 fn tryGraphQlBatch(
@@ -459,9 +475,9 @@ fn applyResults(
         // it into the disk_cache entry. With no buffer (test path) persist
         // immediately so single-test assertions still see the file land.
         if (persist_buffer) |buf| {
-            buf.append(scratch, res) catch persistRepoResult(scratch, res);
+            buf.append(scratch, res) catch persistRepoResult(scratch, res, null);
         } else {
-            persistRepoResult(scratch, res);
+            persistRepoResult(scratch, res, null);
         }
     }
 }
@@ -475,12 +491,47 @@ fn fetchRepos(scratch: Allocator, set: RepoSet) void {
     }
 }
 
-fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
+const ShaGroup = struct {
+    owner: []const u8,
+    repo: []const u8,
+    shas: std.ArrayListUnmanaged([]const u8) = .{},
+};
+
+/// The REST tag listing is per-repository, so grouping first turns "one
+/// request per pinned SHA" into "one request per repository". Insertion order
+/// is preserved so the deadline truncates the same prefix on every run.
+fn groupShasByRepo(scratch: Allocator, set: ShaSet) std.StringArrayHashMapUnmanaged(ShaGroup) {
+    var by_repo: std.StringArrayHashMapUnmanaged(ShaGroup) = .{};
+
     var it = set.valueIterator();
     while (it.next()) |key| {
+        const repo_key = std.fmt.allocPrint(scratch, "{s}/{s}", .{ key.owner, key.repo }) catch continue;
+        const gop = by_repo.getOrPut(scratch, repo_key) catch continue;
+        if (!gop.found_existing) gop.value_ptr.* = .{ .owner = key.owner, .repo = key.repo };
+        gop.value_ptr.shas.append(scratch, key.sha) catch continue;
+    }
+
+    return by_repo;
+}
+
+fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
+    var by_repo = groupShasByRepo(scratch, set);
+
+    var it = by_repo.iterator();
+    while (it.next()) |entry| {
         if (engine.isNetworkDeadlineExceeded()) return;
-        const resolution = rest_fallback.resolveTagForSha(scratch, key.owner, key.repo, key.sha) catch rest_fallback.TagResolution.unknown;
-        stale_refs.setCachedTagResult(key.owner, key.repo, key.sha, resolution);
+        const group = entry.value_ptr;
+        const shas = group.shas.items;
+
+        const out = scratch.alloc(rest_fallback.TagResolution, shas.len) catch continue;
+        // A transport failure leaves every entry `.unknown`, matching the
+        // per-SHA fallback the loop used before batching.
+        rest_fallback.resolveTagsForShas(scratch, group.owner, group.repo, shas, out) catch
+            @memset(out, rest_fallback.TagResolution.unknown);
+
+        for (shas, out) |sha, resolution| {
+            stale_refs.setCachedTagResult(group.owner, group.repo, sha, resolution);
+        }
     }
 }
 
@@ -503,6 +554,36 @@ test "prefetchAllWithOptions: offline-only is a no-op" {
     const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &.{} };
     const wfs = [_]Workflow{wf};
     try prefetchAllWithOptions(testing.allocator, &wfs, .{});
+}
+
+test "groupShasByRepo: collapses one repo's SHAs into a single request unit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    const sha_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const sha_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const sha_c = "cccccccccccccccccccccccccccccccccccccccc";
+
+    var set: ShaSet = .{};
+    try putRefKey(scratch, &set, "actions", "checkout", sha_a, ShaKey{ .owner = "actions", .repo = "checkout", .sha = sha_a });
+    try putRefKey(scratch, &set, "actions", "checkout", sha_b, ShaKey{ .owner = "actions", .repo = "checkout", .sha = sha_b });
+    try putRefKey(scratch, &set, "actions", "setup-node", sha_c, ShaKey{ .owner = "actions", .repo = "setup-node", .sha = sha_c });
+
+    var by_repo = groupShasByRepo(scratch, set);
+
+    // Three pinned SHAs, but only two repositories to query.
+    try testing.expectEqual(@as(usize, 2), by_repo.count());
+    try testing.expectEqual(@as(usize, 2), by_repo.get("actions/checkout").?.shas.items.len);
+    try testing.expectEqual(@as(usize, 1), by_repo.get("actions/setup-node").?.shas.items.len);
+}
+
+test "groupShasByRepo: empty set yields no groups" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var by_repo = groupShasByRepo(arena.allocator(), ShaSet{});
+    try testing.expectEqual(@as(usize, 0), by_repo.count());
 }
 
 test "collectRefs: deduplicates repeated action refs" {
@@ -886,7 +967,7 @@ test "persistRepoResult: writes branches/default_branch/impostor (v2)" {
         .default_branch = default_branch,
     };
 
-    persistRepoResult(alloc, res);
+    persistRepoResult(alloc, res, null);
 
     const loaded = disk_cache.load(testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;

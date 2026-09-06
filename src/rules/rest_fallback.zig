@@ -70,6 +70,29 @@ pub fn resolveTagForSha(
     repo: []const u8,
     sha: []const u8,
 ) RestError!TagResolution {
+    var out: [1]TagResolution = undefined;
+    try resolveTagsForShas(allocator, owner, repo, &.{sha}, &out);
+    return out[0];
+}
+
+/// Resolves every SHA pinned to one repository against a single tag listing.
+/// The listing is per-repo, not per-SHA, so a workflow pinning N actions from
+/// the same repository costs one request instead of N.
+///
+/// `out` must be the same length as `shas`; results are written positionally
+/// and every entry is initialized, so a caller reads valid data even when the
+/// request fails.
+pub fn resolveTagsForShas(
+    allocator: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    shas: []const []const u8,
+    out: []TagResolution,
+) RestError!void {
+    std.debug.assert(out.len == shas.len);
+    @memset(out, .unknown);
+    if (shas.len == 0) return;
+
     const url = try std.fmt.allocPrint(
         allocator,
         "https://api.github.com/repos/{s}/{s}/git/matching-refs/tags/?per_page=100",
@@ -80,23 +103,34 @@ pub fn resolveTagForSha(
     var resp = try http_client.fetchAuthenticatedJson(allocator, url);
     defer resp.deinit();
 
-    if (resp.status != .ok) return TagResolution.unknown;
+    if (resp.status != .ok) return;
 
-    return matchShaInRefs(allocator, resp.body, sha, owner, repo);
+    matchShasInRefs(allocator, resp.body, shas, out, owner, repo);
 }
 
-fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8, owner: []const u8, repo: []const u8) TagResolution {
-    const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch return .unknown;
+fn matchShasInRefs(
+    allocator: Allocator,
+    body: []const u8,
+    targets: []const []const u8,
+    out: []TagResolution,
+    owner: []const u8,
+    repo: []const u8,
+) void {
+    @memset(out, .unknown);
+
+    const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{}) catch return;
 
     const items = switch (root) {
         .array => |arr| arr.items,
-        else => return .unknown,
+        else => return,
     };
 
-    if (items.len == 0) return .unknown;
+    if (items.len == 0) return;
 
     var annotated_shas: [64][]const u8 = undefined;
     var annotated_count: usize = 0;
+
+    var unresolved = targets.len;
 
     for (items) |item| {
         const obj = json_util.asObject(item) orelse continue;
@@ -106,7 +140,7 @@ fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8
         const obj_type = json_util.stringField(ref_obj, "type") orelse continue;
 
         if (std.mem.eql(u8, obj_type, "commit")) {
-            if (std.mem.eql(u8, obj_sha, target_sha)) return .has_tag;
+            unresolved -= markMatches(obj_sha, targets, out);
         } else if (std.mem.eql(u8, obj_type, "tag")) {
             if (annotated_count < annotated_shas.len) {
                 annotated_shas[annotated_count] = obj_sha;
@@ -115,14 +149,42 @@ fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8
         }
     }
 
+    // Each annotated tag is dereferenced once and compared against every
+    // still-unresolved target, rather than once per target.
     for (annotated_shas[0..annotated_count]) |tag_sha| {
+        if (unresolved == 0) break;
         const commit_sha = dereferenceAnnotatedTag(allocator, owner, repo, tag_sha) catch continue;
-        if (std.mem.eql(u8, commit_sha, target_sha)) return .has_tag;
+        unresolved -= markMatches(commit_sha, targets, out);
     }
 
-    if (items.len >= 100) return .unknown;
+    // A full page means the listing may be truncated, so an absent SHA cannot
+    // be distinguished from one on a page we never fetched.
+    if (items.len >= 100) return;
 
-    return .no_tag;
+    for (out) |*res| {
+        if (res.* != .has_tag) res.* = .no_tag;
+    }
+}
+
+/// Single-target convenience over `matchShasInRefs`, kept because the
+/// one-SHA shape is what most call sites and tests reason about.
+fn matchShaInRefs(allocator: Allocator, body: []const u8, target_sha: []const u8, owner: []const u8, repo: []const u8) TagResolution {
+    var out: [1]TagResolution = undefined;
+    matchShasInRefs(allocator, body, &.{target_sha}, &out, owner, repo);
+    return out[0];
+}
+
+/// Returns how many entries flipped to `has_tag`, so the caller can stop
+/// dereferencing annotated tags once every target is resolved.
+fn markMatches(candidate_sha: []const u8, targets: []const []const u8, out: []TagResolution) usize {
+    var newly: usize = 0;
+    for (targets, out) |target, *res| {
+        if (res.* == .has_tag) continue;
+        if (!std.mem.eql(u8, candidate_sha, target)) continue;
+        res.* = .has_tag;
+        newly += 1;
+    }
+    return newly;
 }
 
 fn dereferenceAnnotatedTag(allocator: Allocator, owner: []const u8, repo: []const u8, tag_sha: []const u8) RestError![]const u8 {
@@ -387,6 +449,67 @@ test "matchShaInRefs: multiple lightweight tags, one matches" {
     ;
     const result = matchShaInRefs(arena.allocator(), body, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "o", "r");
     try testing.expectEqual(TagResolution.has_tag, result);
+}
+
+test "matchShasInRefs: resolves several SHAs from one listing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  {"ref":"refs/tags/v1","object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"commit"}},
+        \\  {"ref":"refs/tags/v2","object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","type":"commit"}}
+        \\]
+    ;
+    const targets = [_][]const u8{
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cccccccccccccccccccccccccccccccccccccccc",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    };
+    var out: [3]TagResolution = undefined;
+    matchShasInRefs(arena.allocator(), body, &targets, &out, "o", "r");
+
+    try testing.expectEqual(TagResolution.has_tag, out[0]);
+    try testing.expectEqual(TagResolution.no_tag, out[1]);
+    try testing.expectEqual(TagResolution.has_tag, out[2]);
+}
+
+test "matchShasInRefs: pagination guard leaves unmatched targets unknown" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(testing.allocator);
+    try buf.append(testing.allocator, '[');
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        if (i != 0) try buf.append(testing.allocator, ',');
+        try buf.writer(testing.allocator).print(
+            "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
+            .{ i, i },
+        );
+    }
+    try buf.append(testing.allocator, ']');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const targets = [_][]const u8{
+        "0000000000000000000000000000000000000000",
+        "ffffffffffffffffffffffffffffffffffffffff",
+    };
+    var out: [2]TagResolution = undefined;
+    matchShasInRefs(arena.allocator(), buf.items, &targets, &out, "o", "r");
+
+    try testing.expectEqual(TagResolution.has_tag, out[0]);
+    try testing.expectEqual(TagResolution.unknown, out[1]);
+}
+
+test "resolveTagsForShas: empty input is a no-op that issues no request" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // An expired deadline would make any real request fail, so reaching the
+    // early return proves nothing was fetched.
+    rules_engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer rules_engine.clearNetworkDeadline();
+
+    var out: [0]TagResolution = undefined;
+    try resolveTagsForShas(arena.allocator(), "o", "r", &.{}, &out);
 }
 
 test "matchShaInRefs: annotated tags fail to dereference offline -> no_tag" {
