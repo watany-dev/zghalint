@@ -123,18 +123,24 @@ fn permissionProblemMessage(
 ) ?[]const u8 {
     return switch (problem.kind) {
         .unknown_scope => blk: {
-            const suggestion = util.didYouMean(problem.text, workflow_types.permission_scope_keys);
-            break :blk if (suggestion) |s| std.fmt.allocPrint(
+            var suffix_buf: [64]u8 = undefined;
+            const suffix = if (util.didYouMean(problem.text, workflow_types.permission_scope_keys)) |s|
+                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+            else
+                "";
+            break :blk std.fmt.allocPrint(
                 alloc,
-                "unknown permission scope \"{s}\". did you mean \"{s}\"?",
-                .{ problem.text, s },
-            ) catch null else std.fmt.allocPrint(
-                alloc,
-                "unknown permission scope \"{s}\"",
-                .{problem.text},
+                "unknown permission scope \"{s}\"{s}",
+                .{ problem.text, suffix },
             ) catch null;
         },
-        .invalid_level => std.fmt.allocPrint(
+        // An empty `text` means the value was missing or not a scalar, so there
+        // is no level to quote back.
+        .invalid_level => if (problem.text.len == 0) std.fmt.allocPrint(
+            alloc,
+            "missing permission level for \"{s}\". expected \"read\", \"write\" or \"none\"",
+            .{problem.scope},
+        ) catch null else std.fmt.allocPrint(
             alloc,
             "invalid permission level \"{s}\" for \"{s}\". expected \"read\", \"write\" or \"none\"",
             .{ problem.text, problem.scope },
@@ -756,6 +762,35 @@ test "PERM003: report an invalid permission level" {
         "invalid permission level \"raed\" for \"contents\". expected \"read\", \"write\" or \"none\"",
         diag.message,
     );
+    try std.testing.expectEqual(@as(u32, 4), diag.span.start_line);
+}
+
+test "PERM003: a missing level is reported on the key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions:
+        \\  contents:
+        \\  actions: read
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try std.testing.expectEqualStrings(
+        "missing permission level for \"contents\". expected \"read\", \"write\" or \"none\"",
+        diag.message,
+    );
+    // The key, not the next entry: a null value's span is the following token.
     try std.testing.expectEqual(@as(u32, 4), diag.span.start_line);
 }
 

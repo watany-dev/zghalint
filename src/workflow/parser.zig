@@ -27,7 +27,7 @@ const ParsedStringMap = struct {
 const ParsedPermissions = struct {
     permissions: types.Permissions,
     meta: ?types.PermissionsMeta,
-    problems: []const types.PermissionProblem = &.{},
+    problems: []const types.PermissionProblem,
 };
 
 fn isEmptyContainer(node: Node) bool {
@@ -576,14 +576,17 @@ fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedP
                         .span = entry.key.span,
                     });
                 } else if (level == null) {
+                    // A null value's span is the *next* token, so a non-scalar
+                    // value is reported on the key instead.
+                    const text: []const u8, const span: yaml.Span = switch (entry.value) {
+                        .scalar => |s| .{ s.value, s.span },
+                        else => .{ "", entry.key.span },
+                    };
                     try problems.append(allocator, .{
                         .kind = .invalid_level,
-                        .text = switch (entry.value) {
-                            .scalar => |s| s.value,
-                            else => "",
-                        },
+                        .text = text,
                         .scope = entry.key.value,
-                        .span = entry.value.getSpan(),
+                        .span = span,
                     });
                 }
             }

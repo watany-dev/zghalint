@@ -129,9 +129,10 @@ Missing caching, redundant checkout, fail-fast disabled.
 
 Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection, deprecated workflow commands.
 
-### Permissions (2 rules)
+### Permissions (3 rules)
 
-Overly broad scopes, missing job-level permissions.
+Overly broad scopes, missing job-level permissions, unknown scope names and
+invalid permission levels.
 
 ### Expression Validation (8 rules)
 
