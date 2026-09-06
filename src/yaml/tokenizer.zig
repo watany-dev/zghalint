@@ -176,9 +176,7 @@ pub const Tokenizer = struct {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
-        self.pos += 1;
-        self.line += 1;
-        self.column = 1;
+        self.consumeNewline();
         return .{
             .kind = .newline,
             .start = start,
@@ -211,9 +209,7 @@ pub const Tokenizer = struct {
                 continue;
             }
             if (self.source[self.pos] == '\n') {
-                self.pos += 1;
-                self.line += 1;
-                self.column = 1;
+                self.consumeNewline();
                 continue;
             }
             self.advance();
@@ -242,15 +238,11 @@ pub const Tokenizer = struct {
             const saved_pos = self.pos;
             const saved_line = self.line;
             const saved_col = self.column;
-            self.pos += 1;
-            self.line += 1;
-            self.column = 1;
+            self.consumeNewline();
 
             while (self.pos < self.source.len) {
                 if (self.source[self.pos] == '\n') {
-                    self.pos += 1;
-                    self.line += 1;
-                    self.column = 1;
+                    self.consumeNewline();
                     continue;
                 }
                 if (self.source[self.pos] == ' ') {
@@ -269,9 +261,7 @@ pub const Tokenizer = struct {
         }
 
         while (self.pos < self.source.len and self.source[self.pos] == '\n') {
-            self.pos += 1;
-            self.line += 1;
-            self.column = 1;
+            self.consumeNewline();
 
             var indent: u32 = 0;
             while (self.pos + indent < self.source.len and self.source[self.pos + indent] == ' ') {
@@ -350,6 +340,12 @@ pub const Tokenizer = struct {
     fn advance(self: *Tokenizer) void {
         self.pos += 1;
         self.column += 1;
+    }
+
+    fn consumeNewline(self: *Tokenizer) void {
+        self.pos += 1;
+        self.line += 1;
+        self.column = 1;
     }
 
     fn skipWhitespace(self: *Tokenizer) void {
