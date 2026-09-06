@@ -30,10 +30,8 @@ fn severityColor(sev: Severity) []const u8 {
 /// and Unicode bidi embedding/override/isolate controls become `\u{XXXX}`;
 /// bytes that are not valid UTF-8 become `\xHH`. Tab is preserved for
 /// source alignment, and every other code point is copied through intact.
-/// Bytes that pass through untouched are accumulated into a run and flushed
-/// with a single `writeAll`; only the rare escaped code point costs a writer
-/// call. A string with nothing to escape — almost every message — is one
-/// scan and one copy instead of one `writeByte` per byte.
+/// Untouched bytes are flushed in runs rather than one at a time: a
+/// `writeByte` per byte made this the hottest part of terminal output (#192).
 fn writeSanitized(writer: anytype, s: []const u8) !void {
     var i: usize = 0;
     var run_start: usize = 0;

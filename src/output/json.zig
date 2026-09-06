@@ -3,10 +3,10 @@ const diagnostics = @import("../diagnostics.zig");
 const Diagnostic = diagnostics.Diagnostic;
 const DiagnosticList = diagnostics.DiagnosticList;
 
-/// The object shape is fixed, so every key is a literal and each diagnostic
-/// costs one `print` plus one escape scan per string. `std.json.Stringify`
-/// would re-derive the same layout from the type on every diagnostic; on a
-/// 45k-diagnostic run that generic path was 16% of the instructions.
+/// The object shape is fixed, so it is written from literals rather than
+/// through `std.json.Stringify`, which re-derived the same layout from the
+/// type for every diagnostic — 16% of the instructions on a 45k-diagnostic
+/// run (#191).
 pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: usize) !void {
     const counts = list.countBySeverity();
 
