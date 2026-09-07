@@ -45,6 +45,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `src/diagnostics.zig` — Diagnostic types, severity, categories
 - `src/util.zig` — Shared helpers (e.g. step name generation for autofix)
 - `src/e2e_test.zig` — Fixture-driven E2E tests over `tests/fixtures/e2e/` (real files through parser → rules)
+- `bench/` — actionlint / zizmor との三者比較ベンチ (`scripts/bench.py`。形式は `bench/README.md`)
 - `src/fix/` — Auto-fix engine
   - `engine.zig` — Collect and apply `--fix` / `--fix-unsafe` rewrites in place
 - `src/rules/` — Linting rule implementations

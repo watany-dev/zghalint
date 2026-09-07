@@ -1,0 +1,24 @@
+# bench:forbid template-injection
+# bench:forbid unpinned-action
+# bench:forbid excessive-permissions
+# bench:forbid missing-timeout
+# bench:forbid unnamed-step
+name: clean
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run tests
+        run: make test
