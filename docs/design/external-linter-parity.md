@@ -229,24 +229,32 @@ bom-prefixed.yml: workflow parse error: InvalidValue
 いずれも GitHub の公式手順どおりの最小権限だが PERM001 が出ていた。
 zizmor の `excessive-permissions` はどれも指摘しない。
 
-個別スコープの `write` を一律に報告するのをやめ、**権限昇格に繋がる 5 つの
-スコープ** — `actions` / `contents` / `deployments` / `packages` / `pages` —
-に限定した。この 5 つは write を得た時点でリポジトリが保存・実行・公開する
-もの (コード、ワークフロー、パッケージ、デプロイ、公開サイト) を書き換えられ、
-そのジョブの実行範囲を超えて影響が及ぶ。
+個別スコープの `write` を一律に報告するのをやめ、**スコープの性質**と
+**宣言箇所**の 2 軸で判定するようにした。
 
-残りのスコープはリポジトリの**メタデータ** (issue, PR, check, status,
+軸 1 — 権限昇格に繋がるスコープ (`actions` / `contents` / `deployments` /
+`packages`) は宣言箇所を問わず報告する。この 4 つは write を得た時点で
+リポジトリが保存・実行・公開するもの (コード、ワークフロー、デプロイ、
+パッケージ) を書き換えられ、そのジョブの実行範囲を超えて影響が及ぶ。
+
+軸 2 — 残りはリポジトリの**メタデータ** (issue, PR, check, status,
 discussion, project, code scanning alert, attestation, artifact metadata,
-models) を書くか、OIDC トークンを発行する (`id-token`) だけである。GitHub の
-公式手順がこれらを `write` で要求しており、それ以下に絞る手段もないため、
-指摘してもノイズにしかならない。とくに `id-token: write` は trusted
-publishing のためにジョブレベルで宣言するのが公式の推奨で、報告すること自体が
-誤りだった。
+models, Pages のデプロイ) を書くか、OIDC トークンを発行する (`id-token`)
+だけである。GitHub の公式手順がこれらを `write` で要求しており、それ以下に
+絞る手段もない — CodeQL は `security-events: write`、trusted publishing は
+`id-token: write`、`actions/deploy-pages` は `pages: write` を要る。
+**それを必要とするジョブの上で**指摘してもノイズにしかならないので報告しない。
+ただし**ワークフローレベル**の宣言は話が別で、そのスコープが無関係なジョブに
+まで配られるため引き続き報告する (autofix は付けない — レベルを下げると必要な
+ジョブが壊れるので、直し方は「必要なジョブへ移す」であり機械的には書けない)。
 
 `contents: write` を読み取りだけのジョブで宣言するような過剰権限
 (`bench/cases/d-permissions-secrets/job-widens-permissions.yml`) は引き続き
 検出する。`write-all` も従来どおり warning。ベンチの FP は 5 件から 2 件
 (いずれも G9) に減り、precision は 95% → 98% になった。
+
+回帰ガードは `tests/fixtures/e2e/perm001-scope-placement.yml` (ジョブ側は
+出ない) と `perm001-workflow-level-grant.yml` (ワークフロー側は出る)。
 
 #### G15 (#286). API トークンでの publish を指摘しない (trusted publishing 未使用) — 要ルール追加
 

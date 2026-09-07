@@ -21,12 +21,12 @@ const util = @import("../util.zig");
 
 fn checkBroadPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
     if (wf.permissions) |perms| {
-        checkPermissionsScope(perms, wf.permissions_meta, spans.workflow_head, diag_list);
+        checkPermissionsScope(perms, wf.permissions_meta, spans.workflow_head, .workflow, diag_list);
     }
 
     for (wf.jobs) |job| {
         if (job.permissions) |perms| {
-            checkPermissionsScope(perms, job.permissions_meta, job.span, diag_list);
+            checkPermissionsScope(perms, job.permissions_meta, job.span, .job, diag_list);
         }
     }
 }
@@ -67,25 +67,30 @@ fn makeDowngradeToReadFix(diag_list: *DiagnosticList, yaml_key: []const u8, valu
     };
 }
 
+/// Where a `permissions:` block was written. A workflow-level grant applies to
+/// every job in the file, so it is judged more strictly than a job-level one.
+const Placement = enum { workflow, job };
+
 /// Scopes whose `write` grant lets a job change what the repository stores,
 /// runs or ships: its code and workflow files (`contents`, `actions`), the
-/// packages it publishes (`packages`), its deployments (`deployments`) and its
-/// published site (`pages`). Those are the paths by which a compromised step
-/// escalates beyond its own run, so PERM001 reports only these.
+/// packages it publishes (`packages`) and its deployments (`deployments`).
+/// Those are the paths by which a compromised step escalates beyond its own
+/// run, so PERM001 reports them wherever they are declared.
 ///
 /// Every other scope writes repository *metadata* — issues, pull requests,
 /// checks, statuses, discussions, projects, code-scanning alerts, attestations,
-/// artifact metadata, models — or mints an OIDC token (`id-token`). GitHub's
-/// own documented workflows require those at `write` and cannot ask for less:
-/// CodeQL needs `security-events: write`, trusted publishing needs
-/// `id-token: write`, a labeler needs `issues: write`. Reporting them is noise,
-/// not a finding (#285).
+/// artifact metadata, models, Pages deployments — or mints an OIDC token
+/// (`id-token`). GitHub's own documented workflows require those at `write` and
+/// cannot ask for less: CodeQL needs `security-events: write`, trusted
+/// publishing needs `id-token: write`, `actions/deploy-pages` needs
+/// `pages: write`, a labeler needs `issues: write`. Reporting such a grant on
+/// the job that needs it is noise, not a finding (#285) — but at workflow level
+/// it still hands the scope to every other job, which `Placement` catches.
 const escalating_scopes = [_][]const u8{
     "actions",
     "contents",
     "deployments",
     "packages",
-    "pages",
 };
 
 fn scopeEscalatesPrivilege(comptime key: []const u8) bool {
@@ -99,7 +104,13 @@ fn scopeEscalatesPrivilege(comptime key: []const u8) bool {
 
 /// `fallback` is the span reported when the parser captured no span for the
 /// offending permissions entry (e.g. a flow-style `permissions:` mapping).
-fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: Span, diag_list: *DiagnosticList) void {
+fn checkPermissionsScope(
+    perms: Permissions,
+    meta: ?PermissionsMeta,
+    fallback: Span,
+    placement: Placement,
+    diag_list: *DiagnosticList,
+) void {
     if (perms.write_all) {
         const span = perms.value_span orelse fallback;
         diag_list.append(.{
@@ -114,22 +125,38 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
     }
 
     // `PermissionsMeta` declares exactly the scope keys, so it doubles as the
-    // key list. Only the escalating scopes are reported; see
-    // `escalating_scopes` for why the rest are left alone.
+    // key list.
     inline for (workflow_types.permission_scopes) |field| {
         const key: []const u8 = comptime workflow_types.permissionScopeKey(field);
-        if (comptime scopeEscalatesPrivilege(key)) {
+        const escalates = comptime scopeEscalatesPrivilege(key);
+        if (escalates or placement == .workflow) {
             const level: ?workflow_types.PermissionLevel = @field(perms, field);
             const value_span: ?Span = if (meta) |m| @field(m, field) else null;
             if (level) |lvl| {
                 if (lvl == .write) {
+                    // The GitHub Actions spec has no `id-token: read`, so that
+                    // entry has to be removed rather than lowered.
+                    const is_id_token = comptime std.mem.eql(u8, key, "id-token");
                     diag_list.append(.{
                         .rule_id = "PERM001",
                         .severity = .info,
-                        .message = "Broad write permission detected. Ensure this is necessary.",
+                        .message = if (escalates)
+                            "Broad write permission detected. Ensure this is necessary."
+                        else
+                            "Workflow-level write permission is granted to every job, not just the one that needs it.",
                         .span = value_span orelse fallback,
-                        .fix_hint = "Consider if 'read' permission would suffice instead of 'write'.",
-                        .fix = if (value_span) |vs| makeDowngradeToReadFix(diag_list, key, vs) else null,
+                        .fix_hint = if (escalates)
+                            "Consider if 'read' permission would suffice instead of 'write'."
+                        else if (is_id_token)
+                            "id-token: write enables OIDC. Declare it on the job that needs OIDC."
+                        else
+                            "Move this scope onto the job that needs it, or lower it to 'read' here.",
+                        // Lowering a metadata scope would break the job that
+                        // needs it, so only the escalating ones carry a fix.
+                        .fix = if (escalates) blk: {
+                            const vs = value_span orelse break :blk null;
+                            break :blk makeDowngradeToReadFix(diag_list, key, vs);
+                        } else null,
                     }) catch return;
                 }
             }
@@ -599,7 +626,7 @@ test "PERM001: autofix replaces write-all with minimal permissions" {
     const perms = Permissions{ .write_all = true, .value_span = value_span };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, .workflow, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -618,7 +645,7 @@ test "PERM001: no fix when value_span is null" {
     const perms = Permissions{ .write_all = true };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, .workflow, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
@@ -628,7 +655,7 @@ test "PERM001: no fix for individual write when meta is null" {
     const perms = Permissions{ .contents = .write };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, .workflow, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
@@ -651,7 +678,7 @@ test "PERM001: per-field autofix downgrades contents: write to read" {
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, spans.workflow_head, &diags);
+    checkPermissionsScope(perms, meta, spans.workflow_head, .workflow, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -665,85 +692,84 @@ test "PERM001: per-field autofix downgrades contents: write to read" {
     try std.testing.expectEqualStrings("permissions:\n  contents: read\n", result.content);
 }
 
-test "PERM001: id-token: write is not reported (OIDC is declared per job by design)" {
-    const value_span = Span{
-        .start_line = 2,
-        .start_col = 13,
-        .end_line = 2,
-        .end_col = 18,
-        .start_byte = 26,
-        .end_byte = 31,
-    };
-    const perms = Permissions{ .id_token = .write };
-    const meta = PermissionsMeta{ .id_token = value_span };
+/// The scopes PERM001 leaves alone at job level: each is the documented
+/// minimum for a common workflow — CodeQL uploads (`security-events`), trusted
+/// publishing (`id-token`), a Pages deploy (`pages`), a labeler (`issues`), a
+/// review bot (`pull-requests`, `checks`, `statuses`), provenance
+/// (`attestations`).
+const metadata_write_perms = Permissions{
+    .attestations = .write,
+    .checks = .write,
+    .discussions = .write,
+    .id_token = .write,
+    .issues = .write,
+    .pages = .write,
+    .pull_requests = .write,
+    .repository_projects = .write,
+    .security_events = .write,
+    .statuses = .write,
+};
 
+test "PERM001: metadata scopes at write are not reported on the job that needs them" {
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, spans.workflow_head, &diags);
+    checkPermissionsScope(metadata_write_perms, null, spans.workflow_head, .job, &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "PERM001: metadata scopes at write are not reported" {
-    // Each of these is the documented minimum for a common workflow:
-    // CodeQL uploads (`security-events`), a labeler (`issues`), a review bot
-    // (`pull-requests`, `checks`, `statuses`), provenance (`attestations`).
-    const perms = Permissions{
-        .attestations = .write,
-        .checks = .write,
-        .discussions = .write,
-        .issues = .write,
-        .pull_requests = .write,
-        .repository_projects = .write,
-        .security_events = .write,
-        .statuses = .write,
-    };
+test "PERM001: metadata scopes at write are reported at workflow level" {
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
+    checkPermissionsScope(metadata_write_perms, null, spans.workflow_head, .workflow, &diags);
 
-    try std.testing.expectEqual(@as(usize, 0), diags.len());
+    // Every scope set above, since a workflow-level grant reaches every job.
+    try std.testing.expectEqual(@as(usize, 10), diags.len());
+    for (0..diags.len()) |i| {
+        // No autofix: lowering the level would break the job that needs it;
+        // the entry has to move to that job instead.
+        try std.testing.expect(diags.get(i).fix == null);
+    }
 }
 
-test "PERM001: every escalating scope at write is reported" {
+test "PERM001: every escalating scope at write is reported at job level" {
     const perms = Permissions{
         .actions = .write,
         .contents = .write,
         .deployments = .write,
         .packages = .write,
-        .pages = .write,
     };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
+    checkPermissionsScope(perms, null, spans.workflow_head, .job, &diags);
 
     try std.testing.expectEqual(escalating_scopes.len, diags.len());
 }
 
-test "PERM001: autofix applies to the escalating scopes via the engine" {
+test "PERM001: autofix applies to an escalating scope via the engine" {
     const fix_engine = @import("../fix/engine.zig");
-    const source = "permissions:\n  pages: write\n";
-    // `write` at bytes 22..27.
+    const source = "permissions:\n  packages: write\n";
+    // `write` at bytes 25..30.
     const value_span = Span{
         .start_line = 2,
-        .start_col = 10,
+        .start_col = 13,
         .end_line = 2,
-        .end_col = 15,
-        .start_byte = 22,
-        .end_byte = 27,
+        .end_col = 18,
+        .start_byte = 25,
+        .end_byte = 30,
     };
-    const perms = Permissions{ .pages = .write };
-    const meta = PermissionsMeta{ .pages = value_span };
+    const perms = Permissions{ .packages = .write };
+    const meta = PermissionsMeta{ .packages = value_span };
 
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
-    checkPermissionsScope(perms, meta, spans.workflow_head, &diags);
+    checkPermissionsScope(perms, meta, spans.workflow_head, .job, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
     const result = try fix_engine.applyFixes(std.testing.allocator, source, &.{fix});
     defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("permissions:\n  pages: read\n", result.content);
+    try std.testing.expectEqualStrings("permissions:\n  packages: read\n", result.content);
 }
 
 test "PERM001: id-token alongside contents: write leaves id-token untouched" {
@@ -775,8 +801,13 @@ test "PERM001: id-token alongside contents: write leaves id-token untouched" {
     var diags = DiagnosticList.init(alloc);
     checkBroadPermissions(&wf, &diags);
 
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    try std.testing.expect(diags.get(0).fix != null);
+    // Both are workflow-level, so both are reported; only `contents` is fixable.
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+    var fix_count: usize = 0;
+    for (0..diags.len()) |i| {
+        if (diags.get(i).fix != null) fix_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), fix_count);
 
     var fixes_buf: [1]Fix = undefined;
     var n: usize = 0;

@@ -38,6 +38,7 @@ autofix 実装計画のうち、Phase 1（置換系 5 件）と Phase 2 前半�
   - 4 フィールド未検出は既存ルールの gap で、Tidy First 的に同時解消する価値がある
   - `id-token: read` は GitHub Actions 仕様で存在せず、機械的置換は誤誘導になる
   - fix を `.unsafe` に寄せることで `--fix` の safety 契約を守る（write は意図があって書かれている想定）
+- **改訂 (#285)**: 「14 フィールド全部を検出」は FP 源だった。GitHub の公式手順がそのジョブに要求する `write`（CodeQL の `security-events`、trusted publishing の `id-token`、`actions/deploy-pages` の `pages`）まで指摘してしまうため、検出対象を「権限昇格に繋がる 4 スコープ（`actions` / `contents` / `deployments` / `packages`）はどこでも」＋「それ以外のスコープはワークフローレベル宣言のみ」に絞った。autofix は前者にのみ付く（後者は「必要なジョブへ移す」が正しい直し方で、レベル降格は壊す）。詳細は `docs/design/external-linter-parity.md` §4.1 G14
 
 ### D4. PERM001 追加: 個別 value span 保持は `PermissionsMeta` を新設
 

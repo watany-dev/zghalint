@@ -40,7 +40,7 @@ autofix Phase 2 前半（`BP005`, `PERM002`, `DEP001`、`autofix-phase2-insertio
 
 `id-token` スコープは GitHub Actions 仕様上 `read` / `none` の 2 値しかなく（`write` の反対は `none`）、機械的に `read` へ置換すると誤った YAML を生成する。本設計では `id-token: write` 検出を残しつつ fix は付けず、専用 `fix_hint` で OIDC 用途を案内する。
 
-> **追記 (#285)**: その後 PERM001 の対象を権限昇格に繋がる 5 スコープ（`actions` / `contents` / `deployments` / `packages` / `pages`）に絞ったため、`id-token` を含むメタデータ系スコープはそもそも検出されなくなった。この節と以降の「14 フィールド」「13 フィールド」は当時の実装の記録であり、現行の挙動は `docs/design/external-linter-parity.md` §4.1 G14 を参照。
+> **追記 (#285)**: その後 PERM001 の対象を「権限昇格に繋がる 4 スコープ（`actions` / `contents` / `deployments` / `packages`）はどこでも」＋「それ以外はワークフローレベル宣言のみ」に絞った。`id-token` を含むメタデータ系スコープはジョブレベルでは検出されず、ワークフローレベルでは検出のみで autofix は付かない。この節と以降の「14 フィールド」「13 フィールド」は当時の実装の記録であり、現行の挙動は `docs/design/external-linter-parity.md` §4.1 G14 を参照。
 
 ### `PermissionsMeta` 方式（PERM001）
 
