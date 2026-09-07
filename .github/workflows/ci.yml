@@ -94,8 +94,8 @@ jobs:
 
       - name: ruff
         run: |
-          ruff check tests/pbt/
-          ruff format --check tests/pbt/
+          ruff check tests/pbt/ scripts/
+          ruff format --check tests/pbt/ scripts/
 
   build:
     name: Build (${{ matrix.os }})

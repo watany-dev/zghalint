@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .strip = strip_release,
     });
-    addDocsRules(b, lib_mod);
+    addRepoFiles(b, lib_mod);
 
     // Both the CLI module and its test module need the same dependencies.
     const cli_imports: []const std.Build.Module.Import = &.{
@@ -57,7 +57,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    addDocsRules(b, lib_test_mod);
+    addRepoFiles(b, lib_test_mod);
     const lib_unit_tests = b.addTest(.{ .root_module = lib_test_mod });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
@@ -140,11 +140,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_unit_tests.step);
 }
 
-/// `docs/rules.md` lives outside the module root (`src/`), so it cannot be
-/// reached with a relative `@embedFile`. Expose it under a stable name for
-/// src/docs_sync_test.zig instead.
-fn addDocsRules(b: *std.Build, module: *std.Build.Module) void {
+/// Repository files that tests read but that live outside the module root
+/// (`src/`), so a relative `@embedFile` cannot reach them. Expose them under
+/// stable names instead.
+fn addRepoFiles(b: *std.Build, module: *std.Build.Module) void {
+    // src/docs_sync_test.zig
     module.addAnonymousImport("docs_rules_md", .{
         .root_source_file = b.path("docs/rules.md"),
+    });
+    // src/rules/popular_actions.zig
+    module.addAnonymousImport("popular_actions_manifest", .{
+        .root_source_file = b.path("scripts/popular-actions.txt"),
     });
 }

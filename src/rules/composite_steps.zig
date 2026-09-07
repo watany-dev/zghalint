@@ -21,6 +21,7 @@ const best_practices = @import("best_practices.zig");
 const security = @import("security.zig");
 const uses_rules = @import("uses.zig");
 const local_action = @import("local_action.zig");
+const popular_actions = @import("popular_actions.zig");
 const expressions = @import("expressions.zig");
 const expr_check = @import("expr_check.zig");
 const expr_overlay = @import("expr_overlay.zig");
@@ -76,6 +77,8 @@ const composite_step_checks = [_]StepCheck{
     stepCheck(&best_practices.rules, "BP008"),
     stepCheck(&uses_rules.rules, "DEP003"),
     stepCheck(&local_action.rules, "DEP004"),
+    stepCheck(&popular_actions.rules, "DEP005"),
+    stepCheck(&popular_actions.rules, "DEP006"),
 };
 
 /// Contexts a composite action step cannot resolve. They are all valid
@@ -340,6 +343,48 @@ test "DEP003: a malformed uses inside a composite step is reported" {
     defer lint.deinit();
 
     try testing.expect(lint.has("DEP003"));
+}
+
+test "DEP005: an undeclared with: key inside a composite step is reported" {
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/checkout@v4
+        \\      with:
+        \\        fetch-dept: 0
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("DEP005"));
+}
+
+test "DEP006: a deprecated input inside a composite step is reported" {
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/setup-node@v2
+        \\      with:
+        \\        version: 16
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("DEP006"));
+}
+
+test "BP003: a composite step on an action with a retired runtime is reported" {
+    // The runtime half of BP003 reads the embedded table rather than an
+    // `action.yml` on disk, so it has to reach composite steps too.
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/create-release@v1
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("BP003"));
 }
 
 test "BP008: a deprecated workflow command inside a composite step is reported" {

@@ -63,3 +63,25 @@
 - action の更新 PR では SHA と `# vX.Y.Z` コメントの両方が書き換わることを確認する
 - PBT の依存は `==` で固定する。Hypothesis はバージョン間で生成戦略と
   シュリンク挙動が変わるため、範囲指定にするとコード変更なしに CI の結果が変わる
+
+## popular actions メタデータの更新
+
+**真は各アクションの `action.yml`。** それを読んで生成したスナップショットが
+`src/rules/data/popular_actions.zig` で、DEP005 / DEP006 / BP003 が参照する。
+
+| 参照元 | 読み方 |
+|---|---|
+| 対象アクション一覧 | `scripts/popular-actions.txt`（`owner/repo[/path]@ref` を 1 行ずつ） |
+| 生成スクリプト | `scripts/gen-popular-actions.py`（各リポジトリを shallow clone して `action.yml` を読む） |
+
+手順:
+
+1. 一覧を更新する（新しいメジャーが出た、対象を足す / 外す）
+2. `python3 scripts/gen-popular-actions.py` を実行する（`pyyaml` と `git` が要る）
+3. 生成物の差分を確認する。入力が消えているだけの差分は、上流が本当に消したのか
+   一覧の `ref` を巻き戻していないかを疑う
+4. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
+
+データが古いと「上流が足したばかりの入力を未知として報告する」誤検出になる。
+一覧に載せるのは、古くなればすぐ気付かれる程度に広く使われているアクションだけに
+する。載っていないアクションは検証されないだけで、誤検出にはならない。
