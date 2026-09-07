@@ -36,3 +36,5 @@ still be renumbered before 1.0.
 - Prebuilt binaries for Linux, macOS and Windows on x86_64 and aarch64.
 - SLSA build provenance attestations on every release archive, verifiable with
   `gh attestation verify` (see the README).
+- Fuzz targets (`zig build fuzz`) for the YAML tokenizer, the YAML parser and
+  the `${{ }}` expression parser.

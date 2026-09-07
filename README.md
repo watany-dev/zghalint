@@ -249,7 +249,16 @@ zig build test                      # Run all unit tests
 zig build test --summary all        # With detailed summary
 zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
+zig build fuzz                      # Fuzz targets over their seed corpus
 ```
+
+The parsers that consume untrusted input (the YAML tokenizer, the YAML parser
+and the `${{ }}` expression parser) have fuzz targets in `src/fuzz_test.zig`.
+`zig build fuzz` replays their seed corpus as ordinary regression tests;
+`zig build fuzz --fuzz --webui=127.0.0.1` starts continuous, coverage-guided
+fuzzing and runs until interrupted. See
+[docs/design/pbt-strategy.md](docs/design/pbt-strategy.md) §6-4 for the corpus
+and regression policy.
 
 ## Contributing
 

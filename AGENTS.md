@@ -13,6 +13,8 @@ zig build                           # Build executable and library
 zig build run -- [workflow files]   # Run with arguments
 zig build test                      # Run all unit tests
 zig build test --summary all        # With detailed summary
+zig build fuzz                      # Fuzz targets over their seed corpus
+zig build fuzz --fuzz --webui=127.0.0.1  # Continuous fuzzing (Ctrl-C to stop)
 zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
 ```

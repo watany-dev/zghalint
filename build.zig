@@ -84,6 +84,31 @@ pub fn build(b: *std.Build) void {
     });
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
+    // Fuzzing gets its own artifact: `zig build fuzz --fuzz` instruments only
+    // these targets, and a plain `zig build fuzz` runs each one over its seed
+    // corpus, which is also how they run inside `zig build test`.
+    // Rooted at the fuzz file rather than src/lib.zig: only the parsers under
+    // test get coverage instrumentation, instead of the whole 1400-test suite.
+    const fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("src/fuzz_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const fuzz_tests = b.addTest(.{
+        .root_module = fuzz_mod,
+        // The imported modules bring their own inline tests along; only the
+        // fuzz targets belong to this step.
+        .filters = &.{"fuzz:"},
+        // The self-hosted x86_64 backend emits no `-fsanitize-coverage` PCs,
+        // so `--fuzz` panics in std.Build.Fuzz.addEntryPoint with an empty PC
+        // list. The LLVM backend produces the coverage the fuzzer needs.
+        .use_llvm = true,
+    });
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_step = b.step("fuzz", "Run fuzz targets (add --fuzz for continuous fuzzing)");
+    fuzz_step.dependOn(&run_fuzz_tests.step);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
