@@ -1,6 +1,6 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`3a0f748`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`83a3d9d`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
@@ -8,17 +8,17 @@
 | 項目 | 状態 |
 |---|---|
 | ルール数 | `docs/rules.md` の表は 98 行（DEP005 / DEP006 追加分）で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストする。残る不一致は**見出しの「90 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
-| `src/**/*.zig` | 51,263 行 |
-| ユニットテスト | 1751 件（`zig build test` 緑） |
+| `src/**/*.zig` | 51,322 行 |
+| ユニットテスト | 1752 件（`zig build test` 緑） |
 | #55 actionlint parity | 54 sub-issue 中 **54 close 済み（100%）**。umbrella #55 本体も close 済み |
 | 型検査エンジン | T0〜T4 完了（#129 は PR #256 で overlay 接続、close 済み）。EXPR018 引数型検査（#162）も同 PR で完了・close 済み |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（43 本）と `tests/fixtures/e2e-action/*.yml`（7 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
-| bench | `bench/cases/` に 129 ファイル（複数ファイルのケースをまとめて 124 ケース）。A〜D は PR #277、E〜J は PR #287 で揃った。`scripts/bench.py` の採点で zghalint は recall 100%（105/105）・precision 97%・位置一致 96%（101/105）。FN 0 件、FP 3 件はすべて #285。実行エラーは #284 の 1 件のみ。外部ツール未導入の環境では zghalint 単独で採点する |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（45 本）と `tests/fixtures/e2e-action/*.yml`（7 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| bench | `bench/cases/` に 129 ファイル（複数ファイルのケースをまとめて 124 ケース）。A〜D は PR #277、E〜J は PR #287 で揃った。`scripts/bench.py` の採点で zghalint は recall 100%（105/105）・precision 100%・位置一致 96%（101/105）。FN・FP ともに 0 件で、実行エラーは #284 の 1 件のみ。外部ツール未導入の環境では zghalint 単独で採点する |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
 | ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241） |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
-| オープン PR | #207（本ロードマップ）と #217（形式仕様とモデル検査）の 2 本。#272 / #277 / #287（bench）と #278（G5〜G8）/ #279（#159）/ #288（G11）/ #289（G12）/ #290（#64）/ #292（G9）はマージ済み |
-| オープン issue | 9 件。内訳はその他 1（#135）、ベンチマーク系 4（#262 本体と #268〜#270）、bench 由来の parity gap 4（#281 #284〜#286 = G10 / G13〜G15）。#55 #64 #263 #264 #265〜#267 #271 #273〜#276 #280 #282 #283 #159 は実装済みのため close 済み |
+| オープン PR | #207（本ロードマップ）と #217（形式仕様とモデル検査）の 2 本。#272 / #277 / #287（bench）と #278（G5〜G8）/ #279（#159）/ #288（G11）/ #289（G12）/ #290（#64）/ #292（G9）/ #291（G14）はマージ済み |
+| オープン issue | 9 件。内訳はその他 1（#135）、パーサ堅牢性 1（#293、実ワークフロー 228 件中 36 件が parse error）、ベンチマーク系 4（#262 本体と #268〜#270）、bench 由来の parity gap 3（#281 #284 #286 = G10 / G13 / G15）。#55 #64 #263 #264 #265〜#267 #271 #273〜#276 #280 #282 #283 #285 #159 は実装済みのため close 済み |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
 | 既知バグ | 形式検証由来の反例はすべて解消した。security 3 件（#218 / #219 / #220）に続き、prefetch キャッシュ（#221 / #222）・`--fix` の原子性（#223）・SEC021 の誤検知（#224）が PR #261 で修正・close 済み |
 
@@ -105,7 +105,7 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 |---|---|
 | #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
 | ベンチマーク #262 | zghalint / actionlint / zizmor を三者比較し、改善課題を継続的に洗い出す umbrella。基盤（#263）は PR #272、ケース A〜D（#264）は PR #277、ケース E〜J（#265〜#267）と FN 候補の検証（#271）は PR #287 で完了した。残る sub-issue は性能計測 #268、autofix 交差検証 #269、運用ループ #270 の 3 本で、いずれもケース本体ではなく回し方の課題 |
-| bench 由来の parity gap #280〜#286 | E〜J のケースで出た FP・FN・実行エラーを `docs/design/external-linter-parity.md` の G9〜G15 として起票したもの。残るのは 4 本で、ルール追加が #281（`needs:` の未知 job と循環）/ #284（中身のないワークフローを診断で返す）/ #286（API トークンでの publish を trusted publishing へ誘導）、ルール改善が #285（PERM001 がジョブに必要な write 権限まで警告する FP）。パーサ層の #280（G9、関数呼び出し結果へのプロパティ・インデックスアクセス）は PR #292、ファイル全体が検査対象から落ちる系の #282（G11、UTF-8 BOM）は PR #288、#283（G12、ドキュメントマーカー）は PR #289 で解消し、A〜D 由来の G5〜G8（#273〜#276）は PR #278 で解消済み |
+| bench 由来の parity gap #280〜#286 | E〜J のケースで出た FP・FN・実行エラーを `docs/design/external-linter-parity.md` の G9〜G15 として起票したもの。残るのは 3 本で、いずれもルール追加。#281（`needs:` の未知 job と循環）/ #284（中身のないワークフローを診断で返す）/ #286（API トークンでの publish を trusted publishing へ誘導）。ルール改善の #285（G14、PERM001 の過剰警告）は PR #291、パーサ層の #280（G9、関数呼び出し結果へのプロパティ・インデックスアクセス）は PR #292、ファイル全体が検査対象から落ちる系の #282（G11、UTF-8 BOM）は PR #288、#283（G12、ドキュメントマーカー）は PR #289 で解消し、A〜D 由来の G5〜G8（#273〜#276）は PR #278 で解消済み |
 | PR #217 形式仕様 | Alloy（ルール所有権）と TLA+（prefetch / autofix）の仕様と反例。#218〜#224 の出所で、指摘はすべて修正済み。マージすれば以後の反例追加が同じ場所に載る |
 | リポジトリ運用・CI 基盤（旧 #230 #234〜#244） | 12 件すべて実装済み・close 済み（Dependabot / PBT 依存固定 / Zig 版一元化 / coverage / concurrency / 外部静的解析 / ファズ / 自リポジトリ dogfooding / action.yml スモーク / メタファイル / release provenance / タグ整合 / `docs/rules.md` 同期テスト）。track として終了 |
 
@@ -114,14 +114,14 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 | 順 | 対象 | 理由 |
 |---|---|---|
 | 1 | `docs/rules.md` の見出し修正 | 表は 98 行で registry と同期済みなのに、見出しが「90 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
-| 2 | #285 | PERM001 が CodeQL の `security-events: write` や trusted publishing の `id-token: write` まで警告する FP 3 件。bench に残る FP はこの 3 件だけで、公式手順どおりの最小権限が叱られる形なので実害が大きい |
-| 3 | #284 | 中身のないワークフロー（コメントのみのファイル）を `InvalidValue` ではなく診断として返す。bench に残る唯一の実行エラー `i-robustness/comments-only.yml` がこれで消える |
+| 2 | #293 | 実ワークフロー 228 件のうち 36 件が parse error で lint できない（`-` 単独行、親キーと同一インデントのシーケンス）。実利用の 16% が丸ごと検査対象から落ちるので、単発ルールより優先度が高い |
+| 3 | #284 | 中身のないワークフロー（コメントのみのファイル）を `InvalidValue` ではなく診断として返す。bench に残る唯一の実行エラー `i-robustness/comments-only.yml` がこれで消える。#293 と同じ YAML 入り口の話なので続けて入れられる |
 | 4 | #281 / #135 | ルール追加の 2 本。#281 は `needs:` の未知 job と循環、#135 は SC007 typosquat で設計済み・オフライン完結のため他と完全に並列できる |
 
 Phase 1〜4 はすべて閉じ、ルール追加の主戦場は #55 から bench（#262）へ移った。
-E〜J のケースが揃ったことで採点は全カテゴリを覆い、recall 100% / precision 97% という実測から改善課題が出る形になっている。
-検出漏れは消えたので、残る課題は FP（#285）とパーサ堅牢性（#284）が中心で、
-新ルールの大量追加ではなく既存の精度を上げる段階に入った。
+E〜J のケースが揃ったことで採点は全カテゴリを覆い、recall 100% / precision 100% に到達した。
+bench 上の FN・FP は消えたので、次の課題は採点済みケースの外——実ワークフローで落ちる
+パーサ堅牢性（#293 / #284）へ移っている。
 
 ## 4. 進め方の注意
 
