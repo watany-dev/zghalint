@@ -126,6 +126,53 @@ lint できなかった」) も同じ扱いにする。JSON 自体は正常に�
 `--fail-on-fp` を付けると、zghalint が `forbid` に反した時点で非ゼロ終了
 する。CI で誤検出の混入を止める用途。
 
+## 性能計測 (`--perf`)
+
+採点ではなく wall time と最大 RSS を測るモード (issue #268)。実装は
+`scripts/bench_perf.py`。zghalint は `-Doptimize=ReleaseFast` で作った
+バイナリを渡す — Debug ビルドの数字は比較に使えない。
+
+```bash
+zig build -Doptimize=ReleaseFast
+python3 scripts/fetch-corpus.py                     # many-small 用のコーパス
+python3 scripts/bench.py --perf                     # Markdown を stdout へ
+python3 scripts/bench.py --perf -o /tmp/perf.md --json /tmp/perf.json
+python3 scripts/bench.py --perf --runs 3 --warmup 1 # 手元での確認用
+```
+
+| シナリオ | 内容 |
+|---|---|
+| cases | `bench/cases/` のワークフロー全件を 1 回の起動で処理する |
+| huge | 約 10,000 行の合成ワークフロー 1 本 (実行時に生成) |
+| many-small | `bench/corpus/` を 1000 ファイルに敷き詰めて 1 回の起動で処理する |
+| network | cases を対象に、zghalint は `--no-cache` (cold) とディスクキャッシュ (warm)、zizmor は `--offline` とオンラインを比べる |
+
+各コマンドは `hyperfine --warmup 3` (既定; `--runs` / `--warmup` で変更) で
+測り、hyperfine が無ければ同じ回数の in-process ループで代用する。最大 RSS
+はもう 1 回だけ実行して `wait4(2)` の `ru_maxrss` を取る — `/usr/bin/time -v`
+の "Maximum resident set size" と同じ値。zghalint / actionlint / zizmor は
+すべて `bench/` の採点と同じフラグ (`--offline`, `-no-color`,
+`--offline --no-progress`) で走らせる。
+
+終了コードは表に載せる。zghalint の 2 は「lint できなかったファイルがある」
+の意味で、コーパスには自前パーサが拒否する実ファイルが含まれるため、
+many-small では 2 が出るのが現状の挙動 (堅牢性の観察点)。
+
+network シナリオは、計測前に zghalint の cold 実行がキャッシュを書き、
+zizmor のオンライン実行が監査を完了することを確かめてから走らせる。
+どちらかが失敗する環境 (api.github.com へ届かない) では「計測できなかった
+シナリオ」として理由つきで載せ、接続失敗のコストを取得コストとして
+報告しない。`bench/corpus/` が空なら many-small も同じ扱いになる。
+
+### コーパス (`scripts/fetch-corpus.py`)
+
+`scripts/popular-actions.txt` のリポジトリを `.github/workflows/` だけ
+sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集める。
+上流のライセンスをそのまま持つファイルなので `bench/corpus/` は git 管理外
+にし、代わりに `bench/corpus/manifest.json` に取得元 (リポジトリ・コミット・
+ファイル名) と取得時刻を残す。`--repo owner/repo` で追加、`--limit N` で
+先頭 N リポジトリだけ取得できる。
+
 ## ケースを追加する
 
 1. カテゴリのディレクトリに `.yml` を置く (複数ファイルならディレクトリごと)。
