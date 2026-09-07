@@ -286,6 +286,27 @@ const LintFileError = error{
     WorkflowParseError,
 };
 
+/// An undefined `*alias` is an error about one line of the file, not about the
+/// file as a whole, so it is reported with the position the parser recorded.
+fn reportYamlParseError(
+    stderr: *std.Io.Writer,
+    file_path: []const u8,
+    err: anyerror,
+    parser: *const zghalint.yaml.Parser,
+) void {
+    if (parser.failure) |failure| {
+        stderr.print("{s}:{d}:{d}: YAML parse error: {s}: '*{s}'\n", .{
+            file_path,
+            failure.span.start_line,
+            failure.span.start_col,
+            @errorName(err),
+            failure.alias,
+        }) catch {};
+        return;
+    }
+    stderr.print("{s}: YAML parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+}
+
 /// `appendOwning` is required because `diag_list`'s fix arena dies with the
 /// caller's frame; `Fix.edits` would otherwise dangle.
 fn appendFiltered(
@@ -324,7 +345,7 @@ fn lintDocumentFile(
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
 
     const yaml_node = yaml_parser.parse() catch |err| {
-        stderr.print("{s}: YAML parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+        reportYamlParseError(stderr, file_path, err, &yaml_parser);
         return error.YamlParseError;
     };
 
@@ -445,7 +466,7 @@ fn lintFile(
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
 
     const yaml_node = yaml_parser.parse() catch |err| {
-        stderr.print("{s}: YAML parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+        reportYamlParseError(stderr, file_path, err, &yaml_parser);
         return error.YamlParseError;
     };
 
