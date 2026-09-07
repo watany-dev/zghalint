@@ -147,7 +147,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **86 rules** across 10 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **90 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 

@@ -71,16 +71,26 @@ pub fn build(b: *std.Build) void {
     const test_bin_step = b.step("test-bin", "Install test binaries for coverage measurement");
     test_bin_step.dependOn(&install_cov_lib_tests.step);
 
-    // link_libc is required because the imported lib_mod includes tests that
+    // The library dependency is `lib_test_mod`, not the distribution `lib_mod`:
+    // the latter is stripped in Release modes, and a stripped import next to an
+    // unstripped root makes LLVM reject the mixed debug info ("local variable
+    // requires a valid scope") when the tests are built with -Doptimize=ReleaseFast.
+    //
+    // link_libc is required because the imported library includes tests that
     // call setenv/unsetenv via @extern; those symbols must resolve when the
-    // exe test binary is linked.
+    // CLI test binaries are linked.
+    const test_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "zghalint", .module = lib_test_mod },
+        .{ .name = "build_options", .module = build_options.createModule() },
+    };
+
     const exe_unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .imports = cli_imports,
+            .imports = test_imports,
         }),
     });
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
@@ -117,7 +127,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .imports = cli_imports,
+            .imports = test_imports,
         }),
         .use_llvm = true,
         .name = "cov-exe-test",
