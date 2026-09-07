@@ -21,7 +21,7 @@ Zero external dependencies — even the YAML parser is built from scratch.
 
 ### Build from source
 
-Requires **Zig 0.15.2** or later.
+Requires **Zig 0.15.2** or later (the authoritative value is `minimum_zig_version` in `build.zig.zon`; see [docs/maintenance.md](docs/maintenance.md)).
 
 ```bash
 git clone https://github.com/watany-dev/zghalint.git
@@ -35,6 +35,7 @@ The binary will be at `./zig-out/bin/zghalint`.
 
 Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are available on the [Releases](https://github.com/watany-dev/zghalint/releases) page.
 The first public tag is `v0.0.1-rc.1`, published as a prerelease while the installation flow and CLI contract are still being validated.
+Tags follow `v<semver>`, with prereleases as `v<semver>-rc.<N>`; see [docs/maintenance.md](docs/maintenance.md) for the release procedure.
 
 ### Use as a GitHub Action
 

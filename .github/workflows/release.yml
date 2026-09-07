@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# リリースは途中でキャンセルすると中途半端な成果物が残るため、
+# グループ化だけ行い cancel-in-progress は付けない。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Verify Release Inputs
@@ -20,12 +26,38 @@ jobs:
         with:
           persist-credentials: false
 
+      # version を省略すると build.zig.zon の minimum_zig_version が使われる。
+      # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.15.2
 
       - name: Build
         run: zig build
+
+      # タグ・build.zig.zon・バイナリの --version が食い違ったまま
+      # リリースされるのを防ぐ。build.zig 経由のバージョン伝播もここで検証する。
+      - name: Verify version consistency
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${TAG#v}
+
+          ZON_VERSION=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' build.zig.zon | head -1)
+          if [ -z "$ZON_VERSION" ]; then
+            echo "::error::could not read .version from build.zig.zon"
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$ZON_VERSION" ]; then
+            echo "::error::tag $TAG implies version $TAG_VERSION but build.zig.zon has $ZON_VERSION"
+            exit 1
+          fi
+
+          # 出力は `zghalint vX.Y.Z` 形式なので、先頭の `v` を落として比較する。
+          BIN_VERSION=$(./zig-out/bin/zghalint --version | tr -d '\r' | awk '{print $NF}')
+          BIN_VERSION=${BIN_VERSION#v}
+          if [ "$BIN_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::binary reports --version $BIN_VERSION but tag implies $TAG_VERSION"
+            exit 1
+          fi
+          echo "version OK: $TAG_VERSION"
 
       - name: Format Check
         run: zig fmt --check src/ build.zig
@@ -63,9 +95,9 @@ jobs:
         with:
           persist-credentials: false
 
+      # version を省略すると build.zig.zon の minimum_zig_version が使われる。
+      # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          version: 0.15.2
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}

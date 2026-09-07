@@ -1,13 +1,21 @@
 #!/bin/bash
 set -e
 
-# Claude Code (web) の sandbox 環境では pip 配布の ziglang 0.15.2 が使う
+# Claude Code (web) の sandbox 環境では pip 配布の ziglang が使う
 # x86_64 self-hosted バックエンドが `TODO rework lowerUav` で panic することが
 # ある。LLVM バックエンドなら動くため、`zig` を wrapper 経由にしてコンパイル
 # 系サブコマンドへ `-fllvm` を注入する。ビルドステップの定義は build.zig に
 # 一本化してあるので、wrapper は `-fllvm` の注入だけを行う。
 
-ZIG_VERSION="0.15.2"
+# Zig バージョンの定義は build.zig.zon の minimum_zig_version 一箇所に集約する。
+# CI (mlugg/setup-zig は version 省略時に同じ値を読む) とローカルをずらさない。
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ZON_PATH="$REPO_ROOT/build.zig.zon"
+ZIG_VERSION="$(sed -n 's/^[[:space:]]*\.minimum_zig_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ZON_PATH" | head -1)"
+if [ -z "$ZIG_VERSION" ]; then
+  echo "setup-zig.sh: cannot read minimum_zig_version from $ZON_PATH" >&2
+  exit 1
+fi
 WRAPPER_PATH="/usr/local/bin/zig"
 REAL_ZIG_LINK="/usr/local/bin/zig-real"
 

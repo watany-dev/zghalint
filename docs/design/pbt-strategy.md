@@ -1,6 +1,6 @@
 # PBT 戦略: Property-Based Testing 強化計画
 
-最終更新: 2026-09-04
+最終更新: 2026-09-07
 
 ## 1. 概要
 
@@ -94,7 +94,7 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 | 6 | **Zig in-process PBT**（`std.Random` + 既存 `test "..."` 内で seed 駆動） | **P2** | subprocess は遅く 50 例上限。in-process なら 1000+ 例で深掘り可能 | 大 | 高速化・shrinking で root cause 特定容易 |
 | 7 | **新しい不変条件の追加** (a) ファイル順序非依存 (b) `--quick` と通常モードの整合性 (c) severity override の単調性 (d) JSON ↔ SARIF の diagnostic 数一致 | **P2** | PBT は不変条件の数が価値を決める。低コストで追加可 | 小 | 検出領域の多角化 |
 | 8 | **advisory / archived / dependabot / refconfusion / stale_refs の検出 PBT** | **P2** | 外部依存があり生成困難な可能性。要調査 | 中 | 残ルールの網羅 |
-| 9 | **Hypothesis DB 永続化と CI 統合** | **P2** | 失敗事例を再現可能にする。現状ローカル一過性 | 小 | 回帰防止・shrink 結果の蓄積 |
+| 9 | ~~**Hypothesis DB 永続化と CI 統合**~~ | **完了** | `actions/cache` で `.hypothesis/` を run 間に引き継ぎ、依存を `==` で固定、`-x` を `--maxfail=3` に変更 (2026-09-07, #235) | 小 | 回帰防止・shrink 結果の蓄積 |
 | 10 | **terminal 出力フォーマッタの property test** | **P3** | 視覚出力で重要度低。ANSI escape を含み検証が煩雑 | 中 | 限定的 |
 
 ### 推奨実装順序
@@ -135,8 +135,9 @@ PBT_SETTINGS = settings(
 )
 ```
 
-`max_examples` を上げる場合は CI 時間と相談。Hypothesis DB（タスク #9）導入後は
-過去の失敗例が優先的に再実行されるため、上げ幅を抑えても網羅性は維持できる。
+`max_examples` を上げる場合は CI 時間と相談。Hypothesis DB（タスク #9）は
+CI でキャッシュされ、過去の失敗例が優先的に再実行されるため、上げ幅を抑えても
+網羅性は維持できる。
 
 ### 6-3. ジェネレータ階層
 
@@ -174,13 +175,28 @@ pytest tests/pbt/ -v --hypothesis-show-statistics
 pytest tests/pbt/test_crash.py -v
 ```
 
-### CI 統合（タスク #9 完了後の想定）
+### CI 統合（タスク #9 完了）
 
-```bash
-# GitHub Actions 例
-- name: PBT
-  run: pytest tests/pbt/ -v --hypothesis-profile=ci
+```yaml
+# .github/workflows/ci.yml の pbt ジョブ
+- name: Cache Hypothesis example database
+  uses: actions/cache@... # v6.1.0
+  with:
+    path: .hypothesis
+    key: hypothesis-${{ runner.os }}-${{ github.run_id }}
+    restore-keys: |
+      hypothesis-${{ runner.os }}-
+- run: pytest tests/pbt/ --maxfail=3 -v
 ```
+
+`--maxfail=3` は `-x` の代替。42 個の `@given` テストのうち複数の不変条件が
+同時に壊れる変更で、1 回の CI run から全体像を掴めるようにしている。
+
+**`--hypothesis-profile=ci` は今回見送った。** 各テストファイルの
+`PBT_SETTINGS` が `max_examples` を明示指定しており、`@settings` の明示値は
+profile の既定値より優先されるため、profile を登録しても実効値が変わらない。
+導入するなら 7 ファイルに散った `PBT_SETTINGS` を 1 箇所へ集約するのが前提で、
+それは本タスクの範囲を超える。
 
 ### 強化作業の完了基準
 
