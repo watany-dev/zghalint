@@ -149,7 +149,7 @@ SEC009 (`workflow_run` の checkout) も同じ関数でガードを見るよう�
 SEC021 が担当するトリガ (`workflow_dispatch` / `issue_comment` など) は
 フォーク由来かどうかという概念を持たないため、対象外。
 
-#### G9 (#280). 関数呼び出しの結果へのプロパティ / インデックスアクセスを解釈できない (FP) — 要パーサ修正
+#### G9 (#280). 関数呼び出しの結果へのプロパティ / インデックスアクセスを解釈できない (FP) — 対応済み
 
 `bench/cases/e-expression/function-call-property-access.yml`。
 
@@ -167,6 +167,16 @@ run: echo "${{ fromJSON('[1,2,3]')[0] }}"
 ため、`bench/cases/e-expression/fromjson-invalid-literal.yml`
 (`fromJSON('{bad').name`) では本来出るべき EXPR009 (不正な JSON リテラル) が
 落ちる。ベンチ全体で唯一の zghalint FN がこれ。
+
+式パーサに postfix チェーン (`parsePostfix`) を入れて、関数呼び出しの結果にも
+`.field` / `[expr]` を続けられるようにした。新しいノード種別は 2 つ
+(`property_access` / `index_access`) で、受け手は `children[0]`。コンテキスト
+参照はこれまでどおり平坦な文字列パスの `context_access` のままなので、
+EXPR010-EXPR016 や SEC002 のパス解決には影響しない。型検査側は受け手の型に
+セグメントを 1 つ適用するだけで、`fromJSON` の結果に無いキーは実際には
+分からないため診断は出さず `any` に落とす。
+
+これでベンチの FN は 0 件になり、recall は 100% になった。
 
 #### G10 (#281). `needs:` の未定義ジョブ / 循環依存を検出しない — 要ルール追加
 
@@ -250,8 +260,8 @@ models, Pages のデプロイ) を書くか、OIDC トークンを発行する (
 
 `contents: write` を読み取りだけのジョブで宣言するような過剰権限
 (`bench/cases/d-permissions-secrets/job-widens-permissions.yml`) は引き続き
-検出する。`write-all` も従来どおり warning。ベンチの FP は 5 件から 2 件
-(いずれも G9) に減り、precision は 95% → 98% になった。
+検出する。`write-all` も従来どおり warning。ベンチの FP は 5 件から 0 件に
+なり、G9 の解消と合わせて precision は 95% → 100% になった。
 
 回帰ガードは `tests/fixtures/e2e/perm001-scope-placement.yml` (ジョブ側は
 出ない) と `perm001-workflow-level-grant.yml` (ワークフロー側は出る)。
@@ -294,9 +304,11 @@ SEC019 (secret を `env:` 経由にせず直接使う) が同じステップで�
   盲点としてケースだけ残し、当面は検出しない。
 - `bench/cases/e-expression/env-undefined.yml` (どの `env:` でも定義していない
   `env.NAME` の参照) も 3 ツールとも無反応。同じく共通の盲点。
-- YAML のアンカー / エイリアス / マージキーは zghalint (#64) も actionlint も
-  解決しない。`bench/cases/i-robustness/yaml-anchors-and-merge-keys.yml` は
-  両ツールを skip し、状況の記録だけに使う。
+- YAML のアンカー / エイリアス / マージキーは zghalint が #64 で解決するように
+  なった (`src/yaml/parser.zig`)。actionlint は alias node を解決せず
+  `defaults` を型エラーとして弾くため、
+  `bench/cases/i-robustness/yaml-anchors-and-merge-keys.yml` では actionlint
+  だけを skip する。
 - 外部ツール側の観察: zizmor 1.30.0 は中身のないワークフロー
   (`i-robustness/comments-only.yml`) と `timeout-minutes: "10m"`
   (`f-syntax-schema/shell-and-timeout-types.yml`) でクラッシュする (exit 3)。
@@ -318,7 +330,7 @@ PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む�
       (PERF001 が持っている知識を共有する)
 - [x] G2: composite action (`action.yml`) の解析サポート
 - [x] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
-- [ ] G9 (#280): 関数呼び出しの結果へのプロパティ / インデックスアクセスを式パーサに
+- [x] G9 (#280): 関数呼び出しの結果へのプロパティ / インデックスアクセスを式パーサに
       解釈させる (EXPR009 の取りこぼしもこれで直る)
 - [ ] G10 (#281): `needs:` の未定義ジョブと循環依存を検出する
 - [x] G11 (#282): UTF-8 BOM を読み飛ばす

@@ -16,6 +16,8 @@ pub const ParseError = error{
     OutOfMemory,
     MaxDepthExceeded,
     MultipleDocuments,
+    UndefinedAlias,
+    AliasExpansionTooLarge,
 };
 
 /// Hard cap on nested mappings/sequences/flow containers. A well-formed
@@ -24,12 +26,38 @@ pub const ParseError = error{
 /// a stack overflow (SIGSEGV) during CI runs.
 pub const max_parse_depth: u16 = 256;
 
+/// Total nodes an `*alias` expansion may materialise across one document.
+/// Each alias is copied rather than shared so its diagnostics point at the
+/// alias site, which makes the classic "billion laughs" YAML (`&b [*a, *a]`
+/// repeated) grow exponentially. A real workflow expands a few hundred nodes;
+/// the cap stops a hostile file from exhausting CI memory.
+pub const max_alias_expansion_nodes: usize = 100_000;
+
+/// `<<: *anchor` folds the referenced mapping's entries into the surrounding
+/// mapping.
+const merge_key = "<<";
+
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokenizer: Tokenizer,
     current: Token,
     source: []const u8,
     depth: u16,
+    /// `&name` definitions seen so far. Registered only *after* the anchored
+    /// node finishes parsing, so `&a [*a]` resolves to an undefined alias
+    /// instead of a cycle — the parser can never build a self-referential AST.
+    anchors: std.StringHashMapUnmanaged(Node),
+    alias_budget: usize,
+    /// Where the parse gave up, when the failure has a source position worth
+    /// showing. Zig errors carry no payload, so the CLI reads it from here to
+    /// print `file:line:col` instead of a bare error name.
+    failure: ?Failure,
+
+    pub const Failure = struct {
+        span: Span,
+        /// Anchor name the alias referred to, without the `*`.
+        alias: []const u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Parser {
         var tokenizer = Tokenizer.init(source);
@@ -42,6 +70,9 @@ pub const Parser = struct {
             .current = current,
             .source = source,
             .depth = 0,
+            .anchors = .{},
+            .alias_budget = max_alias_expansion_nodes,
+            .failure = null,
         };
     }
 
@@ -91,6 +122,14 @@ pub const Parser = struct {
             return Node{ .null_value = self.spanFromToken(self.current) };
         }
 
+        if (self.current.kind == .anchor) {
+            return self.parseAnchoredNode(min_indent);
+        }
+
+        if (self.current.kind == .alias) {
+            return self.resolveAlias();
+        }
+
         if (self.current.kind == .sequence_entry) {
             return self.parseBlockSequence();
         }
@@ -120,6 +159,115 @@ pub const Parser = struct {
         }
 
         return Node{ .null_value = self.spanFromToken(self.current) };
+    }
+
+    /// `&name` binds the node that follows it, which may sit on the same line
+    /// (`key: &a value`) or on the indented lines below (`key: &a` + a block).
+    fn parseAnchoredNode(self: *Parser, min_indent: u32) ParseError!Node {
+        const name = self.current.slice(self.source)[1..];
+        self.advance();
+
+        const node = if (self.current.kind == .newline or self.current.kind == .eof) blk: {
+            self.skipNewlinesAndComments();
+            if (self.current.kind == .eof or self.current.column < min_indent) {
+                break :blk Node{ .null_value = self.spanFromToken(self.current) };
+            }
+            break :blk try self.parseNode(min_indent);
+        } else try self.parseNode(min_indent);
+
+        // A repeated `&name` shadows the earlier definition, as in YAML.
+        self.anchors.put(self.allocator, name, node) catch return ParseError.OutOfMemory;
+        return node;
+    }
+
+    /// Resolves `*name` to a copy of the anchored node whose spans all point at
+    /// the alias token. Diagnostics then land on the line the user actually
+    /// wrote rather than on the far-away anchor definition.
+    fn resolveAlias(self: *Parser) ParseError!Node {
+        const token = self.current;
+        self.advance();
+
+        const name = token.slice(self.source)[1..];
+        const span = self.spanFromToken(token);
+        const target = self.anchors.get(name) orelse {
+            self.failure = .{ .span = span, .alias = name };
+            return ParseError.UndefinedAlias;
+        };
+        return self.cloneWithSpan(target, span);
+    }
+
+    /// Expanded nodes carry no `full_span`: their text lives at the anchor, so
+    /// no autofix may rewrite the source range the alias occupies.
+    fn cloneWithSpan(self: *Parser, node: Node, span: Span) ParseError!Node {
+        if (self.alias_budget == 0) return ParseError.AliasExpansionTooLarge;
+        self.alias_budget -= 1;
+
+        return switch (node) {
+            .scalar => |s| Node{ .scalar = .{ .value = s.value, .style = s.style, .span = span } },
+            .null_value => Node{ .null_value = span },
+            .sequence => |seq| blk: {
+                const items = self.allocator.alloc(Node, seq.items.len) catch return ParseError.OutOfMemory;
+                for (seq.items, items) |src, *dst| dst.* = try self.cloneWithSpan(src, span);
+                break :blk Node{ .sequence = .{ .items = items, .span = span } };
+            },
+            .mapping => |m| blk: {
+                const entries = self.allocator.alloc(MappingEntry, m.entries.len) catch return ParseError.OutOfMemory;
+                for (m.entries, entries) |src, *dst| {
+                    dst.* = .{
+                        .key = .{ .value = src.key.value, .style = src.key.style, .span = span },
+                        .value = try self.cloneWithSpan(src.value, span),
+                        .span = span,
+                        .full_span = null,
+                    };
+                }
+                break :blk Node{ .mapping = .{ .entries = entries, .span = span } };
+            },
+        };
+    }
+
+    /// Folds `<<:` sources into `entries`. Explicit keys win over merged ones
+    /// and, among several sources, the earlier one wins — the YAML 1.1 merge
+    /// rule. Returns `entries` untouched when the mapping holds no merge key,
+    /// which is every mapping in a workflow that uses no anchors.
+    fn applyMergeKeys(self: *Parser, entries: []MappingEntry) ParseError![]MappingEntry {
+        var has_merge = false;
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, merge_key)) has_merge = true;
+        }
+        if (!has_merge) return entries;
+
+        var merged = std.ArrayList(MappingEntry){};
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, merge_key)) continue;
+            merged.append(self.allocator, entry) catch return ParseError.OutOfMemory;
+        }
+
+        for (entries) |entry| {
+            if (!std.mem.eql(u8, entry.key.value, merge_key)) continue;
+            switch (entry.value) {
+                .mapping => |m| try self.mergeMappingInto(&merged, m),
+                // `<<: [*a, *b]` merges several mappings; non-mapping items
+                // are not merge sources and are ignored rather than fatal.
+                .sequence => |seq| for (seq.items) |item| {
+                    if (item == .mapping) try self.mergeMappingInto(&merged, item.mapping);
+                },
+                else => {},
+            }
+        }
+
+        return merged.toOwnedSlice(self.allocator) catch ParseError.OutOfMemory;
+    }
+
+    fn mergeMappingInto(self: *Parser, merged: *std.ArrayList(MappingEntry), source: Mapping) ParseError!void {
+        outer: for (source.entries) |entry| {
+            for (merged.items) |existing| {
+                if (std.mem.eql(u8, existing.key.value, entry.key.value)) continue :outer;
+            }
+            var copy = entry;
+            // The entry's text lives at the merge source, not here.
+            copy.full_span = null;
+            merged.append(self.allocator, copy) catch return ParseError.OutOfMemory;
+        }
     }
 
     fn parseBlockMapping(self: *Parser, first_key_token: Token, min_indent: u32) ParseError!Node {
@@ -165,7 +313,8 @@ pub const Parser = struct {
             break;
         }
 
-        const owned_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const owned_entries = try self.applyMergeKeys(parsed_entries);
         const span = if (owned_entries.len > 0)
             Span{
                 .start_line = owned_entries[0].key.span.start_line,
@@ -246,7 +395,8 @@ pub const Parser = struct {
             self.advance();
         }
 
-        const owned_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const owned_entries = try self.applyMergeKeys(parsed_entries);
         return Node{ .mapping = .{ .entries = owned_entries, .span = start_span } };
     }
 
@@ -290,6 +440,16 @@ pub const Parser = struct {
 
         self.skipNewlinesAndComments();
 
+        if (self.current.kind == .anchor) {
+            const name = self.current.slice(self.source)[1..];
+            self.advance();
+            const node = try self.parseFlowValue();
+            self.anchors.put(self.allocator, name, node) catch return ParseError.OutOfMemory;
+            return node;
+        }
+        if (self.current.kind == .alias) {
+            return self.resolveAlias();
+        }
         if (self.current.kind == .flow_mapping_start) {
             return self.parseFlowMapping();
         }
@@ -849,6 +1009,257 @@ test "a run of comments between mapping entries does not end the mapping" {
     const job = root.mapping.entries[0].value.mapping;
 
     try std.testing.expectEqual(@as(usize, 2), job.entries.len);
+}
+
+test "parse resolves an alias to the anchored scalar" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: &runner ubuntu-latest\nb: *runner\n");
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings("ubuntu-latest", root.mapping.getScalar("a").?);
+    try std.testing.expectEqualStrings("ubuntu-latest", root.mapping.getScalar("b").?);
+}
+
+test "parse points an expanded alias at the alias site, not the anchor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: &runner ubuntu-latest\nb: *runner\n");
+    const root = try parser.parse();
+
+    // Diagnostics on `b` must name line 2, where the user wrote the alias.
+    try std.testing.expectEqual(@as(u32, 2), root.mapping.get("b").?.getSpan().start_line);
+    try std.testing.expectEqual(@as(u32, 1), root.mapping.get("a").?.getSpan().start_line);
+}
+
+test "parse resolves an alias to an anchored block mapping" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\x-common: &common
+        \\  runs-on: ubuntu-latest
+        \\  timeout-minutes: 10
+        \\copy: *common
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const copy = root.mapping.get("copy").?.mapping;
+
+    try std.testing.expectEqual(@as(usize, 2), copy.entries.len);
+    try std.testing.expectEqualStrings("ubuntu-latest", copy.getScalar("runs-on").?);
+    try std.testing.expectEqualStrings("10", copy.getScalar("timeout-minutes").?);
+}
+
+test "parse merges an anchored mapping through a merge key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\x-common: &common
+        \\  runs-on: ubuntu-latest
+        \\  timeout-minutes: 10
+        \\jobs:
+        \\  build:
+        \\    <<: *common
+        \\    steps: []
+        \\  test:
+        \\    <<: *common
+        \\    steps: []
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const jobs = root.mapping.get("jobs").?.mapping;
+
+    for ([_][]const u8{ "build", "test" }) |job_id| {
+        const job = jobs.get(job_id).?.mapping;
+        try std.testing.expect(job.get(merge_key) == null);
+        try std.testing.expectEqualStrings("ubuntu-latest", job.getScalar("runs-on").?);
+        try std.testing.expectEqualStrings("10", job.getScalar("timeout-minutes").?);
+        try std.testing.expect(job.get("steps") != null);
+    }
+}
+
+test "parse lets an explicit key override a merged one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\x: &common
+        \\  runs-on: ubuntu-latest
+        \\job:
+        \\  <<: *common
+        \\  runs-on: macos-latest
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.get("job").?.mapping;
+
+    try std.testing.expectEqual(@as(usize, 1), job.entries.len);
+    try std.testing.expectEqualStrings("macos-latest", job.getScalar("runs-on").?);
+}
+
+test "parse merges a sequence of aliases, earliest source winning" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\a: &a
+        \\  runs-on: ubuntu-latest
+        \\b: &b
+        \\  runs-on: macos-latest
+        \\  timeout-minutes: 5
+        \\job:
+        \\  <<: [*a, *b]
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.get("job").?.mapping;
+
+    try std.testing.expectEqualStrings("ubuntu-latest", job.getScalar("runs-on").?);
+    try std.testing.expectEqualStrings("5", job.getScalar("timeout-minutes").?);
+}
+
+test "parse applies several merge keys in order" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\a: &a
+        \\  x: 1
+        \\b: &b
+        \\  x: 2
+        \\  y: 3
+        \\job:
+        \\  <<: *a
+        \\  <<: *b
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.get("job").?.mapping;
+
+    try std.testing.expectEqualStrings("1", job.getScalar("x").?);
+    try std.testing.expectEqualStrings("3", job.getScalar("y").?);
+}
+
+test "parse merges an inline mapping given directly to a merge key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "job:\n  <<: {a: 1}\n  b: 2\n");
+    const root = try parser.parse();
+    const job = root.mapping.get("job").?.mapping;
+
+    try std.testing.expectEqualStrings("1", job.getScalar("a").?);
+    try std.testing.expectEqualStrings("2", job.getScalar("b").?);
+}
+
+test "parse resolves anchors and aliases inside flow collections" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: [&r ubuntu-latest, *r]\n");
+    const root = try parser.parse();
+    const items = root.mapping.get("a").?.sequence.items;
+
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("ubuntu-latest", items[0].scalar.value);
+    try std.testing.expectEqualStrings("ubuntu-latest", items[1].scalar.value);
+}
+
+test "parse resolves an alias inside a block sequence item" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\a: &step
+        \\  uses: actions/checkout@v4
+        \\steps:
+        \\  - *step
+        \\  - run: echo hi
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const steps = root.mapping.get("steps").?.sequence.items;
+
+    try std.testing.expectEqual(@as(usize, 2), steps.len);
+    try std.testing.expectEqualStrings("actions/checkout@v4", steps[0].mapping.getScalar("uses").?);
+}
+
+test "parse takes the last definition of a repeated anchor name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: &r one\nb: &r two\nc: *r\n");
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings("two", root.mapping.getScalar("c").?);
+}
+
+test "parse rejects an alias with no matching anchor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "job:\n  <<: *missing\n");
+    try std.testing.expectError(error.UndefinedAlias, parser.parse());
+}
+
+// An anchor is registered only once its node is complete, so a reference to
+// itself has nothing to resolve against. That is what keeps the AST acyclic
+// and the parser out of an infinite loop.
+test "parse rejects a self-referential anchor instead of looping" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: &a\n  b: *a\n");
+    try std.testing.expectError(error.UndefinedAlias, parser.parse());
+}
+
+test "parse rejects mutually recursive anchors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: &a\n  x: *b\nb: &b\n  y: *a\n");
+    try std.testing.expectError(error.UndefinedAlias, parser.parse());
+}
+
+test "parse caps an exponentially expanding alias chain" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The classic "billion laughs": every level doubles the previous one, so
+    // 32 levels would materialise 2^32 nodes without the expansion budget.
+    var source = std.ArrayList(u8){};
+    defer source.deinit(std.testing.allocator);
+    try source.appendSlice(std.testing.allocator, "a0: &a0 [x, x]\n");
+    for (1..32) |i| {
+        try source.print(std.testing.allocator, "a{d}: &a{d} [*a{d}, *a{d}]\n", .{ i, i, i - 1, i - 1 });
+    }
+
+    var parser = Parser.init(arena.allocator(), source.items);
+    try std.testing.expectError(error.AliasExpansionTooLarge, parser.parse());
+}
+
+test "parse leaves a merged entry without a rewritable full_span" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The text of `timeout-minutes` lives at the anchor, so no autofix may
+    // treat the alias line as its removable range.
+    var parser = Parser.init(arena.allocator(), "x: &c\n  timeout-minutes: 10\njob:\n  <<: *c\n");
+    const root = try parser.parse();
+    const job = root.mapping.get("job").?.mapping;
+
+    try std.testing.expectEqual(@as(usize, 1), job.entries.len);
+    try std.testing.expect(job.entries[0].full_span == null);
 }
 
 test "a comment run longer than the depth limit does not abort the parse" {
