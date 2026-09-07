@@ -103,4 +103,5 @@ test {
     _ = @import("util.zig");
     _ = @import("workspace.zig");
     _ = @import("e2e_test.zig");
+    _ = @import("docs_sync_test.zig");
 }

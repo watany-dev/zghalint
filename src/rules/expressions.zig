@@ -1295,6 +1295,23 @@ pub const expression_rule = @import("engine.zig").Rule{
     .check_job = &checkJob,
 };
 
+/// `expression_rule` is an umbrella: it registers once as `EXPR` but emits
+/// diagnostics under finer-grained IDs. The docs-sync test needs the real IDs,
+/// so they are listed here; `expressions: sub_rule_ids covers every emitted ID`
+/// keeps the list from drifting away from the code below.
+pub const sub_rule_ids = [_][]const u8{
+    "EXPR001",
+    "EXPR002",
+    "EXPR003",
+    "EXPR004",
+    "EXPR005",
+    "EXPR006",
+    "EXPR007",
+    "EXPR008",
+    "EXPR009",
+    "EXPR017",
+};
+
 fn expectNoDiagnostics(expr: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
