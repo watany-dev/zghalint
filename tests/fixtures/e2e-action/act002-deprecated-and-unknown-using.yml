@@ -1,0 +1,7 @@
+# zghalint:expect ACT002@6
+# zghalint:forbid ACT003
+name: Deprecated runtime
+description: Still pinned to a runtime GitHub is retiring
+runs:
+  using: node16
+  main: dist/index.js

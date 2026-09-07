@@ -663,6 +663,50 @@ compare against, so the value check is skipped for it. Plain `1.10` and `1.1`,
 or `True` and `true`, are the same YAML value and do not count as a mismatch;
 quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
 
+## Action Metadata Rules (ACT)
+
+Validate action metadata files (`action.yml` / `action.yaml`) — the manifest of
+a composite, JavaScript, or Docker action. これらはワークフローではないため、
+ワークフロー用のルールは一切適用されず、ACT ルールだけが走る。
+
+| ID | Name | Severity | Description |
+|----|------|----------|-------------|
+| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い |
+| ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
+| ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
+| ACT004 | action-invalid-definition | error | 値の形が仕様と違う（`runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
+
+### 検査対象になるファイル
+
+引数を省略した場合、既定で以下を読む:
+
+- リポジトリ直下の `action.yml` / `action.yaml`
+- `.github/actions/<name>/action.yml` / `action.yaml`
+
+GitHub 自身が案内しているのはこの 2 つの配置なので既定はここまでとし、それ以外の
+場所に置いたメタデータはパスを直接渡す。判定はファイル名そのもので行うため、
+`my-action.yml` はワークフロー扱いのままになる。
+
+### ACT002 が受理する `using`
+
+`node20` / `node24` / `docker` / `composite` の 4 つ。`node12` / `node16` は
+GitHub が実行を停止するランタイムなので warning として報告し、それ以外の未知の値は
+error として報告する（編集距離 2 以内で候補が一意に定まるときは
+`did you mean ...?` を添える）。
+
+### 個々の定義に対する検査
+
+- `inputs.<name>` に置けるのは `description` / `required` / `default` /
+  `deprecationMessage`、`outputs.<name>` に置けるのは `description` /
+  `value`。未知のキーは ACT003、値の型が違うものは ACT004。
+- `value:` は composite action だけが持つ。JavaScript / Docker action は実行時に
+  出力を書き出すため、`value:` があれば ACT004 として報告する。`using` の値が
+  解決できない場合は出力側の判定を行わない。
+- composite の `runs.steps` はシーケンスであることだけを確認する。既存の step
+  ルールや式検証を steps に適用するのは別の変更（#100 のフォローアップ）。
+
+---
+
 ---
 
 ## Configuring Rules

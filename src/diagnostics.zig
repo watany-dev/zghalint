@@ -21,6 +21,7 @@ pub const Category = enum {
     permissions,
     runner,
     reusable_workflow,
+    action,
 };
 
 pub const FixSafety = enum {

@@ -1,0 +1,26 @@
+# zghalint:forbid ACT001
+# zghalint:forbid ACT002
+# zghalint:forbid ACT003
+# zghalint:forbid ACT004
+name: Clean composite action
+description: A well-formed composite action; nothing may fire
+author: zghalint
+branding:
+  icon: check
+  color: green
+inputs:
+  version:
+    description: Toolchain version to install
+    required: false
+    default: "1.0.0"
+outputs:
+  resolved:
+    description: The version that was actually installed
+    value: ${{ steps.resolve.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve the version
+      id: resolve
+      shell: bash
+      run: echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"

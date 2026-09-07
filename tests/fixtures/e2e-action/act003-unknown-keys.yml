@@ -1,0 +1,10 @@
+# zghalint:expect ACT003@3 ACT003@10
+name: Misspelled keys
+descrption: The document key and the input key are both typos
+runs:
+  using: node20
+  main: dist/index.js
+inputs:
+  version:
+    description: Toolchain version
+    requried: true
