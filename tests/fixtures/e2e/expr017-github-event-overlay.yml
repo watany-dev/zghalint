@@ -1,0 +1,30 @@
+# zghalint:expect EXPR017@18 EXPR017@21
+# zghalint:forbid EXPR002
+# zghalint:forbid EXPR003
+name: curated github.event overlay
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Object compared to a string
+        if: github.event.issue == 'bug'
+        run: echo hi
+      - name: Bool is not orderable
+        if: github.event.pull_request.draft > 1
+        run: echo hi
+      - name: Curated scalar comparisons stay silent
+        if: github.event.issue.number == 1 && github.event.repository.default_branch == 'main'
+        run: echo hi
+      - name: Uncurated payload paths stay silent
+        if: github.event.deployment.payload.env == 'prod'
+        run: echo hi
+      - name: A typo under the overlay stays silent
+        run: echo "${{ github.event.issue.numer }}"
