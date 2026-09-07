@@ -125,12 +125,16 @@ SEC002 をステップ単位からワークフロー単位のルールへ移し�
 に載せ替えた。ラベル 1 件ごとの部分一致は据え置き — 自前プールに
 `self-hosted-gpu` のような名前を付ける運用が多いため。
 
-#### G7 (#275). `docker://` 形式の `uses:` を SC001 が見ていない — 要ルール改善
+#### G7 (#275). `docker://` 形式の `uses:` を SC001 が見ていない — 対応済み
 
 `bench/cases/c-supply-chain/docker-uses-no-digest.yml`。
 `uses: docker://alpine:3.19` はコンテナイメージのタグ参照だが、SC001 は
 `container.image` / `services.*.image` しか見ていない。zizmor は pedantic
 persona の `unpinned-images` で検出する。
+
+SC001 にステップの走査を足し、`ActionRef.is_docker` が立つ `uses:` を
+`container.image` と同じ基準 (`@sha256:` 固定) で見るようにした。
+`uses:` のマーケットプレース形は SEC001 の担当なので重複はしない。
 
 #### G8 (#276). SEC005 がフォーク判定のガードを見ない (FP) — 要ルール改善
 
@@ -169,5 +173,5 @@ PERF001 (キャッシュを足せ) と SEC016 (リリース系でのキャッシ
 - [ ] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
-- [ ] G7 (#275): SC001 を `uses: docker://...` に対応させる
+- [x] G7 (#275): SC001 を `uses: docker://...` に対応させる
 - [ ] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する

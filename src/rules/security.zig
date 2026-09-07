@@ -1121,6 +1121,18 @@ fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) vo
     if (job.container) |container| {
         checkCredentialsForHardcoded(container.credentials, job.span, list);
     }
+    for (job.steps) |*step| {
+        const ref = step.uses orelse continue;
+        if (!ref.is_docker) continue;
+        if (isImagePinned(ref.raw)) continue;
+        list.append(.{
+            .rule_id = "SC001",
+            .severity = .warning,
+            .message = "container action image is not pinned to a SHA256 digest",
+            .span = step.uses_value_span orelse step.span,
+            .fix_hint = "pin the image using a digest reference, e.g. docker://image@sha256:abc123...",
+        }) catch return;
+    }
     for (job.services) |service| {
         checkCredentialsForHardcoded(service.credentials, job.span, list);
     }
@@ -1628,6 +1640,10 @@ fn isImagePinned(image: []const u8) bool {
     return std.mem.indexOf(u8, image, "@sha256:") != null;
 }
 
+/// `uses: docker://<image>[:<tag>]` runs a container image straight from a
+/// registry, so an unpinned reference is the same supply chain risk as an
+/// unpinned `container.image` (#275). SEC001 covers only the marketplace form
+/// of `uses:`, which is why the docker form is handled here.
 fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
     if (job.container) |container| {
         if (container.image) |image| {
@@ -4119,6 +4135,34 @@ test "SC001: both container and service unpinned" {
     var list = runJob(.{ .id = "build", .container = container, .services = &services, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(countDiagnostics(&list, "SC001") == 2);
+}
+
+test "SC001: docker:// step image with a tag" {
+    const steps = [_]Step{.{ .uses = ActionRef.parse("docker://alpine:3.19") }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: docker:// step image without a tag" {
+    const steps = [_]Step{.{ .uses = ActionRef.parse("docker://alpine") }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: docker:// step image pinned to a digest (no false positive)" {
+    const steps = [_]Step{.{ .uses = ActionRef.parse("docker://alpine@sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b") }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SC001"));
+}
+
+test "SC001: a marketplace action is not an image (no false positive)" {
+    const steps = [_]Step{.{ .uses = ActionRef.parse("actions/checkout@v4") }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
 
 test "SC001: pinned container image (no false positive)" {

@@ -137,7 +137,7 @@ Detect supply chain risks in action and container image references.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| SC001 | unpinned-images | warning | Container images should be pinned to a SHA256 digest for supply chain security |
+| SC001 | unpinned-images | warning | Container images (`container.image`, `services.*.image`, `uses: docker://...`) should be pinned to a SHA256 digest for supply chain security |
 | SC002 | compromised-action-sha | error | Action references a SHA or tag of a known-compromised release |
 | SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database |
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
