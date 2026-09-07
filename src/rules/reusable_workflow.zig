@@ -1,12 +1,15 @@
 const std = @import("std");
 const engine = @import("engine.zig");
+const called_workflow = @import("called_workflow.zig");
 const workflow_types = @import("../workflow/types.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
+const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const WorkflowCallInputProblem = workflow_types.WorkflowCallInputProblem;
+const CallArgKey = workflow_types.CallArgKey;
 
 fn workflowCallInputProblemMessage(
     alloc: std.mem.Allocator,
@@ -65,6 +68,66 @@ fn checkWorkflowCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
+/// Call arguments are matched case-insensitively, the way the runner resolves
+/// them, so a case difference is never reported as a missing or unknown name.
+fn hasCallArg(keys: []const CallArgKey, name: []const u8) bool {
+    for (keys) |key| {
+        if (std.ascii.eqlIgnoreCase(key.name, name)) return true;
+    }
+    return false;
+}
+
+/// RW002: a `required: true` input of the called workflow that the call never
+/// passes. Only a local call is checked — `called_workflow.load` returns null
+/// for everything else.
+fn checkCallRequiredInputs(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.jobs) |*job| {
+        const uses = job.uses orelse continue;
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const called = called_workflow.load(arena.allocator(), uses) orelse continue;
+
+        for (called.inputs) |input| {
+            if (!(input.required orelse false)) continue;
+            // A required input that also carries a default still gets a value
+            // at dispatch time; RW001 reports that contradiction on the
+            // definition side, so the call is not at fault here.
+            if (input.default_value != null) continue;
+            if (hasCallArg(job.with_keys, input.name)) continue;
+
+            reportMissingInput(job, uses, input.name, list);
+        }
+    }
+}
+
+fn reportMissingInput(
+    job: *const Job,
+    uses: []const u8,
+    input_name: []const u8,
+    list: *DiagnosticList,
+) void {
+    const alloc = list.fixAllocator();
+    const message = std.fmt.allocPrint(
+        alloc,
+        "required input \"{s}\" of \"{s}\" is not set by this call",
+        .{ input_name, uses },
+    ) catch return;
+    const hint = std.fmt.allocPrint(
+        alloc,
+        "add `{s}:` under the job's `with:`",
+        .{input_name},
+    ) catch return;
+
+    list.append(.{
+        .rule_id = "RW002",
+        .severity = .@"error",
+        .message = message,
+        .span = job.uses_value_span orelse job.span,
+        .fix_hint = hint,
+    }) catch return;
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "RW001",
@@ -73,6 +136,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .reusable_workflow,
         .check_workflow = checkWorkflowCallInputs,
+    },
+    .{
+        .id = "RW002",
+        .name = "workflow-call-required-inputs",
+        .description = "Every required input of a called local workflow must be passed",
+        .severity = .@"error",
+        .category = .reusable_workflow,
+        .check_workflow = checkCallRequiredInputs,
     },
 };
 
@@ -168,4 +239,171 @@ test "RW001: required with default is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "required") != null);
+}
+
+/// The called workflow every RW002 test resolves `./.github/workflows/reusable.yml`
+/// to. Set before installing `called_workflow.source_override`.
+var called_source: []const u8 = "";
+
+fn calledLookup(path: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, path, ".github/workflows/reusable.yml")) return null;
+    return called_source;
+}
+
+const required_input_workflow =
+    \\on:
+    \\  workflow_call:
+    \\    inputs:
+    \\      version:
+    \\        type: string
+    \\        required: true
+    \\      env:
+    \\        type: string
+    \\        default: dev
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo ok
+    \\
+;
+
+fn runCallInputCheck(arena: std.mem.Allocator, source: []const u8, list: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(arena, source);
+    checkCallRequiredInputs(&wf, list);
+}
+
+test "RW002: a missing required input is reported" {
+    called_source = required_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      env: prod
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("RW002", diags.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "version") != null);
+}
+
+test "RW002: a passed required input is accepted" {
+    called_source = required_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      version: '1.0'
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW002: a remote call is not checked" {
+    called_source = required_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  remote:
+        \\    uses: octo-org/repo/.github/workflows/ci.yml@main
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW002: a required input with a default is not demanded" {
+    called_source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      target:
+        \\        type: string
+        \\        required: true
+        \\        default: main
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW002: a non-scalar `with:` value still counts as passed" {
+    called_source = required_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    // `version` holds a sequence, which the value map drops; only `with_keys`
+    // still sees the key, and the call did pass it.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      version:
+        \\        - '1.0'
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
 }

@@ -46,12 +46,30 @@ pub const Context = struct {
 /// initialize it before any rule executes.
 pub var current: Context = .{};
 
+/// The repository root of the run, resolved once from the first linted file.
+/// The RW rules read a called reusable workflow relative to it; a null root
+/// means the walk never ran or failed, and those cross-file checks stay quiet.
+var repo_root: ?[]const u8 = null;
+
 pub fn set(ctx: Context) void {
     current = ctx;
 }
 
+/// Borrowed from a caller-owned arena that must outlive the lint run, the same
+/// way `Context` borrows its lockfile names.
+pub fn setRepoRoot(root: []const u8) void {
+    repo_root = root;
+}
+
+pub fn repoRoot() ?[]const u8 {
+    return repo_root;
+}
+
+/// Resets every piece of module state, so one `defer` at the end of a run
+/// covers both the probe context and the repository root.
 pub fn clear() void {
     current = .{};
+    repo_root = null;
 }
 
 const node_lockfiles = [_]struct {

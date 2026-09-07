@@ -29,6 +29,15 @@ pub const OutputKey = struct {
     span: yaml_types.Span,
 };
 
+/// A single key of a job-level `with:` / `secrets:` mapping on a reusable
+/// workflow call. Kept alongside the value map so the RW rules see every key —
+/// including one whose value is not a scalar, which `StringMap` drops — and can
+/// point a diagnostic at the key token.
+pub const CallArgKey = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 pub const ScalarValueMeta = struct {
     value_span: yaml_types.Span,
     style: yaml_types.ScalarStyle,
@@ -532,6 +541,8 @@ pub const Job = struct {
     /// Span of the job-level `uses:` scalar value (for DEP003).
     uses_value_span: ?yaml_types.Span = null,
     with: ?StringMap = null,
+    /// Keys of the job-level `with:` mapping in source order (for RW002/RW003).
+    with_keys: []const CallArgKey = &.{},
     secrets: ?SecretsConfig = null,
     /// Column (1-based) at which this job's child keys are indented.
     job_indent: u32 = 0,

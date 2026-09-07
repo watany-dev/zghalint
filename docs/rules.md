@@ -718,11 +718,12 @@ error として報告する（編集距離 2 以内で候補が一意に定ま�
 ## Reusable Workflow Rules (RW)
 
 Validate the `on.workflow_call` interface a reusable workflow exposes to its
-callers.
+callers, and the calls made against it.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted |
+| RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
 
 ### RW001 workflow-call-inputs
 
@@ -753,6 +754,38 @@ on a required input is never applied — so declaring both is always a mistake i
 one direction or the other. Fix by giving every input an explicit `type` of
 `string`, `number` or `boolean`, matching the `default` to it, and dropping
 either `required: true` or `default`.
+
+### RW002 workflow-call-required-inputs
+
+A job that calls a reusable workflow must pass every input the called workflow
+declares `required: true`. A missing one fails the run at dispatch time, before
+any step executes.
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+```
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  build:
+    uses: ./.github/workflows/reusable.yml   # `version` is never passed
+```
+
+Fix by adding the input under the job's `with:`.
+
+Only a **local** call (`./path/to/workflow.yml`) is checked: a call into another
+repository names a file zghalint cannot read, so it is left alone. The called
+file is read one level deep and never followed further, so workflows that call
+each other cannot loop. An input that is both `required` and defaulted is
+reported on the definition side by [RW001](#rw001-workflow-call-inputs) and is
+not demanded of the caller.
 
 ---
 

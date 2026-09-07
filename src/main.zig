@@ -538,19 +538,25 @@ fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
     return false;
 }
 
-/// Errors are swallowed: PERF001 simply emits diagnostics without a fix when
-/// probing fails. Config overrides take precedence over probe results.
+/// Resolves the repository root and probes it for lockfiles. Errors are
+/// swallowed: PERF001 simply emits diagnostics without a fix when probing
+/// fails, and the RW rules skip a call they cannot resolve. Config overrides
+/// take precedence over probe results.
 fn initWorkspaceContext(
     arena: std.mem.Allocator,
     files: []const []const u8,
     config: *const Config,
 ) void {
-    // PERF001 is the sole consumer of the probe, so a disabled rule makes the
-    // repo-root walk and the directory scan pure startup cost.
-    if (!config.isRuleEnabled("PERF001")) return;
-
     const hint = if (files.len > 0) files[0] else ".";
     const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch return;
+    // The RW rules resolve a local `uses:` against the root, so it is set
+    // whether or not the lockfile probe below runs.
+    zghalint.workspace.setRepoRoot(root);
+
+    // PERF001 is the sole consumer of the probe, so a disabled rule makes the
+    // directory scan pure startup cost.
+    if (!config.isRuleEnabled("PERF001")) return;
+
     var ctx = zghalint.workspace.detectFromRoot(arena, root) catch zghalint.workspace.Context{};
 
     if (config.perf001.node_cache_manager) |mgr| {
@@ -630,7 +636,8 @@ pub fn main() !u8 {
         return 0;
     }
 
-    // Probe the workspace for lockfiles so PERF001 can emit concrete
+    // Resolve the repository root (the RW rules read a called workflow
+    // relative to it) and probe it for lockfiles so PERF001 can emit concrete
     // `cache: <manager>` fixes for setup-node / setup-python / setup-go.
     var workspace_arena = std.heap.ArenaAllocator.init(allocator);
     defer workspace_arena.deinit();

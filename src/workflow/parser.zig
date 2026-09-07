@@ -830,6 +830,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         try recordEmpty(&empty, ctx.allocator, "with", n);
         if (!isEmptyContainer(n)) {
             job.with = try parseStringMap(ctx.allocator, n);
+            job.with_keys = try parseCallArgKeys(ctx.allocator, n);
         }
     }
     if (m.get("secrets")) |n| {
@@ -1318,6 +1319,22 @@ fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const typ
     };
 
     const keys = try allocator.alloc(types.EnvKey, m.entries.len);
+    for (m.entries, keys) |entry, *key| {
+        key.* = .{ .name = entry.key.value, .span = entry.key.span };
+    }
+    return keys;
+}
+
+/// Like `parseEnvKeys`, but for the `with:` / `secrets:` mapping of a
+/// reusable workflow call: the RW rules validate key names, so no entry may be
+/// dropped for having a non-scalar value.
+fn parseCallArgKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.CallArgKey {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const keys = try allocator.alloc(types.CallArgKey, m.entries.len);
     for (m.entries, keys) |entry, *key| {
         key.* = .{ .name = entry.key.value, .span = entry.key.span };
     }
