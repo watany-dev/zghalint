@@ -215,7 +215,7 @@ action / API から必要な scope を推定するか、既知の必須 scope �
 除外する必要がある。ベンチの FP 5 件中 3 件がこれで、precision を 95% に
 下げている唯一の要因が G9 と G14 の 2 つ。
 
-#### G15. API トークンでの publish を指摘しない (trusted publishing 未使用) — 要ルール追加
+#### G15 (#286). API トークンでの publish を指摘しない (trusted publishing 未使用) — 要ルール追加
 
 `bench/cases/d-permissions-secrets/api-token-instead-of-oidc.yml`。
 
@@ -284,7 +284,7 @@ PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む�
 - [ ] G12 (#283): `---` / `...` のドキュメントマーカーを受理する
 - [ ] G13 (#284): 中身のないワークフローを診断として報告する
 - [ ] G14 (#285): PERM001 がジョブに必要な write 権限を除外する
-- [ ] G15: API トークンでの publish を指摘する (trusted publishing への誘導)
+- [ ] G15 (#286): API トークンでの publish を指摘する (trusted publishing への誘導)
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [x] G7 (#275): SC001 を `uses: docker://...` に対応させる
