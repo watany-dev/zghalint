@@ -118,12 +118,6 @@ const deprecated_actions = [_]DeprecatedAction{
 };
 
 /// Single digit only, as every deprecated tag is.
-fn majorTag(version: []const u8) ?u8 {
-    if (version.len != 2 or version[0] != 'v') return null;
-    if (!std.ascii.isDigit(version[1])) return null;
-    return version[1] - '0';
-}
-
 fn buildDeprecatedActionFix(
     list: *DiagnosticList,
     step: *const Step,
@@ -248,7 +242,9 @@ fn reportRetiredRemoteRuntime(
 /// reference is actually older than it.
 fn replacementVersion(action_ref: ActionRef) ?[]const u8 {
     const action_name = util.actionBaseName(action_ref.raw);
-    const major = majorTag(action_ref.ref orelse return null) orelse return null;
+    // The same reading of a ref the metadata table uses, so that a reference
+    // the retired-runtime half matched (`@v2.3.4`) can carry its `@vN` fix.
+    const major = popular_actions.majorFromRef(action_ref.ref orelse return null) orelse return null;
 
     for (deprecated_actions) |dep| {
         if (!std.mem.eql(u8, action_name, dep.action)) continue;
@@ -845,13 +841,11 @@ test "BP003: no warning for current version" {
 }
 
 test "BP003: a remote action on a retired runtime is an error" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
     // `actions/setup-node@v2` is in the embedded table with `using: node12`,
     // and the version table has no replacement below v2 to attach.
     const step = Step{ .uses = ActionRef.parse("actions/setup-node@v2") };
-    var diags = DiagnosticList.init(arena.allocator());
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
@@ -862,16 +856,32 @@ test "BP003: a remote action on a retired runtime is an error" {
 }
 
 test "BP003: the retired-runtime finding keeps the version table's autofix" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-
     // "actions/checkout@v2" ends at byte 25, version "v2" occupies bytes 23..25.
     const step = Step{
         .uses = ActionRef.parse("actions/checkout@v2"),
         .uses_value_end_byte = 25,
         .uses_value_style = .plain,
     };
-    var diags = DiagnosticList.init(arena.allocator());
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const d = diags.get(0);
+    try std.testing.expect(d.severity == .@"error");
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("v4", fix.edits[0].replacement);
+}
+
+test "BP003: a patch-level ref is read like the major it names" {
+    // "actions/checkout@v2.3.4" ends at byte 30, the version occupies 23..30.
+    const step = Step{
+        .uses = ActionRef.parse("actions/checkout@v2.3.4"),
+        .uses_value_end_byte = 30,
+        .uses_value_style = .plain,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());

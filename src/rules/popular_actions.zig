@@ -54,16 +54,20 @@ pub fn lookup(action: ActionRef) ?ActionMeta {
 
 /// The major version a ref names (`v4`, `v4.2.2`, `4`), or null when the ref
 /// is a branch, a SHA, or a tag that is not a plain version (`v4-beta`).
-fn majorFromRef(ref: []const u8) ?u16 {
+pub fn majorFromRef(ref: []const u8) ?u16 {
     if (ref.len == 0) return null;
 
     var i: usize = if (ref[0] == 'v' or ref[0] == 'V') 1 else 0;
     const start = i;
     while (i < ref.len and std.ascii.isDigit(ref[i])) i += 1;
     if (i == start) return null;
-    // Anything but a version separator after the digits means the tag encodes
-    // something else (`v4-beta`, `1.x-lts`, a mostly numeric branch name).
-    if (i < ref.len and ref[i] != '.') return null;
+
+    // What follows the major must itself be a version, so that a tag or branch
+    // encoding something else (`v4-beta`, `1.x-lts`, `4.x-maintenance`) is not
+    // read as the major it starts with.
+    for (ref[i..]) |c| {
+        if (!std.ascii.isDigit(c) and c != '.') return null;
+    }
 
     return std.fmt.parseInt(u16, ref[start..i], 10) catch null;
 }
@@ -134,6 +138,10 @@ test "majorFromRef reads a major version only from a version tag" {
     try testing.expectEqual(@as(?u16, 12), majorFromRef("v12.0"));
     try testing.expectEqual(@as(?u16, null), majorFromRef("main"));
     try testing.expectEqual(@as(?u16, null), majorFromRef("v4-beta"));
+    // Maintenance branches start with a major but do not name a version.
+    try testing.expectEqual(@as(?u16, null), majorFromRef("4.x-maintenance"));
+    try testing.expectEqual(@as(?u16, null), majorFromRef("v1.x"));
+    try testing.expectEqual(@as(?u16, null), majorFromRef("2.0-beta"));
     try testing.expectEqual(@as(?u16, null), majorFromRef("releases/v1"));
     try testing.expectEqual(@as(?u16, null), majorFromRef(""));
 }
@@ -148,6 +156,8 @@ test "lookup matches a major version and ignores everything else" {
     try testing.expect(lookup(ActionRef.parse("Actions/Checkout@v4.2.2")) != null);
 
     try testing.expect(lookup(ActionRef.parse("actions/checkout@main")) == null);
+    try testing.expect(lookup(ActionRef.parse("actions/checkout@4.x-maintenance")) == null);
+    try testing.expect(lookup(ActionRef.parse("actions/CACHE/Restore@v4")) == null);
     try testing.expect(lookup(ActionRef.parse("some-org/unknown-action@v1")) == null);
     try testing.expect(lookup(ActionRef.parse("./local")) == null);
     try testing.expect(lookup(ActionRef.parse("docker://alpine:3.19")) == null);

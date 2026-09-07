@@ -72,9 +72,19 @@ def major_of(ref: str) -> int:
 
 
 def clone(owner: str, repo: str, ref: str, into: pathlib.Path) -> pathlib.Path:
-    """Shallow-clone `owner/repo` at `ref`; reuse the checkout across paths."""
+    """Shallow-clone `owner/repo` at `ref`; reuse the checkout across paths.
+
+    Every ref in the manifest is a moving major tag, so a cached checkout is
+    refetched rather than reused as-is: otherwise `--cache-dir` would quietly
+    regenerate the table from whatever the tag pointed at last time.
+    """
     dest = into / f"{owner}__{repo}__{ref}"
     if dest.exists():
+        subprocess.run(
+            ["git", "-C", str(dest), "fetch", "--quiet", "--depth", "1", "origin", f"tags/{ref}"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(dest), "reset", "--quiet", "--hard", "FETCH_HEAD"], check=True)
         return dest
     subprocess.run(
         [
@@ -103,6 +113,13 @@ def read_manifest_yaml(checkout: pathlib.Path, path: str) -> dict:
     raise SystemExit(f"no action manifest under {directory}")
 
 
+def is_true(value: object) -> bool:
+    """`required:` as the runner reads it. A quoted `"false"` is not true."""
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() == "true"
+
+
 def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) -> ActionMeta:
     doc = read_manifest_yaml(checkout, path)
     runs = doc.get("runs") or {}
@@ -110,17 +127,20 @@ def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) 
 
     inputs = []
     declared = doc.get("inputs") or {}
-    if isinstance(declared, dict):
-        for name, spec in declared.items():
-            spec = spec if isinstance(spec, dict) else {}
-            inputs.append(
-                Input(
-                    name=str(name),
-                    required=bool(spec.get("required")),
-                    has_default="default" in spec,
-                    deprecation=spec.get("deprecationMessage"),
-                )
+    # An entry that silently ends up with no inputs would make DEP005 reject
+    # every `with:` key the action actually accepts.
+    if not isinstance(declared, dict):
+        raise SystemExit(f"{owner}/{repo}@{ref}: `inputs:` is not a mapping")
+    for name, spec in declared.items():
+        spec = spec if isinstance(spec, dict) else {}
+        inputs.append(
+            Input(
+                name=str(name),
+                required=is_true(spec.get("required")),
+                has_default="default" in spec,
+                deprecation=spec.get("deprecationMessage"),
             )
+        )
 
     return ActionMeta(
         owner=owner,

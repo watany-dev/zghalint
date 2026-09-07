@@ -345,6 +345,34 @@ test "DEP003: a malformed uses inside a composite step is reported" {
     try testing.expect(lint.has("DEP003"));
 }
 
+test "DEP005: an undeclared with: key inside a composite step is reported" {
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/checkout@v4
+        \\      with:
+        \\        fetch-dept: 0
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("DEP005"));
+}
+
+test "DEP006: a deprecated input inside a composite step is reported" {
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/setup-node@v2
+        \\      with:
+        \\        version: 16
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("DEP006"));
+}
+
 test "BP008: a deprecated workflow command inside a composite step is reported" {
     var lint = try Lint.run(
         \\runs:
