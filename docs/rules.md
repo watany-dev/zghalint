@@ -200,6 +200,7 @@ action / reusable workflow references.
 | DEP001 | dependabot-cooldown | info | Dependabot updates should configure a cooldown period to avoid excessive PRs |
 | DEP002 | dependabot-execution | warning | `insecure-external-code-execution: allow` is a supply chain attack risk |
 | DEP003 | uses-format | error | `uses:` is not a supported action reference (step) or reusable workflow call (job) |
+| DEP004 | local-action-inputs | error | `with:` does not match the `inputs:` declared by the referenced local action, or the action has no `action.yml` |
 
 ### DEP003 で受理される形式
 
@@ -215,6 +216,23 @@ action / reusable workflow references.
 - `./.github/workflows/{file}.yml` — `@ref` を付けられない
 
 `uses:` の値が `${{ }}` を含む場合は実行時にしか決まらないため報告しない。
+
+### DEP004 のスコープ
+
+`uses: ./{path}` が指すディレクトリの `action.yml` / `action.yaml` を読み、
+呼び出し側の `with:` と突き合わせる。パスはリポジトリルート（`.git` を持つ
+ディレクトリ）からの相対として解決する。報告するのは 3 種類:
+
+- 参照先に `action.yml` も `action.yaml` も存在しない
+- `with:` のキーがアクションの `inputs:` に無い（編集距離 2 以内で候補が一意に
+  定まる場合は `did you mean ...?` を添える）
+- `required: true` かつ `default:` を持たない入力が渡されていない
+
+`runs.using: docker` のアクションでは `args:` / `entrypoint:` は入力ではなく
+Dockerfile の上書きなので報告しない。DEP003 が既に弾く形式の参照（`../` 始まり、
+`@ref` 付きなど）は二重報告を避けるため対象外。
+
+ディスクだけを読むので `--quick` / `--offline` でも動作する。
 
 ## Runner Rules (RUNNER)
 
