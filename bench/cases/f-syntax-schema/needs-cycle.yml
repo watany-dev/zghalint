@@ -1,0 +1,20 @@
+# bench:expect needs-cycle@7
+name: needs forms a cycle
+on: push
+permissions:
+  contents: read
+jobs:
+  a:
+    needs: [b]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: A
+        run: make a
+  b:
+    needs: [a]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: B
+        run: make b

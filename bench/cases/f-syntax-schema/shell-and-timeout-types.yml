@@ -1,0 +1,14 @@
+# bench:expect unknown-shell@14
+# bench:expect mapping-value-type@10
+name: unknown shell and a string timeout
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: "10m"
+    steps:
+      - name: Build
+        run: make build
+        shell: basch

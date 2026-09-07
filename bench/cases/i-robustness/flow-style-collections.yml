@@ -1,0 +1,13 @@
+# bench:expect missing-timeout@10
+# bench:forbid unknown-key
+# bench:forbid mapping-value-type
+name: everything written in YAML flow style
+on: {push: {branches: [main, "release/*"]}}
+concurrency: {group: flow, cancel-in-progress: true}
+permissions: {contents: read}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy: {matrix: {os: [ubuntu-latest, macos-latest]}}
+    steps:
+      - {name: Build, run: make build}

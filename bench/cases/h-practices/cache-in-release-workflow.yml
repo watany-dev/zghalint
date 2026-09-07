@@ -1,0 +1,23 @@
+# bench:expect cache-poisoning@18
+# bench:forbid missing-cache
+name: caching inside a release workflow
+on:
+  release:
+    types: [published]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Restore the build cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('package-lock.json') }}
+      - name: Publish
+        run: npm publish

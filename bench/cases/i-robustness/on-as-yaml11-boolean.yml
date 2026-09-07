@@ -1,0 +1,18 @@
+# bench:expect deprecated-workflow-command@18
+name: the on key quoted, which YAML 1.1 readers fold to true
+"on":
+  push:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Emit a value
+        id: emit
+        run: echo "::set-output name=tag::v1"

@@ -1,0 +1,15 @@
+# bench:expect deprecated-runner@11 actionlint=-
+name: job pinned to a retired runner image
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

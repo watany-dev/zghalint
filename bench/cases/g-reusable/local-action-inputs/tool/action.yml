@@ -1,0 +1,12 @@
+name: local tool
+description: builds the project
+inputs:
+  version:
+    description: the version to build
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Build
+      shell: bash
+      run: make build VERSION="${{ inputs.version }}"

@@ -1,0 +1,14 @@
+# bench:expect invalid-activity-type@5
+name: unknown activity type
+on:
+  issues:
+    types: [opened, reopend]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

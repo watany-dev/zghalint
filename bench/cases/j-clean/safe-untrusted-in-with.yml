@@ -1,0 +1,23 @@
+# bench:forbid broad-write-permission
+# bench:forbid template-injection
+name: untrusted text passed as action input data, never as script
+on:
+  issue_comment:
+    types: [created]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Store the comment body as an artifact name
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: comment
+          path: ./comment.txt

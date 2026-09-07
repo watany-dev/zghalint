@@ -1,0 +1,12 @@
+# bench:expect fromjson-literal@12
+name: fromJSON with a broken literal
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read config
+        run: echo "${{ fromJSON('{bad').name }}"

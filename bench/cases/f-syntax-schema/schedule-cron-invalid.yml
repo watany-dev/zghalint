@@ -1,0 +1,16 @@
+# bench:expect invalid-cron@6
+# bench:expect cron-too-frequent@7
+name: broken and too-frequent cron
+on:
+  schedule:
+    - cron: '0 0 * *'
+    - cron: '*/2 * * * *'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

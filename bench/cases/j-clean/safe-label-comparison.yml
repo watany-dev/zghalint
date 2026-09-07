@@ -1,0 +1,20 @@
+# bench:forbid template-injection
+# bench:forbid untrusted-input-condition
+# bench:forbid unsound-contains
+name: an if guard comparing a label name is not a code path
+on:
+  pull_request:
+    types: [labeled]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  deploy:
+    if: github.event.label.name == 'ready-to-deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Deploy
+        run: make deploy

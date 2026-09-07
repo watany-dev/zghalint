@@ -1,0 +1,21 @@
+# bench:forbid template-injection
+# bench:forbid github-env-injection
+name: untrusted text reaches the shell only through an env var
+on:
+  issues:
+    types: [opened]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Print the title without interpolating it
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          printf '%s\n' "$TITLE"

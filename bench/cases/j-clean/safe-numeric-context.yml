@@ -1,0 +1,19 @@
+# bench:forbid template-injection
+name: only numeric context values are interpolated into run blocks
+on:
+  pull_request_target:
+    types: [opened]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Print numbers that cannot carry shell metacharacters
+        run: |
+          echo "pr ${{ github.event.number }} run ${{ github.run_number }}"
+          echo "attempt ${{ github.run_attempt }}"

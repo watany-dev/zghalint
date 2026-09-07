@@ -1,0 +1,19 @@
+# bench:expect matrix-include-exclude@15
+name: exclude names a value the matrix never produces
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+        exclude:
+          - os: windows-latest
+            node: 20
+    steps:
+      - name: Build
+        run: make build

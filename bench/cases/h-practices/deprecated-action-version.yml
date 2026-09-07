@@ -1,0 +1,18 @@
+# bench:expect deprecated-action-version@15
+name: artifact action stuck on a retired major version
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Upload
+        uses: actions/upload-artifact@v3
+        with:
+          name: dist
+          path: dist/

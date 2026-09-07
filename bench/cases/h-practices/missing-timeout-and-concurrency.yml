@@ -1,0 +1,12 @@
+# bench:expect missing-timeout@9
+# bench:expect push-without-concurrency@1
+name: job without a timeout on a push workflow
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build
+        run: make build

@@ -1,0 +1,12 @@
+# bench:expect function-availability@12
+name: success() inside run
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Report
+        run: echo "${{ success() }}"

@@ -1,0 +1,19 @@
+# bench:expect needs-unknown-job@13
+name: needs names a job that does not exist
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build
+  deploy:
+    needs: [buld]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Deploy
+        run: make deploy

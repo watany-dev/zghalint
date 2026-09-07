@@ -1,0 +1,15 @@
+# bench:expect invalid-filter-glob@6
+name: broken glob in a branch filter
+on:
+  push:
+    branches:
+      - 'release/[main'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

@@ -1,0 +1,15 @@
+# bench:expect undefined-step-reference@12
+name: steps forward reference
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read a step that runs later
+        run: echo "${{ steps.later.outputs.value }}"
+      - name: Produce the value
+        id: later
+        run: echo "value=1" >> "$GITHUB_OUTPUT"

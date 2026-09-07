@@ -1,0 +1,31 @@
+# bench:forbid broad-write-permission
+# bench:forbid template-injection
+# bench:forbid excessive-permissions
+# bench:forbid unpinned-action
+# bench:forbid missing-timeout
+# bench:forbid expression-syntax
+# bench:forbid secrets-outside-env
+name: Release
+on:
+  release:
+    types: [published]
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Publish
+        run: npm publish --provenance

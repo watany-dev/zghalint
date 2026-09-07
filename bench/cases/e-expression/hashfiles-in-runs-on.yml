@@ -1,0 +1,12 @@
+# bench:expect function-availability@8
+name: hashFiles under runs-on
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ${{ hashFiles('go.sum') }}
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build
