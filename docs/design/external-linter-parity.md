@@ -215,11 +215,31 @@ action / API から必要な scope を推定するか、既知の必須 scope �
 除外する必要がある。ベンチの FP 5 件中 3 件がこれで、precision を 95% に
 下げている唯一の要因が G9 と G14 の 2 つ。
 
+#### G15. API トークンでの publish を指摘しない (trusted publishing 未使用) — 要ルール追加
+
+`bench/cases/d-permissions-secrets/api-token-instead-of-oidc.yml`。
+
+```yaml
+- uses: pypa/gh-action-pypi-publish@76f52bc...  # v1.12.4
+  with:
+    password: ${{ secrets.PYPI_API_TOKEN }}
+```
+
+長命の API トークンを渡す形。同じ action は OIDC (trusted publishing) に対応
+しており、`id-token: write` があればトークン自体が不要になる。zizmor は
+`use-trusted-publishing` として指摘するが、zghalint は該当ルールを持たない。
+SEC019 (secret を `env:` 経由にせず直接使う) が同じステップで発火するものの、
+「そもそもトークンが要らない」ことは伝えていない。#271 の FN 候補 1 の検証結果。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
   (actionlint / zizmor いずれも指摘なし)
 - `BP002` ×7 — `name` のないステップ
+- `DEP003` — `uses: actions//checkout@v4` のような難読化された `uses:`
+  (`bench/cases/c-supply-chain/uses-obfuscated.yml`)。zizmor の `obfuscation`
+  はこの形を指摘せず、actionlint は形式不正として拾う。#271 の FN 候補 3 は
+  FN ではなかった
 
 ### 4.3 意図的に一致させないもの
 
@@ -264,6 +284,7 @@ PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む�
 - [ ] G12 (#283): `---` / `...` のドキュメントマーカーを受理する
 - [ ] G13 (#284): 中身のないワークフローを診断として報告する
 - [ ] G14 (#285): PERM001 がジョブに必要な write 権限を除外する
+- [ ] G15: API トークンでの publish を指摘する (trusted publishing への誘導)
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [x] G7 (#275): SC001 を `uses: docker://...` に対応させる

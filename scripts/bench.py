@@ -95,6 +95,13 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "zizmor": ["artipacked"],
         "actionlint": None,
     },
+    # zghalint has no equivalent: SEC019 (secret outside env:) fires on the same
+    # step but says nothing about OIDC being available instead of a token.
+    "use-trusted-publishing": {
+        "zghalint": None,
+        "zizmor": ["use-trusted-publishing"],
+        "actionlint": None,
+    },
     "excessive-permissions": {
         "zghalint": ["SEC004", "SEC007"],
         "zizmor": ["excessive-permissions"],
