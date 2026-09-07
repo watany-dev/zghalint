@@ -187,6 +187,16 @@ pub const ExprTokenizer = struct {
 pub const NodeKind = enum {
     context_access,
     function_call,
+    /// `.field` applied to something that is not a bare context reference —
+    /// today only a function result (`fromJSON(x).tag`). `value` is the
+    /// property name (`*` for the object filter) and the single child is the
+    /// receiver. A context reference keeps its flattened `context_access` path
+    /// instead, so the contextual rules see it unchanged.
+    property_access,
+    /// `[expr]` applied to the same kind of receiver. `children[0]` is the
+    /// receiver and `children[1]` the index expression, which need not be a
+    /// literal (`fromJSON(x)[matrix.i]`).
+    index_access,
     binary_op,
     unary_op,
     string_literal,
@@ -397,7 +407,8 @@ pub const ExprParser = struct {
                 }
 
                 if (self.current.kind == .open_paren) {
-                    return self.parseFunctionCall(name, name_start);
+                    const call = try self.parseFunctionCall(name, name_start);
+                    return self.parsePostfix(call);
                 }
 
                 return self.parseContextAccess(name, name_start);
@@ -445,6 +456,61 @@ pub const ExprParser = struct {
             .end_byte = @intCast(close_paren_pos + 1),
             .height = try self.heightAbove(children),
         };
+    }
+
+    /// The `.field` / `[expr]` chain hanging off a function result. GitHub
+    /// Actions allows a call anywhere a value is expected, so `fromJSON(x).tag`,
+    /// `fromJSON(x)[0]` and `fromJSON(x).a[0].b` are all valid; treating the
+    /// call as the end of the expression made every one of them EXPR001 (#280).
+    fn parsePostfix(self: *ExprParser, receiver: ExprNode) ParseError!ExprNode {
+        var node = receiver;
+        while (true) {
+            switch (self.current.kind) {
+                .dot => {
+                    self.advance();
+                    if (self.current.kind != .identifier and self.current.kind != .star) {
+                        self.error_message = "expected property name after '.'";
+                        return ParseError.UnexpectedToken;
+                    }
+                    const name = self.current;
+                    self.advance();
+                    const children = try self.allocator.alloc(ExprNode, 1);
+                    children[0] = node;
+                    node = ExprNode{
+                        .kind = .property_access,
+                        .value = name.value,
+                        .children = children,
+                        .start_byte = children[0].start_byte,
+                        .end_byte = @intCast(name.pos + name.value.len),
+                        .height = try self.heightAbove(children),
+                    };
+                },
+                .open_bracket => {
+                    self.advance();
+                    try self.enter();
+                    defer self.leave();
+                    const index = try self.parseOr();
+                    if (self.current.kind != .close_bracket) {
+                        self.error_message = "missing closing bracket";
+                        return ParseError.UnexpectedToken;
+                    }
+                    const close_pos = self.current.pos;
+                    self.advance();
+                    const children = try self.allocator.alloc(ExprNode, 2);
+                    children[0] = node;
+                    children[1] = index;
+                    node = ExprNode{
+                        .kind = .index_access,
+                        .value = "[]",
+                        .children = children,
+                        .start_byte = children[0].start_byte,
+                        .end_byte = @intCast(close_pos + 1),
+                        .height = try self.heightAbove(children),
+                    };
+                },
+                else => return node,
+            }
+        }
     }
 
     fn parseContextAccess(self: *ExprParser, first: []const u8, first_start: usize) ParseError!ExprNode {
@@ -603,7 +669,7 @@ fn validateNode(
     switch (node.kind) {
         .context_access => validateContextAccess(allocator, node.value, span, list, env),
         .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent, env),
-        .binary_op, .unary_op => {
+        .binary_op, .unary_op, .property_access, .index_access => {
             if (node.kind == .binary_op) {
                 checkUnsoundCondition(allocator, node, span, list, expr_base_byte);
                 checkComparison(allocator, node, span, list, env);
@@ -1804,6 +1870,95 @@ test "parser: byte offsets for star context access" {
     try std.testing.expectEqual(NodeKind.context_access, node.kind);
     try std.testing.expectEqual(@as(u32, 0), node.start_byte);
     try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+}
+
+test "parser: property access on a function result" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "fromJSON(env.CFG).name";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.property_access, node.kind);
+    try std.testing.expectEqualStrings("name", node.value);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+
+    const recv = node.children[0];
+    try std.testing.expectEqual(NodeKind.function_call, recv.kind);
+    try std.testing.expectEqualStrings("fromJSON", recv.value);
+}
+
+test "parser: index access on a function result" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src = "fromJSON('[1,2,3]')[0]";
+    var parser = ExprParser.init(arena.allocator(), src);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.index_access, node.kind);
+    try std.testing.expectEqual(@as(u32, 0), node.start_byte);
+    try std.testing.expectEqual(@as(u32, @intCast(src.len)), node.end_byte);
+    try std.testing.expectEqual(NodeKind.function_call, node.children[0].kind);
+    try std.testing.expectEqual(NodeKind.number_literal, node.children[1].kind);
+    try std.testing.expectEqualStrings("0", node.children[1].value);
+}
+
+test "parser: postfix chain over a nested function call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = ExprParser.init(arena.allocator(), "fromJSON(toJSON(github.event)).a[0].b");
+    const node = try parser.parse();
+
+    // .b on ( [0] on ( .a on fromJSON(toJSON(github.event)) ) )
+    try std.testing.expectEqual(NodeKind.property_access, node.kind);
+    try std.testing.expectEqualStrings("b", node.value);
+    const idx = node.children[0];
+    try std.testing.expectEqual(NodeKind.index_access, idx.kind);
+    const prop_a = idx.children[0];
+    try std.testing.expectEqual(NodeKind.property_access, prop_a.kind);
+    try std.testing.expectEqualStrings("a", prop_a.value);
+    const outer_call = prop_a.children[0];
+    try std.testing.expectEqual(NodeKind.function_call, outer_call.kind);
+    try std.testing.expectEqualStrings("fromJSON", outer_call.value);
+    try std.testing.expectEqual(NodeKind.function_call, outer_call.children[0].kind);
+    try std.testing.expectEqualStrings("toJSON", outer_call.children[0].value);
+}
+
+test "parser: object filter on a function result" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = ExprParser.init(arena.allocator(), "fromJSON(env.LIST).*.id");
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.property_access, node.kind);
+    try std.testing.expectEqualStrings("id", node.value);
+    const star = node.children[0];
+    try std.testing.expectEqual(NodeKind.property_access, star.kind);
+    try std.testing.expectEqualStrings("*", star.value);
+}
+
+test "parser: bracket access on a function result needs a closing bracket" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = ExprParser.init(arena.allocator(), "fromJSON(env.LIST)[0");
+    try std.testing.expectError(ParseError.UnexpectedToken, parser.parse());
+    try std.testing.expectEqualStrings("missing closing bracket", parser.error_message.?);
+}
+
+test "parser: dot after a function call needs a property name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = ExprParser.init(arena.allocator(), "fromJSON(env.CFG).");
+    try std.testing.expectError(ParseError.UnexpectedToken, parser.parse());
+    try std.testing.expectEqualStrings("expected property name after '.'", parser.error_message.?);
+}
+
+test "validate: property access on a function result is not a syntax error" {
+    try expectNoDiagnostics("fromJSON('{\"tag\":\"v1\"}').tag");
+    try expectNoDiagnostics("fromJSON('[1,2,3]')[0]");
+    try expectNoDiagnostics("toJSON(github.event).x");
+}
+
+test "validate: a broken fromJSON literal is still reported under a property access" {
+    try expectSingleRule("fromJSON('{bad').name", "EXPR009");
 }
 
 test "validate: valid expression github.sha" {

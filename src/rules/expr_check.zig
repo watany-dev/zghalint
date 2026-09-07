@@ -223,6 +223,7 @@ pub fn typeOf(node: *const ExprNode, env: *const TypeEnv) TypeRef {
     return switch (node.kind) {
         .context_access => walkPath(node.value, env).ty,
         .function_call => functionReturnType(node),
+        .property_access, .index_access => accessType(node, env),
         .binary_op => blk: {
             if (isCompareOp(node.value)) break :blk &t.type_bool;
             if (node.children.len == 2) {
@@ -239,6 +240,27 @@ pub fn typeOf(node: *const ExprNode, env: *const TypeEnv) TypeRef {
         .boolean_literal => &t.type_bool,
         .null_literal => &t.type_null,
     };
+}
+
+/// `fromJSON(x).tag` and friends (#280). The receiver is a function result, so
+/// a key that is not in the modelled shape says nothing about the workflow —
+/// the segment is applied for its type only and any problem is dropped, which
+/// `applySegment` already collapses to `any`.
+fn accessType(node: *const ExprNode, env: *const TypeEnv) TypeRef {
+    const recv = typeOf(&node.children[0], env);
+    const seg: Segment = switch (node.kind) {
+        .property_access => if (std.mem.eql(u8, node.value, "*"))
+            .star
+        else
+            .{ .ident = node.value },
+        // A non-literal subscript (`fromJSON(x)[matrix.i]`) names no key, so
+        // only an array receiver still yields something better than `any`.
+        else => switch (node.children[1].kind) {
+            .string_literal => .{ .index_string = stripQuotes(node.children[1].value) },
+            else => return if (recv.kind == .array) recv.elem orelse any else any,
+        },
+    };
+    return applySegment(recv, seg, "", .overlay).ty;
 }
 
 fn functionReturnType(node: *const ExprNode) TypeRef {

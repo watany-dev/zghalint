@@ -350,6 +350,9 @@ GitHub は context キーを case-insensitive に解決するため、overlay �
   → expr_check.typeOf(node, env)
        context_access → path をセグメント化し catalog/overlay をウォーク
        function_call  → 子の typeOf → overload の ret
+       property_access / index_access
+                      → 受け手の typeOf にセグメントを 1 つ適用（#280）。
+                        受け手は関数結果なので診断は出さず不明は any
        binary_op ==   → 比較規則（T3 で診断）結果型 bool
        binary_op &&   → merge(lhs, rhs)
        unary_op !     → 子を typeOf し bool
