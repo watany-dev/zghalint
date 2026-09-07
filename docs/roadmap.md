@@ -1,6 +1,6 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`fef3b99`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`132be45`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
@@ -13,11 +13,12 @@
 | #55 actionlint parity | 54 sub-issue 中 **53 close 済み（98%）**。残るは #64 のみ |
 | 型検査エンジン | T0〜T4 完了（#129 は PR #256 で overlay 接続、close 済み）。EXPR018 引数型検査（#162）も同 PR で完了・close 済み |
 | E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（40 本）と `tests/fixtures/e2e-action/*.yml`（7 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| bench | `bench/cases/` に 58 件。A〜D（56 件）は PR #277 で揃い、`scripts/bench.py` の採点で zghalint は recall 88%（42/48）・precision 98%・位置一致 79%、実行エラー 0。外部ツール未導入の環境では zghalint 単独で採点する |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
 | ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241） |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
-| オープン PR | #207（本ロードマップ）と #217（形式仕様とモデル検査）の 2 本。#249 / #252（Dependabot）はマージ済み |
-| オープン issue | 13 件。内訳は #55 本体 1、#55 の sub-issue 1（#64）、その他 2（#135 #159）、ベンチマーク系 9（#262 本体と #264〜#271）。#97〜#99 は PR #260 で、#221〜#224 は PR #261 で、#263 は PR #272 で close 済み |
+| オープン PR | #207（本ロードマップ）と #217（形式仕様とモデル検査）の 2 本。#272 / #277（bench）はマージ済み |
+| オープン issue | 16 件。内訳は #55 本体 1、#55 の sub-issue 1（#64）、その他 2（#135 #159）、ベンチマーク系 8（#262 本体と #265〜#271）、bench 由来の parity gap 4（#273〜#276 = G5〜G8）。#263 は PR #272 で、#264 は PR #277 で close 済み |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
 | 既知バグ | 形式検証由来の反例はすべて解消した。security 3 件（#218 / #219 / #220）に続き、prefetch キャッシュ（#221 / #222）・`--fix` の原子性（#223）・SEC021 の誤検知（#224）が PR #261 で修正・close 済み |
 
@@ -27,7 +28,7 @@ Phase 4 は PR #258 で composite の `runs.steps`（ACT005 = #254）とロー�
 PR #259 で reusable workflow 側 4 本（RW002〜RW005 = #105〜#108）が、
 PR #260 で埋め込みメタデータによる DEP005 / DEP006 とランタイム判定版 BP003（#97〜#99）が着地している。
 #55 に残るのは Phase を跨ぐパーサ基盤の #64 だけである。
-実装済みだったルール系 issue（#72 #73 #75 #86 #91 #92 #96〜#100 #105〜#108 #124 #129 #162 #210 #218〜#224 #254 #263）は close 済み。
+実装済みだったルール系 issue（#72 #73 #75 #86 #91 #92 #96〜#100 #105〜#108 #124 #129 #162 #210 #218〜#224 #254 #263 #264）は close 済み。
 
 リポジトリ運用・CI 基盤トラックは完了した。CI は fmt / build / test に加えて
 クロスコンパイル・3 OS スモーク・自リポジトリの dogfooding・外部静的解析（actionlint / zizmor / shellcheck / ruff）・
@@ -103,7 +104,8 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 |---|---|
 | #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
 | #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator` が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、bench 由来のルール修正が増える**前**に済ませると衝突が少ない |
-| ベンチマーク #262 | zghalint / actionlint / zizmor を約 100 ケースで三者比較し、改善課題を継続的に洗い出す umbrella。基盤（#263）は PR #272 で完了し、`bench/cases/` と `scripts/bench.py` が置かれた。残る sub-issue はケース作成 #264〜#267、性能計測 #268、autofix 交差検証 #269、運用ループ #270、FN 候補の検証 #271 |
+| ベンチマーク #262 | zghalint / actionlint / zizmor を約 100 ケースで三者比較し、改善課題を継続的に洗い出す umbrella。基盤（#263）は PR #272 で、ケース A〜D（#264）は PR #277 で完了した。残る sub-issue はケース作成 #265〜#267、性能計測 #268、autofix 交差検証 #269、運用ループ #270、FN 候補の検証 #271 |
+| bench 由来の parity gap #273〜#276 | A〜D のケースで出た FN 6 件・FP 1 件を `docs/design/external-linter-parity.md` の G5〜G8 として起票したもの。G5（#273）は SEC002 の汚染源に `inputs.*` / `toJSON(github.event)` / ステップ出力を加える、G6（#274）は SEC020 の `runs-on` 配列対応、G7（#275）は SC001 の `uses: docker://` 対応、G8（#276）は SEC005 が SEC022 のフォークガード解析を共有する。いずれも既存ルールの改善で、bench が実測から出した最初の課題群 |
 | PR #217 形式仕様 | Alloy（ルール所有権）と TLA+（prefetch / autofix）の仕様と反例。#218〜#224 の出所で、指摘はすべて修正済み。マージすれば以後の反例追加が同じ場所に載る |
 | リポジトリ運用・CI 基盤（旧 #230 #234〜#244） | 12 件すべて実装済み・close 済み（Dependabot / PBT 依存固定 / Zig 版一元化 / coverage / concurrency / 外部静的解析 / ファズ / 自リポジトリ dogfooding / action.yml スモーク / メタファイル / release provenance / タグ整合 / `docs/rules.md` 同期テスト）。track として終了 |
 | #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
@@ -113,13 +115,14 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 | 順 | 対象 | 理由 |
 |---|---|---|
 | 1 | `docs/rules.md` の見出し修正 | 表は 98 行で registry と同期済みなのに、見出しが「90 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
-| 2 | #264〜#267 | bench ケース本体。基盤ができた直後がケースを積むいちばん安いタイミングで、以後の改善課題はここから出る |
-| 3 | #159 | エンジンの arena。ケース追加でルール側の修正が増える前に `Rule` シグネチャを固める |
-| 4 | #135 | SC007 typosquat。設計済み・オフライン完結で、他と完全に並列できる |
-| 5 | #64 | YAML anchor / alias / merge key。#55 に残った最後の 1 件で、パーサ層に触るため他と競合しやすい |
+| 2 | #159 | エンジンの arena。G5〜G8 で `security.zig` 側の修正が始まる前に `Rule` シグネチャを固める |
+| 3 | #273〜#276 | bench が実測で出した parity gap（G5〜G8）。FN 6 件・FP 1 件の出所が特定済みで、いずれも既存ルールの改善に閉じる |
+| 4 | #265〜#267 | 残りの bench ケース（E〜F / G〜H / I〜J）。A〜D と同じ形で積めば追加の改善課題が出る |
+| 5 | #135 | SC007 typosquat。設計済み・オフライン完結で、他と完全に並列できる |
 
 Phase 1〜4 はすべて閉じ、ルール追加の主戦場は #55 から bench（#262）へ移った。
-以後はベンチのケースを積んで実測から改善課題を出す形になる。#135 と #159 は競合しないので並行で流す。#64 はパーサ層に触るため単独で入れる。
+A〜D のケースが揃ったことで、改善課題は推測ではなく採点結果（recall 88% / FP 1 件）から出るようになっている。
+#135 は他と競合しないので並行で流す。#55 に残る #64（YAML anchor / alias / merge key）はパーサ層に触るため単独で入れる。
 
 ## 4. 進め方の注意
 
