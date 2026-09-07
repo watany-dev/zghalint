@@ -566,6 +566,9 @@ pub const Job = struct {
     /// Entries of the job-level `with:` mapping in source order (for RW002/RW003).
     with_args: []const CallArg = &.{},
     secrets: ?SecretsConfig = null,
+    /// Entries of the job-level `secrets:` mapping in source order (for RW004).
+    /// Empty for `secrets: inherit`, which names nothing.
+    secrets_args: []const CallArg = &.{},
     /// Column (1-based) at which this job's child keys are indented.
     job_indent: u32 = 0,
     /// Byte position to insert a new `permissions:` entry (after `runs-on:` line).

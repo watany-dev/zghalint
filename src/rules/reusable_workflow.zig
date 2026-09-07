@@ -69,11 +69,13 @@ fn checkWorkflowCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-/// Call arguments are matched case-insensitively, the way the runner resolves
-/// them, so a case difference is never reported as a missing or unknown name.
-fn hasCallArg(args: []const CallArg, name: []const u8) bool {
-    for (args) |arg| {
-        if (std.ascii.eqlIgnoreCase(arg.name, name)) return true;
+/// Whether any of `items` — call arguments or declarations, both of which carry
+/// a `name` — is `name`. The comparison is case-insensitive, the way the runner
+/// resolves these, so a case difference is never reported as a missing or
+/// unknown name.
+fn hasName(items: anytype, name: []const u8) bool {
+    for (items) |item| {
+        if (std.ascii.eqlIgnoreCase(item.name, name)) return true;
     }
     return false;
 }
@@ -95,7 +97,7 @@ fn checkCallRequiredInputs(wf: *const Workflow, list: *DiagnosticList) void {
             // at dispatch time; RW001 reports that contradiction on the
             // definition side, so the call is not at fault here.
             if (input.default_value != null) continue;
-            if (hasCallArg(job.with_args, input.name)) continue;
+            if (hasName(job.with_args, input.name)) continue;
 
             reportMissingArg(.input, job, uses, input.name, list);
         }
@@ -267,6 +269,38 @@ fn reportInputTypeMismatch(input: workflow_types.InputDef, arg: CallArg, list: *
     }) catch return;
 }
 
+/// RW004: a `required: true` secret of the called workflow the call never
+/// passes, and a `secrets:` entry the called workflow does not declare.
+fn checkCallSecrets(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.jobs) |*job| {
+        const uses = job.uses orelse continue;
+        // `secrets: inherit` hands over every secret of the caller, so there is
+        // nothing left to match against a declaration.
+        if (job.secrets) |config| {
+            if (config == .inherit) continue;
+        }
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const called = called_workflow.load(arena.allocator(), uses) orelse continue;
+        // A called workflow that declares no `workflow_call.secrets` has no
+        // closed secret set to check a call against.
+        if (called.secrets.len == 0) continue;
+
+        for (called.secrets) |secret| {
+            if (!(secret.required orelse false)) continue;
+            if (hasName(job.secrets_args, secret.name)) continue;
+            reportMissingArg(.secret, job, uses, secret.name, list);
+        }
+
+        for (job.secrets_args) |arg| {
+            if (hasName(called.secrets, arg.name)) continue;
+            const declared = declaredNames(arena.allocator(), called.secrets);
+            reportUnknownArg(.secret, declared, arg, uses, list);
+        }
+    }
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "RW001",
@@ -291,6 +325,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .reusable_workflow,
         .check_workflow = checkCallInputs,
+    },
+    .{
+        .id = "RW004",
+        .name = "workflow-call-secrets",
+        .description = "A call must pass every required secret of the called local workflow and no undeclared one",
+        .severity = .@"error",
+        .category = .reusable_workflow,
+        .check_workflow = checkCallSecrets,
     },
 };
 
@@ -763,4 +805,208 @@ test "RW003: an input without a declared type is not type-checked" {
     try runCallInputValueCheck(arena.allocator(), source, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+const secret_workflow =
+    \\on:
+    \\  workflow_call:
+    \\    secrets:
+    \\      npm_token:
+    \\        required: true
+    \\      slack_webhook:
+    \\        required: false
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo ok
+    \\
+;
+
+fn runCallSecretCheck(arena: std.mem.Allocator, source: []const u8, list: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(arena, source);
+    checkCallSecrets(&wf, list);
+}
+
+test "RW004: a missing required secret and an unknown secret are reported" {
+    called_source = secret_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets:
+        \\      slack_webhook: ${{ secrets.SLACK }}
+        \\      aws_key: ${{ secrets.AWS }}
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallSecretCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expectEqualStrings("RW004", diags.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "npm_token") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "aws_key") != null);
+}
+
+test "RW004: a call passing every required secret is accepted" {
+    called_source = secret_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets:
+        \\      npm_token: ${{ secrets.NPM_TOKEN }}
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallSecretCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW004: secrets inherit skips every check" {
+    called_source = secret_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets: inherit
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallSecretCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW004: an absent secrets key still reports a missing required secret" {
+    called_source = secret_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallSecretCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "npm_token") != null);
+}
+
+test "RW004: a called workflow declaring no secrets is not checked" {
+    called_source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      version:
+        \\        type: string
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets:
+        \\      anything: ${{ secrets.ANYTHING }}
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallSecretCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW004: a remote call is not checked" {
+    called_source = secret_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: octo-org/repo/.github/workflows/ci.yml@main
+        \\    secrets:
+        \\      aws_key: ${{ secrets.AWS }}
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallSecretCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW004: a near-miss secret name carries a suggestion" {
+    called_source = secret_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets:
+        \\      npm_toke: ${{ secrets.NPM_TOKEN }}
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallSecretCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).fix_hint.?, "npm_token") != null);
 }

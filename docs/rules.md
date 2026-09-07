@@ -725,6 +725,7 @@ callers, and the calls made against it.
 | RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted |
 | RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
 | RW003 | workflow-call-input-values | error | A job calling a local reusable workflow passes an input it does not declare, or a value that does not match the declared type |
+| RW004 | workflow-call-secrets | error | A job calling a local reusable workflow omits one of its `required` secrets, or passes a secret it does not declare |
 
 ### RW001 workflow-call-inputs
 
@@ -822,6 +823,43 @@ invalid is reported on the definition side by
 
 Like [RW002](#rw002-workflow-call-required-inputs), only a **local** call is
 checked.
+
+### RW004 workflow-call-secrets
+
+The `secrets:` of a reusable workflow call is checked against the secrets the
+called workflow declares, in both directions: every `required: true` secret must
+be passed, and no name may be passed that is not declared.
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    secrets:
+      npm_token:
+        required: true
+      slack_webhook:
+        required: false
+```
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    secrets:
+      slack_webhook: ${{ secrets.SLACK }}
+      aws_key: ${{ secrets.AWS }}   # not declared by the called workflow
+      # required secret `npm_token` is never passed
+```
+
+`secrets: inherit` hands the caller's whole secret set over, so a job that uses
+it is not checked at all. Neither is a call whose target declares no
+`workflow_call.secrets`: without a declaration there is no closed set to check
+against. Like [RW002](#rw002-workflow-call-required-inputs), only a **local**
+call is checked.
+
+This is the caller-side counterpart of EXPR014, which checks `secrets.<name>`
+uses inside the called workflow against the same declaration.
 
 ---
 

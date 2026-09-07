@@ -829,6 +829,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         try recordEmpty(&empty, ctx.allocator, "secrets", n);
         if (!isEmptyContainer(n)) {
             job.secrets = try parseSecretsConfig(ctx.allocator, n);
+            job.secrets_args = try parseCallArgs(ctx.allocator, n);
         }
     }
     if (m.get("container")) |n| {
