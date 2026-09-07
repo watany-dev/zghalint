@@ -48,6 +48,35 @@ jobs:
           version: 0.15.2
       - run: zig build
 
+  cross:
+    name: Cross-compile ${{ matrix.zig_target }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # release.yml の build マトリクスと同じ配布ターゲット。Zig は遅延解析な
+        # ので、あるターゲットでしか通らない分岐はそのターゲットでコンパイルする
+        # まで落ちない。タグ push まで気付けないのを避けるため PR でも回す。
+        # ターゲットを増減するときは release.yml も併せて更新すること。
+        zig_target:
+          - x86_64-linux
+          - aarch64-linux
+          - x86_64-macos
+          - aarch64-macos
+          - x86_64-windows
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - name: Build ${{ matrix.zig_target }}
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+
   test:
     name: Test (${{ matrix.os }}, ${{ matrix.optimize }})
     runs-on: ${{ matrix.os }}
