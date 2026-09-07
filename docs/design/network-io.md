@@ -278,10 +278,16 @@ main.zig
   │         ├─ applyDiskCache
   │         │    └─ repo ごとに disk_cache.load → applyCacheEntry で
   │         │       rule caches に注入し、満たされた ref を set から除去
+  │         ├─ pruneSatisfiedRepos
+  │         │    └─ 残 ref がゼロで archived も不要な repo を除去
+  │         │       （空 GraphQL でキャッシュを消さないため）
   │         ├─ tryGraphQlBatch
   │         │    ├─ 残りの repos を max 30 件ずつ graphql.batchQuery
   │         │    ├─ applyResults(persist_dir=null) で rule caches に注入
-  │         │    └─ persistRepoResult で disk_cache.save/saveToDir に保存
+  │         │    ├─ markResolved で解決済み ref を set から除去
+  │         │    │  （REST フォールバックは未解決分だけを取り直す）
+  │         │    └─ persistRepoResult で既存エントリとマージして保存
+  │         │       （`cached_at` は最古の持ち越し分に合わせる = TTL 不変）
   │         └─ REST fallback
   │              ├─ fetchRepos / fetchShaRefs / fetchNamedRefs
   │              │    └─ rest_fallback.fetchArchiveStatus /
@@ -297,7 +303,7 @@ main.zig
 | 経路 | 成功条件 | 失敗時 |
 |------|---------|--------|
 | Disk cache | `cached_at` が 24h 以内 | スキップして GraphQL/REST へ |
-| GraphQL | `GITHUB_TOKEN` あり ＋ 200 OK | `NoToken`→REST、`RateLimited`→中断、他→REST |
+| GraphQL | `GITHUB_TOKEN` あり ＋ 200 OK | `NoToken`→REST、`RateLimited`→中断（バッチ位置によらず REST は叩かない）、他→REST |
 | REST | 常時 | 個別の失敗は当該 step のみスキップ |
 
 ## 6. エラー型
@@ -341,7 +347,14 @@ main.zig
 - `prefetch.buildRepoInputs`: repo 単位での sha/named グルーピング、
   inactive ルールで対応スライスが空になること。
 - `prefetch.applyCacheEntry`: ヒット時の rule cache 注入と set からの
-  削除、inactive カテゴリのスキップ。
+  削除、inactive カテゴリのスキップ、SC008 有効時に impostor 判定を持たない
+  SHA を残すこと。
+- `prefetch.pruneSatisfiedRepos`: 残 ref のある repo の保持、SC004 無効時の
+  全除去。
+- `prefetch.mergeEntries` / `persistRepoResult`: 既存エントリとのマージ
+  （新しい結果が勝ち、問い合わせなかった SHA は残る）。持ち越しでは
+  `cached_at` を更新しない — 更新すると毎日触る repo が永久に再検証されない。
+- `prefetch.markResolved`: 解決済み ref の除去と `unknown` の保持。
 - `prefetch.applyResults`: `missing=true` のスキップ、`persist_dir`
   指定時の tmpDir への書き込み検証。
 - `prefetch.prefetchAll`: offline 時 no-op。

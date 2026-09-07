@@ -69,6 +69,7 @@ pub fn prefetchAllWithOptions(
     if (!opts.no_cache) {
         _ = applyDiskCache(scratch, &ref_sets, active);
     }
+    pruneSatisfiedRepos(scratch, &ref_sets, active);
 
     // GraphQL first; falls back to REST on no-token, parse failure, or
     // rate-limit. SC008's REST compare phase rides on top of the same
@@ -84,7 +85,7 @@ pub fn prefetchAllWithOptions(
 
     const used_graphql = tryGraphQlBatch(
         scratch,
-        ref_sets,
+        &ref_sets,
         active,
         &pending_compares,
         &pending_persist,
@@ -217,7 +218,7 @@ fn applyDiskCache(
         const repo = val_ptr.repo;
 
         const entry = disk_cache.loadFromDir(cache_dir, scratch, owner, repo) orelse continue;
-        hits += applyCacheEntry(sets, repo_key, owner, repo, entry, active);
+        hits += applyCacheEntry(sets, owner, repo, entry, active);
     }
 
     return hits;
@@ -227,7 +228,6 @@ fn applyDiskCache(
 /// without staging files on disk.
 fn applyCacheEntry(
     sets: *RefSets,
-    repo_key: []const u8,
     owner: []const u8,
     repo: []const u8,
     entry: disk_cache.CachedRepo,
@@ -235,10 +235,13 @@ fn applyCacheEntry(
 ) usize {
     var hits: usize = 0;
 
+    // The repo itself is not dropped here: a repo whose `archived` flag is
+    // cached may still own SHAs or named refs this run has to fetch, and
+    // dropping it would keep those out of the GraphQL batch forever (#221).
+    // `pruneSatisfiedRepos` removes a repo only once nothing is left to ask.
     if (active.archived) {
         if (entry.archived) |b| {
             archived.setCachedResult(owner, repo, b);
-            _ = sets.repos.remove(repo_key);
             hits += 1;
         }
     }
@@ -254,6 +257,12 @@ fn applyCacheEntry(
                     .unknown => .unknown,
                 };
                 stale_refs.setCachedTagResult(owner, repo, s.sha, mapped);
+                // SC005 and SC008 share the (owner, repo, sha) tuple. A cache
+                // file written by a run with SC008 off carries no impostor
+                // verdict, so dropping the SHA here would keep it out of the
+                // batch and silence SC008 for the rest of the TTL. It is not a
+                // hit either: the ref still has to be fetched.
+                if (active.impostor and !hasImpostorEntry(entry, s.sha)) continue;
                 _ = sets.sha_refs.remove(key);
                 hits += 1;
             }
@@ -290,6 +299,87 @@ fn applyCacheEntry(
     return hits;
 }
 
+fn hasImpostorEntry(entry: disk_cache.CachedRepo, sha: []const u8) bool {
+    for (entry.impostor) |e| {
+        if (std.mem.eql(u8, e.sha, sha)) return true;
+    }
+    return false;
+}
+
+/// Drops repositories that have nothing left to ask GitHub about: no
+/// outstanding SHA or named ref, and either SC004 is off or its `archived`
+/// verdict is already cached.
+///
+/// Without this, a run with SC004 disabled still sends every repository in an
+/// otherwise empty GraphQL request and then overwrites the disk cache with
+/// that empty answer, so warm and cold runs alternate forever (#221).
+/// Conversely, a repository whose `archived` flag came from disk must stay
+/// when a newly added pin still needs resolving.
+fn pruneSatisfiedRepos(scratch: Allocator, sets: *RefSets, active: ActiveRules) void {
+    // Bail out rather than prune on allocation failure: keeping a repository
+    // costs one request, dropping one wrongly costs a missed diagnostic.
+    var needed: std.StringHashMapUnmanaged(void) = .{};
+    if (active.stale or active.impostor) {
+        var it = sets.sha_refs.valueIterator();
+        while (it.next()) |k| {
+            const repo_key = std.fmt.allocPrint(scratch, "{s}/{s}", .{ k.owner, k.repo }) catch return;
+            needed.put(scratch, repo_key, {}) catch return;
+        }
+    }
+    if (active.refconf) {
+        var it = sets.named_refs.valueIterator();
+        while (it.next()) |k| {
+            const repo_key = std.fmt.allocPrint(scratch, "{s}/{s}", .{ k.owner, k.repo }) catch return;
+            needed.put(scratch, repo_key, {}) catch return;
+        }
+    }
+
+    // Snapshot the keys: `sets.repos` is mutated below.
+    var repo_keys = std.ArrayList([]const u8){};
+    defer repo_keys.deinit(scratch);
+    var rk_it = sets.repos.keyIterator();
+    while (rk_it.next()) |k| repo_keys.append(scratch, k.*) catch return;
+
+    for (repo_keys.items) |repo_key| {
+        if (needed.contains(repo_key)) continue;
+        if (active.archived) {
+            const val = sets.repos.getPtr(repo_key) orelse continue;
+            if (!archived.hasCachedResult(val.owner, val.repo)) continue;
+        }
+        _ = sets.repos.remove(repo_key);
+    }
+}
+
+/// A repository accumulates SHAs across branches and runs, so the merged
+/// arrays are capped to keep the cache file bounded. Fresh results are written
+/// first, so the cap only ever discards the oldest entries.
+const max_merged_entries = 256;
+
+/// Fresh results win; entries the current run did not ask about are carried
+/// over from disk. Without this the cache would only ever remember the last
+/// run's delta, which is what breaks warm runs across branches (#221).
+fn mergeEntries(
+    comptime T: type,
+    comptime key_field: []const u8,
+    scratch: Allocator,
+    old: []const T,
+    fresh: []const T,
+) []const T {
+    if (old.len == 0) return fresh;
+    if (fresh.len == 0) return if (old.len > max_merged_entries) old[0..max_merged_entries] else old;
+
+    var list = std.ArrayList(T){};
+    list.appendSlice(scratch, fresh) catch return fresh;
+    outer: for (old) |o| {
+        if (list.items.len >= max_merged_entries) break;
+        for (fresh) |f| {
+            if (std.mem.eql(u8, @field(o, key_field), @field(f, key_field))) continue :outer;
+        }
+        list.append(scratch, o) catch return fresh;
+    }
+    return list.toOwnedSlice(scratch) catch fresh;
+}
+
 /// Non-fatal: failures are ignored so that a missing cache dir or permission
 /// error never blocks the lint run.
 ///
@@ -318,23 +408,57 @@ fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult, dir: ?std.fs.D
             break :blk list.toOwnedSlice(scratch) catch &.{};
         },
     };
+    const merged = mergeWithCached(scratch, res.owner, res.repo, entry, dir);
+
     if (dir) |d| {
-        disk_cache.saveToDir(d, scratch, res.owner, res.repo, entry) catch return;
+        disk_cache.saveToDir(d, scratch, res.owner, res.repo, merged) catch return;
     } else {
-        disk_cache.save(scratch, res.owner, res.repo, entry) catch return;
+        disk_cache.save(scratch, res.owner, res.repo, merged) catch return;
     }
 }
 
+/// Folds whatever the disk already holds for this repository into `entry`, so
+/// a run that only queried the SHAs it missed does not erase the ones an
+/// earlier run resolved.
+fn mergeWithCached(
+    scratch: Allocator,
+    owner: []const u8,
+    repo: []const u8,
+    entry: disk_cache.CachedRepo,
+    dir: ?std.fs.Dir,
+) disk_cache.CachedRepo {
+    const old = blk: {
+        if (dir) |d| break :blk disk_cache.loadFromDir(d, scratch, owner, repo);
+        break :blk disk_cache.load(scratch, owner, repo);
+    } orelse return entry;
+
+    var merged = entry;
+    // The TTL is per file, so re-stamping it with `now` after carrying old
+    // entries over would keep them alive for another day on every run: a
+    // repository touched daily would never be re-checked. The file expires
+    // when its oldest content does.
+    merged.cached_at = @min(entry.cached_at, old.cached_at);
+    merged.shas = mergeEntries(disk_cache.ShaEntry, "sha", scratch, old.shas, entry.shas);
+    merged.named = mergeEntries(disk_cache.NamedEntry, "ref", scratch, old.named, entry.named);
+    merged.branches = mergeEntries(disk_cache.BranchEntry, "name", scratch, old.branches, entry.branches);
+    merged.impostor = mergeEntries(disk_cache.ImpostorEntry, "sha", scratch, old.impostor, entry.impostor);
+    if (merged.archived == null) merged.archived = old.archived;
+    if (merged.default_branch == null) merged.default_branch = old.default_branch;
+    return merged;
+}
+
+/// `sets` is narrowed as batches land, so a REST fallback triggered by a later
+/// batch only refetches what GraphQL could not resolve (#222).
 fn tryGraphQlBatch(
     scratch: Allocator,
-    sets: RefSets,
+    sets: *RefSets,
     active: ActiveRules,
     pending: *std.ArrayList(PendingCompare),
     persist_buffer: ?*std.ArrayList(graphql.RepoResult),
 ) bool {
     if (sets.repos.count() == 0) return false;
 
-    const inputs = buildRepoInputs(scratch, sets, active) catch return false;
+    const inputs = buildRepoInputs(scratch, sets.*, active) catch return false;
 
     var idx: usize = 0;
     while (idx < inputs.len) {
@@ -347,7 +471,10 @@ fn tryGraphQlBatch(
 
         const results = graphql.batchQuery(scratch, chunk) catch |err| switch (err) {
             error.NoToken => return false, // fall back to REST
-            error.RateLimited => return idx > 0, // give up; keep what we have
+            // RateLimited aborts the GraphQL phase, as `network-io.md` says:
+            // REST talks to the same rate-limited API, so falling back would
+            // only add requests to a budget that just ran out (#222).
+            error.RateLimited => return true,
             else => return false,
         };
 
@@ -358,6 +485,7 @@ fn tryGraphQlBatch(
             pending,
             persist_buffer,
         );
+        markResolved(sets, results, active);
         idx = end;
     }
 
@@ -433,6 +561,39 @@ fn buildRepoInputs(
     }
 
     return inputs;
+}
+
+/// Removes everything a landed batch answered from `sets`, so the REST
+/// fallback a later batch may trigger neither refetches resolved refs nor
+/// overwrites their values with `unknown` when the REST call fails (#222).
+/// `.unknown` GraphQL verdicts stay in the set: REST may still do better.
+fn markResolved(sets: *RefSets, results: []const graphql.RepoResult, active: ActiveRules) void {
+    for (results) |res| {
+        if (res.missing) continue;
+
+        if (active.stale) {
+            for (res.sha_results) |sr| {
+                if (sr.resolution == .unknown) continue;
+                removeRefKey(&sets.sha_refs, res.owner, res.repo, sr.sha);
+            }
+        }
+        if (active.refconf) {
+            for (res.named_results) |nr| {
+                removeRefKey(&sets.named_refs, res.owner, res.repo, nr.ref);
+            }
+        }
+        if (res.archived != null) {
+            var key_buf: [max_ref_key_len]u8 = undefined;
+            const key = std.fmt.bufPrint(&key_buf, "{s}/{s}", .{ res.owner, res.repo }) catch continue;
+            _ = sets.repos.remove(key);
+        }
+    }
+}
+
+fn removeRefKey(set: anytype, owner: []const u8, repo: []const u8, ref: []const u8) void {
+    var key_buf: [max_ref_key_len]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, ref }) catch return;
+    _ = set.remove(key);
 }
 
 fn applyResults(
@@ -690,7 +851,7 @@ test "buildRepoInputs: inactive rules leave slices empty" {
     try testing.expect(!inputs[0].needs_impostor);
 }
 
-test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits" {
+test "applyCacheEntry: fresh hit drops shas/named from sets and counts hits" {
     archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
     stale_refs.initStaleRefs(testing.allocator, false);
@@ -722,11 +883,54 @@ test "applyCacheEntry: fresh hit drops repo/shas/named from sets and counts hits
         .named = @constCast(&named),
     };
 
-    const hits = applyCacheEntry(&sets, repo_key, "o", "r", entry, .{ .archived = true, .stale = true, .refconf = true, .impostor = false });
+    const active = ActiveRules{ .archived = true, .stale = true, .refconf = true, .impostor = false };
+    const hits = applyCacheEntry(&sets, "o", "r", entry, active);
     try testing.expectEqual(@as(usize, 3), hits);
-    try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
     try testing.expectEqual(@as(usize, 0), sets.named_refs.count());
+
+    // The repo survives `applyCacheEntry`; pruning is what drops it once
+    // nothing is left to ask about.
+    try testing.expectEqual(@as(usize, 1), sets.repos.count());
+    pruneSatisfiedRepos(alloc, &sets, active);
+    try testing.expectEqual(@as(usize, 0), sets.repos.count());
+}
+
+test "pruneSatisfiedRepos: keeps a cached-archived repo that still owns an unresolved SHA (#221)" {
+    archived.initArchived(testing.allocator, false);
+    defer archived.deinitArchived();
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sets = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets.sha_refs.put(alloc, "o/r@new", .{ .owner = "o", .repo = "r", .sha = "new" });
+
+    // Only the archived flag is cached; the freshly added pin is not.
+    const entry = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .archived = true };
+    const active = ActiveRules{ .archived = true, .stale = true, .refconf = false, .impostor = false };
+    _ = applyCacheEntry(&sets, "o", "r", entry, active);
+    pruneSatisfiedRepos(alloc, &sets, active);
+
+    try testing.expectEqual(@as(usize, 1), sets.repos.count());
+}
+
+test "pruneSatisfiedRepos: drops every repo when no rule needs repo-level data (#221)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sets = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+
+    // SC004 off and nothing outstanding: querying would send an empty GraphQL
+    // request whose empty answer then overwrites the disk cache.
+    pruneSatisfiedRepos(alloc, &sets, .{ .archived = false, .stale = true, .refconf = true, .impostor = false });
+    try testing.expectEqual(@as(usize, 0), sets.repos.count());
 }
 
 test "applyCacheEntry: inactive rules skip corresponding categories" {
@@ -754,11 +958,16 @@ test "applyCacheEntry: inactive rules skip corresponding categories" {
         .named = @constCast(&named),
     };
 
-    const hits = applyCacheEntry(&sets, "o/r", "o", "r", entry, .{ .archived = true, .stale = false, .refconf = false, .impostor = false });
+    const active = ActiveRules{ .archived = true, .stale = false, .refconf = false, .impostor = false };
+    const hits = applyCacheEntry(&sets, "o", "r", entry, active);
     try testing.expectEqual(@as(usize, 1), hits);
-    try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 1), sets.sha_refs.count());
     try testing.expectEqual(@as(usize, 1), sets.named_refs.count());
+
+    // Neither SC005 nor SC006 is active, so the untouched refs are not work
+    // this run owes: the repo is fully satisfied.
+    pruneSatisfiedRepos(alloc, &sets, active);
+    try testing.expectEqual(@as(usize, 0), sets.repos.count());
 }
 
 test "applyCacheEntry: impostor hydrates SC008 verdicts from disk" {
@@ -788,7 +997,7 @@ test "applyCacheEntry: impostor hydrates SC008 verdicts from disk" {
         .impostor = @constCast(&imp_entries),
     };
 
-    _ = applyCacheEntry(&sets, "o/r", "o", "r", entry, .{ .archived = false, .stale = false, .refconf = false, .impostor = true });
+    _ = applyCacheEntry(&sets, "o", "r", entry, .{ .archived = false, .stale = false, .refconf = false, .impostor = true });
 
     const legit = impostor.lookupCachedImpostorResult("o", "r", sha_legit) orelse
         return error.TestExpectedNonNull;
@@ -876,7 +1085,9 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
     try named_refs.put(alloc, "acme/tool@main", .{ .owner = "acme", .repo = "tool", .ref = "main" });
     var sets = RefSets{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
 
-    const hits = applyDiskCache(alloc, &sets, .{ .archived = true, .stale = true, .refconf = true, .impostor = false });
+    const active = ActiveRules{ .archived = true, .stale = true, .refconf = true, .impostor = false };
+    const hits = applyDiskCache(alloc, &sets, active);
+    pruneSatisfiedRepos(alloc, &sets, active);
     try testing.expectEqual(@as(usize, 3), hits);
     try testing.expectEqual(@as(usize, 0), sets.repos.count());
     try testing.expectEqual(@as(usize, 0), sets.sha_refs.count());
@@ -930,6 +1141,202 @@ test "applyResults: persists repo state to the provided cache dir" {
     try testing.expectEqual(@as(usize, 1), loaded.named.len);
     try testing.expect(loaded.named[0].is_tag);
     try testing.expect(loaded.named[0].is_branch);
+}
+
+test "persistRepoResult: merges with the on-disk entry instead of overwriting it (#221)" {
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var env = try test_support.EnvGuard.setDir(testing.allocator, "XDG_CACHE_HOME", tmp.dir);
+    defer env.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sha_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const sha_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    // Run 1 resolves A1 and caches the archived flag.
+    const first_shas = [_]graphql.ShaTagResult{.{ .sha = sha_a, .resolution = .has_tag }};
+    persistRepoResult(alloc, .{
+        .owner = "o",
+        .repo = "r",
+        .archived = false,
+        .sha_results = &first_shas,
+    }, null);
+
+    // Run 2 only misses A2, so GraphQL is asked about A2 alone.
+    const second_shas = [_]graphql.ShaTagResult{.{ .sha = sha_b, .resolution = .no_tag }};
+    persistRepoResult(alloc, .{
+        .owner = "o",
+        .repo = "r",
+        .sha_results = &second_shas,
+    }, null);
+
+    const loaded = disk_cache.load(testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        for (loaded.shas) |e| testing.allocator.free(e.sha);
+        testing.allocator.free(loaded.shas);
+        testing.allocator.free(loaded.named);
+        testing.allocator.free(loaded.branches);
+        testing.allocator.free(loaded.impostor);
+    }
+
+    try testing.expectEqual(@as(usize, 2), loaded.shas.len);
+    var seen_a = false;
+    var seen_b = false;
+    for (loaded.shas) |e| {
+        if (std.mem.eql(u8, e.sha, sha_a)) seen_a = true;
+        if (std.mem.eql(u8, e.sha, sha_b)) seen_b = true;
+    }
+    try testing.expect(seen_a);
+    try testing.expect(seen_b);
+    // Run 2 never asked about `archived`, so run 1's answer survives.
+    try testing.expect(loaded.archived != null);
+    try testing.expect(!loaded.archived.?);
+}
+
+test "persistRepoResult: carrying old entries over does not renew the TTL (#221)" {
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var env = try test_support.EnvGuard.setDir(testing.allocator, "XDG_CACHE_HOME", tmp.dir);
+    defer env.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sha_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const sha_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    // An entry written some hours ago, still inside the TTL.
+    const stamped = std.time.timestamp() - 3600;
+    const first_shas = [_]disk_cache.ShaEntry{.{ .sha = sha_a, .resolution = .has_tag }};
+    var dir = disk_cache.getCacheDir(alloc) orelse return error.TestExpectedNonNull;
+    defer dir.close();
+    try disk_cache.saveToDir(dir, alloc, "o", "r", .{
+        .cached_at = stamped,
+        .archived = false,
+        .shas = &first_shas,
+    });
+
+    const second_shas = [_]graphql.ShaTagResult{.{ .sha = sha_b, .resolution = .no_tag }};
+    persistRepoResult(alloc, .{ .owner = "o", .repo = "r", .sha_results = &second_shas }, null);
+
+    const loaded = disk_cache.load(testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        for (loaded.shas) |e| testing.allocator.free(e.sha);
+        testing.allocator.free(loaded.shas);
+        testing.allocator.free(loaded.named);
+        testing.allocator.free(loaded.branches);
+        testing.allocator.free(loaded.impostor);
+    }
+
+    try testing.expectEqual(@as(usize, 2), loaded.shas.len);
+    // The carried-over answer keeps its age, so the file still expires on time.
+    try testing.expectEqual(stamped, loaded.cached_at);
+}
+
+test "applyCacheEntry: keeps a SHA whose SC008 verdict the cache file lacks" {
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sha = "cccccccccccccccccccccccccccccccccccccccc";
+    var sets = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets.sha_refs.put(alloc, "o/r@" ++ sha, .{ .owner = "o", .repo = "r", .sha = sha });
+
+    // Written by a run with SC008 off: the tag resolution is there, the
+    // impostor verdict is not.
+    const shas = [_]disk_cache.ShaEntry{.{ .sha = sha, .resolution = .has_tag }};
+    const entry = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .shas = &shas };
+    const active = ActiveRules{ .archived = false, .stale = true, .refconf = false, .impostor = true };
+
+    _ = applyCacheEntry(&sets, "o", "r", entry, active);
+    pruneSatisfiedRepos(alloc, &sets, active);
+
+    try testing.expectEqual(@as(usize, 1), sets.sha_refs.count());
+    try testing.expectEqual(@as(usize, 1), sets.repos.count());
+
+    // The same file with the verdict present must still satisfy the SHA,
+    // otherwise the guard above would silently disable the whole SC005 cache.
+    var sets2 = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets2.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets2.sha_refs.put(alloc, "o/r@" ++ sha, .{ .owner = "o", .repo = "r", .sha = sha });
+
+    const imp = [_]disk_cache.ImpostorEntry{.{ .sha = sha, .status = .legitimate }};
+    const full = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .shas = &shas, .impostor = &imp };
+
+    _ = applyCacheEntry(&sets2, "o", "r", full, active);
+    pruneSatisfiedRepos(alloc, &sets2, active);
+
+    try testing.expectEqual(@as(usize, 0), sets2.sha_refs.count());
+    try testing.expectEqual(@as(usize, 0), sets2.repos.count());
+}
+
+test "mergeEntries: fresh results win over the cached ones for the same key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const old = [_]disk_cache.ShaEntry{
+        .{ .sha = "a", .resolution = .unknown },
+        .{ .sha = "b", .resolution = .has_tag },
+    };
+    const fresh = [_]disk_cache.ShaEntry{.{ .sha = "a", .resolution = .no_tag }};
+
+    const merged = mergeEntries(disk_cache.ShaEntry, "sha", alloc, &old, &fresh);
+    try testing.expectEqual(@as(usize, 2), merged.len);
+    try testing.expectEqualStrings("a", merged[0].sha);
+    try testing.expectEqual(graphql.ShaTagResolution.no_tag, merged[0].resolution);
+    try testing.expectEqualStrings("b", merged[1].sha);
+}
+
+test "markResolved: narrows the REST fallback to what GraphQL could not answer (#222)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sets = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets.sha_refs.put(alloc, "o/r@a", .{ .owner = "o", .repo = "r", .sha = "a" });
+    try sets.sha_refs.put(alloc, "o/r@b", .{ .owner = "o", .repo = "r", .sha = "b" });
+    try sets.named_refs.put(alloc, "o/r@main", .{ .owner = "o", .repo = "r", .ref = "main" });
+
+    const sha_res = [_]graphql.ShaTagResult{
+        .{ .sha = "a", .resolution = .has_tag },
+        // Unanswered by GraphQL: REST may still resolve it, so it stays.
+        .{ .sha = "b", .resolution = .unknown },
+    };
+    const named_res = [_]graphql.NamedRefResult{.{ .ref = "main", .is_tag = true, .is_branch = false }};
+    const results = [_]graphql.RepoResult{.{
+        .owner = "o",
+        .repo = "r",
+        .archived = false,
+        .sha_results = &sha_res,
+        .named_results = &named_res,
+    }};
+
+    markResolved(&sets, &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false });
+
+    try testing.expectEqual(@as(usize, 0), sets.repos.count());
+    try testing.expectEqual(@as(usize, 0), sets.named_refs.count());
+    try testing.expectEqual(@as(usize, 1), sets.sha_refs.count());
+    try testing.expect(sets.sha_refs.contains("o/r@b"));
 }
 
 test "persistRepoResult: writes branches/default_branch/impostor (v2)" {

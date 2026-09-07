@@ -581,20 +581,53 @@ fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
     }) catch return;
 }
 
-/// Contexts an attacker fills in on the SEC021 trigger set: the dispatch
+/// Contexts an attacker fills in, per trigger that fills them: the dispatch
 /// payloads (`inputs` / `client_payload`) and the free text of an issue,
 /// comment or discussion. Entries are segment prefixes (see
 /// `pathMatchesPattern`), so `github.event.inputs` covers every declared input
 /// name without listing them.
-const checkout_ref_untrusted_contexts = [_][]const u8{
-    "github.event.inputs",
-    "github.event.client_payload",
-    "github.event.issue.title",
-    "github.event.issue.body",
-    "github.event.comment.body",
-    "github.event.discussion.title",
-    "github.event.discussion.body",
-    "github.event.discussion_comment.body",
+///
+/// The pairing matters. Testing the cross product of the trigger set and the
+/// whole context set reported combinations that cannot occur — a
+/// `repository_dispatch` workflow reading `github.event.inputs` got SEC021
+/// with a message describing a checkout that trigger never performs (#224).
+const TriggerContexts = struct {
+    event: EventType,
+    contexts: []const []const u8,
+};
+
+const trigger_context_table = [_]TriggerContexts{
+    .{ .event = .workflow_dispatch, .contexts = &.{"github.event.inputs"} },
+    .{ .event = .repository_dispatch, .contexts = &.{"github.event.client_payload"} },
+    .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body" } },
+    // `issue_comment` carries the issue it was left on alongside the comment.
+    .{ .event = .issue_comment, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.comment.body" } },
+    .{ .event = .discussion, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body" } },
+    .{ .event = .discussion_comment, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body", "github.event.comment.body" } },
+};
+
+/// Every context in the table, plus the bare `inputs` root.
+const max_checkout_ref_contexts = blk: {
+    var n: usize = 1;
+    for (trigger_context_table) |entry| n += entry.contexts.len;
+    break :blk n;
+};
+
+const CheckoutRefContexts = struct {
+    buf: [max_checkout_ref_contexts][]const u8 = undefined,
+    len: usize = 0,
+
+    fn append(self: *CheckoutRefContexts, context: []const u8) void {
+        for (self.buf[0..self.len]) |existing| {
+            if (std.mem.eql(u8, existing, context)) return;
+        }
+        self.buf[self.len] = context;
+        self.len += 1;
+    }
+
+    fn slice(self: *const CheckoutRefContexts) []const []const u8 {
+        return self.buf[0..self.len];
+    }
 };
 
 /// The `inputs.*` shorthand names whatever started the run: the values a
@@ -602,8 +635,6 @@ const checkout_ref_untrusted_contexts = [_][]const u8{
 /// callers is out of scope, so the root is untrusted unless every way in fills
 /// it from a caller — declaring `workflow_call` alongside a `workflow_dispatch`
 /// that has inputs of its own must not silence the dispatch path (#219).
-const checkout_ref_dispatch_contexts = checkout_ref_untrusted_contexts ++ [_][]const u8{"inputs"};
-
 fn bareInputsAreUntrusted(wf: *const Workflow) bool {
     if (!wf.hasEvent(.workflow_call)) return true;
     for (wf.on.events) |event| {
@@ -612,23 +643,27 @@ fn bareInputsAreUntrusted(wf: *const Workflow) bool {
     return false;
 }
 
-/// The triggers SEC021 owns: the run is started by data an attacker authors
-/// while the job still runs against the base repository. `pull_request_target`
-/// and `workflow_run` are absent because SEC005 / SEC009 already own them.
-fn hasUntrustedRefTrigger(wf: *const Workflow) bool {
+/// The contexts SEC021 owns for this workflow: the union over the triggers it
+/// declares, so only contexts one of them actually populates are considered.
+/// `pull_request_target` and `workflow_run` are absent from the table because
+/// SEC005 / SEC009 already own them.
+///
+/// An empty result means no trigger SEC021 owns is declared: the run is not
+/// started by data an attacker authors while the job runs against the base
+/// repository.
+fn untrustedRefContexts(wf: *const Workflow) CheckoutRefContexts {
+    var out: CheckoutRefContexts = .{};
     for (wf.on.events) |event| {
-        switch (event.event) {
-            .workflow_dispatch,
-            .repository_dispatch,
-            .issues,
-            .issue_comment,
-            .discussion,
-            .discussion_comment,
-            => return true,
-            else => {},
+        for (trigger_context_table) |entry| {
+            if (event.event != entry.event) continue;
+            for (entry.contexts) |context| out.append(context);
         }
     }
-    return false;
+    // The bare `inputs` root only exists for a run something dispatched.
+    if (out.len > 0 and wf.hasEvent(.workflow_dispatch) and bareInputsAreUntrusted(wf)) {
+        out.append("inputs");
+    }
+    return out;
 }
 
 /// True when SEC005 or SEC009 already reports this ref. A workflow can mix
@@ -641,16 +676,12 @@ fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
 }
 
 fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
-    if (!hasUntrustedRefTrigger(wf)) return;
-
-    const contexts: []const []const u8 = if (bareInputsAreUntrusted(wf))
-        &checkout_ref_dispatch_contexts
-    else
-        &checkout_ref_untrusted_contexts;
+    const contexts = untrustedRefContexts(wf);
+    if (contexts.len == 0) return;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
-            checkStepCheckoutRefs(wf, step, contexts, list);
+            checkStepCheckoutRefs(wf, step, contexts.slice(), list);
         }
     }
 }
@@ -698,6 +729,11 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             const input = checkoutCodeInput(step, isWorkflowRunValue) orelse continue;
+            // A workflow may declare both triggers, and a checkout may name
+            // both a PR head and a workflow_run ref. SEC005 is the more
+            // specific finding, so it owns the step: reporting both puts two
+            // diagnostics on one mistake (#224).
+            if (wf.hasEvent(.pull_request_target) and checkoutCodeInput(step, isPRHeadValue) != null) continue;
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
@@ -2544,6 +2580,7 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
 
 const repository_dispatch_trigger = test_support.makeTrigger(.repository_dispatch);
 const discussion_comment_trigger = test_support.makeTrigger(.discussion_comment);
+const issues_trigger = test_support.makeTrigger(.issues);
 const dispatch_target_inputs = [_]workflow_types.DispatchInputDef{
     .{ .name = "target", .name_span = test_support.dummySpan(0, 0) },
 };
@@ -2562,6 +2599,10 @@ const pr_target_and_issue_comment_trigger = Trigger{ .events = &[_]EventConfig{
 const workflow_run_and_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
     .{ .event = .workflow_run },
     .{ .event = .workflow_dispatch },
+} };
+const pr_target_and_workflow_run_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .pull_request_target },
+    .{ .event = .workflow_run },
 } };
 
 fn runCheckoutWith(on: Trigger, key: []const u8, value: []const u8) DiagnosticList {
@@ -2693,6 +2734,38 @@ test "SEC021: workflow_run only defers on the ref SEC009 owns" {
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
     try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: repository_dispatch does not borrow the dispatch inputs context (#224)" {
+    var list = runCheckoutWith(repository_dispatch_trigger, "ref", "${{ github.event.inputs.target }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: issues does not borrow the comment body context (#224)" {
+    var list = runCheckoutWith(issues_trigger, "ref", "${{ github.event.comment.body }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC009: defers to SEC005 when one checkout names both refs (#224)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    with.put("repository", "${{ github.event.pull_request.head.repo.full_name }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_and_workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: still reports when the step names no PR head (#224)" {
+    var list = runCheckoutWith(pr_target_and_workflow_run_trigger, "ref", "${{ github.event.workflow_run.head_sha }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC021: checkout repository defers on the value SEC005 owns" {
