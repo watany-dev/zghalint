@@ -1,0 +1,31 @@
+# zghalint:expect RUNNER003@8 RUNNER003@13
+# zghalint:forbid RUNNER003@18 RUNNER003@23 RUNNER003@28
+name: runner label conflict
+on: push
+jobs:
+  two-hosted-os:
+    # ubuntu-latest and windows-latest can never be the same runner
+    runs-on: [ubuntu-latest, windows-latest]
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  self-hosted-across-os:
+    runs-on: [self-hosted, linux, macos-14]
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  self-hosted-fleet:
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  single-label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  matrix-expression:
+    runs-on: [self-hosted, "${{ matrix.os }}"]
+    timeout-minutes: 5
+    steps:
+      - run: echo hi

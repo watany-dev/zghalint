@@ -201,6 +201,7 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
 | RUNNER002 | unknown-runner | error | `runs-on` label is not a known GitHub-hosted runner (typos leave the job queued forever) |
+| RUNNER003 | runner-label-conflict | error | `runs-on` の複数ラベルが異なる OS を指しており、条件を満たすランナーが存在しない |
 
 RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知のラベル」だけを報告する。
 セルフホストのフリートは列挙しようがないため、以下は報告しない:
@@ -213,6 +214,15 @@ RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知の
 既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
 提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
 `runner.labels` に列挙すれば既知として扱われる。
+
+RUNNER001 / RUNNER002 は `runs-on: [self-hosted, linux, x64]` のような配列指定と
+ランナーグループ（`runs-on: {group:, labels:}`）にも対応し、ラベルごとに検査する。
+
+RUNNER003 は同一ランナーが同時に満たせないラベルの併記を報告する。ジョブは
+すべてのラベルを備えた 1 台のランナーで実行されるため、`ubuntu-latest` と
+`windows-latest` のように OS が異なるラベルを並べると永久に queued のままになる。
+OS を名乗らないラベル（`self-hosted` / `x64` や自前フリートの独自ラベル）は判定に
+使わず、`${{ }}` を含むラベルがあるジョブは matrix 展開が必要なため報告しない。
 
 ## Syntax Rules (SYN)
 

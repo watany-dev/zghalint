@@ -94,36 +94,78 @@ comptime {
     }
 }
 
-fn checkDeprecatedRunner(job: *const Job, diag_list: *DiagnosticList) void {
-    const runs_on = job.runs_on orelse return;
+/// One `runs-on` label with the span to point a diagnostic at.
+const LabelRef = struct {
+    value: []const u8,
+    value_span: ?Span,
+};
 
-    for (known_labels) |entry| {
-        if (entry.status == .current) continue;
-        if (!std.mem.eql(u8, runs_on, entry.label)) continue;
+/// Walks a job's `runs-on` labels. The parser fills `runs_on_labels` for the
+/// scalar and the sequence form alike, so the rules never have to know which
+/// one the user wrote; the `runs_on` scalar is the fallback for hand-built
+/// `Job` values that only set it.
+const LabelIterator = struct {
+    job: *const Job,
+    index: usize = 0,
 
-        const span = job.runs_on_value_span orelse job.span;
-        const fix: ?Fix = if (job.runs_on_value_span) |vs| blk: {
-            const edits = diag_list.allocEdit(.{
-                .start_byte = vs.start_byte,
-                .end_byte = vs.end_byte,
-                .replacement = entry.replacement,
-            }) orelse break :blk null;
-            break :blk Fix{
-                .description = "Replace with supported runner label",
-                .safety = .unsafe,
-                .edits = edits,
+    fn next(self: *LabelIterator) ?LabelRef {
+        if (self.job.runs_on_labels.len > 0) {
+            if (self.index >= self.job.runs_on_labels.len) return null;
+            const i = self.index;
+            self.index += 1;
+            return .{
+                .value = self.job.runs_on_labels[i],
+                .value_span = if (i < self.job.runs_on_label_spans.len)
+                    self.job.runs_on_label_spans[i]
+                else
+                    null,
             };
-        } else null;
+        }
 
-        diag_list.append(.{
-            .rule_id = "RUNNER001",
-            .severity = entry.status.severity(),
-            .message = entry.status.message(),
-            .span = span,
-            .fix_hint = entry.replacement,
-            .fix = fix,
-        }) catch return;
-        return;
+        if (self.index > 0) return null;
+        self.index = 1;
+        return .{
+            .value = self.job.runs_on orelse return null,
+            .value_span = self.job.runs_on_value_span,
+        };
+    }
+};
+
+fn runsOnLabels(job: *const Job) LabelIterator {
+    return .{ .job = job };
+}
+
+fn checkDeprecatedRunner(job: *const Job, diag_list: *DiagnosticList) void {
+    var labels = runsOnLabels(job);
+    while (labels.next()) |label| {
+        for (known_labels) |entry| {
+            if (entry.status == .current) continue;
+            if (!std.mem.eql(u8, label.value, entry.label)) continue;
+
+            const span = label.value_span orelse job.span;
+            const fix: ?Fix = if (label.value_span) |vs| blk: {
+                const edits = diag_list.allocEdit(.{
+                    .start_byte = vs.start_byte,
+                    .end_byte = vs.end_byte,
+                    .replacement = entry.replacement,
+                }) orelse break :blk null;
+                break :blk Fix{
+                    .description = "Replace with supported runner label",
+                    .safety = .unsafe,
+                    .edits = edits,
+                };
+            } else null;
+
+            diag_list.append(.{
+                .rule_id = "RUNNER001",
+                .severity = entry.status.severity(),
+                .message = entry.status.message(),
+                .span = span,
+                .fix_hint = entry.replacement,
+                .fix = fix,
+            }) catch return;
+            break;
+        }
     }
 }
 
@@ -221,27 +263,33 @@ fn looksLikeHostedLabel(label: []const u8) bool {
 }
 
 fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
-    const runs_on = job.runs_on orelse return;
-    if (runs_on.len == 0) return;
+    var labels = runsOnLabels(job);
+    while (labels.next()) |label| {
+        checkUnknownLabel(job, label, diag_list);
+    }
+}
+
+fn checkUnknownLabel(job: *const Job, label: LabelRef, diag_list: *DiagnosticList) void {
+    if (label.value.len == 0) return;
 
     // `runs-on: ${{ matrix.os }}` needs matrix expansion, tracked in #210;
     // until then an expression is out of scope rather than unknown.
-    if (std.mem.indexOf(u8, runs_on, "${{") != null) return;
-    if (isKnownLabel(runs_on)) return;
+    if (std.mem.indexOf(u8, label.value, "${{") != null) return;
+    if (isKnownLabel(label.value)) return;
 
-    const suggestion = nearestKnownLabel(runs_on);
+    const suggestion = nearestKnownLabel(label.value);
     // No near miss and no hosted-runner shape: assume a self-hosted label.
-    if (suggestion == null and !looksLikeHostedLabel(runs_on)) return;
+    if (suggestion == null and !looksLikeHostedLabel(label.value)) return;
 
-    const span = job.runs_on_value_span orelse job.span;
+    const span = label.value_span orelse job.span;
     const hint: ?[]const u8 = if (suggestion) |name|
         std.fmt.allocPrint(diag_list.fixAllocator(), "did you mean \"{s}\"?", .{name}) catch null
     else
         null;
-    const fix: ?Fix = if (suggestion != null and job.runs_on_value_span != null) blk: {
+    const fix: ?Fix = if (suggestion != null and label.value_span != null) blk: {
         const edits = diag_list.allocEdit(.{
-            .start_byte = job.runs_on_value_span.?.start_byte,
-            .end_byte = job.runs_on_value_span.?.end_byte,
+            .start_byte = label.value_span.?.start_byte,
+            .end_byte = label.value_span.?.end_byte,
             .replacement = suggestion.?,
         }) orelse break :blk null;
         break :blk Fix{
@@ -261,6 +309,58 @@ fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
     }) catch return;
 }
 
+/// Operating system a runner label commits the job to. Only GitHub's image
+/// labels and the conventional OS labels say anything: a self-hosted fleet
+/// names its machines freely, and `self-hosted` / `x64` name no OS at all.
+const RunnerOs = enum {
+    linux,
+    windows,
+    macos,
+};
+
+fn labelOs(label: []const u8) ?RunnerOs {
+    if (eqlLabel(label, "linux") or eqlLabel(label, "ubuntu") or hasLabelPrefix(label, "ubuntu")) return .linux;
+    if (eqlLabel(label, "windows") or hasLabelPrefix(label, "windows")) return .windows;
+    if (eqlLabel(label, "macos") or hasLabelPrefix(label, "macos")) return .macos;
+    return null;
+}
+
+/// A job runs on one runner carrying *every* label listed, so two labels that
+/// name different operating systems can never both be satisfied: the job sits
+/// queued until it times out.
+fn checkRunnerConflict(job: *const Job, diag_list: *DiagnosticList) void {
+    var labels = runsOnLabels(job);
+    var first: ?LabelRef = null;
+    var first_os: RunnerOs = undefined;
+
+    while (labels.next()) |label| {
+        // An expression only resolves at run time, so the OS it contributes is
+        // unknown and the whole label set is out of scope.
+        if (std.mem.indexOf(u8, label.value, "${{") != null) return;
+
+        const os = labelOs(label.value) orelse continue;
+        const previous = first orelse {
+            first = label;
+            first_os = os;
+            continue;
+        };
+        if (os == first_os) continue;
+
+        diag_list.append(.{
+            .rule_id = "RUNNER003",
+            .severity = .@"error",
+            .message = std.fmt.allocPrint(
+                diag_list.fixAllocator(),
+                "runs-on labels \"{s}\" and \"{s}\" name different operating systems; no runner can carry both and the job stays queued",
+                .{ previous.value, label.value },
+            ) catch "runs-on labels name different operating systems; no runner can carry both and the job stays queued",
+            .span = label.value_span orelse job.span,
+            .fix_hint = "Keep the labels of a single operating system, or split the job per OS with a matrix",
+        }) catch return;
+        return;
+    }
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "RUNNER001",
@@ -277,6 +377,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .runner,
         .check_job = &checkUnknownRunner,
+    },
+    .{
+        .id = "RUNNER003",
+        .name = "runner-label-conflict",
+        .description = "runs-on labels name different operating systems, so no runner matches",
+        .severity = .@"error",
+        .category = .runner,
+        .check_job = &checkRunnerConflict,
     },
 };
 
@@ -536,4 +644,193 @@ test "RUNNER002: autofix end-to-end replaces the typo in YAML source" {
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
     try testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest") != null);
+}
+
+/// Runs a job check over real workflow source, so a sequence `runs-on` reaches
+/// the rule through the parser instead of a hand-built label list.
+fn runJobCheckSource(
+    arena: std.mem.Allocator,
+    source: []const u8,
+    check: *const fn (*const Job, *DiagnosticList) void,
+    diags: *DiagnosticList,
+) !void {
+    const wf = try test_support.parseWorkflowSource(arena, source);
+    for (wf.jobs) |*job| check(job, diags);
+}
+
+fn sequenceJobSource(comptime labels: []const u8) []const u8 {
+    return "name: CI\non: push\njobs:\n  build:\n    runs-on: " ++ labels ++ "\n    steps:\n      - run: echo hi\n";
+}
+
+test "RUNNER003: conflicting OS labels are reported" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[ubuntu-latest, windows-latest]"),
+        &checkRunnerConflict,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("RUNNER003", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    try testing.expect(std.mem.indexOf(u8, diag.message, "ubuntu-latest") != null);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "windows-latest") != null);
+}
+
+test "RUNNER003: self-hosted linux fleet asking for macOS conflicts" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[self-hosted, linux, macos-14]"),
+        &checkRunnerConflict,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("RUNNER003", diags.get(0).rule_id);
+}
+
+test "RUNNER003: one OS plus self-hosted and arch labels is fine" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[self-hosted, linux, x64]"),
+        &checkRunnerConflict,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RUNNER003: repeated labels of the same OS do not conflict" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[ubuntu-latest, linux, ubuntu-22.04]"),
+        &checkRunnerConflict,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RUNNER003: an expression label puts the whole set out of scope" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[windows-latest, \"${{ matrix.os }}\"]"),
+        &checkRunnerConflict,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RUNNER003: a scalar runs-on never conflicts with itself" {
+    const job = Job{ .id = "build", .runs_on = "ubuntu-latest" };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkRunnerConflict(&job, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RUNNER003: unknown self-hosted labels name no OS" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[self-hosted, gpu-box, ubuntu-latest]"),
+        &checkRunnerConflict,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RUNNER001: a retired label inside a sequence is reported" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[ubuntu-20.04, x64]"),
+        &checkDeprecatedRunner,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("RUNNER001", diag.rule_id);
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("ubuntu-22.04", fix.edits[0].replacement);
+}
+
+test "RUNNER002: an unknown label inside a sequence is reported once" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(
+        arena.allocator(),
+        sequenceJobSource("[self-hosted, ubunut-latest]"),
+        &checkUnknownRunner,
+        &diags,
+    );
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("RUNNER002", diags.get(0).rule_id);
+}
+
+test "RUNNER002: a runner group's labels are checked" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on:
+        \\      group: ubuntu-runners
+        \\      labels: [ubunut-latest]
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(arena.allocator(), source, &checkUnknownRunner, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("RUNNER002", diags.get(0).rule_id);
 }
