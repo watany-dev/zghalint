@@ -272,7 +272,6 @@ fn readSourceFile(
     };
 }
 
-/// The document-level check for `path`, or null when the file is a workflow.
 fn documentLintFn(path: []const u8) ?*const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void {
     if (isDependabotFile(path)) return &zghalint.rules.dependabot.lintDependabot;
     if (isActionMetadataFile(path)) return &zghalint.rules.action_metadata.lintActionMetadata;
@@ -758,7 +757,6 @@ test "isActionMetadataFile matches the file name only" {
     try std.testing.expect(isActionMetadataFile(".github/actions/build/action.yml"));
     try std.testing.expect(!isActionMetadataFile("my-action.yml"));
     try std.testing.expect(!isActionMetadataFile(".github/workflows/action.yml.bak"));
-    // A workflow keeps its own rules whatever it is named.
     try std.testing.expect(!isActionMetadataFile(".github/workflows/action.yml"));
 }
 

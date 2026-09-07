@@ -3,7 +3,7 @@
 //! Action metadata is not a workflow, so — like `dependabot.zig` — these
 //! checks run over the raw YAML document instead of the workflow rule engine.
 //! Composite `runs.steps` are only checked for their shape here; applying the
-//! existing step rules to them is a separate change.
+//! existing step rules to them is #254.
 
 const std = @import("std");
 const engine = @import("engine.zig");
@@ -75,7 +75,6 @@ const deprecated_node_using = [_][]const u8{ "node12", "node16" };
 
 const using_expected = "\"node20\", \"node24\", \"docker\", \"composite\"";
 
-/// YAML 1.2 core schema booleans, in every spelling it recognises.
 const yaml_booleans = [_][]const u8{ "FALSE", "False", "TRUE", "True", "false", "true" };
 
 const Runtime = enum { node, docker, composite };
@@ -313,8 +312,6 @@ fn checkBoolean(list: *DiagnosticList, def: Mapping, key: []const u8, context: [
     reportInvalid(list, message, entry.value.getSpan(), "use the boolean literal `true` or `false`");
 }
 
-/// The two names a message needs for one of the definition sections: the key
-/// it appears under, and how a single entry is called.
 const Section = struct {
     plural: []const u8,
     singular: []const u8,
