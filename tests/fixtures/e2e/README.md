@@ -42,6 +42,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
 | `expr010-step-refs.yml` | EXPR010: unknown / misspelled / forward `steps.<id>` references |
+| `expr011-matrix-context.yml` | EXPR011: undeclared / misspelled `matrix.<key>` and jobs without a matrix |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |

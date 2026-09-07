@@ -183,6 +183,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR009 | fromjson-literal | error | `fromJSON()` string literal argument must be valid JSON |
 | EXPR010 | undefined-step-reference | error | `steps.<id>` must name a step defined earlier in the same job, and only `outputs` / `conclusion` / `outcome` exist below it |
+| EXPR011 | matrix-context | error | `matrix.<key>` must name a key declared in the job's `strategy.matrix` (including keys added by `include:`), and a job without `strategy.matrix` has no `matrix` context |
 | EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 

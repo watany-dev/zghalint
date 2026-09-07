@@ -1141,6 +1141,7 @@ fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
                 strategy.fail_fast_entry_span = entry.full_span;
             }
         } else if (std.mem.eql(u8, entry.key.value, "matrix")) {
+            strategy.matrix_key_present = true;
             strategy.matrix = try parseMatrix(ctx.allocator, entry.value);
         } else if (std.mem.eql(u8, entry.key.value, "max-parallel")) {
             _ = type_validation.checkNumber(

@@ -409,6 +409,11 @@ pub const Strategy = struct {
     fail_fast_value_span: ?yaml_types.Span = null,
     fail_fast_entry_span: ?yaml_types.Span = null,
     matrix: ?Matrix = null,
+    /// True when a `matrix:` key is present, even if its value carries no
+    /// inspectable axes (`matrix: ${{ fromJSON(...) }}` leaves `matrix` null).
+    /// EXPR011 needs the distinction: a job with no `matrix:` at all has no
+    /// `matrix` context, while a dynamic one has keys zghalint cannot know.
+    matrix_key_present: bool = false,
 };
 
 pub const Step = struct {
