@@ -7,6 +7,7 @@ const best_practices = @import("best_practices.zig");
 const performance = @import("performance.zig");
 const permissions = @import("permissions.zig");
 const expressions = @import("expressions.zig");
+const inputs_context = @import("inputs_context.zig");
 const matrix_context = @import("matrix_context.zig");
 const needs_context = @import("needs_context.zig");
 const dependabot = @import("dependabot.zig");
@@ -23,6 +24,7 @@ pub const all_rules = security.security_rules ++
     [_]engine.Rule{expressions.expression_rule} ++
     needs_context.rules ++
     matrix_context.rules ++
+    inputs_context.rules ++
     steps_ref.rules ++
     dependabot.rules ++
     runner.rules ++
