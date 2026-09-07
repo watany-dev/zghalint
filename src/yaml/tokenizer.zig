@@ -45,10 +45,16 @@ pub const Tokenizer = struct {
     /// range, so it is skipped without rescanning.
     expr_unclosed_line_end: usize,
 
+    /// UTF-8 byte order mark. Windows editors prepend it; it carries no
+    /// YAML meaning, so the tokenizer starts past it. The bytes stay in
+    /// `source` so every span keeps pointing at real file offsets.
+    pub const utf8_bom = "\xEF\xBB\xBF";
+
     pub fn init(source: []const u8) Tokenizer {
+        const start: usize = if (std.mem.startsWith(u8, source, utf8_bom)) utf8_bom.len else 0;
         return .{
             .source = source,
-            .pos = 0,
+            .pos = start,
             .line = 1,
             .column = 1,
             .started = false,
@@ -408,6 +414,28 @@ test "tokenizer init" {
     try std.testing.expectEqual(@as(u32, 1), tokenizer.line);
     try std.testing.expectEqual(@as(u32, 1), tokenizer.column);
     try std.testing.expectEqual(false, tokenizer.started);
+}
+
+test "tokenizer skips a leading UTF-8 BOM" {
+    var tokenizer = Tokenizer.init("\xEF\xBB\xBFname: CI");
+    try std.testing.expectEqual(@as(usize, 3), tokenizer.pos);
+    _ = tokenizer.next();
+    const key = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, key.kind);
+    try std.testing.expectEqualStrings("name", key.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 1), key.line);
+    try std.testing.expectEqual(@as(u32, 1), key.column);
+}
+
+test "tokenizer keeps a BOM appearing mid-stream" {
+    var tokenizer = Tokenizer.init("a: \xEF\xBB\xBFb");
+    try std.testing.expectEqual(@as(usize, 0), tokenizer.pos);
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    const value = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, value.kind);
+    try std.testing.expectEqualStrings("\xEF\xBB\xBFb", value.slice(tokenizer.source));
 }
 
 test "tokenizer eof on empty input" {

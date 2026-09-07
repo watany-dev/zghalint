@@ -1,0 +1,16 @@
+﻿# zghalint:expect BP008@16
+# zghalint:forbid BP002
+name: file saved with a UTF-8 BOM
+on: push
+concurrency:
+  group: bom-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Emit a value
+        id: emit
+        run: echo "::set-output name=tag::v1"
