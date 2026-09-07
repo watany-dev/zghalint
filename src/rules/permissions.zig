@@ -67,6 +67,36 @@ fn makeDowngradeToReadFix(diag_list: *DiagnosticList, yaml_key: []const u8, valu
     };
 }
 
+/// Scopes whose `write` grant lets a job change what the repository stores,
+/// runs or ships: its code and workflow files (`contents`, `actions`), the
+/// packages it publishes (`packages`), its deployments (`deployments`) and its
+/// published site (`pages`). Those are the paths by which a compromised step
+/// escalates beyond its own run, so PERM001 reports only these.
+///
+/// Every other scope writes repository *metadata* — issues, pull requests,
+/// checks, statuses, discussions, projects, code-scanning alerts, attestations,
+/// artifact metadata, models — or mints an OIDC token (`id-token`). GitHub's
+/// own documented workflows require those at `write` and cannot ask for less:
+/// CodeQL needs `security-events: write`, trusted publishing needs
+/// `id-token: write`, a labeler needs `issues: write`. Reporting them is noise,
+/// not a finding (#285).
+const escalating_scopes = [_][]const u8{
+    "actions",
+    "contents",
+    "deployments",
+    "packages",
+    "pages",
+};
+
+fn scopeEscalatesPrivilege(comptime key: []const u8) bool {
+    comptime {
+        for (escalating_scopes) |scope| {
+            if (std.mem.eql(u8, key, scope)) return true;
+        }
+        return false;
+    }
+}
+
 /// `fallback` is the span reported when the parser captured no span for the
 /// offending permissions entry (e.g. a flow-style `permissions:` mapping).
 fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: Span, diag_list: *DiagnosticList) void {
@@ -84,30 +114,20 @@ fn checkPermissionsScope(perms: Permissions, meta: ?PermissionsMeta, fallback: S
     }
 
     // `PermissionsMeta` declares exactly the scope keys, so it doubles as the
-    // key list. `id-token` gets a dedicated hint (OIDC context) and no autofix,
-    // because the GitHub Actions spec does not allow `id-token: read`.
+    // key list. Only the escalating scopes are reported; see
+    // `escalating_scopes` for why the rest are left alone.
     inline for (workflow_types.permission_scopes) |field| {
         const key: []const u8 = comptime workflow_types.permissionScopeKey(field);
-        const level: ?workflow_types.PermissionLevel = @field(perms, field);
-        const value_span: ?Span = if (meta) |m| @field(m, field) else null;
-        if (level) |lvl| {
-            if (lvl == .write) {
-                const is_id_token = comptime std.mem.eql(u8, key, "id-token");
-                const span = value_span orelse fallback;
-                if (is_id_token) {
-                    diag_list.append(.{
-                        .rule_id = "PERM001",
-                        .severity = .info,
-                        .message = "id-token: write grants OIDC token issuance. Ensure this job needs OIDC.",
-                        .span = span,
-                        .fix_hint = "id-token: write enables OIDC. Remove this entry if OIDC is not used.",
-                    }) catch return;
-                } else {
+        if (comptime scopeEscalatesPrivilege(key)) {
+            const level: ?workflow_types.PermissionLevel = @field(perms, field);
+            const value_span: ?Span = if (meta) |m| @field(m, field) else null;
+            if (level) |lvl| {
+                if (lvl == .write) {
                     diag_list.append(.{
                         .rule_id = "PERM001",
                         .severity = .info,
                         .message = "Broad write permission detected. Ensure this is necessary.",
-                        .span = span,
+                        .span = value_span orelse fallback,
                         .fix_hint = "Consider if 'read' permission would suffice instead of 'write'.",
                         .fix = if (value_span) |vs| makeDowngradeToReadFix(diag_list, key, vs) else null,
                     }) catch return;
@@ -645,7 +665,7 @@ test "PERM001: per-field autofix downgrades contents: write to read" {
     try std.testing.expectEqualStrings("permissions:\n  contents: read\n", result.content);
 }
 
-test "PERM001: id-token: write emits dedicated hint without autofix" {
+test "PERM001: id-token: write is not reported (OIDC is declared per job by design)" {
     const value_span = Span{
         .start_line = 2,
         .start_col = 13,
@@ -661,30 +681,46 @@ test "PERM001: id-token: write emits dedicated hint without autofix" {
     defer diags.deinit();
     checkPermissionsScope(perms, meta, spans.workflow_head, &diags);
 
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const diag = diags.get(0);
-    try std.testing.expectEqualStrings("PERM001", diag.rule_id);
-    try std.testing.expect(diag.fix == null);
-    const hint = diag.fix_hint orelse return error.TestExpectedNonNull;
-    try std.testing.expect(std.mem.indexOf(u8, hint, "OIDC") != null);
-    try std.testing.expect(std.mem.indexOf(u8, hint, "'read'") == null);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "PERM001: detects write on previously uncovered scopes (attestations/discussions/pages/repository-projects)" {
+test "PERM001: metadata scopes at write are not reported" {
+    // Each of these is the documented minimum for a common workflow:
+    // CodeQL uploads (`security-events`), a labeler (`issues`), a review bot
+    // (`pull-requests`, `checks`, `statuses`), provenance (`attestations`).
     const perms = Permissions{
         .attestations = .write,
+        .checks = .write,
         .discussions = .write,
-        .pages = .write,
+        .issues = .write,
+        .pull_requests = .write,
         .repository_projects = .write,
+        .security_events = .write,
+        .statuses = .write,
     };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     checkPermissionsScope(perms, null, spans.workflow_head, &diags);
 
-    try std.testing.expectEqual(@as(usize, 4), diags.len());
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "PERM001: autofix applies to all 13 non-id-token scopes via the engine" {
+test "PERM001: every escalating scope at write is reported" {
+    const perms = Permissions{
+        .actions = .write,
+        .contents = .write,
+        .deployments = .write,
+        .packages = .write,
+        .pages = .write,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkPermissionsScope(perms, null, spans.workflow_head, &diags);
+
+    try std.testing.expectEqual(escalating_scopes.len, diags.len());
+}
+
+test "PERM001: autofix applies to the escalating scopes via the engine" {
     const fix_engine = @import("../fix/engine.zig");
     const source = "permissions:\n  pages: write\n";
     // `write` at bytes 22..27.
@@ -710,7 +746,7 @@ test "PERM001: autofix applies to all 13 non-id-token scopes via the engine" {
     try std.testing.expectEqualStrings("permissions:\n  pages: read\n", result.content);
 }
 
-test "PERM001: id-token mixed with other writes produces per-field fixes except id-token" {
+test "PERM001: id-token alongside contents: write leaves id-token untouched" {
     const source =
         \\permissions:
         \\  contents: write
@@ -739,16 +775,8 @@ test "PERM001: id-token mixed with other writes produces per-field fixes except 
     var diags = DiagnosticList.init(alloc);
     checkBroadPermissions(&wf, &diags);
 
-    try std.testing.expectEqual(@as(usize, 2), diags.len());
-    var fix_count: usize = 0;
-    var has_id_token_diag = false;
-    for (0..diags.len()) |i| {
-        const diag = diags.get(i);
-        if (diag.fix != null) fix_count += 1;
-        if (std.mem.indexOf(u8, diag.message, "id-token") != null) has_id_token_diag = true;
-    }
-    try std.testing.expectEqual(@as(usize, 1), fix_count);
-    try std.testing.expect(has_id_token_diag);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix != null);
 
     var fixes_buf: [1]Fix = undefined;
     var n: usize = 0;

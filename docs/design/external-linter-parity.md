@@ -218,7 +218,7 @@ bom-prefixed.yml: workflow parse error: InvalidValue
 診断として報告しており、消し忘れのファイルを見つけられる形になっている。
 パースエラーではなく診断として出すのが望ましい。
 
-#### G14 (#285). PERM001 がジョブに必要な write 権限まで警告する (FP) — 要ルール改善
+#### G14 (#285). PERM001 がジョブに必要な write 権限まで警告する (FP) — 対応済み
 
 `bench/cases/j-clean/` の 3 ケース。
 
@@ -226,11 +226,27 @@ bom-prefixed.yml: workflow parse error: InvalidValue
 - `clean-release-publish.yml` — trusted publishing の `id-token: write`
 - `safe-untrusted-in-with.yml` — ラベル付けジョブの `issues: write`
 
-いずれも GitHub の公式手順どおりの最小権限だが PERM001 (warning) が出る。
-zizmor の `excessive-permissions` はどれも指摘しない。ジョブが実際に使う
-action / API から必要な scope を推定するか、既知の必須 scope を持たせて
-除外する必要がある。ベンチの FP 5 件中 3 件がこれで、precision を 95% に
-下げている唯一の要因が G9 と G14 の 2 つ。
+いずれも GitHub の公式手順どおりの最小権限だが PERM001 が出ていた。
+zizmor の `excessive-permissions` はどれも指摘しない。
+
+個別スコープの `write` を一律に報告するのをやめ、**権限昇格に繋がる 5 つの
+スコープ** — `actions` / `contents` / `deployments` / `packages` / `pages` —
+に限定した。この 5 つは write を得た時点でリポジトリが保存・実行・公開する
+もの (コード、ワークフロー、パッケージ、デプロイ、公開サイト) を書き換えられ、
+そのジョブの実行範囲を超えて影響が及ぶ。
+
+残りのスコープはリポジトリの**メタデータ** (issue, PR, check, status,
+discussion, project, code scanning alert, attestation, artifact metadata,
+models) を書くか、OIDC トークンを発行する (`id-token`) だけである。GitHub の
+公式手順がこれらを `write` で要求しており、それ以下に絞る手段もないため、
+指摘してもノイズにしかならない。とくに `id-token: write` は trusted
+publishing のためにジョブレベルで宣言するのが公式の推奨で、報告すること自体が
+誤りだった。
+
+`contents: write` を読み取りだけのジョブで宣言するような過剰権限
+(`bench/cases/d-permissions-secrets/job-widens-permissions.yml`) は引き続き
+検出する。`write-all` も従来どおり warning。ベンチの FP は 5 件から 2 件
+(いずれも G9) に減り、precision は 95% → 98% になった。
 
 #### G15 (#286). API トークンでの publish を指摘しない (trusted publishing 未使用) — 要ルール追加
 
@@ -300,7 +316,7 @@ PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む�
 - [x] G11 (#282): UTF-8 BOM を読み飛ばす
 - [x] G12 (#283): `---` / `...` のドキュメントマーカーを受理する
 - [ ] G13 (#284): 中身のないワークフローを診断として報告する
-- [ ] G14 (#285): PERM001 がジョブに必要な write 権限を除外する
+- [x] G14 (#285): PERM001 がジョブに必要な write 権限を除外する
 - [ ] G15 (#286): API トークンでの publish を指摘する (trusted publishing への誘導)
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
