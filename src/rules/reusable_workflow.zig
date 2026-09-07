@@ -97,37 +97,115 @@ fn checkCallRequiredInputs(wf: *const Workflow, list: *DiagnosticList) void {
             if (input.default_value != null) continue;
             if (hasCallArg(job.with_args, input.name)) continue;
 
-            reportMissingInput(job, uses, input.name, list);
+            reportMissingArg(.input, job, uses, input.name, list);
         }
     }
 }
 
-fn reportMissingInput(
+/// A `required` name of the called workflow the call never passes. The
+/// diagnostic sits on the `uses:` because the call has no token for the name it
+/// is missing.
+fn reportMissingArg(
+    kind: ArgKind,
     job: *const Job,
     uses: []const u8,
-    input_name: []const u8,
+    name: []const u8,
     list: *DiagnosticList,
 ) void {
     const alloc = list.fixAllocator();
     const message = std.fmt.allocPrint(
         alloc,
-        "required input \"{s}\" of \"{s}\" is not set by this call",
-        .{ input_name, uses },
+        "required {s} \"{s}\" of \"{s}\" is not set by this call",
+        .{ kind.noun(), name, uses },
     ) catch return;
     const hint = std.fmt.allocPrint(
         alloc,
-        "add `{s}:` under the job's `with:`",
-        .{input_name},
+        "add `{s}:` under the job's `{s}:`",
+        .{ name, kind.callKey() },
     ) catch return;
 
     list.append(.{
-        .rule_id = "RW002",
+        .rule_id = kind.missingRuleId(),
         .severity = .@"error",
         .message = message,
         .span = job.uses_value_span orelse job.span,
         .fix_hint = hint,
     }) catch return;
 }
+
+/// A `with:` / `secrets:` name the called workflow does not declare.
+fn reportUnknownArg(
+    kind: ArgKind,
+    declared: []const []const u8,
+    arg: CallArg,
+    uses: []const u8,
+    list: *DiagnosticList,
+) void {
+    const alloc = list.fixAllocator();
+    const message = std.fmt.allocPrint(
+        alloc,
+        "unknown {s} \"{s}\" for \"{s}\"",
+        .{ kind.noun(), arg.name, uses },
+    ) catch return;
+    const hint = if (util.didYouMean(arg.name, declared)) |near|
+        std.fmt.allocPrint(alloc, "did you mean `{s}`?", .{near}) catch return
+    else
+        std.fmt.allocPrint(
+            alloc,
+            "remove it, or declare the {s} under the called workflow's `workflow_call`",
+            .{kind.noun()},
+        ) catch return;
+
+    list.append(.{
+        .rule_id = kind.unknownRuleId(),
+        .severity = .@"error",
+        .message = message,
+        .span = arg.name_span,
+        .fix_hint = hint,
+    }) catch return;
+}
+
+/// The names a called workflow declares, for `didYouMean`. An allocation
+/// failure costs the suggestion, not the diagnostic.
+fn declaredNames(alloc: std.mem.Allocator, defs: anytype) []const []const u8 {
+    const names = alloc.alloc([]const u8, defs.len) catch return &.{};
+    for (defs, names) |def, *slot| slot.* = def.name;
+    return names;
+}
+
+/// The two halves of a reusable workflow call that name declarations in the
+/// called workflow. They differ only in the noun and the rule that owns them.
+const ArgKind = enum {
+    input,
+    secret,
+
+    fn noun(self: ArgKind) []const u8 {
+        return @tagName(self);
+    }
+
+    fn callKey(self: ArgKind) []const u8 {
+        return switch (self) {
+            .input => "with",
+            .secret => "secrets",
+        };
+    }
+
+    /// A name the call fails to pass, and a name it passes that does not
+    /// exist, are two rules on the input side and one on the secret side.
+    fn missingRuleId(self: ArgKind) []const u8 {
+        return switch (self) {
+            .input => "RW002",
+            .secret => "RW004",
+        };
+    }
+
+    fn unknownRuleId(self: ArgKind) []const u8 {
+        return switch (self) {
+            .input => "RW003",
+            .secret => "RW004",
+        };
+    }
+};
 
 fn findInput(inputs: []const workflow_types.InputDef, name: []const u8) ?workflow_types.InputDef {
     for (inputs) |input| {
@@ -149,44 +227,13 @@ fn checkCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
 
         for (job.with_args) |arg| {
             const input = findInput(called.inputs, arg.name) orelse {
-                reportUnknownInput(arena.allocator(), called.inputs, arg, uses, list);
+                const declared = declaredNames(arena.allocator(), called.inputs);
+                reportUnknownArg(.input, declared, arg, uses, list);
                 continue;
             };
             reportInputTypeMismatch(input, arg, list);
         }
     }
-}
-
-fn reportUnknownInput(
-    scratch: std.mem.Allocator,
-    inputs: []const workflow_types.InputDef,
-    arg: CallArg,
-    uses: []const u8,
-    list: *DiagnosticList,
-) void {
-    const alloc = list.fixAllocator();
-    const message = std.fmt.allocPrint(
-        alloc,
-        "unknown input \"{s}\" for \"{s}\"",
-        .{ arg.name, uses },
-    ) catch return;
-
-    // The suggestion borrows the called workflow's names, so it is formatted
-    // into the diagnostic arena before `scratch` goes away with the caller.
-    const hint = blk: {
-        const names = scratch.alloc([]const u8, inputs.len) catch break :blk null;
-        for (inputs, names) |input, *slot| slot.* = input.name;
-        const near = util.didYouMean(arg.name, names) orelse break :blk null;
-        break :blk std.fmt.allocPrint(alloc, "did you mean `{s}`?", .{near}) catch null;
-    } orelse "remove it, or declare the input under the called workflow's `workflow_call`";
-
-    list.append(.{
-        .rule_id = "RW003",
-        .severity = .@"error",
-        .message = message,
-        .span = arg.name_span,
-        .fix_hint = hint,
-    }) catch return;
 }
 
 fn reportInputTypeMismatch(input: workflow_types.InputDef, arg: CallArg, list: *DiagnosticList) void {
