@@ -198,7 +198,6 @@ jobs:
           paths: 'smoke/workflows/*.yml'
           format: sarif
           offline: 'true'
-      # config が渡っていれば BP001 は無効なので timeout-minutes は入らない。
       - name: Run action (fix with a config that disables BP001)
         uses: ./
         with:
