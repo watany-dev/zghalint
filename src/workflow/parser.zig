@@ -896,6 +896,19 @@ fn parseDefaults(node: Node) ?types.Defaults {
     };
 }
 
+/// A composite action's `runs.steps` never reach `parseWorkflow`, so the step
+/// rules get at them through this wrapper (#254). Type mismatches and unknown
+/// keys are reported through channels the action metadata linter does not own,
+/// so both collectors stay off here.
+pub fn parseStandaloneStep(allocator: std.mem.Allocator, node: Node) ParseError!types.Step {
+    var ctx = ParseContext{
+        .allocator = allocator,
+        .type_mismatches = null,
+        .unknown_collector = null,
+    };
+    return parseStep(&ctx, node);
+}
+
 fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
     const seq = switch (node) {
         .sequence => |s| s,

@@ -313,7 +313,9 @@ fn lookupShell(shell: []const u8) ?KnownShell {
     return null;
 }
 
-fn checkShellName(shell: []const u8, span: Span, diag_list: *DiagnosticList) void {
+/// Public because composite action steps carry their own `shell:` and are
+/// checked outside BP004's workflow walk (#254).
+pub fn checkShellName(shell: []const u8, span: Span, diag_list: *DiagnosticList) void {
     if (isOpaqueShell(shell)) return;
     if (lookupShell(shell) != null) return;
 
