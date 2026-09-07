@@ -94,7 +94,6 @@ comptime {
     }
 }
 
-/// One `runs-on` label with the span to point a diagnostic at.
 const LabelRef = struct {
     value: []const u8,
     value_span: ?Span,
@@ -262,7 +261,20 @@ fn looksLikeHostedLabel(label: []const u8) bool {
     return false;
 }
 
+/// `self-hosted` marks every other label in the set as a name the fleet's
+/// operator chose: `windows-gpu` is then a machine of theirs, not a misspelt
+/// GitHub image. zghalint cannot enumerate those, so it says nothing.
+fn hasSelfHostedLabel(job: *const Job) bool {
+    var labels = runsOnLabels(job);
+    while (labels.next()) |label| {
+        if (eqlLabel(label.value, "self-hosted")) return true;
+    }
+    return false;
+}
+
 fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
+    if (hasSelfHostedLabel(job)) return;
+
     var labels = runsOnLabels(job);
     while (labels.next()) |label| {
         checkUnknownLabel(job, label, diag_list);
@@ -309,9 +321,6 @@ fn checkUnknownLabel(job: *const Job, label: LabelRef, diag_list: *DiagnosticLis
     }) catch return;
 }
 
-/// Operating system a runner label commits the job to. Only GitHub's image
-/// labels and the conventional OS labels say anything: a self-hosted fleet
-/// names its machines freely, and `self-hosted` / `x64` name no OS at all.
 const RunnerOs = enum {
     linux,
     windows,
@@ -319,25 +328,36 @@ const RunnerOs = enum {
 };
 
 fn labelOs(label: []const u8) ?RunnerOs {
+    // A fleet is free to call a Linux box `macos-m1`, so an unrecognised label
+    // names no OS: guessing at one would invent conflicts that do not exist.
+    if (!isKnownLabel(label)) return null;
     if (eqlLabel(label, "linux") or eqlLabel(label, "ubuntu") or hasLabelPrefix(label, "ubuntu")) return .linux;
     if (eqlLabel(label, "windows") or hasLabelPrefix(label, "windows")) return .windows;
     if (eqlLabel(label, "macos") or hasLabelPrefix(label, "macos")) return .macos;
     return null;
 }
 
+/// An expression only resolves at run time, so the OS it contributes is
+/// unknown — and so is the whole set, whatever order the labels appear in.
+fn hasExpressionLabel(job: *const Job) bool {
+    var labels = runsOnLabels(job);
+    while (labels.next()) |label| {
+        if (std.mem.indexOf(u8, label.value, "${{") != null) return true;
+    }
+    return false;
+}
+
 /// A job runs on one runner carrying *every* label listed, so two labels that
 /// name different operating systems can never both be satisfied: the job sits
 /// queued until it times out.
 fn checkRunnerConflict(job: *const Job, diag_list: *DiagnosticList) void {
+    if (hasExpressionLabel(job)) return;
+
     var labels = runsOnLabels(job);
     var first: ?LabelRef = null;
     var first_os: RunnerOs = undefined;
 
     while (labels.next()) |label| {
-        // An expression only resolves at run time, so the OS it contributes is
-        // unknown and the whole label set is out of scope.
-        if (std.mem.indexOf(u8, label.value, "${{") != null) return;
-
         const os = labelOs(label.value) orelse continue;
         const previous = first orelse {
             first = label;
@@ -658,22 +678,67 @@ fn runJobCheckSource(
     for (wf.jobs) |*job| check(job, diags);
 }
 
-fn sequenceJobSource(comptime labels: []const u8) []const u8 {
-    return "name: CI\non: push\njobs:\n  build:\n    runs-on: " ++ labels ++ "\n    steps:\n      - run: echo hi\n";
+fn countForRunsOn(
+    labels: []const u8,
+    check: *const fn (*const Job, *DiagnosticList) void,
+) !usize {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source = try std.fmt.allocPrint(
+        arena.allocator(),
+        "name: CI\non: push\njobs:\n  build:\n    runs-on: {s}\n    steps:\n      - run: echo hi\n",
+        .{labels},
+    );
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    try runJobCheckSource(arena.allocator(), source, check, &diags);
+    return diags.len();
 }
 
-test "RUNNER003: conflicting OS labels are reported" {
+test "RUNNER003: only label sets naming two operating systems conflict" {
+    const cases = [_]struct { labels: []const u8, conflicts: usize }{
+        .{ .labels = "[ubuntu-latest, windows-latest]", .conflicts = 1 },
+        .{ .labels = "[self-hosted, linux, macos-14]", .conflicts = 1 },
+        // One OS plus labels that name none.
+        .{ .labels = "[self-hosted, linux, x64]", .conflicts = 0 },
+        .{ .labels = "[ubuntu-latest, linux, ubuntu-22.04]", .conflicts = 0 },
+        .{ .labels = "ubuntu-latest", .conflicts = 0 },
+        // `macos-m1` is a name the fleet chose, not GitHub's macOS image.
+        .{ .labels = "[self-hosted, linux, macos-m1]", .conflicts = 0 },
+        // An expression puts the set out of scope wherever it sits.
+        .{ .labels = "[windows-latest, \"${{ matrix.os }}\"]", .conflicts = 0 },
+        .{ .labels = "[ubuntu-latest, windows-latest, \"${{ matrix.os }}\"]", .conflicts = 0 },
+    };
+
+    for (cases) |case| {
+        const count = try countForRunsOn(case.labels, &checkRunnerConflict);
+        testing.expectEqual(case.conflicts, count) catch |err| {
+            std.debug.print("runs-on: {s}\n", .{case.labels});
+            return err;
+        };
+    }
+}
+
+test "RUNNER003: the diagnostic names both conflicting labels" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
 
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[ubuntu-latest, windows-latest]"),
-        &checkRunnerConflict,
-        &diags,
-    );
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: [ubuntu-latest, windows-latest]
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    try runJobCheckSource(arena.allocator(), source, &checkRunnerConflict, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -681,97 +746,8 @@ test "RUNNER003: conflicting OS labels are reported" {
     try testing.expect(diag.severity == .@"error");
     try testing.expect(std.mem.indexOf(u8, diag.message, "ubuntu-latest") != null);
     try testing.expect(std.mem.indexOf(u8, diag.message, "windows-latest") != null);
-}
-
-test "RUNNER003: self-hosted linux fleet asking for macOS conflicts" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[self-hosted, linux, macos-14]"),
-        &checkRunnerConflict,
-        &diags,
-    );
-
-    try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expectEqualStrings("RUNNER003", diags.get(0).rule_id);
-}
-
-test "RUNNER003: one OS plus self-hosted and arch labels is fine" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[self-hosted, linux, x64]"),
-        &checkRunnerConflict,
-        &diags,
-    );
-
-    try testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "RUNNER003: repeated labels of the same OS do not conflict" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[ubuntu-latest, linux, ubuntu-22.04]"),
-        &checkRunnerConflict,
-        &diags,
-    );
-
-    try testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "RUNNER003: an expression label puts the whole set out of scope" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[windows-latest, \"${{ matrix.os }}\"]"),
-        &checkRunnerConflict,
-        &diags,
-    );
-
-    try testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "RUNNER003: a scalar runs-on never conflicts with itself" {
-    const job = Job{ .id = "build", .runs_on = "ubuntu-latest" };
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    checkRunnerConflict(&job, &diags);
-
-    try testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "RUNNER003: unknown self-hosted labels name no OS" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[self-hosted, gpu-box, ubuntu-latest]"),
-        &checkRunnerConflict,
-        &diags,
-    );
-
-    try testing.expectEqual(@as(usize, 0), diags.len());
+    // The span points at the label that broke the set, not at the job.
+    try testing.expectEqualStrings("windows-latest", source[diag.span.start_byte..diag.span.end_byte]);
 }
 
 test "RUNNER001: a retired label inside a sequence is reported" {
@@ -780,12 +756,17 @@ test "RUNNER001: a retired label inside a sequence is reported" {
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
 
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[ubuntu-20.04, x64]"),
-        &checkDeprecatedRunner,
-        &diags,
-    );
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: [ubuntu-20.04, x64]
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    try runJobCheckSource(arena.allocator(), source, &checkDeprecatedRunner, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
@@ -795,23 +776,27 @@ test "RUNNER001: a retired label inside a sequence is reported" {
 }
 
 test "RUNNER002: an unknown label inside a sequence is reported once" {
+    try testing.expectEqual(
+        @as(usize, 1),
+        try countForRunsOn("[ubuntu-latest, ubunut-latest]", &checkUnknownRunner),
+    );
+}
+
+test "RUNNER002: a self-hosted set's own labels are left alone" {
+    // Every label beside `self-hosted` is the fleet operator's own name, even
+    // when it wears an OS prefix.
+    try testing.expectEqual(
+        @as(usize, 0),
+        try countForRunsOn("[self-hosted, windows-gpu, macos-m1]", &checkUnknownRunner),
+    );
+}
+
+test "RUNNER002: a runner group's labels are checked" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
 
-    try runJobCheckSource(
-        arena.allocator(),
-        sequenceJobSource("[self-hosted, ubunut-latest]"),
-        &checkUnknownRunner,
-        &diags,
-    );
-
-    try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expectEqualStrings("RUNNER002", diags.get(0).rule_id);
-}
-
-test "RUNNER002: a runner group's labels are checked" {
     const source =
         \\name: CI
         \\on: push
@@ -824,11 +809,6 @@ test "RUNNER002: a runner group's labels are checked" {
         \\      - run: echo hi
         \\
     ;
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var diags = DiagnosticList.init(testing.allocator);
-    defer diags.deinit();
-
     try runJobCheckSource(arena.allocator(), source, &checkUnknownRunner, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());

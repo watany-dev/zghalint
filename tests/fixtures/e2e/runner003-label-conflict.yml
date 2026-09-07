@@ -1,5 +1,6 @@
-# zghalint:expect RUNNER003@8 RUNNER003@13
-# zghalint:forbid RUNNER003@18 RUNNER003@23 RUNNER003@28
+# zghalint:expect RUNNER003@9 RUNNER003@14
+# zghalint:forbid RUNNER003@19 RUNNER003@24 RUNNER003@29 RUNNER003@34
+# zghalint:forbid RUNNER002@34 RUNNER002@19
 name: runner label conflict
 on: push
 jobs:
@@ -25,7 +26,13 @@ jobs:
     steps:
       - run: echo hi
   matrix-expression:
-    runs-on: [self-hosted, "${{ matrix.os }}"]
+    runs-on: [ubuntu-latest, windows-latest, "${{ matrix.os }}"]
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  fleet-named-after-an-os:
+    # `macos-m1` is this fleet's own machine name, not GitHub's macOS image
+    runs-on: [self-hosted, linux, macos-m1]
     timeout-minutes: 5
     steps:
       - run: echo hi
