@@ -15,6 +15,8 @@ const FixMode = enum {
 
 const all_rules = zghalint.rules.registry.all_rules;
 
+var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
+
 const CliArgs = struct {
     files: std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
@@ -619,9 +621,18 @@ fn initWorkspaceContext(
 }
 
 pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // DebugAllocator は空になったスラブごとに munmap を出すため、1,000 ファイルを
+    // 1 回の起動で処理すると syscall 時間の 80% が mmap/munmap になっていた。
+    // smp_allocator は空きスラブをスレッドローカルに保持して munmap を出さない。
+    // 安全検査 (リーク検出など) が効く Debug / ReleaseSafe では従来どおり
+    // DebugAllocator を使う。
+    const allocator, const is_debug_allocator = switch (builtin.mode) {
+        .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
+        .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
+    };
+    defer if (is_debug_allocator) {
+        _ = debug_allocator.deinit();
+    };
 
     // 64KB: a large workflow set emits megabytes of diagnostics, and a 4KB
     // buffer turned that into thousands of `write` syscalls (0.94s of sys
