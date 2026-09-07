@@ -7,3 +7,6 @@
 # purpose: normalising them would turn the case into a copy of a neighbour.
 bench/cases/i-robustness/crlf-and-tab-indent.yml -text
 bench/cases/i-robustness/bom-prefixed.yml -text
+
+# The e2e BOM fixture is only meaningful with its byte order mark intact.
+tests/fixtures/e2e/bom-prefixed.yml -text
