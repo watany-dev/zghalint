@@ -323,8 +323,8 @@ fn lintDocumentFile(
 
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
 
-    const yaml_node = yaml_parser.parse() catch {
-        stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
+    const yaml_node = yaml_parser.parse() catch |err| {
+        stderr.print("{s}: YAML parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
         return error.YamlParseError;
     };
 
@@ -444,8 +444,8 @@ fn lintFile(
 
     var yaml_parser = zghalint.yaml.Parser.init(arena_alloc, source);
 
-    const yaml_node = yaml_parser.parse() catch {
-        stderr.print("{s}: YAML parse error\n", .{file_path}) catch {};
+    const yaml_node = yaml_parser.parse() catch |err| {
+        stderr.print("{s}: YAML parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
         return error.YamlParseError;
     };
 

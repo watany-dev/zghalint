@@ -15,6 +15,7 @@ pub const ParseError = error{
     UnexpectedToken,
     OutOfMemory,
     MaxDepthExceeded,
+    MultipleDocuments,
 };
 
 /// Hard cap on nested mappings/sequences/flow containers. A well-formed
@@ -45,12 +46,38 @@ pub const Parser = struct {
     }
 
     pub fn parse(self: *Parser) ParseError!Node {
+        // Comments may precede the document marker (a license header, a
+        // lint directive), so the marker is looked for past them rather
+        // than only as the very first token.
+        self.skipNewlinesAndComments();
         if (self.current.kind == .document_start) {
             self.advance();
             self.skipNewlines();
         }
 
-        return self.parseNode(0);
+        const node = try self.parseNode(0);
+        try self.rejectTrailingDocument();
+        return node;
+    }
+
+    /// A workflow file holds exactly one YAML document; GitHub never runs a
+    /// second one. Silently parsing only the first would hide the rest of the
+    /// file from every rule, so any content past the first document is
+    /// rejected — whether it is introduced by a `---` or, after a `...` end
+    /// marker, starts bare. Trailing markers on their own hide nothing and
+    /// are consumed.
+    fn rejectTrailingDocument(self: *Parser) ParseError!void {
+        var marker_seen = false;
+        while (self.current.kind != .eof) : (self.advance()) {
+            switch (self.current.kind) {
+                .document_start, .document_end => marker_seen = true,
+                .newline, .comment => {},
+                // Malformed input (an unclosed flow collection, say) also
+                // leaves tokens behind, so only a marker turns the leftovers
+                // into a second document.
+                else => if (marker_seen) return error.MultipleDocuments,
+            }
+        }
     }
 
     fn parseNode(self: *Parser, min_indent: u32) ParseError!Node {
@@ -444,6 +471,71 @@ test "parse mapping with a UTF-8 BOM prefix" {
             try std.testing.expectEqualStrings("on", m.entries[1].key.value);
             try std.testing.expectEqual(@as(u32, 2), m.entries[1].key.span.start_line);
         },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse document wrapped in explicit markers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "---\nname: CI\non: push\n...\n");
+    const node = try parser.parse();
+    switch (node) {
+        .mapping => |m| {
+            try std.testing.expectEqual(@as(usize, 2), m.entries.len);
+            try std.testing.expectEqualStrings("name", m.entries[0].key.value);
+            // Line 1 is the marker, so the first key sits on line 2.
+            try std.testing.expectEqual(@as(u32, 2), m.entries[0].key.span.start_line);
+            try std.testing.expectEqualStrings("on", m.entries[1].key.value);
+            try std.testing.expectEqual(@as(u32, 3), m.entries[1].key.span.start_line);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse document marker preceded by comments" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "# header\n\n---\nname: CI\n");
+    const node = try parser.parse();
+    switch (node) {
+        .mapping => |m| {
+            try std.testing.expectEqual(@as(usize, 1), m.entries.len);
+            try std.testing.expectEqualStrings("name", m.entries[0].key.value);
+            try std.testing.expectEqual(@as(u32, 4), m.entries[0].key.span.start_line);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
+test "parse rejects a second document" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "name: first\n---\nname: second\n");
+    try std.testing.expectError(error.MultipleDocuments, parser.parse());
+}
+
+test "parse rejects a second document after an end marker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "---\nname: first\n...\n---\nname: second\n...\n");
+    try std.testing.expectError(error.MultipleDocuments, parser.parse());
+}
+
+test "parse rejects a bare second document after an end marker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "---\nname: first\n...\nname: second\n");
+    try std.testing.expectError(error.MultipleDocuments, parser.parse());
+}
+
+test "parse accepts trailing markers with no second document" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "name: CI\n...\n---\n# trailing\n");
+    const node = try parser.parse();
+    switch (node) {
+        .mapping => |m| try std.testing.expectEqual(@as(usize, 1), m.entries.len),
         else => return error.UnexpectedToken,
     }
 }
