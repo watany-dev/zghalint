@@ -724,6 +724,7 @@ callers, and the calls made against it.
 |----|------|----------|-------------|
 | RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted |
 | RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
+| RW003 | workflow-call-input-values | error | A job calling a local reusable workflow passes an input it does not declare, or a value that does not match the declared type |
 
 ### RW001 workflow-call-inputs
 
@@ -786,6 +787,41 @@ file is read one level deep and never followed further, so workflows that call
 each other cannot loop. An input that is both `required` and defaulted is
 reported on the definition side by [RW001](#rw001-workflow-call-inputs) and is
 not demanded of the caller.
+
+### RW003 workflow-call-input-values
+
+The `with:` of a reusable workflow call may only name inputs the called
+workflow declares, and each value must fit the input's declared `type`.
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+      retries:
+        type: number
+```
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      verison: '1.0'    # unknown input — did you mean `version`?
+      retries: three    # not a number
+```
+
+Quoting is not consulted: `retries: '3'` is accepted, the way the runner
+coerces the value. A value built by an expression (`${{ … }}`) is only known at
+run time and is never type-checked, and an input whose `type:` is missing or
+invalid is reported on the definition side by
+[RW001](#rw001-workflow-call-inputs) instead.
+
+Like [RW002](#rw002-workflow-call-required-inputs), only a **local** call is
+checked.
 
 ---
 

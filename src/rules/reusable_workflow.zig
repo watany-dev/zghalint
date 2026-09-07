@@ -2,6 +2,7 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const called_workflow = @import("called_workflow.zig");
 const workflow_types = @import("../workflow/types.zig");
+const util = @import("../util.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
@@ -128,6 +129,97 @@ fn reportMissingInput(
     }) catch return;
 }
 
+fn findInput(inputs: []const workflow_types.InputDef, name: []const u8) ?workflow_types.InputDef {
+    for (inputs) |input| {
+        if (std.ascii.eqlIgnoreCase(input.name, name)) return input;
+    }
+    return null;
+}
+
+/// RW003: a `with:` entry the called workflow does not declare, or one whose
+/// value cannot be a value of the declared type.
+fn checkCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.jobs) |*job| {
+        const uses = job.uses orelse continue;
+        if (job.with_args.len == 0) continue;
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const called = called_workflow.load(arena.allocator(), uses) orelse continue;
+
+        for (job.with_args) |arg| {
+            const input = findInput(called.inputs, arg.name) orelse {
+                reportUnknownInput(arena.allocator(), called.inputs, arg, uses, list);
+                continue;
+            };
+            reportInputTypeMismatch(input, arg, list);
+        }
+    }
+}
+
+fn reportUnknownInput(
+    scratch: std.mem.Allocator,
+    inputs: []const workflow_types.InputDef,
+    arg: CallArg,
+    uses: []const u8,
+    list: *DiagnosticList,
+) void {
+    const alloc = list.fixAllocator();
+    const message = std.fmt.allocPrint(
+        alloc,
+        "unknown input \"{s}\" for \"{s}\"",
+        .{ arg.name, uses },
+    ) catch return;
+
+    // The suggestion borrows the called workflow's names, so it is formatted
+    // into the diagnostic arena before `scratch` goes away with the caller.
+    const hint = blk: {
+        const names = scratch.alloc([]const u8, inputs.len) catch break :blk null;
+        for (inputs, names) |input, *slot| slot.* = input.name;
+        const near = util.didYouMean(arg.name, names) orelse break :blk null;
+        break :blk std.fmt.allocPrint(alloc, "did you mean `{s}`?", .{near}) catch null;
+    } orelse "remove it, or declare the input under the called workflow's `workflow_call`";
+
+    list.append(.{
+        .rule_id = "RW003",
+        .severity = .@"error",
+        .message = message,
+        .span = arg.name_span,
+        .fix_hint = hint,
+    }) catch return;
+}
+
+fn reportInputTypeMismatch(input: workflow_types.InputDef, arg: CallArg, list: *DiagnosticList) void {
+    // A missing or invalid `type:` is RW001's finding on the definition side;
+    // without one there is nothing here to check the value against.
+    const input_type = input.input_type orelse return;
+    // A non-scalar value, and one built by an expression, are both opaque:
+    // neither can be compared against the declared type without evaluating it.
+    const value = arg.value orelse return;
+    if (std.mem.indexOf(u8, value, "${{") != null) return;
+    if (input_type.matchesScalar(value)) return;
+
+    const alloc = list.fixAllocator();
+    const message = std.fmt.allocPrint(
+        alloc,
+        "input \"{s}\" value does not match type \"{s}\"",
+        .{ input.name, input_type.name() },
+    ) catch return;
+    const hint = std.fmt.allocPrint(
+        alloc,
+        "pass a `{s}` value",
+        .{input_type.name()},
+    ) catch return;
+
+    list.append(.{
+        .rule_id = "RW003",
+        .severity = .@"error",
+        .message = message,
+        .span = arg.value_span orelse arg.name_span,
+        .fix_hint = hint,
+    }) catch return;
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "RW001",
@@ -144,6 +236,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .reusable_workflow,
         .check_workflow = checkCallRequiredInputs,
+    },
+    .{
+        .id = "RW003",
+        .name = "workflow-call-input-values",
+        .description = "A call must only pass inputs the called local workflow declares, with matching types",
+        .severity = .@"error",
+        .category = .reusable_workflow,
+        .check_workflow = checkCallInputs,
     },
 };
 
@@ -402,6 +502,218 @@ test "RW002: a non-scalar `with:` value still counts as passed" {
     var diags = DiagnosticList.init(testing.allocator);
     defer diags.deinit();
     try runCallInputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+const typed_input_workflow =
+    \\on:
+    \\  workflow_call:
+    \\    inputs:
+    \\      version:
+    \\        type: string
+    \\      retries:
+    \\        type: number
+    \\      verbose:
+    \\        type: boolean
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo ok
+    \\
+;
+
+fn runCallInputValueCheck(arena: std.mem.Allocator, source: []const u8, list: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(arena, source);
+    checkCallInputs(&wf, list);
+}
+
+test "RW003: an unknown input is reported with a suggestion" {
+    called_source = typed_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      verison: '1.0'
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputValueCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("RW003", diags.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "verison") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).fix_hint.?, "version") != null);
+}
+
+test "RW003: an unknown input without a near name falls back to a generic hint" {
+    called_source = typed_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      completely_different: x
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputValueCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).fix_hint.?, "did you mean") == null);
+}
+
+test "RW003: a value that does not match the declared type is reported" {
+    called_source = typed_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      retries: three
+        \\      verbose: sometimes
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputValueCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "number") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "boolean") != null);
+}
+
+test "RW003: matching values and expressions are accepted" {
+    called_source = typed_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      version: '1.0'
+        \\      retries: 3
+        \\      verbose: true
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputValueCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW003: an expression value is not type-checked" {
+    called_source = typed_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      retries: ${{ github.event.inputs.retries }}
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputValueCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW003: a remote call is not checked" {
+    called_source = typed_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: octo-org/repo/.github/workflows/ci.yml@main
+        \\    with:
+        \\      anything: x
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputValueCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RW003: an input without a declared type is not type-checked" {
+    called_source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      version:
+        \\        description: no type here
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      version: anything
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputValueCheck(arena.allocator(), source, &diags);
 
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
