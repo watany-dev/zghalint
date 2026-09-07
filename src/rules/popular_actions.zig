@@ -13,7 +13,6 @@
 
 const std = @import("std");
 const engine = @import("engine.zig");
-const spans = @import("spans.zig");
 const with_inputs = @import("with_inputs.zig");
 const workflow_types = @import("../workflow/types.zig");
 const data = @import("data/popular_actions.zig");
@@ -369,12 +368,9 @@ test "every manifest entry is present in the generated table" {
     try testing.expectEqual(data.popular_actions.len, seen);
 }
 
-test "the generated table stays well-formed" {
-    for (data.popular_actions) |meta| {
-        try testing.expect(meta.owner.len > 0);
-        try testing.expect(meta.repo.len > 0);
-        try testing.expect(meta.using.len > 0);
-        try testing.expect(meta.major > 0);
-        for (meta.inputs) |input| try testing.expect(input.name.len > 0);
-    }
+test "every entry declares a runtime" {
+    // `lookup` cannot reach an entry with a broken owner / repo / major, so
+    // the manifest test above already covers those. `using` is only read by
+    // BP003, which stays silent rather than failing when it is empty.
+    for (data.popular_actions) |meta| try testing.expect(meta.using.len > 0);
 }

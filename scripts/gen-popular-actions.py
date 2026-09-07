@@ -36,8 +36,9 @@ ENTRY_RE = re.compile(
 @dataclass
 class Input:
     name: str
+    #: `required: true` without a `default:` — a default satisfies the input
+    #: whether or not the caller passes anything.
     required: bool = False
-    has_default: bool = False
     deprecation: str | None = None
 
 
@@ -80,26 +81,13 @@ def major_of(ref: str) -> int:
 
 
 def clone(owner: str, repo: str, ref: str, into: pathlib.Path) -> pathlib.Path:
-    """Shallow-clone `owner/repo` at `ref`; reuse the checkout across paths.
+    """Shallow-clone `owner/repo` at `ref`, once per run.
 
-    Every ref in the manifest is a moving major tag, so a cached checkout is
-    refetched rather than reused as-is: otherwise `--cache-dir` would quietly
-    regenerate the table from whatever the tag pointed at last time.
+    `actions/cache`, `actions/cache/restore` and `actions/cache/save` are three
+    manifest entries in one repository; the checkout is shared between them.
     """
     dest = into / f"{owner}__{repo}__{ref}"
-    # A directory left behind by an interrupted clone has no `.git`, and
-    # fetching inside it would fail rather than repair it.
-    if dest.exists() and not (dest / ".git").is_dir():
-        shutil.rmtree(dest)
     if dest.exists():
-        subprocess.run(
-            ["git", "-C", str(dest), "fetch", "--quiet", "--depth", "1", "origin", ref],
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(dest), "reset", "--quiet", "--hard", "FETCH_HEAD"],
-            check=True,
-        )
         return dest
     subprocess.run(
         [
@@ -159,8 +147,7 @@ def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) 
         inputs.append(
             Input(
                 name=str(name),
-                required=is_true(spec.get("required")),
-                has_default="default" in spec,
+                required=is_true(spec.get("required")) and "default" not in spec,
                 deprecation=spec.get("deprecationMessage"),
             )
         )
@@ -181,40 +168,42 @@ def zig_string(value: str) -> str:
     return f'"{escaped}"'
 
 
+HEADER = """\
+//! Metadata of widely used actions: what `with:` keys they accept and
+//! which runtime they declare. DEP005, DEP006 and BP003 read this table.
+//!
+//! GENERATED FILE — do not edit by hand. Regenerate with
+//! `python3 scripts/gen-popular-actions.py` after changing
+//! `scripts/popular-actions.txt`; see docs/maintenance.md.
+
+pub const Input = struct {
+    name: []const u8,
+    /// `required: true` without a `default:`. An input with a default is
+    /// satisfied whether or not the caller passes it.
+    required: bool = false,
+    /// The action's own `deprecationMessage:`, reported verbatim by DEP006.
+    deprecation: ?[]const u8 = null,
+};
+
+pub const ActionMeta = struct {
+    owner: []const u8,
+    repo: []const u8,
+    /// Sub-directory for an action that does not sit at the repository
+    /// root, such as `actions/cache/restore`. Empty for the root action.
+    path: []const u8 = "",
+    /// The major version this entry describes; `uses: owner/repo@v4`
+    /// matches the entry with `major == 4`.
+    major: u16,
+    /// `runs.using` as declared by the action.
+    using: []const u8,
+    inputs: []const Input,
+};
+
+pub const popular_actions = [_]ActionMeta{"""
+
+
 def render(metas: list[ActionMeta]) -> str:
-    out = [
-        "//! Metadata of widely used actions: what `with:` keys they accept and",
-        "//! which runtime they declare. DEP005, DEP006 and BP003 read this table.",
-        "//!",
-        "//! GENERATED FILE — do not edit by hand. Regenerate with",
-        "//! `python3 scripts/gen-popular-actions.py` after changing",
-        "//! `scripts/popular-actions.txt`; see docs/maintenance.md.",
-        "",
-        "pub const Input = struct {",
-        "    name: []const u8,",
-        "    /// `required: true` without a `default:`. An input with a default is",
-        "    /// satisfied whether or not the caller passes it.",
-        "    required: bool = false,",
-        "    /// The action's own `deprecationMessage:`, reported verbatim by DEP006.",
-        "    deprecation: ?[]const u8 = null,",
-        "};",
-        "",
-        "pub const ActionMeta = struct {",
-        "    owner: []const u8,",
-        "    repo: []const u8,",
-        "    /// Sub-directory for an action that does not sit at the repository",
-        "    /// root, such as `actions/cache/restore`. Empty for the root action.",
-        '    path: []const u8 = "",',
-        "    /// The major version this entry describes; `uses: owner/repo@v4`",
-        "    /// matches the entry with `major == 4`.",
-        "    major: u16,",
-        "    /// `runs.using` as declared by the action.",
-        "    using: []const u8,",
-        "    inputs: []const Input,",
-        "};",
-        "",
-        "pub const popular_actions = [_]ActionMeta{",
-    ]
+    out = [HEADER]
 
     for meta in metas:
         out.append("    .{")
@@ -230,7 +219,7 @@ def render(metas: list[ActionMeta]) -> str:
             out.append("        .inputs = &.{")
             for inp in meta.inputs:
                 fields = [f".name = {zig_string(inp.name)}"]
-                if inp.required and not inp.has_default:
+                if inp.required:
                     fields.append(".required = true")
                 if inp.deprecation:
                     fields.append(f".deprecation = {zig_string(str(inp.deprecation))}")
@@ -244,18 +233,10 @@ def render(metas: list[ActionMeta]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--cache-dir",
-        type=pathlib.Path,
-        help="reuse checkouts across runs instead of cloning into a temp dir",
-    )
-    args = parser.parse_args()
+    argparse.ArgumentParser(description=__doc__).parse_args()
 
     entries = parse_manifest(MANIFEST.read_text(encoding="utf-8"))
-
-    workdir = args.cache_dir or pathlib.Path(tempfile.mkdtemp(prefix="popular-actions-"))
-    workdir.mkdir(parents=True, exist_ok=True)
+    workdir = pathlib.Path(tempfile.mkdtemp(prefix="popular-actions-"))
 
     metas = []
     try:
@@ -264,8 +245,7 @@ def main() -> int:
             checkout = clone(owner, repo, ref, workdir)
             metas.append(collect(owner, repo, path, ref, checkout))
     finally:
-        if args.cache_dir is None:
-            shutil.rmtree(workdir, ignore_errors=True)
+        shutil.rmtree(workdir, ignore_errors=True)
 
     OUTPUT.write_text(render(metas), encoding="utf-8")
     subprocess.run(["zig", "fmt", str(OUTPUT)], check=True)

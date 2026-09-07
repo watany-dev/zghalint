@@ -77,8 +77,7 @@
 手順:
 
 1. 一覧を更新する（新しいメジャーが出た、対象を足す / 外す）
-2. `python3 scripts/gen-popular-actions.py` を実行する（`pyyaml` と `git` が要る。
-   `--cache-dir <dir>` を渡すと clone を再利用できる）
+2. `python3 scripts/gen-popular-actions.py` を実行する（`pyyaml` と `git` が要る）
 3. 生成物の差分を確認する。入力が消えているだけの差分は、上流が本当に消したのか
    一覧の `ref` を巻き戻していないかを疑う
 4. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
