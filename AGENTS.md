@@ -14,7 +14,8 @@ zig build run -- [workflow files]   # Run with arguments
 zig build test                      # Run all unit tests
 zig build test --summary all        # With detailed summary
 zig build fuzz                      # Fuzz targets over their seed corpus
-zig build fuzz --fuzz --webui=127.0.0.1  # Continuous fuzzing (Ctrl-C to stop)
+# 探索実行 (`zig build fuzz --fuzz`) は Zig 0.15.2 のファザ側の不具合で動かない。
+# docs/design/pbt-strategy.md §6-4 を参照。
 zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
 ```

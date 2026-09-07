@@ -187,12 +187,15 @@ in-process 側は `std.Random` を自前で回すのではなく、Zig 標準の
 - fuzz 用のテスト成果物は `use_llvm = true` でビルドする。self-hosted x86_64
   バックエンドは `-fsanitize-coverage` の PC を出さないため、`--fuzz` が
   `std.Build.Fuzz.addEntryPoint` で空の PC リストに当たって panic する。
-- `--fuzz` は Web UI を立てて常駐するモードであり、自発的には終了しない。
-  CI では `timeout --signal=INT 300` で打ち切り、終了コード 124 を
-  「所定時間内に反例なし」として扱う (`ci.yml` の `fuzz` ジョブ)。
-- 中断されたファジング実行が `.zig-cache/v/` を壊した状態を残すことがある。
-  ローカルで fuzzer 自体が segfault する場合は `rm -rf .zig-cache/v` してから
-  再実行する。
+- **Zig 0.15.2 では `--fuzz` の探索実行が使えない。** ファザ本体が起動直後に
+  落ち、ビルドは `run test failure` で終わる。ターゲットを 1 つしか持たない
+  最小プロジェクトでも、`.zig-cache` を削除した初回実行でも再現するため、
+  zghalint 側の問題ではない。したがって CI に入れているのはシードコーパスの
+  決定的実行 (`zig build fuzz`) だけで、探索実行は入れていない。
+- Zig 側が直り次第、`--fuzz` を時間制限付きで CI に戻す。`--fuzz` は Web UI を
+  立てて常駐し自発的には終了しないので、`timeout --signal=INT 300` で打ち切り、
+  終了コード 124 を「所定時間内に反例なし」として扱う形になる。手元で試す場合は
+  `zig build fuzz --fuzz --webui=127.0.0.1` (既定のバインドが失敗する環境がある)。
 
 ## 7. 検証手順
 

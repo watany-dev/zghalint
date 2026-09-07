@@ -133,32 +133,14 @@ jobs:
           version: 0.15.2
       # 決定的な回帰実行。シードコーパスを 1 件ずつ流すだけなので数秒で終わり、
       # 過去に見つかった入力が再発していれば必ず落ちる。
+      #
+      # `--fuzz` の探索実行は CI に入れていない。Zig 0.15.2 のファザ本体が
+      # 起動直後に落ちる (`run test failure`) ため、反例の有無に関わらず必ず
+      # 赤になる。ターゲットを 1 つだけ持つ最小プロジェクトでも、キャッシュを
+      # 削除した初回実行でも再現するので zghalint 側の問題ではない。
+      # 詳細と手元での回し方は docs/design/pbt-strategy.md §6-4 を参照。
       - name: Fuzz targets over the seed corpus
         run: zig build fuzz
-      # 探索実行。`--fuzz` は Web UI を立てて常駐するモードなので timeout で
-      # 打ち切る。時間切れ (124) が「所定時間内に反例なし」を意味し、失敗は
-      # ログに現れる。CI を不安定にしないため探索側は 5 分に制限する。
-      - name: Continuous fuzzing (time-limited)
-        run: |
-          # GitHub の既定シェルは `bash -e` なので、timeout が返す 124 を
-          # そのまま受けるとこの行でジョブが落ちる。`|| status=$?` で受け止める。
-          status=0
-          timeout --signal=INT 300 zig build fuzz --fuzz --webui=127.0.0.1 > fuzz.log 2>&1 || status=$?
-          cat fuzz.log
-          if [ "$status" -ne 124 ]; then
-            echo "::error::fuzzing stopped before the time limit (exit ${status})"
-            exit 1
-          fi
-          if grep -qiE "panic|segmentation fault|run test failure|tests failed" fuzz.log; then
-            echo "::error::a fuzz target failed; reproduce with 'zig build fuzz --fuzz'"
-            exit 1
-          fi
-      - name: Upload fuzz log
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: fuzz-log
-          path: fuzz.log
 
   coverage:
     name: Test Coverage

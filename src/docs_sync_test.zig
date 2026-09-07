@@ -10,7 +10,13 @@ const registry = @import("rules/registry.zig");
 const expressions = @import("rules/expressions.zig");
 
 const rules_md = @embedFile("docs_rules_md");
-const expressions_src = @embedFile("rules/expressions.zig");
+/// Every source that writes an `EXPRnnn` rule ID. The scan below reads these
+/// so a new sub-ID cannot be introduced in one of them and stay undocumented.
+const expression_sources: []const []const u8 = &.{
+    @embedFile("rules/expressions.zig"),
+    @embedFile("rules/needs_context.zig"),
+    @embedFile("rules/steps_ref.zig"),
+};
 
 const testing = std.testing;
 
@@ -84,29 +90,33 @@ test "docs/rules.md documents no rule that is not registered" {
 test "expressions: sub_rule_ids covers every emitted ID" {
     // The `EXPR` rule registers once but emits EXPR001..EXPR017, so the docs
     // check reads `sub_rule_ids` instead of the registry entry. Scanning the
-    // source keeps that list honest: any `EXPRnnn` written in expressions.zig
-    // must appear in it.
-    var i: usize = 0;
-    while (std.mem.indexOfPos(u8, expressions_src, i, "EXPR")) |pos| {
-        const id_end = pos + "EXPR".len + 3;
-        i = pos + "EXPR".len;
-        if (id_end > expressions_src.len) continue;
-        const digits = expressions_src[pos + "EXPR".len .. id_end];
-        if (!std.ascii.isDigit(digits[0])) continue;
-        if (!std.ascii.isDigit(digits[1]) or !std.ascii.isDigit(digits[2])) continue;
+    // sources keeps that list honest. Only quoted IDs count: those are the
+    // string literals that end up in a diagnostic's `rule_id`, whereas prose
+    // in comments mentions ranges of IDs that no rule emits.
+    const needle = "\"EXPR";
+    for (expression_sources) |src| {
+        var i: usize = 0;
+        while (std.mem.indexOfPos(u8, src, i, needle)) |pos| {
+            i = pos + needle.len;
+            const id_start = pos + 1;
+            const id_end = i + 3;
+            if (id_end >= src.len) continue;
+            const digits = src[i..id_end];
+            if (!std.ascii.isDigit(digits[0]) or !std.ascii.isDigit(digits[1]) or !std.ascii.isDigit(digits[2])) continue;
+            if (src[id_end] != '"') continue;
 
-        const id = expressions_src[pos..id_end];
-        const listed = for (expressions.sub_rule_ids) |sub_id| {
-            if (std.mem.eql(u8, sub_id, id)) break true;
-        } else false;
-        // EXPR012 and EXPR010 are registered as rules of their own; the file
-        // only mentions them in prose about how the scan is shared.
-        const owned_elsewhere = for (registry.all_rules) |rule| {
-            if (std.mem.eql(u8, rule.id, id)) break true;
-        } else false;
-        if (!listed and !owned_elsewhere) {
-            std.debug.print("{s} is used in expressions.zig but missing from sub_rule_ids\n", .{id});
-            return error.SubRuleIdNotListed;
+            const id = src[id_start..id_end];
+            const listed = for (expressions.sub_rule_ids) |sub_id| {
+                if (std.mem.eql(u8, sub_id, id)) break true;
+            } else false;
+            // EXPR010 and EXPR012 are registered as rules of their own.
+            const owned_elsewhere = for (registry.all_rules) |rule| {
+                if (std.mem.eql(u8, rule.id, id)) break true;
+            } else false;
+            if (!listed and !owned_elsewhere) {
+                std.debug.print("{s} is emitted by an expression source but missing from sub_rule_ids\n", .{id});
+                return error.SubRuleIdNotListed;
+            }
         }
     }
 }

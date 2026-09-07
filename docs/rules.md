@@ -669,7 +669,7 @@ on:
         options: [a, b]
       retries:
         type: number
-        default: "3"      # string default for a number input
+        default: three    # default is not a number
       target:
         type: string
         required: true

@@ -19,7 +19,7 @@ still be renumbered before 1.0.
 
 ### Added
 
-- GitHub Actions workflow linting across nine categories: security (`SEC*`),
+- GitHub Actions workflow linting across ten categories: security (`SEC*`),
   supply chain (`SC*`), performance (`PERF*`), best practices (`BP*`),
   permissions (`PERM*`), expression validation (`EXPR*`), dependencies
   (`DEP*`), runners (`RUNNER*`), syntax (`SYN*`) and reusable workflows
