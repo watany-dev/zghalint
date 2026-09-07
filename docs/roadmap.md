@@ -10,27 +10,27 @@
 | ルール数 | `docs/rules.md` の表は 87 行で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストするようになり、RW001 の欠落も解消した。残る不一致は**見出しの「77 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
 | `src/**/*.zig` | 42,552 行 |
 | ユニットテスト | 1530 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **37 close 済み（69%）** |
+| #55 actionlint parity | 54 sub-issue 中 **42 close 済み（77%）** |
 | 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129 で、PR #256 が実装中。引数型検査は #162 |
 | E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（38 本）と `tests/fixtures/e2e-action/*.yml`（6 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
 | ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241） |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
 | オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#256（#129 の overlay 接続）、#249 / #252（Dependabot） |
-| オープン issue | 43 件。内訳は #55 本体 1、#55 の sub-issue 17、parity ラベルだが sub でないもの 3（#162 #210 #254）、形式検証由来のバグ 7（#218〜#224）、リポジトリ運用・CI 基盤 12（#230 #234〜#244）、その他 3（#124 #135 #159） |
+| オープン issue | 21 件。内訳は #55 本体 1、#55 の sub-issue 14、parity ラベルだが sub でないもの 2（#162 #254）、形式検証由来のバグ 4（#221〜#224）、その他 2（#135 #159） |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
-| 実装済みだが未 close の issue | **22 件** — ルール系 10（#72 #73 #75 #86 #100 #124 #210 #218 #219 #220）と CI・運用系 12（#230 #234〜#244）。いずれも main に実装が入っているのに open のまま。棚卸しの最大のノイズ源 |
-| 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は修正済み（issue は未 close）。未修正は #221 / #222（prefetch キャッシュ）、#223（`--fix` の原子性）、#224（二重報告）の 4 件 |
+| 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は修正済みで close 済み。残る反例は #221 / #222（prefetch キャッシュ）、#223（`--fix` の原子性）、#224（二重報告）の 4 件 |
 
 Phase 1（トリガー `on:` 群）と Phase 2（job / step / matrix）は完了済み。
 Phase 3（contextual typing）も存在検証 4 本（#86 #87 #89 #90）が着地し、残るのは
 overlay 接続（#129 = PR #256）と、その先の #162 / #91 / #92 だけになった。
 Phase 4 も基盤の #100（action.yml メタデータ = ACT001〜ACT004）が入り、後続の複数ファイル横断ルールが着手可能になっている。
+実装済みだったルール系 issue（#72 #73 #75 #86 #100 #124 #210 #218 #219 #220）は本回で close 済み。
 
-リポジトリ運用・CI 基盤トラックはほぼ片付いた。CI は fmt / build / test に加えて
+リポジトリ運用・CI 基盤トラックは完了した。CI は fmt / build / test に加えて
 クロスコンパイル・3 OS スモーク・自リポジトリの dogfooding・外部静的解析（actionlint / zizmor / shellcheck / ruff）・
 ファズ・coverage を回し、release は provenance attestation とバイナリスモークを持つ。
-ただし該当 issue（#230 #234〜#244）が 12 件すべて open のまま残っている。
+該当 issue（#230 #234〜#244）12 件も本回で close 済みで、この track に残作業はない。
 
 ## 2. ロードマップ
 
@@ -64,12 +64,12 @@ RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
 
 | ルール | issue | 実装 | 状態 |
 |---|---|---|---|
-| EXPR010 `steps.<id>` | #86 | `src/rules/steps_ref.zig` | 実装済み（issue 未 close） |
+| EXPR010 `steps.<id>` | #86 | `src/rules/steps_ref.zig` | 完了（close 済み） |
 | EXPR011 `matrix.<key>` | #87 | `src/rules/matrix_context.zig` | 完了 |
 | EXPR012 `needs.<job>` | — | `src/rules/needs_context.zig` | 完了 |
 | EXPR013 `inputs.<name>` | #89 | `src/rules/inputs_context.zig` | 完了 |
 | EXPR014 `secrets.<name>` | #90 | `src/rules/secrets_context.zig` | 完了 |
-| EXPR017 curated `github.event` overlay | #124 | `src/rules/expr_catalog.zig` | 実装済み（issue 未 close） |
+| EXPR017 curated `github.event` overlay | #124 | `src/rules/expr_catalog.zig` | 完了（close 済み） |
 
 残りの着手順:
 
@@ -106,19 +106,18 @@ RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
 | #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator` が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が続く Phase 3〜4 の**前**に済ませると衝突が少ない |
 | 形式検証由来の残バグ #221〜#224 | security 3 件（#218 / #219 / #220）は修正済み。残りは #221 / #222 が prefetch キャッシュ（ウォームランが成立しない・RateLimited の劣化）、#223 が `--fix` の原子性、#224 が二重報告。いずれも `src/rules/` の外なのでルール実装と並行できる |
 | PR #217 形式仕様 | Alloy（ルール所有権）と TLA+（prefetch / autofix）の仕様と反例。#218〜#224 の出所。マージすれば以後の反例追加が同じ場所に載る |
-| リポジトリ運用・CI 基盤 #230 #234〜#244（12 件） | **12 件すべて実装が main に入っている**（Dependabot / PBT 依存固定 / Zig 版一元化 / coverage / concurrency / 外部静的解析 / ファズ / 自リポジトリ dogfooding / action.yml スモーク / メタファイル / release provenance / タグ整合 / `docs/rules.md` 同期テスト）。残作業は close だけ |
+| リポジトリ運用・CI 基盤（旧 #230 #234〜#244） | 12 件すべて実装済み・close 済み（Dependabot / PBT 依存固定 / Zig 版一元化 / coverage / concurrency / 外部静的解析 / ファズ / 自リポジトリ dogfooding / action.yml スモーク / メタファイル / release provenance / タグ整合 / `docs/rules.md` 同期テスト）。track として終了 |
 | #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
 
-## 3. 直近の着手順（上位 6 件）
+## 3. 直近の着手順（上位 5 件）
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | 実装済み issue の close（ルール系 #72 #73 #75 #86 #100 #124 #210 #218 #219 #220 と CI・運用系 #230 #234〜#244） | コードは main にあるのに 22 件が open のまま。open issue 43 件の半数がこれで、棚卸しのたびに実装状況を手で突き合わせる原因になっている。コスト 0 で解消できる |
+| 1 | #129（PR #256） | Phase 3 の締め。存在検証 5 本を overlay に寄せ、ADR-0009 の二重メンテを終わらせる。#162 の前提でもある |
 | 2 | `docs/rules.md` の見出し修正 | 表は 87 行で registry と同期済みなのに、見出しが「77 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
-| 3 | #129（PR #256） | Phase 3 の締め。存在検証 5 本を overlay に寄せ、ADR-0009 の二重メンテを終わらせる。#162 の前提でもある |
-| 4 | #159 | エンジンの arena。Phase 4 でルール追加が再び集中する前に `Rule` シグネチャを固める |
-| 5 | #254 | composite の `runs.steps` を既存ルールに通す。#100 の基盤がそのまま使え、Phase 4 の他ルールより依存が浅い |
-| 6 | #221 / #222 | prefetch キャッシュ。ウォームランが成立しないのは実利用のレイテンシに直結する |
+| 3 | #159 | エンジンの arena。Phase 4 でルール追加が再び集中する前に `Rule` シグネチャを固める |
+| 4 | #254 | composite の `runs.steps` を既存ルールに通す。#100 の基盤がそのまま使え、Phase 4 の他ルールより依存が浅い |
+| 5 | #221 / #222 | prefetch キャッシュ。ウォームランが成立しないのは実利用のレイテンシに直結する |
 
 #129 → #162 → #91 → #92 で Phase 3 を閉じ、Phase 4 は #254 → #96 → #105 の順で
 ローダー基盤を育てる。#135 / #64 / #221〜#224 は競合しないので並行で流す。
