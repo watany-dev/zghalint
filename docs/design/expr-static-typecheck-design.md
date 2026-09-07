@@ -24,7 +24,6 @@ GitHub Actions の `${{ }}` 式に対し、actionlint と同型の静的型体�
 - EXPR006 / EXPR007 の検出・autofix（型と独立。現行 `validateNode` に残す）
 - 関数名の大小文字非区別化
 - 型 narrowing（`&&` / `||`）
-- EXPR018（引数型・補間値の object/array/null）
 
 ## 現状整理
 
@@ -536,9 +535,10 @@ stat -c%s zig-out/bin/zghalint
 |---|---|---|
 | T0 | `Type` / catalog / `typeOf`（診断なし） | intern 同一性、`display`、`assignable`/`merge` の表、`github.sha`→string、`github.event.foo`→any、`job.unknown` はまだ診断しない |
 | T1 | path ウォークを EXPR003 に接続 | 既存 EXPR003 テストがグリーンのまま。追加: `github.repository.permissions` が EXPR003。`github.event.foo` は沈黙。`steps.x` は沈黙 |
-| T2 | シグネチャ表へ EXPR004/005 を移行。戻り値型 | `startsWith(github.sha, 'a')` の型が bool。`startsWith(github.event, 'a')` は **診断しない**（EXPR018 待ち）が typeOf は bool |
+| T2 | シグネチャ表へ EXPR004/005 を移行。戻り値型 | `startsWith(github.sha, 'a')` の型が bool。`startsWith(github.event, 'a')` は T2 時点では **診断しない**（T5 で EXPR018 が拾う）が typeOf は bool |
 | T3 | EXPR017 | §6 の行列を表駆動テスト。`any` 短絡。`github.event > 3` は発火、`github.event.issue.number == 'foo'` は沈黙 |
 | T4 | overlay 接続 | EXPR010〜EXPR014 の既存テストが二重診断にならないこと |
+| T5 | EXPR018（引数型・補間値） | `startsWith(github.event, 'a')` が発火。overlay 未接続の loose context と `if:` 条件は沈黙 |
 
 T0 の表駆動例:
 
@@ -611,17 +611,29 @@ ADR 「Follow-up」と同じ。実装順の目安だけここへ落とす。
 1. EXPR010〜EXPR014 先行 → T4 overlay
 2. `github.event.inputs` overlay（SYN017）
 3. パーサの数値添字
-4. EXPR018（引数型と補間値）
-5. curated scalar（任意。D3 を崩さない範囲）
-6. 型 narrowing
-7. 関数名 case-insensitive
+4. curated scalar（任意。D3 を崩さない範囲）
+5. 型 narrowing
 
-## 実装状況（T0〜T4）
+## 実装状況（T0〜T5）
 
 T0〜T3 を `src/rules/expr_type.zig` / `expr_catalog.zig` / `expr_check.zig`、
 T4（steps / matrix / needs / inputs / secrets の overlay）を
 `src/rules/expr_overlay.zig` + `expressions.checkWorkflow` として実装済み。
-関数の引数型テーブル（EXPR018 用）は利用者が現れるまで持たない。
+
+T5（EXPR018）は `FuncSig.args` / `.rest` に `ArgKind`（`any` / `string` /
+`string_or_array`）を持たせ、`expr_check.acceptsArg` と
+`expr_check.interpolationProblem` で判定する。D3（誤検出ゼロ優先）を守るため:
+
+- `ArgKind` は「絶対に渡せないコンテナ」だけを弾く。スカラーは GitHub が
+  文字列へ強制変換するので `number` / `bool` / `null` は常に受理する
+- overlay が付かず `catalog.loose_context` へ落ちたコンテキスト
+  （`steps` / `matrix` / `needs` / `inputs` / `jobs`）は
+  `catalog.isUnmodelledObject` がポインタ同一性で判別して沈黙する。
+  `github.event` は別の loose 型なので診断対象に残る
+- 補間側は `${{ }}` 全体の型のみを見る。`toJSON()` や比較の内側にある
+  コンテナは対象外
+- `if:` は値を評価するだけでレンダリングしないため、補間側の診断は出さない
+  （`ExprUse.condition`）。引数型の診断は `if:` でも出る
 
 ### バイナリサイズ実測（ADR D7）
 
@@ -644,7 +656,15 @@ T4（#129）投入時。上表とは測定時点のベースラインが異な�
 | T4 投入後 | 957,607 |
 | 増分 | +4,202（約 4.1 KiB） |
 
-累計 +25 KiB 程度で、32 KiB の予算内。
+T5（#162）投入時:
+
+| | text (bytes) |
+|---|---|
+| T5 直前 | 957,607 |
+| T5 投入後 | 959,722 |
+| 増分 | +2,115（約 2.1 KiB） |
+
+累計 +27 KiB 程度で、32 KiB の予算内。
 
 ## 参考
 

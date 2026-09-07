@@ -297,6 +297,30 @@ pub fn checkCompare(op: []const u8, lhs: TypeRef, rhs: TypeRef) bool {
     return false;
 }
 
+/// Returns false only when the value can never be what the parameter takes
+/// (EXPR018, #162). `any` and the un-overlaid contexts short-circuit to true,
+/// which is what keeps the check free of false positives (ADR D3).
+pub fn acceptsArg(kind: catalog.ArgKind, ty: TypeRef) bool {
+    if (ty.kind == .any) return true;
+    if (catalog.isUnmodelledObject(ty)) return true;
+    return switch (kind) {
+        .any => true,
+        .string => ty.kind != .object and ty.kind != .array,
+        .string_or_array => ty.kind != .object,
+    };
+}
+
+/// A value spliced into a string that GitHub cannot render usefully
+/// (EXPR018, #162). Objects render as `Object`, arrays as `Array`, and null as
+/// nothing at all; a scalar is always fine.
+pub fn interpolationProblem(ty: TypeRef) ?t.TypeKind {
+    if (catalog.isUnmodelledObject(ty)) return null;
+    return switch (ty.kind) {
+        .object, .array, .null => ty.kind,
+        else => null,
+    };
+}
+
 const testing = std.testing;
 fn walkTy(path: []const u8) TypeRef {
     return walkPath(path, &TypeEnv.empty).ty;
@@ -402,6 +426,35 @@ test "checkCompare: relational table" {
     try testing.expect(!checkCompare(">", &t.type_bool, &t.type_number));
     try testing.expect(!checkCompare("<=", &t.type_null, &t.type_number));
     try testing.expect(!checkCompare(">", &t.type_loose_object, &t.type_number));
+}
+
+test "acceptsArg: only containers are rejected" {
+    const K = catalog.ArgKind;
+    try testing.expect(acceptsArg(.string, &t.type_string));
+    try testing.expect(acceptsArg(.string, &t.type_number));
+    try testing.expect(acceptsArg(.string, &t.type_bool));
+    // null coerces to an empty string, so it is not an argument error.
+    try testing.expect(acceptsArg(.string, &t.type_null));
+    try testing.expect(!acceptsArg(.string, &t.type_loose_object));
+    try testing.expect(!acceptsArg(.string, &t.type_array_string));
+
+    try testing.expect(acceptsArg(.string_or_array, &t.type_array_string));
+    try testing.expect(!acceptsArg(.string_or_array, &t.type_loose_object));
+
+    try testing.expect(acceptsArg(.any, &t.type_loose_object));
+    try testing.expect(acceptsArg(K.string, &t.type_any));
+    // An un-overlaid context carries no information to reject.
+    try testing.expect(acceptsArg(.string, catalog.lookupContext("jobs").?));
+}
+
+test "interpolationProblem: containers and null only" {
+    try testing.expectEqual(@as(?t.TypeKind, null), interpolationProblem(&t.type_string));
+    try testing.expectEqual(@as(?t.TypeKind, null), interpolationProblem(&t.type_any));
+    try testing.expectEqual(@as(?t.TypeKind, null), interpolationProblem(&t.type_bool));
+    try testing.expectEqual(@as(?t.TypeKind, .object), interpolationProblem(&t.type_loose_object));
+    try testing.expectEqual(@as(?t.TypeKind, .array), interpolationProblem(&t.type_array_any));
+    try testing.expectEqual(@as(?t.TypeKind, .null), interpolationProblem(&t.type_null));
+    try testing.expectEqual(@as(?t.TypeKind, null), interpolationProblem(catalog.lookupContext("steps").?));
 }
 
 test "segments: dotted, star and bracket forms" {

@@ -511,8 +511,14 @@ pub fn validateExpression(
     list: *DiagnosticList,
     expr_base_byte: ?usize,
 ) void {
-    validateExpressionEnv(allocator, expr, base_span, list, expr_base_byte, &expr_check.TypeEnv.empty);
+    validateExpressionEnv(allocator, expr, base_span, list, expr_base_byte, &expr_check.TypeEnv.empty, .interpolation);
 }
+
+/// What GitHub does with the value of a `${{ }}`: splice it into a string
+/// (`run:` / `env:` / `with:`) or evaluate it as a condition (`if:`). Only the
+/// former renders the value, so only it can report an EXPR018 interpolation
+/// finding (#162).
+pub const ExprUse = enum { interpolation, condition };
 
 /// As `validateExpression`, but resolving context roots against `env` first,
 /// so the workflow's own `steps` / `matrix` / `needs` / `inputs` / `secrets`
@@ -524,6 +530,7 @@ pub fn validateExpressionEnv(
     list: *DiagnosticList,
     expr_base_byte: ?usize,
     env: *const expr_check.TypeEnv,
+    use: ExprUse,
 ) void {
     var parser = ExprParser.init(allocator, expr);
     const node = parser.parse() catch |err| {
@@ -543,6 +550,45 @@ pub fn validateExpressionEnv(
         return;
     };
     validateNode(allocator, &node, base_span, list, expr_base_byte, null, env);
+    if (use == .interpolation) {
+        checkInterpolatedValue(allocator, &node, base_span, list, env);
+    }
+}
+
+/// EXPR018, interpolation half: the whole `${{ }}` value is what gets rendered,
+/// so only the root type matters — a container nested inside a comparison or a
+/// `toJSON()` call is fine (#162).
+fn checkInterpolatedValue(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    span: Span,
+    list: *DiagnosticList,
+    env: *const expr_check.TypeEnv,
+) void {
+    const ty = expr_check.typeOf(node, env);
+    const kind = expr_check.interpolationProblem(ty) orelse return;
+
+    var buf: [96]u8 = undefined;
+    const rendered = switch (kind) {
+        .object => "the string \"Object\"",
+        .array => "the string \"Array\"",
+        else => "an empty string",
+    };
+    const msg = std.fmt.allocPrint(
+        allocator,
+        "\"{s}\" value is interpolated into a string and renders as {s}",
+        .{ expr_type.display(ty, &buf), rendered },
+    ) catch "this value does not render usefully in a string";
+    list.append(.{
+        .rule_id = "EXPR018",
+        .severity = .warning,
+        .message = msg,
+        .span = span,
+        .fix_hint = if (kind == .null)
+            "provide a fallback, e.g. ${{ value || '' }}"
+        else
+            "index into the value, or wrap it in toJSON()",
+    }) catch return;
 }
 
 fn validateNode(
@@ -651,6 +697,37 @@ fn checkComparison(
     }) catch return;
 }
 
+/// EXPR018, argument half: runs only once the arity is right, so a call with
+/// the wrong number of arguments reports EXPR005 alone (#162).
+fn checkArgumentTypes(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    sig: *const catalog.FuncSig,
+    span: Span,
+    list: *DiagnosticList,
+    env: *const expr_check.TypeEnv,
+) void {
+    for (node.children, 0..) |*arg, index| {
+        const kind = sig.argKind(index);
+        const ty = expr_check.typeOf(arg, env);
+        if (expr_check.acceptsArg(kind, ty)) continue;
+
+        var buf: [96]u8 = undefined;
+        const msg = std.fmt.allocPrint(
+            allocator,
+            "\"{s}\" value cannot be passed to argument {d} of \"{s}()\", which expects {s}",
+            .{ expr_type.display(ty, &buf), index + 1, sig.name, kind.display() },
+        ) catch "argument type does not match the function signature";
+        list.append(.{
+            .rule_id = "EXPR018",
+            .severity = .warning,
+            .message = msg,
+            .span = span,
+            .fix_hint = "pass a property of the value, or wrap it in toJSON()",
+        }) catch return;
+    }
+}
+
 fn validateFunctionCall(
     allocator: std.mem.Allocator,
     node: *const ExprNode,
@@ -675,6 +752,8 @@ fn validateFunctionCall(
                 .message = msg,
                 .span = span,
             }) catch return;
+        } else {
+            checkArgumentTypes(allocator, node, sig, span, list, env);
         }
     } else {
         const msg = std.fmt.allocPrint(allocator, "unknown function: '{s}'", .{name}) catch "unknown function";
@@ -1009,10 +1088,11 @@ pub fn findAndValidateExpressions(
     list: *DiagnosticList,
     text_base_byte: ?usize,
 ) void {
-    findAndValidateExpressionsEnv(allocator, text, anchor, list, text_base_byte, &expr_check.TypeEnv.empty);
+    findAndValidateExpressionsEnv(allocator, text, anchor, list, text_base_byte, &expr_check.TypeEnv.empty, .interpolation);
 }
 
-/// As `findAndValidateExpressions`, with the overlays of `env` in scope (#129).
+/// As `findAndValidateExpressions`, with the overlays of `env` in scope (#129)
+/// and `use` deciding whether the value is rendered into a string (#162).
 pub fn findAndValidateExpressionsEnv(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -1020,6 +1100,7 @@ pub fn findAndValidateExpressionsEnv(
     list: *DiagnosticList,
     text_base_byte: ?usize,
     env: *const expr_check.TypeEnv,
+    use: ExprUse,
 ) void {
     var pos: usize = 0;
     while (pos + 2 < text.len) {
@@ -1031,7 +1112,7 @@ pub fn findAndValidateExpressionsEnv(
                 const leading_trim = std.mem.indexOfNone(u8, expr_content, " \t\n\r") orelse 0;
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
                 const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
-                validateExpressionEnv(allocator, trimmed, expr_span, list, expr_base_byte, env);
+                validateExpressionEnv(allocator, trimmed, expr_span, list, expr_base_byte, env, use);
                 pos = expr_start + end_offset + 2;
             } else {
                 list.append(.{
@@ -1261,10 +1342,10 @@ fn checkIfCondition(
     switch (classifyIfConditionShape(if_val)) {
         .mixed_expression_string => {
             checkMixedIfCondition(if_val, span, list, base);
-            findAndValidateExpressionsEnv(allocator, if_val, anchor, list, base, env);
+            findAndValidateExpressionsEnv(allocator, if_val, anchor, list, base, env, .condition);
         },
         .single_wrapped_expression => {
-            findAndValidateExpressionsEnv(allocator, if_val, anchor, list, base, env);
+            findAndValidateExpressionsEnv(allocator, if_val, anchor, list, base, env, .condition);
             const inner = singleWrappedExpressionInner(if_val) orelse return;
             checkIfConstantBoolean(inner, span, list);
         },
@@ -1273,7 +1354,7 @@ fn checkIfCondition(
             if (trimmed.len == 0) return;
             const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
             const abs: ?usize = if (base) |b| b + leading else null;
-            validateExpressionEnv(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs, env);
+            validateExpressionEnv(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs, env, .condition);
             checkIfConstantBoolean(trimmed, span, list);
         },
     }
@@ -1297,7 +1378,7 @@ fn checkScalarMap(
             .track_bytes => if (entry_meta) |m| scalarValueStartByte(m) else null,
             .no_bytes => null,
         };
-        findAndValidateExpressionsEnv(allocator, value, Anchor.fromMeta(entry_meta, fallback), list, base, env);
+        findAndValidateExpressionsEnv(allocator, value, Anchor.fromMeta(entry_meta, fallback), list, base, env, .interpolation);
     }
 }
 
@@ -1315,7 +1396,7 @@ fn checkStepEnv(step: *const Step, list: *DiagnosticList, env: *const expr_check
     // from it.
     if (step.run) |run_val| {
         const run_anchor = spans.runAnchor(step);
-        findAndValidateExpressionsEnv(allocator, run_val, run_anchor, list, null, env);
+        findAndValidateExpressionsEnv(allocator, run_val, run_anchor, list, null, env, .interpolation);
     }
 
     checkIfCondition(allocator, step.if_condition, step.if_condition_meta, step.span, list, env);
@@ -1380,6 +1461,19 @@ pub const expression_rule = @import("engine.zig").Rule{
     .category = .expression,
     .check_workflow = &checkWorkflow,
 };
+
+fn expectRuleReported(expr: []const u8, rule_id: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 0);
+    for (0..list.len()) |i| {
+        if (std.mem.eql(u8, list.get(i).rule_id, rule_id)) return;
+    }
+    return error.RuleNotReported;
+}
 
 fn expectNoDiagnostics(expr: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2022,9 +2116,9 @@ test "validate: all valid functions with correct args" {
         "startsWith('hello', 'hel')",
         "endsWith('hello', 'llo')",
         "format('Hello {0}', 'world')",
-        "join(github.event, ', ')",
+        "join(fromJSON('[1,2]'), ', ')",
         "toJSON(github.event)",
-        "fromJSON('{}')",
+        "fromJSON('\"x\"')",
         "hashFiles('**/package-lock.json')",
         "success()",
         "always()",
@@ -2098,7 +2192,7 @@ test "validate EXPR008: format escaped braces are valid" {
 }
 
 test "validate EXPR008: no check when format string is not a literal" {
-    try expectNoDiagnostics("format(github.event, github.sha)");
+    try expectNoDiagnostics("format(github.sha, github.ref)");
 }
 
 test "validate: nested function calls" {
@@ -3150,16 +3244,20 @@ test "EXPR017: array compared to a scalar" {
     try expectSingleRule("fromJSON('[1,2]') == 'x'", "EXPR017");
 }
 
+// A `fromJSON` literal also gives the result a container type, so these
+// expressions carry an EXPR018 interpolation finding alongside EXPR009.
 test "validate EXPR009: fromJSON invalid object literal" {
-    try expectSingleRule("fromJSON('{invalid}')", "EXPR009");
+    try expectRuleReported("fromJSON('{invalid}')", "EXPR009");
 }
 
 test "validate EXPR009: fromJSON trailing comma in array" {
-    try expectSingleRule("fromJSON('[\"ubuntu-latest\", \"macos-latest\",]')", "EXPR009");
+    try expectRuleReported("fromJSON('[\"ubuntu-latest\", \"macos-latest\",]')", "EXPR009");
 }
 
 test "validate EXPR009: fromJSON valid array literal" {
-    try expectNoDiagnostics("fromJSON('[\"ubuntu-latest\", \"macos-latest\"]')");
+    // Valid JSON, so EXPR009 stays quiet; the lone finding is the array being
+    // rendered into a string.
+    try expectSingleRule("fromJSON('[\"ubuntu-latest\", \"macos-latest\"]')", "EXPR018");
 }
 
 test "validate EXPR009: fromJSON skips non-literal argument" {
@@ -3200,6 +3298,109 @@ test "EXPR017: scalar mixing in equality is not reported" {
 
 test "EXPR017: comparison inside a logical expression" {
     try expectSingleRule("success() && github.event > 3", "EXPR017");
+}
+
+test "EXPR018: object passed to a string parameter" {
+    try expectSingleRule("startsWith(github.event, 'a')", "EXPR018");
+    try expectSingleRule("endsWith('a', github.event)", "EXPR018");
+    try expectSingleRule("fromJSON(github.event)", "EXPR018");
+}
+
+test "EXPR018: array passed to a string parameter" {
+    try expectSingleRule("hashFiles(fromJSON('[1]'))", "EXPR018");
+}
+
+test "EXPR018: message names the position and the function" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "startsWith(github.event, 'a')", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqualStrings(
+        "\"object\" value cannot be passed to argument 1 of \"startsWith()\", which expects a string",
+        list.get(0).message,
+    );
+}
+
+test "EXPR018: an array reaches a string_or_array parameter" {
+    try expectNoDiagnostics("join(fromJSON('[1,2]'), ',')");
+    try expectSingleRule("join(github.event, ',')", "EXPR018");
+}
+
+test "EXPR018: scalars and null are accepted as string arguments" {
+    try expectNoDiagnostics("startsWith(github.run_number, 'a')");
+    try expectNoDiagnostics("startsWith(github.ref_protected, 'a')");
+    try expectNoDiagnostics("startsWith(fromJSON('null'), 'a')");
+}
+
+test "EXPR018: a variadic tail is typed too" {
+    try expectSingleRule("hashFiles('a', github.event)", "EXPR018");
+    // `format` types only its first parameter; the rest render via the
+    // placeholders and are not this rule's business.
+    try expectNoDiagnostics("format('{0}', github.event)");
+}
+
+test "EXPR018: an un-overlaid context is never an argument error" {
+    for ([_][]const u8{
+        "startsWith(steps, 'a')",
+        "startsWith(matrix, 'a')",
+        "startsWith(needs, 'a')",
+        "startsWith(inputs, 'a')",
+        "startsWith(jobs, 'a')",
+    }) |expr| try expectNoDiagnostics(expr);
+}
+
+test "EXPR018: arity errors are reported alone" {
+    try expectSingleRule("startsWith(github.event)", "EXPR005");
+}
+
+test "EXPR018: object interpolated into a string" {
+    try expectSingleRule("github.event", "EXPR018");
+    try expectSingleRule("fromJSON('{\"a\": 1}')", "EXPR018");
+}
+
+test "EXPR018: interpolation message names what gets rendered" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpression(arena.allocator(), "github.event", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqualStrings(
+        "\"object\" value is interpolated into a string and renders as the string \"Object\"",
+        list.get(0).message,
+    );
+}
+
+test "EXPR018: only the rendered root type is interpolated" {
+    try expectNoDiagnostics("toJSON(github.event)");
+    try expectNoDiagnostics("github.event.number");
+    try expectNoDiagnostics("github.event == github.event");
+}
+
+test "EXPR018: an un-overlaid context is never an interpolation error" {
+    for ([_][]const u8{ "steps", "matrix", "needs", "inputs", "jobs" }) |expr| {
+        try expectNoDiagnostics(expr);
+    }
+}
+
+test "EXPR018: an if: condition is evaluated, not rendered" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateExpressionEnv(
+        arena.allocator(),
+        "github.event",
+        Span.point(1, 1, 0),
+        &list,
+        0,
+        &expr_check.TypeEnv.empty,
+        .condition,
+    );
+    try std.testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "typeOf: function return types" {
