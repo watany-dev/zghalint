@@ -1,0 +1,17 @@
+# bench:persona pedantic
+# bench:expect template-injection@17 actionlint=-
+# bench:skip zghalint:template-injection 意図的な非対応。SEC002 は untrusted context に限定し matrix.* は対象外 (parity doc 4.3)
+name: matrix interpolation
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      - name: Build
+        run: make build TARGET=${{ matrix.target }}
