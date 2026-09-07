@@ -20,10 +20,12 @@ const std = @import("std");
 const yaml_parser = @import("yaml/parser.zig");
 const workflow_parser = @import("workflow/parser.zig");
 const registry = @import("rules/registry.zig");
+const action_metadata = @import("rules/action_metadata.zig");
 const rule_engine = @import("rules/engine.zig");
 const diagnostics = @import("diagnostics.zig");
 
 const fixture_dir = "tests/fixtures/e2e";
+const action_fixture_dir = "tests/fixtures/e2e-action";
 
 const Expectation = struct {
     rule_id: []const u8,
@@ -90,6 +92,19 @@ fn lintSource(
     return list;
 }
 
+/// Action metadata is not a workflow, so its fixtures stop at the YAML
+/// document and run the document-level check the CLI uses for `action.yml`.
+fn lintActionSource(
+    alloc: std.mem.Allocator,
+    source: []const u8,
+) !diagnostics.DiagnosticList {
+    var yp = yaml_parser.Parser.init(alloc, source);
+
+    var list = diagnostics.DiagnosticList.init(alloc);
+    action_metadata.lintActionMetadata(try yp.parse(), &list);
+    return list;
+}
+
 fn matches(diag: diagnostics.Diagnostic, exp: Expectation) bool {
     if (!std.mem.eql(u8, diag.rule_id, exp.rule_id)) return false;
     const want_line = exp.line orelse return true;
@@ -97,19 +112,20 @@ fn matches(diag: diagnostics.Diagnostic, exp: Expectation) bool {
     return diag.span.start_line == want_line;
 }
 
-test "E2E: fixtures produce the declared diagnostics" {
-    // Fixture paths are relative to the repo root; `zig build test` and the
-    // local wrapper both run with cwd = repo root (same assumption as the
-    // PERF001 fixture harness).
-    var dir = try std.fs.cwd().openDir(fixture_dir, .{ .iterate = true });
+const LintFn = *const fn (std.mem.Allocator, []const u8) anyerror!diagnostics.DiagnosticList;
+
+/// Fixture paths are relative to the repo root; `zig build test` and the
+/// local wrapper both run with cwd = repo root (same assumption as the
+/// PERF001 fixture harness).
+fn runFixtures(
+    alloc: std.mem.Allocator,
+    dir_path: []const u8,
+    lint: LintFn,
+    /// Rule IDs seen across every fixture, for the coverage check.
+    covered: *std.StringHashMapUnmanaged(void),
+) !void {
+    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    // Rule IDs seen across every fixture, for the coverage test below.
-    var covered: std.StringHashMapUnmanaged(void) = .{};
 
     var it = dir.iterate();
     while (try it.next()) |entry| {
@@ -123,7 +139,7 @@ test "E2E: fixtures produce the declared diagnostics" {
             return error.FixtureWithoutExpectations;
         }
 
-        var list = try lintSource(alloc, source);
+        var list = try lint(alloc, source);
         defer list.deinit();
 
         for (list.items.items) |diag| {
@@ -153,6 +169,15 @@ test "E2E: fixtures produce the declared diagnostics" {
             }
         }
     }
+}
+
+test "E2E: fixtures produce the declared diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var covered: std.StringHashMapUnmanaged(void) = .{};
+    try runFixtures(alloc, fixture_dir, lintSource, &covered);
 
     // Minimum coverage: every rule family must fire at least once through a
     // real file, so a parser regression cannot silence a whole category.
@@ -164,6 +189,22 @@ test "E2E: fixtures produce the declared diagnostics" {
         "RUNNER001", "RUNNER002", "DEP003",  "RW001",
     };
     for (must_cover) |rule_id| {
+        if (covered.get(rule_id) == null) {
+            std.debug.print("no e2e fixture exercises rule {s}\n", .{rule_id});
+            return error.RuleNotCoveredByFixtures;
+        }
+    }
+}
+
+test "E2E: action metadata fixtures produce the declared diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var covered: std.StringHashMapUnmanaged(void) = .{};
+    try runFixtures(alloc, action_fixture_dir, lintActionSource, &covered);
+
+    for ([_][]const u8{ "ACT001", "ACT002", "ACT003", "ACT004" }) |rule_id| {
         if (covered.get(rule_id) == null) {
             std.debug.print("no e2e fixture exercises rule {s}\n", .{rule_id});
             return error.RuleNotCoveredByFixtures;

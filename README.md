@@ -15,6 +15,7 @@ Zero external dependencies — even the YAML parser is built from scratch.
 - **Expression Validation** — `${{ }}` syntax, context access, function calls, argument validation
 - **Permissions** — Overly broad scopes, missing job-level permissions
 - **Dependencies** — Dependabot configuration validation
+- **Action Metadata** — `action.yml` required keys, `runs.using` runtimes, input/output definitions
 - **Multiple Output Formats** — Terminal (colored), JSON, SARIF 2.1.0 (GitHub Code Scanning)
 
 ## Installation
@@ -90,7 +91,15 @@ zghalint .github/workflows/*.yml
 
 # Lint a specific file
 zghalint .github/workflows/ci.yml
+
+# Lint the default targets of the current repository
+zghalint
 ```
+
+With no file arguments zghalint reads `.github/workflows/*.yml`,
+`.github/dependabot.yml`, the repository's own `action.yml` / `action.yaml`,
+and `.github/actions/*/action.yml`. Action metadata kept anywhere else is
+linted by passing its path explicitly.
 
 ### With configuration file
 
@@ -138,7 +147,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **78 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **86 rules** across 10 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 
@@ -175,6 +184,12 @@ Dependabot cooldown configuration, insecure external code execution settings,
 Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
 detection (typos such as `ubunut-latest`), and conflicting label sets that no
 single runner can satisfy (`runs-on: [ubuntu-latest, windows-latest]`).
+
+### Action Metadata (4 rules)
+
+Required keys in `action.yml` / `action.yaml`, supported and deprecated
+`runs.using` runtimes, unknown metadata keys, and the shape of `inputs` /
+`outputs` definitions.
 
 ### Syntax (19 rules)
 

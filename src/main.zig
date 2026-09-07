@@ -141,7 +141,8 @@ fn printHelp(writer: anytype) !void {
         \\GitHub Actions workflow linter
         \\
         \\Arguments:
-        \\  [FILES...]  Files to lint (default: .github/workflows/*.yml, .github/dependabot.yml)
+        \\  [FILES...]  Files to lint (default: .github/workflows/*.yml, .github/dependabot.yml,
+        \\              action.yml, .github/actions/*/action.yml)
         \\              Use `--` before files whose names begin with `-`.
         \\
         \\Options:
@@ -187,12 +188,60 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
         } else |_| {}
     }
 
+    try collectDefaultActionFiles(allocator, &files);
+
     return files;
+}
+
+/// The two layouts GitHub itself documents: an action at the repository root,
+/// and one action per directory under `.github/actions/`. Deeper nestings are
+/// not searched; those paths can still be passed explicitly.
+fn collectDefaultActionFiles(
+    allocator: std.mem.Allocator,
+    files: *std.ArrayList([]const u8),
+) !void {
+    inline for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
+        if (std.fs.cwd().access(name, .{})) |_| {
+            try files.append(allocator, try allocator.dupe(u8, name));
+        } else |_| {}
+    }
+
+    var dir = std.fs.cwd().openDir(".github/actions", .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    // A directory that cannot be walked is treated like one that is not
+    // there: every other probe here is best-effort too, and a default-file
+    // scan should not fail the whole run.
+    var iter = dir.iterate();
+    while (iter.next() catch return) |entry| {
+        // The kind is not checked: a symlinked action directory is as valid
+        // as a real one, and `access` on the file below settles it either way.
+        inline for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
+            const path = try std.fmt.allocPrint(allocator, ".github/actions/{s}/{s}", .{ entry.name, name });
+            errdefer allocator.free(path);
+            if (std.fs.cwd().access(path, .{})) |_| {
+                try files.append(allocator, path);
+            } else |_| {
+                allocator.free(path);
+            }
+        }
+    }
 }
 
 fn isDependabotFile(path: []const u8) bool {
     return std.mem.endsWith(u8, path, "dependabot.yml") or
         std.mem.endsWith(u8, path, "dependabot.yaml");
+}
+
+/// Matches on the file name, not a suffix: `my-action.yml` is a workflow-shaped
+/// file name, not action metadata. A file under `.github/workflows/` is a
+/// workflow whatever it is called, so `action.yml` there keeps its own rules.
+fn isActionMetadataFile(path: []const u8) bool {
+    const base = std.fs.path.basename(path);
+    if (!std.mem.eql(u8, base, "action.yml") and !std.mem.eql(u8, base, "action.yaml")) return false;
+
+    const dir = std.fs.path.dirname(path) orelse return true;
+    return !std.mem.eql(u8, std.fs.path.basename(dir), "workflows");
 }
 
 fn readSourceFile(
@@ -223,7 +272,13 @@ fn readSourceFile(
     };
 }
 
-/// Errors that `lintFile` / `lintDependabotFile` have already reported on
+fn documentLintFn(path: []const u8) ?*const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void {
+    if (isDependabotFile(path)) return &zghalint.rules.dependabot.lintDependabot;
+    if (isActionMetadataFile(path)) return &zghalint.rules.action_metadata.lintActionMetadata;
+    return null;
+}
+
+/// Errors that `lintFile` / `lintDocumentFile` have already reported on
 /// stderr; the caller only has to record that the run cannot be trusted.
 const LintFileError = error{
     UnreadableFile,
@@ -248,12 +303,16 @@ fn appendFiltered(
     }
 }
 
-fn lintDependabotFile(
+/// Non-workflow YAML (Dependabot config, action metadata) has no `Workflow`
+/// to build, so these files go straight from the YAML document to a
+/// document-level check instead of through the rule engine.
+fn lintDocumentFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
+    lint_fn: *const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void,
 ) !void {
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
@@ -272,7 +331,7 @@ fn lintDependabotFile(
     var diag_list = zghalint.DiagnosticList.init(allocator);
     defer diag_list.deinit();
 
-    zghalint.rules.dependabot.lintDependabot(yaml_node, &diag_list);
+    lint_fn(yaml_node, &diag_list);
 
     appendFiltered(all_diags, &diag_list, config, file_path);
 }
@@ -294,7 +353,7 @@ fn prefetchNetworkData(
 
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
-        if (isDependabotFile(file_path)) continue;
+        if (documentLintFn(file_path) != null) continue;
 
         const file = std.fs.cwd().openFile(file_path, .{}) catch continue;
         defer file.close();
@@ -620,11 +679,11 @@ pub fn main() !u8 {
 
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
-        const lint_result = if (isDependabotFile(file_path))
-            lintDependabotFile(allocator, file_path, &config, &all_diags, stderr)
+        const lint_result = if (documentLintFn(file_path)) |lint_fn|
+            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn)
         else
             lintFile(allocator, file_path, &config, &all_diags, stderr);
-        // lintFile / lintDependabotFile already reported the reason on stderr.
+        // lintFile / lintDocumentFile already reported the reason on stderr.
         lint_result catch {
             had_fatal = true;
             unlinted_count += 1;
@@ -690,6 +749,22 @@ test "isDependabotFile detects dependabot yml" {
     try std.testing.expect(isDependabotFile("some/path/dependabot.yml"));
     try std.testing.expect(!isDependabotFile(".github/workflows/ci.yml"));
     try std.testing.expect(!isDependabotFile("dependabot.txt"));
+}
+
+test "isActionMetadataFile matches the file name only" {
+    try std.testing.expect(isActionMetadataFile("action.yml"));
+    try std.testing.expect(isActionMetadataFile("action.yaml"));
+    try std.testing.expect(isActionMetadataFile(".github/actions/build/action.yml"));
+    try std.testing.expect(!isActionMetadataFile("my-action.yml"));
+    try std.testing.expect(!isActionMetadataFile(".github/workflows/action.yml.bak"));
+    try std.testing.expect(!isActionMetadataFile(".github/workflows/action.yml"));
+}
+
+test "documentLintFn routes non-workflow files" {
+    try std.testing.expect(documentLintFn(".github/dependabot.yml") != null);
+    try std.testing.expect(documentLintFn(".github/actions/build/action.yml") != null);
+    try std.testing.expect(documentLintFn(".github/workflows/ci.yml") == null);
+    try std.testing.expect(documentLintFn(".github/workflows/action.yml") == null);
 }
 
 test "hasErrors detects error severity" {
