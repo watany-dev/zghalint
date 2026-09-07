@@ -29,13 +29,16 @@ pub const OutputKey = struct {
     span: yaml_types.Span,
 };
 
-/// A single key of a job-level `with:` / `secrets:` mapping on a reusable
-/// workflow call. Kept alongside the value map so the RW rules see every key —
+/// A single entry of a job-level `with:` / `secrets:` mapping on a reusable
+/// workflow call. Kept alongside the value map so the RW rules see every entry —
 /// including one whose value is not a scalar, which `StringMap` drops — and can
-/// point a diagnostic at the key token.
-pub const CallArgKey = struct {
+/// point a diagnostic at either token.
+pub const CallArg = struct {
     name: []const u8,
-    span: yaml_types.Span,
+    name_span: yaml_types.Span,
+    /// Null when the value is not a scalar, which no RW rule can type-check.
+    value: ?[]const u8 = null,
+    value_span: ?yaml_types.Span = null,
 };
 
 pub const ScalarValueMeta = struct {
@@ -196,6 +199,25 @@ pub const CallableInputType = enum {
     string,
     number,
     boolean,
+
+    pub fn name(self: CallableInputType) []const u8 {
+        return @tagName(self);
+    }
+
+    /// Whether a YAML scalar can carry a value of this type. Quoting is not
+    /// consulted: `'3'` is accepted for `number`, the way the runner coerces
+    /// the input rather than rejecting the call.
+    pub fn matchesScalar(self: CallableInputType, value: []const u8) bool {
+        return switch (self) {
+            .string => true,
+            .number => if (std.fmt.parseFloat(f64, value)) |_| true else |_| false,
+            // YAML 1.2 core schema: only these six spellings resolve to a
+            // bool. `yes` / `on` are YAML 1.1 and stay strings on GitHub.
+            .boolean => for ([_][]const u8{ "true", "True", "TRUE", "false", "False", "FALSE" }) |lit| {
+                if (std.mem.eql(u8, value, lit)) break true;
+            } else false,
+        };
+    }
 };
 
 pub const InputDef = struct {
@@ -541,8 +563,8 @@ pub const Job = struct {
     /// Span of the job-level `uses:` scalar value (for DEP003).
     uses_value_span: ?yaml_types.Span = null,
     with: ?StringMap = null,
-    /// Keys of the job-level `with:` mapping in source order (for RW002/RW003).
-    with_keys: []const CallArgKey = &.{},
+    /// Entries of the job-level `with:` mapping in source order (for RW002/RW003).
+    with_args: []const CallArg = &.{},
     secrets: ?SecretsConfig = null,
     /// Column (1-based) at which this job's child keys are indented.
     job_indent: u32 = 0,

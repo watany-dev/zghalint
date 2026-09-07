@@ -9,7 +9,7 @@ const Workflow = engine.Workflow;
 const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const WorkflowCallInputProblem = workflow_types.WorkflowCallInputProblem;
-const CallArgKey = workflow_types.CallArgKey;
+const CallArg = workflow_types.CallArg;
 
 fn workflowCallInputProblemMessage(
     alloc: std.mem.Allocator,
@@ -70,9 +70,9 @@ fn checkWorkflowCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
 
 /// Call arguments are matched case-insensitively, the way the runner resolves
 /// them, so a case difference is never reported as a missing or unknown name.
-fn hasCallArg(keys: []const CallArgKey, name: []const u8) bool {
-    for (keys) |key| {
-        if (std.ascii.eqlIgnoreCase(key.name, name)) return true;
+fn hasCallArg(args: []const CallArg, name: []const u8) bool {
+    for (args) |arg| {
+        if (std.ascii.eqlIgnoreCase(arg.name, name)) return true;
     }
     return false;
 }
@@ -94,7 +94,7 @@ fn checkCallRequiredInputs(wf: *const Workflow, list: *DiagnosticList) void {
             // at dispatch time; RW001 reports that contradiction on the
             // definition side, so the call is not at fault here.
             if (input.default_value != null) continue;
-            if (hasCallArg(job.with_keys, input.name)) continue;
+            if (hasCallArg(job.with_args, input.name)) continue;
 
             reportMissingInput(job, uses, input.name, list);
         }
