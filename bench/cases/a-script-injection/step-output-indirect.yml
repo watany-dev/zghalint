@@ -1,0 +1,20 @@
+# 前段 step が untrusted を output へ出し、後段が `steps.<id>.outputs.*` で使う
+# 間接汚染。前段は env 束縛なので安全形であり、指摘は後段だけに出るのが正。
+# bench:expect template-injection@20 actionlint=-
+name: indirect via step output
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Capture the title into an output
+        id: capture
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+      - name: Use the captured title
+        run: echo ${{ steps.capture.outputs.title }}

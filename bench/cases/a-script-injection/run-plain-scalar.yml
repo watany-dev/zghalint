@@ -1,0 +1,13 @@
+# bench:expect template-injection@13
+name: plain scalar
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo the title
+        run: echo ${{ github.event.issue.title }}

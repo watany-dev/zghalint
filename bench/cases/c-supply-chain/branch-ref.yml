@@ -1,0 +1,14 @@
+# bench:expect unpinned-action@12
+name: branch ref
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out from a moving branch
+        uses: actions/checkout@main
+      - name: Build
+        run: make build

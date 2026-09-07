@@ -1,0 +1,16 @@
+# bench:expect excessive-permissions@11 zghalint=PERM001 zizmor=- actionlint=-
+name: job widens
+on: push
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - name: Release
+        run: make release

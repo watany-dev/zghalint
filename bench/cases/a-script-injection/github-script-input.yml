@@ -1,0 +1,16 @@
+# bench:expect template-injection@16
+name: github-script
+on:
+  issue_comment:
+    types: [created]
+permissions: {}
+jobs:
+  reply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run a script with the comment inlined
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            console.log("${{ github.event.comment.body }}")

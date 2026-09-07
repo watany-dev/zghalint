@@ -1,0 +1,15 @@
+# SHA は v4.2.2 のものだが、コメントは v3.0.0 を名乗る。
+# bench:expect sha-comment-mismatch@13 zghalint=- zizmor=- actionlint=-
+name: sha comment mismatch
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out at a SHA whose comment lies
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3.0.0
+        with:
+          persist-credentials: false

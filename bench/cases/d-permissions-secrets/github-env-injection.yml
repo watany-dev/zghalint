@@ -1,0 +1,16 @@
+# bench:expect github-env-injection@14 zghalint=SEC008 zizmor=- actionlint=-
+name: github env injection
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Persist the title into the environment
+        run: echo "TITLE=${{ github.event.issue.title }}" >> "$GITHUB_ENV"
+      - name: Use it
+        run: echo "$TITLE"

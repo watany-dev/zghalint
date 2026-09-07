@@ -1,0 +1,21 @@
+# bench:expect untrusted-checkout@20
+name: dispatch ref
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ref to build
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the requested ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false

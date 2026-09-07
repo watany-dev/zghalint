@@ -1,0 +1,19 @@
+# 同一リポジトリからの PR に限定するガード付き。fork のコードは checkout されない。
+# bench:forbid untrusted-checkout
+name: pr_target guarded
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the pull request head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false

@@ -1,0 +1,17 @@
+# bench:expect template-injection@17 actionlint=-
+name: dispatch inputs
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deploy target
+        required: true
+        type: string
+permissions: {}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Deploy to the requested target
+        run: ./deploy.sh ${{ inputs.target }}

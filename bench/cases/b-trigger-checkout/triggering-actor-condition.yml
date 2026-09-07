@@ -1,0 +1,19 @@
+# `github.triggering_actor` 版。actor 名でのボット判定は再実行で詐称できる。
+# bench:expect bot-condition@11
+name: triggering actor condition
+on:
+  pull_request_target:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  automerge:
+    if: github.triggering_actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Approve the bot pull request
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

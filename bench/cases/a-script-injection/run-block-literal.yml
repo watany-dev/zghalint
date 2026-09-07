@@ -1,0 +1,17 @@
+# 位置は補間そのものの行を正とする。actionlint は `run:` キーの行を指すため
+# 位置一致だけが落ちる (検出そのものはできている)。
+# bench:expect template-injection@17
+name: block literal
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo the title
+        run: |
+          echo "start"
+          echo "${{ github.event.issue.title }}"

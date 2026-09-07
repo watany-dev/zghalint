@@ -1,0 +1,18 @@
+# checkout が `.git/config` に残した資格情報を artifact ごと持ち出す形。
+# bench:expect artipacked@13
+name: artipacked
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out with persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Upload the whole workspace
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: workspace
+          path: .

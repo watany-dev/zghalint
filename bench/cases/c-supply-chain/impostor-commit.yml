@@ -1,0 +1,15 @@
+# 到達不能な SHA (impostor commit) の判定には upstream の ref 一覧が要る。
+# bench:expect impostor-commit@15 zghalint=SC008 zizmor=impostor-commit actionlint=-
+# bench:skip zghalint:impostor-commit --offline では upstream の ref を引けない
+# bench:skip zizmor:impostor-commit --offline では upstream の ref を引けない
+name: impostor commit
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out at an unreachable SHA
+        uses: actions/checkout@0000000000000000000000000000000000000000

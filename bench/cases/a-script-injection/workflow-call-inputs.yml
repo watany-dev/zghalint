@@ -1,0 +1,18 @@
+# 呼び出し元が渡す `inputs.*`。zizmor は untrusted として報告する。
+# bench:expect template-injection@18 actionlint=-
+name: workflow_call inputs
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Deploy target
+        required: true
+        type: string
+permissions: {}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Deploy to the caller supplied target
+        run: ./deploy.sh ${{ inputs.target }}
