@@ -91,7 +91,7 @@ rule モジュールは結果を受け取りキャッシュに格納するロジ
 |-----|------|
 | `isActive() bool` | prefetch が fetch を issue すべきかの判定 |
 | `setCached*(...)` | prefetch が結果を注入する入口 |
-| `getArenaAllocator()` | prefetch が rule 寿命の allocator を借りるためのヘルパ |
+| `cacheAllocator()` | prefetch がキャッシュ寿命の allocator を借りるためのヘルパ |
 
 prefetch から REST を直接叩く経路は `rest_fallback.fetch*` を使う。
 旧設計の `fetch*Pub(...)` ブリッジは `rest_fallback` 抽出に伴い廃止した。

@@ -1,0 +1,34 @@
+# bench:forbid broad-write-permission
+# bench:forbid template-injection
+# bench:forbid excessive-permissions
+# bench:forbid unpinned-action
+# bench:forbid missing-timeout
+# bench:forbid expression-syntax
+name: Code scanning
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Initialize
+        uses: github/codeql-action/init@4e94bd11f71e507f7f87df81788dff88d1dacbfb
+        with:
+          languages: javascript
+      - name: Analyze
+        uses: github/codeql-action/analyze@4e94bd11f71e507f7f87df81788dff88d1dacbfb

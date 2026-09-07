@@ -1,0 +1,6 @@
+# bench:expect unknown-action-runtime@5 actionlint=-
+name: action with an unsupported runs.using
+description: runs an unknown runtime
+runs:
+  using: rust
+  main: main.rs

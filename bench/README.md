@@ -24,6 +24,7 @@ bench/
   cases/<category>/<name>.yml         # ワークフローのケース
   cases/<category>/<name>.action.yml  # composite action のケース
   cases/<category>/<name>.dependabot.yml  # dependabot 設定のケース
+  cases/<category>/<name>/            # 複数ファイルのケース (下記)
 ```
 
 拡張子は `.yml` / `.yaml` のどちらでもよい。
@@ -32,6 +33,24 @@ bench/
 一時ディレクトリへ `action.yml` として複製される — zizmor はファイル名でしか
 composite action を認識しないため。`*.dependabot.yml` も同じく
 `dependabot.yml` として複製される。行番号は複製前後で変わらない。
+
+### 複数ファイルのケース
+
+カテゴリ直下のディレクトリは、それ自体が 1 ケースになる。ディレクトリ全体が
+一時領域へ複製され、そこをリポジトリのルートとしてツールを実行するので、
+`uses: ./.github/workflows/reusable.yml` や `uses: ./tool` が実際のリポジトリ
+と同じように解決される。
+
+```
+cases/g-reusable/missing-required-input/
+  .github/workflows/caller.yml    # bench: ヘッダを持つ = エントリファイル
+  .github/workflows/reusable.yml  # 呼ばれる側
+```
+
+`bench:` ヘッダを持つファイルはツリー内にちょうど 1 つだけ置く。それが
+ツールへ渡すエントリファイルになる。複製時に空の `.git` を作る —
+actionlint はこれでプロジェクトルートを判定しており、無いとローカル
+`uses:` の検査を丸ごと省くため。
 
 ## 期待値ヘッダ
 
@@ -63,7 +82,11 @@ composite action を認識しないため。`*.dependabot.yml` も同じく
 3 ツールすべての対応づけが必要。よく使う種別は `scripts/bench.py` の
 `DEFAULT_KIND_MAP` に登録済みで、ヘッダ側の指定がそれを上書きする。
 どちらにもない種別はエラーになる — 対応づけ漏れが黙って recall 0 になるのを
-防ぐため。
+防ぐため。登録済みの対応表は次で出せる (ここに転記すると腐るため置かない)。
+
+```bash
+python3 scripts/bench.py --kinds
+```
 
 ### `bench:forbid <kind> [<tool>=<IDs>]...`
 
@@ -96,15 +119,18 @@ skip されない。
 
 各ツールは 60 秒でタイムアウトし、クラッシュ・タイムアウト・出力が
 パースできない場合は「実行エラー」として記録する — 黙って 0 件として
-採点しない (堅牢性の観察点)。
+採点しない (堅牢性の観察点)。zghalint の終了コード 2 (「そのファイルを
+lint できなかった」) も同じ扱いにする。JSON 自体は正常に出るため、
+そうしないと解析を拒否したファイルが「指摘なし」に化ける。
 
 `--fail-on-fp` を付けると、zghalint が `forbid` に反した時点で非ゼロ終了
 する。CI で誤検出の混入を止める用途。
 
 ## ケースを追加する
 
-1. カテゴリのディレクトリに `.yml` を置く。
-2. ヘッダに `bench:expect` / `bench:forbid` を書く。
+1. カテゴリのディレクトリに `.yml` を置く (複数ファイルならディレクトリごと)。
+2. ヘッダに `bench:expect` / `bench:forbid` を書く。ヘッダ行も本文の行数に
+   数えるので、`@<line>` を書いた後にヘッダを増やすとずれる。
 3. `python3 scripts/bench.py --case '<category>/*'` で意図どおり採点されるか
    確認する。行番号は実際の出力に合わせる。
 4. `ruff check scripts/ && ruff format --check scripts/` を通す。

@@ -1,0 +1,15 @@
+# bench:forbid expression-syntax
+# bench:forbid argument-type
+name: property access on a function result
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read a field out of a parsed JSON literal
+        run: echo "${{ fromJSON('{"tag":"v1"}').tag }}"
+      - name: Index into a parsed JSON array
+        run: echo "${{ fromJSON('[1,2,3]')[0] }}"

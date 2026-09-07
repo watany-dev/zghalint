@@ -96,7 +96,7 @@ comptime {
     }
 }
 
-const LabelRef = struct {
+pub const LabelRef = struct {
     value: []const u8,
     value_span: ?Span,
 };
@@ -105,11 +105,11 @@ const LabelRef = struct {
 /// scalar and the sequence form alike, so the rules never have to know which
 /// one the user wrote; the `runs_on` scalar is the fallback for hand-built
 /// `Job` values that only set it.
-const LabelIterator = struct {
+pub const LabelIterator = struct {
     job: *const Job,
     index: usize = 0,
 
-    fn next(self: *LabelIterator) ?LabelRef {
+    pub fn next(self: *LabelIterator) ?LabelRef {
         if (self.job.runs_on_labels.len > 0) {
             if (self.index >= self.job.runs_on_labels.len) return null;
             const i = self.index;
@@ -132,7 +132,7 @@ const LabelIterator = struct {
     }
 };
 
-fn runsOnLabels(job: *const Job) LabelIterator {
+pub fn runsOnLabels(job: *const Job) LabelIterator {
     return .{ .job = job };
 }
 

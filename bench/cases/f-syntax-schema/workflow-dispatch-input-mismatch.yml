@@ -1,0 +1,18 @@
+# bench:expect workflow-dispatch-inputs@9
+name: workflow_dispatch input mismatch
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: prod
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

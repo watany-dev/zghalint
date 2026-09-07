@@ -1,0 +1,16 @@
+# bench:forbid expression-syntax
+name: deeply nested expression that must not blow the parser stack
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ ((((((((((github.ref == 'refs/heads/main')))))))))) }}
+    steps:
+      - name: Build
+        run: echo "${{ format('{0}', format('{0}', format('{0}', github.sha))) }}"

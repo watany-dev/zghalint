@@ -1,0 +1,15 @@
+# bench:expect workflow-call-input-values@14 actionlint=-
+# bench:expect workflow-call-input-values@15
+name: caller passing an unknown input and a wrong type
+on: push
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable.yml
+    with:
+      environment: staging
+      dry_run: yes-please
+      unknown_input: 1

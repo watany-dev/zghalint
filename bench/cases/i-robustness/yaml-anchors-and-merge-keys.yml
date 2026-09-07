@@ -1,0 +1,29 @@
+# bench:expect missing-timeout@24
+# bench:forbid unknown-key
+# bench:forbid mapping-value-type
+# bench:skip zghalint YAML アンカー/エイリアスは未対応 (#64)
+# bench:skip actionlint alias node を解決せず defaults を型エラーとして弾く
+name: workflow built out of anchors, aliases and a merge key
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+defaults: &defaults
+  run:
+    shell: bash
+jobs:
+  build:
+    defaults: *defaults
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build
+  test:
+    defaults: *defaults
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test
+        run: make test

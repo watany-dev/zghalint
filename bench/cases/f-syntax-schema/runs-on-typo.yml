@@ -1,0 +1,12 @@
+# bench:expect unknown-runner-label@8
+name: runs-on typo
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubunt-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

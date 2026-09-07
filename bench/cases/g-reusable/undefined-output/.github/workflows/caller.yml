@@ -1,0 +1,17 @@
+# bench:expect workflow-call-outputs@17 actionlint=expression
+name: caller reading an output the callee never declares
+on: push
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable.yml
+  use:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [call]
+    steps:
+      - name: Print
+        run: echo "${{ needs.call.outputs.digest }}"

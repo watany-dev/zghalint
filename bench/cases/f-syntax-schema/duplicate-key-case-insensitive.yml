@@ -1,0 +1,15 @@
+# bench:expect duplicate-key@12
+name: duplicate key differing in case
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TOKEN: a
+      token: b
+    steps:
+      - name: Build
+        run: make build

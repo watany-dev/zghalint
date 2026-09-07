@@ -1,0 +1,15 @@
+# bench:expect exclusive-event-filters@6
+name: branches with branches-ignore
+on:
+  push:
+    branches: [main]
+    branches-ignore: [dev]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

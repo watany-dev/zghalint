@@ -50,6 +50,15 @@ fn stepCheck(comptime candidates: []const Rule, comptime id: []const u8) StepChe
     @compileError("no rule with id " ++ id);
 }
 
+/// The same guarantee for a rule wired in through an exported entry point
+/// instead of its `check_step` field.
+fn requireRule(comptime candidates: []const Rule, comptime id: []const u8) void {
+    for (candidates) |rule| {
+        if (std.mem.eql(u8, rule.id, id)) return;
+    }
+    @compileError("no rule with id " ++ id);
+}
+
 /// The step rules that still hold with no workflow and no job around them.
 /// Every entry reads nothing but the step itself and on-disk data. The
 /// omissions are deliberate:
@@ -64,7 +73,12 @@ fn stepCheck(comptime candidates: []const Rule, comptime id: []const u8) StepChe
 ///     step does not control.
 const composite_step_checks = [_]StepCheck{
     stepCheck(&security.security_rules, "SEC001"),
-    stepCheck(&security.security_rules, "SEC002"),
+    // SEC002 is workflow-scoped (its taint sources include the triggers and the
+    // sibling steps), so it exports a step-level entry point of its own.
+    blk: {
+        requireRule(&security.security_rules, "SEC002");
+        break :blk &security.checkStandaloneStepScriptInjection;
+    },
     stepCheck(&security.security_rules, "SEC003"),
     stepCheck(&security.security_rules, "SEC006"),
     stepCheck(&security.security_rules, "SEC008"),
@@ -92,10 +106,10 @@ pub fn checkCompositeSteps(root: Mapping, steps_node: Node, list: *DiagnosticLis
         else => return,
     };
 
-    // The document lint path hands rules no arena, so this one owns the memory
-    // the parsed steps and the overlays need. Diagnostic messages come from the
-    // list's own arena and outlive it.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // Scratch for the parsed steps and the overlays: diagnostic messages come
+    // from the list's own arena and outlive it, and the list's allocator keeps
+    // this under the run's leak detection (#159).
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 

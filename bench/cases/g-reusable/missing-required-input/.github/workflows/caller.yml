@@ -1,0 +1,12 @@
+# bench:expect workflow-call-required-inputs@10
+name: caller without a required input
+on: push
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable.yml
+    with:
+      environment: staging

@@ -1,0 +1,12 @@
+# bench:expect unknown-key@4
+name: unknown top-level key
+on: push
+prmissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

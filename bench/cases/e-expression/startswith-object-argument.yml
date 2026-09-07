@@ -1,0 +1,13 @@
+# bench:expect argument-type@12
+name: startsWith on an object
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Guard on the event object
+        if: ${{ startsWith(github.event, 'a') }}
+        run: make build

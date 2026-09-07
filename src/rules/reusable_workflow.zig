@@ -92,7 +92,7 @@ fn checkCallRequiredInputs(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         const uses = job.uses orelse continue;
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(list.allocator);
         defer arena.deinit();
         const called = called_workflow.load(arena.allocator(), uses) orelse continue;
 
@@ -228,7 +228,7 @@ fn checkCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
         const uses = job.uses orelse continue;
         if (job.with_args.len == 0) continue;
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(list.allocator);
         defer arena.deinit();
         const called = called_workflow.load(arena.allocator(), uses) orelse continue;
 
@@ -285,7 +285,7 @@ fn checkCallSecrets(wf: *const Workflow, list: *DiagnosticList) void {
             if (config == .inherit) continue;
         }
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(list.allocator);
         defer arena.deinit();
         const called = called_workflow.load(arena.allocator(), uses) orelse continue;
         // A called workflow that declares no `workflow_call.secrets` has no
@@ -426,7 +426,7 @@ const NeedsOutputResolver = struct {
         if (!eqlId(identSegment(iter.next()) orelse return, "outputs")) return;
         const output = identSegment(iter.next()) orelse return;
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(self.list.allocator);
         defer arena.deinit();
         const called = called_workflow.load(arena.allocator(), uses) orelse return;
         if (hasName(called.outputs, output)) return;
@@ -474,9 +474,9 @@ fn callsLocalWorkflow(wf: *const Workflow) bool {
 }
 
 fn checkCallOutputs(wf: *const Workflow, list: *DiagnosticList) void {
-    // The engine hands rules no arena (#159), so this one owns the memory the
-    // expression parser needs and frees it once the workflow is scanned.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // Scratch for the expression parser: no diagnostic points at it, and
+    // the list's allocator keeps it under the run's leak detection (#159).
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 

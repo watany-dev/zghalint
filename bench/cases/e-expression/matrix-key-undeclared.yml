@@ -1,0 +1,15 @@
+# bench:expect undeclared-matrix-key@15
+name: matrix key undeclared
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Build
+        run: make build ARCH=${{ matrix.arch }}

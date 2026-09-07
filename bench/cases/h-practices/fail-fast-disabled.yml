@@ -1,0 +1,19 @@
+# bench:expect fail-fast-disabled@14
+name: matrix that keeps burning runners after the first failure
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [18, 20, 22]
+    steps:
+      - name: Test
+        run: echo "test on ${{ matrix.version }}"

@@ -1,0 +1,13 @@
+# bench:expect workflow-call-secrets@11
+# bench:expect workflow-call-secrets@13
+name: caller omitting a required secret
+on: push
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable.yml
+    secrets:
+      unrelated: ${{ secrets.OTHER }}

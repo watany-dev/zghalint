@@ -1,0 +1,14 @@
+# bench:expect undefined-env@13
+name: env key never defined
+on: push
+permissions:
+  contents: read
+env:
+  DEFINED: 1
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Print
+        run: echo "${{ env.NEVER_DEFINED }}"
