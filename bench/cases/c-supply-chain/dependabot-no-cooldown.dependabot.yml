@@ -1,5 +1,4 @@
-# dependabot.yml は actionlint が読まないため actionlint だけ skip される。
-# bench:expect dependabot-cooldown@5
+# bench:expect dependabot-cooldown@4
 version: 2
 updates:
   - package-ecosystem: github-actions

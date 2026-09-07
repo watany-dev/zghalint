@@ -1,4 +1,3 @@
-# 安全形: OIDC に必要な最小の権限だけを持つジョブ。
 # bench:forbid excessive-permissions
 name: oidc
 on: push

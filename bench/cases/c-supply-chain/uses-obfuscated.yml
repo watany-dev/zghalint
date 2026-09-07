@@ -1,5 +1,4 @@
-# 大文字混在・`/` 重複・`.git` 付きの難読化された `uses:`。
-# bench:expect obfuscated-uses@13 zghalint=DEP003 zizmor=- actionlint=action
+# bench:expect obfuscated-uses@12 zghalint=DEP003 zizmor=- actionlint=action
 name: obfuscated uses
 on: push
 permissions:

@@ -1,4 +1,3 @@
-# 安全形: 完全 SHA + バージョンコメント。
 # bench:forbid unpinned-action
 name: full sha
 on: push

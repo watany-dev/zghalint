@@ -1,4 +1,3 @@
-# 安全形: digest 固定のイメージ。
 # bench:persona pedantic
 # bench:forbid unpinned-image zghalint=SC001 zizmor=unpinned-images actionlint=-
 name: container digest
