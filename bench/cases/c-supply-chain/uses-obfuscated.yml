@@ -1,0 +1,12 @@
+# bench:expect obfuscated-uses@12 zghalint=DEP003 zizmor=- actionlint=action
+name: obfuscated uses
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out through a doubled path separator
+        uses: actions//checkout@v4

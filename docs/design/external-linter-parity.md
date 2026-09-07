@@ -93,6 +93,41 @@ zizmor pedantic の `undocumented-permissions` (1 件)。スタイル規約寄�
 YAML コメントの有無を強制するルールは zghalint の診断カテゴリに馴染まないため
 採用しない。
 
+#### G5 (#273). 汚染源が `github.event.*` に限られている — 要ルール改善
+
+`bench/cases/a-script-injection/` で発覚した SEC002 の FN 4 件。zizmor は
+いずれも `template-injection` として検出する。
+
+| ケース | 汚染源 |
+|---|---|
+| `dispatch-inputs.yml` | `workflow_dispatch` の `inputs.*` |
+| `workflow-call-inputs.yml` | `workflow_call` の `inputs.*` |
+| `tojson-event.yml` | `toJSON(github.event)` (フィールド指定なしの丸ごと展開) |
+| `step-output-indirect.yml` | 汚染値を書いた `steps.<id>.outputs.*` の再展開 |
+
+前 3 つは汚染源テーブルの追加で済む。4 つ目はステップ間のデータフロー追跡が
+要るため段階が 1 つ上がる。
+
+#### G6 (#274). `runs-on` が配列のとき SEC020 が発火しない — 要ルール改善
+
+`bench/cases/b-trigger-checkout/self-hosted-fork-trigger.yml`。
+`runs-on: self-hosted` (スカラー) では発火するが
+`runs-on: [self-hosted, linux]` では発火しない。配列要素の走査漏れ。
+
+#### G7 (#275). `docker://` 形式の `uses:` を SC001 が見ていない — 要ルール改善
+
+`bench/cases/c-supply-chain/docker-uses-no-digest.yml`。
+`uses: docker://alpine:3.19` はコンテナイメージのタグ参照だが、SC001 は
+`container.image` / `services.*.image` しか見ていない。zizmor は pedantic
+persona の `unpinned-images` で検出する。
+
+#### G8 (#276). SEC005 がフォーク判定のガードを見ない (FP) — 要ルール改善
+
+`bench/cases/b-trigger-checkout/pr-target-guarded.yml`。
+`if: github.event.pull_request.head.repo.full_name == github.repository` で
+フォーク由来の実行を除外しているジョブでも SEC005 が発火する。SEC022 は
+同種のガード解析を持っているので、その判定を SEC005 と共有させたい。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -106,6 +141,9 @@ YAML コメントの有無を強制するルールは zghalint の診断カテ�
   誤検出を避ける設計であり、pedantic persona との差分は仕様どおり。
 - zizmor `concurrency-limits` 2 件は zghalint の `BP005` が同じ 2 ファイルを
   指摘済み (parity 達成)。
+- `bench/cases/c-supply-chain/sha-comment-mismatch.yml` (SHA 固定だが末尾の
+  `# vX.Y.Z` コメントが別リリースを名乗る) は 3 ツールとも無反応。共通の
+  盲点としてケースだけ残し、当面は検出しない。
 
 ### 4.4 ルール間の相互作用メモ
 
@@ -118,3 +156,7 @@ PERF001 (キャッシュを足せ) と SEC016 (リリース系でのキャッシ
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
 - [ ] G2: composite action (`action.yml`) の解析サポートを設計する
 - [ ] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
+- [ ] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
+- [ ] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
+- [ ] G7 (#275): SC001 を `uses: docker://...` に対応させる
+- [ ] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する

@@ -1,0 +1,14 @@
+# bench:expect template-injection@14
+# bench:expect dangerous-trigger@4 zghalint=- actionlint=-
+name: pull_request_target title
+on:
+  pull_request_target:
+    types: [opened]
+permissions: {}
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo the pull request title
+        run: echo "${{ github.event.pull_request.title }}"

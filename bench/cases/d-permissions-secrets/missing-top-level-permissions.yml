@@ -1,0 +1,11 @@
+# トップレベル `permissions:` が無いと既定のトークン権限がそのまま渡る。
+# bench:expect excessive-permissions@1
+name: no permissions
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

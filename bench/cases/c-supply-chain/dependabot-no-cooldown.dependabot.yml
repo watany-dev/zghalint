@@ -1,0 +1,7 @@
+# bench:expect dependabot-cooldown@4
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

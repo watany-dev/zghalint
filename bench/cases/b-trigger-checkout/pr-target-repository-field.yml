@@ -1,0 +1,19 @@
+# `ref` ではなく `repository` を fork へ向ける形 (#218)。
+# bench:expect untrusted-checkout@18
+# bench:expect dangerous-trigger@5
+name: pr_target repository
+on:
+  pull_request_target:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the fork repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          persist-credentials: false

@@ -1,0 +1,17 @@
+# 安全形 (#138): ラベル名や ref 名を `if:` で見るだけならシェルには届かない。
+# bench:forbid template-injection
+# bench:forbid untrusted-input-condition zghalint=SEC006 zizmor=- actionlint=-
+name: label gate
+on:
+  pull_request_target:
+    types: [labeled]
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.event.label.name == 'safe-to-test' && startsWith(github.head_ref, 'release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

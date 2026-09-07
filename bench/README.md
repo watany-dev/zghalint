@@ -23,13 +23,15 @@ python3 scripts/bench.py --json /tmp/b.json # 生スコアも出す
 bench/
   cases/<category>/<name>.yml         # ワークフローのケース
   cases/<category>/<name>.action.yml  # composite action のケース
+  cases/<category>/<name>.dependabot.yml  # dependabot 設定のケース
 ```
 
 拡張子は `.yml` / `.yaml` のどちらでもよい。
 カテゴリは issue #262 の A〜J に対応する (`a-script-injection`,
 `c-supply-chain`, `e-expression`, `j-clean` …)。`*.action.yml` は実行時に
 一時ディレクトリへ `action.yml` として複製される — zizmor はファイル名でしか
-composite action を認識しないため。行番号は複製前後で変わらない。
+composite action を認識しないため。`*.dependabot.yml` も同じく
+`dependabot.yml` として複製される。行番号は複製前後で変わらない。
 
 ## 期待値ヘッダ
 
@@ -75,7 +77,9 @@ composite action を認識しないため。行番号は複製前後で変わら
 出力の skip 表にそのまま載る。
 
 `*.action.yml` のケースでは actionlint が自動で skip される
-(workflow ファイルしか読まないため)。
+(workflow ファイルしか読まないため)。`*.dependabot.yml` のケースでも同じ理由で
+actionlint が自動で skip される。zizmor は dependabot 設定を監査するので
+skip されない。
 
 ### `bench:persona <regular|pedantic|auditor>`
 

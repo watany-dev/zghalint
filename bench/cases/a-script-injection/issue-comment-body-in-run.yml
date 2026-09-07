@@ -1,5 +1,5 @@
 # bench:expect template-injection@15
-# bench:expect untrusted-checkout-ref@19 zghalint=SEC021 zizmor=- actionlint=-
+# bench:expect untrusted-checkout@19
 # bench:forbid expression-syntax
 name: comment triage
 on:

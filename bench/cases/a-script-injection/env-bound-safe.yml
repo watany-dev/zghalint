@@ -1,0 +1,16 @@
+# 安全形: env に束縛して `$VAR` で参照する。3 ツールとも無言が正。
+# bench:forbid template-injection
+name: env bound
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo the title through an env binding
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        run: echo "$TITLE"
