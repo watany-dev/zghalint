@@ -1,31 +1,31 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`015f8b5`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`b499419`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数 | `docs/rules.md` の表は 87 行で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストするようになり、RW001 の欠落も解消した。残る不一致は**見出しの「77 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
-| `src/**/*.zig` | 42,552 行 |
-| ユニットテスト | 1530 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **42 close 済み（77%）** |
-| 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129 で、PR #256 が実装中。引数型検査は #162 |
+| ルール数 | `docs/rules.md` の表は 88 行（EXPR018 追加分）で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストする。残る不一致は**見出しの「77 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
+| `src/**/*.zig` | 43,487 行 |
+| ユニットテスト | 1554 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **43 close 済み（79%）** |
+| 型検査エンジン | T0〜T4 完了（#129 は PR #256 で overlay 接続、close 済み）。EXPR018 引数型検査（#162）も同 PR で完了・close 済み |
 | E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（38 本）と `tests/fixtures/e2e-action/*.yml`（6 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
 | ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241） |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
-| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#256（#129 の overlay 接続）、#249 / #252（Dependabot） |
-| オープン issue | 21 件。内訳は #55 本体 1、#55 の sub-issue 14、parity ラベルだが sub でないもの 2（#162 #254）、形式検証由来のバグ 4（#221〜#224）、その他 2（#135 #159） |
+| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#249 / #252（Dependabot） |
+| オープン issue | 19 件。内訳は #55 本体 1、#55 の sub-issue 12、parity ラベルだが sub でないもの 1（#254）、形式検証由来のバグ 4（#221〜#224）、その他 2（#135 #159） |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
 | 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は修正済みで close 済み。残る反例は #221 / #222（prefetch キャッシュ）、#223（`--fix` の原子性）、#224（二重報告）の 4 件 |
 
 Phase 1（トリガー `on:` 群）と Phase 2（job / step / matrix）は完了済み。
-Phase 3（contextual typing）も存在検証 4 本（#86 #87 #89 #90）が着地し、残るのは
-overlay 接続（#129 = PR #256）と、その先の #162 / #91 / #92 だけになった。
+Phase 3（contextual typing）は T4 overlay 接続（#129）と EXPR018（#162）も PR #256 で着地し、
+残るのは #91 / #92 の 2 件だけになった。
 Phase 4 も基盤の #100（action.yml メタデータ = ACT001〜ACT004）が入り、後続の複数ファイル横断ルールが着手可能になっている。
-実装済みだったルール系 issue（#72 #73 #75 #86 #100 #124 #210 #218 #219 #220）は本回で close 済み。
+実装済みだったルール系 issue（#72 #73 #75 #86 #100 #124 #129 #162 #210 #218 #219 #220）は close 済み。
 
 リポジトリ運用・CI 基盤トラックは完了した。CI は fmt / build / test に加えて
 クロスコンパイル・3 OS スモーク・自リポジトリの dogfooding・外部静的解析（actionlint / zizmor / shellcheck / ruff）・
@@ -57,9 +57,9 @@ RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
 ラベル表は `src/rules/runner.zig` にあり、self-hosted のフリート表記は RUNNER002 / RUNNER003 とも対象外にしてある。
 この matrix 構造は Phase 3 の EXPR011 がそのまま使っている。
 
-### Phase 3: contextual typing（エンジン T4 = #129）— 残り 4 件
+### Phase 3: contextual typing（エンジン T4 = #129）— 残り 2 件
 
-存在検証は 4 本とも実装済み。式の走査は `src/rules/expr_scan.zig` に切り出され、
+存在検証 5 本・T4 overlay 接続・EXPR018 が実装済み。式の走査は `src/rules/expr_scan.zig` に切り出され、
 各 context ルールは同じ形（`<context>_context.zig`）で並んでいる。
 
 | ルール | issue | 実装 | 状態 |
@@ -70,15 +70,15 @@ RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
 | EXPR013 `inputs.<name>` | #89 | `src/rules/inputs_context.zig` | 完了 |
 | EXPR014 `secrets.<name>` | #90 | `src/rules/secrets_context.zig` | 完了 |
 | EXPR017 curated `github.event` overlay | #124 | `src/rules/expr_catalog.zig` | 完了（close 済み） |
+| T4 overlay 接続 | #129 | `src/rules/expr_overlay.zig` | 完了（close 済み、PR #256） |
+| EXPR018 引数型・補間値検査 | #162 | `src/rules/expressions.zig` | 完了（close 済み、PR #256） |
 
 残りの着手順:
 
 | 順 | issue | 内容 | 依存 |
 |---|---|---|---|
-| 1 | #129 | T4: 存在検証 5 本を `expr_check.zig` の `TypeEnv` overlay に接続し、エンジン側へ寄せる | **PR #256 で実装中**。ADR-0009 の二重メンテ期間を閉じる |
-| 2 | #162 | EXPR018 関数の引数型と補間値（object / array / null）の型検査 | #129。loose object（overlay 未接続の context）は診断しない |
-| 3 | #91 | EXPR015 キーごとの context 利用可否 | 式を検証する箇所に「どのキーか」を渡す配線が必要 |
-| 4 | #92 | EXPR016 特殊関数の利用可否 | #91 の配線 |
+| 1 | #91 | EXPR015 キーごとの context 利用可否 | 式を検証する箇所に「どのキーか」を渡す配線が必要。#129 の overlay 接続が前提として完了済み |
+| 2 | #92 | EXPR016 特殊関数の利用可否 | #91 の配線 |
 
 ### Phase 4: action.yml / reusable workflow（複数ファイル横断）
 
@@ -113,13 +113,13 @@ RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | #129（PR #256） | Phase 3 の締め。存在検証 5 本を overlay に寄せ、ADR-0009 の二重メンテを終わらせる。#162 の前提でもある |
-| 2 | `docs/rules.md` の見出し修正 | 表は 87 行で registry と同期済みなのに、見出しが「77 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
+| 1 | `docs/rules.md` の見出し修正 | 表は 88 行で registry と同期済みなのに、見出しが「77 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
+| 2 | #91 | Phase 3 の締め。#129 の overlay 接続は完了済みなので、残るキー別 context 利用可否の配線に着手できる |
 | 3 | #159 | エンジンの arena。Phase 4 でルール追加が再び集中する前に `Rule` シグネチャを固める |
 | 4 | #254 | composite の `runs.steps` を既存ルールに通す。#100 の基盤がそのまま使え、Phase 4 の他ルールより依存が浅い |
 | 5 | #221 / #222 | prefetch キャッシュ。ウォームランが成立しないのは実利用のレイテンシに直結する |
 
-#129 → #162 → #91 → #92 で Phase 3 を閉じ、Phase 4 は #254 → #96 → #105 の順で
+#91 → #92 で Phase 3 を閉じ、Phase 4 は #254 → #96 → #105 の順で
 ローダー基盤を育てる。#135 / #64 / #221〜#224 は競合しないので並行で流す。
 
 ## 4. 進め方の注意
