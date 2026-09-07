@@ -3,6 +3,7 @@ const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
+const spans = @import("spans.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -10,6 +11,7 @@ const DiagnosticList = engine.DiagnosticList;
 const Severity = engine.Severity;
 const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
+const Edit = diagnostics_mod.Edit;
 const Span = yaml_types.Span;
 
 const LabelStatus = enum {
@@ -220,35 +222,36 @@ fn looksLikeHostedLabel(label: []const u8) bool {
     return false;
 }
 
-fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
-    const runs_on = job.runs_on orelse return;
-    if (runs_on.len == 0) return;
+const UnknownLabel = struct {
+    suggestion: ?[]const u8,
+};
 
-    // `runs-on: ${{ matrix.os }}` needs matrix expansion, tracked in #210;
-    // until then an expression is out of scope rather than unknown.
-    if (std.mem.indexOf(u8, runs_on, "${{") != null) return;
-    if (isKnownLabel(runs_on)) return;
+/// Null when the label is fine to leave alone: a known one, or an unknown one
+/// shaped like somebody's self-hosted fleet name, which zghalint cannot
+/// enumerate.
+fn classifyLabel(label: []const u8) ?UnknownLabel {
+    if (label.len == 0) return null;
+    if (isKnownLabel(label)) return null;
 
-    const suggestion = nearestKnownLabel(runs_on);
-    // No near miss and no hosted-runner shape: assume a self-hosted label.
-    if (suggestion == null and !looksLikeHostedLabel(runs_on)) return;
+    const suggestion = nearestKnownLabel(label);
+    if (suggestion == null and !looksLikeHostedLabel(label)) return null;
+    return .{ .suggestion = suggestion };
+}
 
-    const span = job.runs_on_value_span orelse job.span;
-    const hint: ?[]const u8 = if (suggestion) |name|
+fn reportUnknownLabel(
+    unknown: UnknownLabel,
+    span: Span,
+    edits: ?[]const Edit,
+    diag_list: *DiagnosticList,
+) void {
+    const hint: ?[]const u8 = if (unknown.suggestion) |name|
         std.fmt.allocPrint(diag_list.fixAllocator(), "did you mean \"{s}\"?", .{name}) catch null
     else
         null;
-    const fix: ?Fix = if (suggestion != null and job.runs_on_value_span != null) blk: {
-        const edits = diag_list.allocEdit(.{
-            .start_byte = job.runs_on_value_span.?.start_byte,
-            .end_byte = job.runs_on_value_span.?.end_byte,
-            .replacement = suggestion.?,
-        }) orelse break :blk null;
-        break :blk Fix{
-            .description = "Replace with the nearest known runner label",
-            .safety = .unsafe,
-            .edits = edits,
-        };
+    const fix: ?Fix = if (edits) |e| Fix{
+        .description = "Replace with the nearest known runner label",
+        .safety = .unsafe,
+        .edits = e,
     } else null;
 
     diag_list.append(.{
@@ -259,6 +262,155 @@ fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
         .fix_hint = hint,
         .fix = fix,
     }) catch return;
+}
+
+/// Axis name behind a `runs-on` that is exactly one `${{ matrix.<key> }}`.
+/// Anything else — `fromJSON(...)`, another context, an expression pasted into
+/// surrounding text — names labels zghalint cannot recover statically.
+fn matrixAxisKey(runs_on: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, runs_on, " \t");
+    if (trimmed.len < "${{}}".len) return null;
+    if (!std.mem.startsWith(u8, trimmed, "${{")) return null;
+    if (!std.mem.endsWith(u8, trimmed, "}}")) return null;
+
+    const inner = std.mem.trim(u8, trimmed[3 .. trimmed.len - 2], " \t");
+    // A second `}}` means two expressions were concatenated, not one reference.
+    if (std.mem.indexOf(u8, inner, "}}") != null) return null;
+
+    const prefix = "matrix.";
+    if (inner.len <= prefix.len) return null;
+    if (!std.ascii.eqlIgnoreCase(inner[0..prefix.len], prefix)) return null;
+
+    const key = inner[prefix.len..];
+    for (key) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return null;
+    }
+    return key;
+}
+
+/// The labels behind `runs-on: ${{ matrix.os }}` are still written out in
+/// `strategy.matrix`, so a typo among them is detectable. The diagnostic goes
+/// on the matrix value: the `runs-on:` line holds nothing to correct.
+fn checkMatrixRunner(job: *const Job, key: []const u8, diag_list: *DiagnosticList) void {
+    const matrix = (job.strategy orelse return).matrix orelse return;
+
+    for (matrix.axes) |axis| {
+        // `exclude` entries drop combinations, so a label there runs nowhere.
+        if (std.ascii.eqlIgnoreCase(axis.name, "exclude")) continue;
+
+        if (std.ascii.eqlIgnoreCase(axis.name, key)) {
+            for (axis.values) |value| checkMatrixValue(matrix, key, value, diag_list);
+        } else if (std.ascii.eqlIgnoreCase(axis.name, "include")) {
+            for (axis.values) |entry| {
+                const mapping = switch (entry) {
+                    .mapping => |m| m,
+                    else => continue,
+                };
+                for (mapping.entries) |item| {
+                    if (std.ascii.eqlIgnoreCase(item.key.value, key)) {
+                        checkMatrixValue(matrix, key, item.value, diag_list);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn checkMatrixValue(
+    matrix: workflow_types.Matrix,
+    key: []const u8,
+    value: yaml_types.Node,
+    diag_list: *DiagnosticList,
+) void {
+    const scalar = switch (value) {
+        .scalar => |s| s,
+        else => return,
+    };
+    // A matrix value can itself be an expression, which lands back at unexpandable.
+    if (std.mem.indexOf(u8, scalar.value, "${{") != null) return;
+
+    const unknown = classifyLabel(scalar.value) orelse return;
+    const edits: ?[]const Edit = if (unknown.suggestion) |name|
+        matrixLabelEdits(matrix, key, scalar, name, diag_list)
+    else
+        null;
+    reportUnknownLabel(unknown, scalarSpan(scalar), edits, diag_list);
+}
+
+/// The scalar's token span covers the surrounding quotes; diagnostics and
+/// edits address the value itself.
+fn scalarSpan(scalar: yaml_types.Scalar) Span {
+    return spans.Anchor
+        .fromMeta(.{ .value_span = scalar.span, .style = scalar.style }, scalar.span)
+        .at(scalar.value, 0, scalar.value.len);
+}
+
+/// Null for block scalars, whose byte range covers the `|` indicator line as
+/// well, so a byte-level swap cannot rewrite them.
+fn labelEdit(scalar: yaml_types.Scalar, replacement: []const u8) ?Edit {
+    switch (scalar.style) {
+        .literal, .folded => return null,
+        else => {},
+    }
+    const span = scalarSpan(scalar);
+    return .{ .start_byte = span.start_byte, .end_byte = span.end_byte, .replacement = replacement };
+}
+
+/// The axis value and every `exclude` entry naming it are rewritten together:
+/// correcting the axis alone would leave an exclusion matching nothing, which
+/// quietly revives the combination the author removed.
+fn matrixLabelEdits(
+    matrix: workflow_types.Matrix,
+    key: []const u8,
+    scalar: yaml_types.Scalar,
+    replacement: []const u8,
+    diag_list: *DiagnosticList,
+) ?[]const Edit {
+    const alloc = diag_list.fixAllocator();
+    var edits = std.ArrayList(Edit){};
+    edits.append(alloc, labelEdit(scalar, replacement) orelse return null) catch return null;
+
+    for (matrix.axes) |axis| {
+        if (!std.ascii.eqlIgnoreCase(axis.name, "exclude")) continue;
+        for (axis.values) |entry| {
+            const mapping = switch (entry) {
+                .mapping => |m| m,
+                else => continue,
+            };
+            for (mapping.entries) |item| {
+                if (!std.ascii.eqlIgnoreCase(item.key.value, key)) continue;
+                const excluded = switch (item.value) {
+                    .scalar => |s| s,
+                    else => continue,
+                };
+                if (!eqlLabel(excluded.value, scalar.value)) continue;
+                const edit = labelEdit(excluded, replacement) orelse continue;
+                edits.append(alloc, edit) catch return null;
+            }
+        }
+    }
+    return edits.toOwnedSlice(alloc) catch null;
+}
+
+fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
+    const runs_on = job.runs_on orelse return;
+    if (runs_on.len == 0) return;
+
+    if (std.mem.indexOf(u8, runs_on, "${{") != null) {
+        const key = matrixAxisKey(runs_on) orelse return;
+        return checkMatrixRunner(job, key, diag_list);
+    }
+
+    const unknown = classifyLabel(runs_on) orelse return;
+    const edits: ?[]const Edit = if (unknown.suggestion) |name| blk: {
+        const value_span = job.runs_on_value_span orelse break :blk null;
+        break :blk diag_list.allocEdit(.{
+            .start_byte = value_span.start_byte,
+            .end_byte = value_span.end_byte,
+            .replacement = name,
+        });
+    } else null;
+    reportUnknownLabel(unknown, job.runs_on_value_span orelse job.span, edits, diag_list);
 }
 
 pub const rules = [_]Rule{
@@ -486,7 +638,7 @@ test "RUNNER002: deprecated labels are left to RUNNER001" {
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "RUNNER002: expression values are skipped" {
+test "RUNNER002: a matrix expression without a matrix to expand is skipped" {
     const job = Job{
         .id = "build",
         .runs_on = "${{ matrix.os }}",
@@ -536,4 +688,199 @@ test "RUNNER002: autofix end-to-end replaces the typo in YAML source" {
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
     try testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest") != null);
+}
+
+fn runRunner002(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    for (wf.jobs) |*job| checkUnknownRunner(job, &list);
+    return list;
+}
+
+test "RUNNER002: matrix values behind runs-on are expanded and checked" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubunut-latest, ubuntu-latest, macos-99]
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runRunner002(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    const first = diags.get(0);
+    try testing.expectEqualStrings("RUNNER002", first.rule_id);
+    try testing.expectEqualStrings("did you mean \"ubuntu-latest\"?", first.fix_hint.?);
+    // The diagnostic points at the matrix value, not at the `runs-on:` line.
+    try testing.expectEqual(@as(u32, 6), first.span.start_line);
+    try testing.expectEqual(@as(u32, 14), first.span.start_col);
+    try testing.expect(diags.get(1).fix_hint == null);
+    try testing.expectEqual(@as(u32, 6), diags.get(1).span.start_line);
+}
+
+test "RUNNER002: include entries contribute labels too" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        include:
+        \\          - os: windwos-latest
+        \\            node: 20
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runRunner002(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings("did you mean \"windows-latest\"?", diags.get(0).fix_hint.?);
+    try testing.expectEqual(@as(u32, 8), diags.get(0).span.start_line);
+}
+
+test "RUNNER002: exclude entries and known matrix values are left alone" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, "macos-latest", self-hosted]
+        \\        node: [18, 20]
+        \\        exclude:
+        \\          - os: macos-99
+        \\            node: 18
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runRunner002(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "RUNNER002: unexpandable runs-on expressions stay out of scope" {
+    const sources = [_][]const u8{
+        // Another context: nothing in the matrix to expand.
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubunut-latest]
+        \\    runs-on: ${{ inputs.os }}
+        \\    steps:
+        \\      - run: echo hi
+        ,
+        // Concatenation: the label is not the matrix value itself.
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubunut-latest]
+        \\    runs-on: ${{ matrix.os }}-4-cores
+        \\    steps:
+        \\      - run: echo hi
+        ,
+        // The axis holds an expression, not a label.
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: ${{ fromJSON(needs.setup.outputs.os) }}
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+        ,
+        // A function call is not a plain property reference.
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubunut-latest]
+        \\    runs-on: ${{ format('{0}', matrix.os) }}
+        \\    steps:
+        \\      - run: echo hi
+    };
+
+    for (sources, 0..) |source, i| {
+        var diags = try runRunner002(source);
+        defer diags.deinit();
+
+        testing.expectEqual(@as(usize, 0), diags.len()) catch |err| {
+            std.debug.print("source {d} unexpectedly flagged\n", .{i});
+            return err;
+        };
+    }
+}
+
+test "RUNNER002: matrix autofix rewrites the value, not the runs-on line" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: ["ubunut-latest"]
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnknownRunner }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 1), result.edits_applied);
+    // The quotes around the value survive the replacement.
+    try testing.expect(std.mem.indexOf(u8, result.content, "os: [\"ubuntu-latest\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ${{ matrix.os }}") != null);
+}
+
+test "RUNNER002: the autofix rewrites the matching exclude entry too" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, windwos-latest]
+        \\        node: [18, 20]
+        \\        exclude:
+        \\          - os: windwos-latest
+        \\            node: 18
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnknownRunner }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 2), result.edits_applied);
+    // Leaving the exclusion behind would revive the combination it removed.
+    try testing.expect(std.mem.indexOf(u8, result.content, "windwos") == null);
+    try testing.expect(std.mem.indexOf(u8, result.content, "- os: windows-latest") != null);
 }
