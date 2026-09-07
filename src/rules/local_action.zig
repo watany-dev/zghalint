@@ -125,7 +125,7 @@ fn load(alloc: Allocator, root: []const u8, uses_path: []const u8) Resolution {
         // 1MiB is far above any real action manifest; a larger file is
         // treated as unreadable rather than parsed.
         const source = std.fs.cwd().readFileAlloc(alloc, path, 1024 * 1024) catch continue;
-        return .{ .found = parseMeta(alloc, source) };
+        return .{ .found = parseMeta(alloc, source) orelse return .unavailable };
     }
 
     return .not_found;
@@ -138,21 +138,25 @@ fn relativeDir(uses_path: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, uses_path, "./")) return null;
     const rel = uses_path["./".len..];
 
-    var it = std.mem.splitScalar(u8, rel, '/');
+    // Windows treats `\\` as a separator too, so splitting on `/` alone would
+    // let `./..\\..\\etc` through the escape guard.
+    var it = std.mem.splitAny(u8, rel, "/\\");
     while (it.next()) |segment| {
         if (std.mem.eql(u8, segment, "..")) return null;
     }
     return rel;
 }
 
-/// A manifest that does not parse yields an empty `Meta`, which reports
-/// nothing: ACT00x already covers a malformed `action.yml` at its own path.
-fn parseMeta(alloc: Allocator, source: []const u8) Meta {
+/// Null when the manifest does not parse: the caller turns that into
+/// `.unavailable` so DEP004 stays silent instead of reading an empty `Meta`
+/// and flagging every `with:` key. ACT00x already covers a malformed
+/// `action.yml` at its own path.
+fn parseMeta(alloc: Allocator, source: []const u8) ?Meta {
     var parser = yaml_parser.Parser.init(alloc, source);
-    const root = parser.parse() catch return .{};
+    const root = parser.parse() catch return null;
     const map = switch (root) {
         .mapping => |m| m,
-        else => return .{},
+        else => return null,
     };
 
     var meta = Meta{};
@@ -194,9 +198,18 @@ fn isYamlTrue(value: []const u8) bool {
     return std.ascii.eqlIgnoreCase(value, "true");
 }
 
+/// The runner matches a `with:` key to an `inputs:` entry without regard to
+/// case, so both directions of the comparison do too.
 fn hasInput(inputs: []const Input, name: []const u8) bool {
     for (inputs) |input| {
-        if (std.mem.eql(u8, input.name, name)) return true;
+        if (std.ascii.eqlIgnoreCase(input.name, name)) return true;
+    }
+    return false;
+}
+
+fn containsIgnoreCase(names: []const []const u8, name: []const u8) bool {
+    for (names) |candidate| {
+        if (std.ascii.eqlIgnoreCase(candidate, name)) return true;
     }
     return false;
 }
@@ -282,7 +295,7 @@ fn checkWith(step: *const Step, meta: Meta, list: *DiagnosticList) void {
     for (meta.inputs) |input| {
         if (!input.required or input.has_default) continue;
         if (step.with) |with| {
-            if (with.get(input.name) != null) continue;
+            if (containsIgnoreCase(with.keys(), input.name)) continue;
         }
 
         const message = std.fmt.allocPrint(
@@ -340,6 +353,7 @@ test "relativeDir strips ./ and rejects escapes" {
     try testing.expect(relativeDir("../shared") == null);
     try testing.expect(relativeDir("./a/../../etc") == null);
     try testing.expect(relativeDir("actions/checkout@v4") == null);
+    try testing.expect(relativeDir("./..\\..\\etc") == null);
 }
 
 /// Runs DEP004 against a temporary repository root. Module state is saved and
@@ -482,6 +496,53 @@ test "DEP004: required input without a default must be passed" {
 
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expect(std.mem.indexOf(u8, list.get(0).message, "token") != null);
+}
+
+test "DEP004: a manifest that is not a mapping reports nothing" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write(".github/actions/bad/action.yml",
+        \\- not
+        \\- a mapping
+        \\
+    );
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    try with.put("version", "1");
+
+    const step = Step{ .uses = ActionRef.parse("./.github/actions/bad"), .with = with };
+    var list = runStep(&step);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: with keys match inputs case-insensitively" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write(".github/actions/setup/action.yml",
+        \\name: Setup
+        \\description: d
+        \\inputs:
+        \\  version:
+        \\    description: v
+        \\    required: true
+        \\runs:
+        \\  using: node24
+        \\  main: index.js
+        \\
+    );
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    try with.put("Version", "1");
+
+    const step = Step{ .uses = ActionRef.parse("./.github/actions/setup"), .with = with };
+    var list = runStep(&step);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.len());
 }
 
 test "DEP004: docker args and entrypoint are not inputs" {

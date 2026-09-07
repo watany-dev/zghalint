@@ -538,12 +538,27 @@ fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
     return false;
 }
 
-/// The repository root, i.e. the nearest ancestor of the first linted file
-/// that holds a `.git`. Both the PERF001 lockfile probe and DEP004's local
-/// action lookups resolve paths against it, so it is computed once.
+/// The repository root, i.e. the nearest ancestor of the linted files that
+/// holds a `.git`. Both the PERF001 lockfile probe and DEP004's local action
+/// lookups resolve paths against it, so it is computed once.
+///
+/// Null when the arguments span several repositories: pinning every `uses: ./…`
+/// to one of them would make DEP004 report missing manifests for the others.
 fn resolveWorkspaceRoot(arena: std.mem.Allocator, files: []const []const u8) ?[]const u8 {
     const hint = if (files.len > 0) files[0] else ".";
-    return zghalint.workspace.findWorkspaceRoot(arena, hint) catch null;
+    const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch null orelse return null;
+
+    // Files in a directory already checked cannot resolve to another root, so
+    // the common case (one directory of workflows) costs a single walk.
+    var last_dir = std.fs.path.dirname(hint) orelse ".";
+    for (files) |file| {
+        const dir = std.fs.path.dirname(file) orelse ".";
+        if (std.mem.eql(u8, dir, last_dir)) continue;
+        last_dir = dir;
+        const other = zghalint.workspace.findWorkspaceRoot(arena, file) catch return null;
+        if (!std.mem.eql(u8, other, root)) return null;
+    }
+    return root;
 }
 
 /// Errors are swallowed: PERF001 simply emits diagnostics without a fix when
