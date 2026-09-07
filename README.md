@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **69 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **76 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 
@@ -134,22 +134,23 @@ Missing timeouts, step naming, deprecated actions, cross-platform shell, concurr
 Overly broad scopes, missing job-level permissions, unknown scope names and
 invalid permission levels.
 
-### Expression Validation (10 rules)
+### Expression Validation (12 rules)
 
-`${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions.
+`${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions, `steps.<id>` resolution.
 
 ### Dependencies (3 rules)
 
 Dependabot cooldown configuration, insecure external code execution settings,
 `uses:` reference format for actions and reusable workflow calls.
 
-### Runner (1 rule)
+### Runner (2 rules)
 
-Deprecated or retired `runs-on:` label detection.
+Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
+detection (typos such as `ubunut-latest`).
 
-### Syntax (13 rules)
+### Syntax (17 rules)
 
-Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency.
+Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `workflow_dispatch` input definitions.
 
 ## Configuration
 
@@ -173,6 +174,13 @@ rules:
   PERF001:
     node_cache_manager: pnpm     # one of: npm, yarn, pnpm
     python_cache_manager: poetry # one of: pip, pipenv, poetry
+
+# RUNNER002 knows the GitHub-hosted runner labels but not your self-hosted
+# fleet. List the labels it should accept as known.
+runner:
+  labels:
+    - ubuntu-nvidia
+    - build-box
 
 # Ignore specific files
 ignore:

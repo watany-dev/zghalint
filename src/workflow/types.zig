@@ -21,6 +21,14 @@ pub const EnvKey = struct {
     span: yaml_types.Span,
 };
 
+/// A single key of a job-level `outputs:` mapping, kept so that EXPR012 can
+/// verify `needs.<job>.outputs.<name>` references and point the diagnostic at
+/// the declaring key.
+pub const OutputKey = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 pub const ScalarValueMeta = struct {
     value_span: yaml_types.Span,
     style: yaml_types.ScalarStyle,
@@ -161,9 +169,18 @@ pub const EventFilter = struct {
     spans: EventFilterSpans = .{},
 };
 
+/// One key written under an event mapping, in source order. SYN011 checks the
+/// names the `EventFilter` struct does not model, so it needs the raw list.
+pub const EventConfigKey = struct {
+    name: []const u8,
+    span: yaml_types.Span,
+};
+
 pub const ScheduleEntry = struct {
     cron: []const u8,
     cron_span: yaml_types.Span,
+    timezone: ?[]const u8 = null,
+    timezone_span: ?yaml_types.Span = null,
 };
 
 pub const CallableInputType = enum {
@@ -193,6 +210,57 @@ pub const WorkflowCallInputProblem = struct {
     kind: WorkflowCallInputProblemKind,
     input_name: []const u8,
     /// Invalid type name, or declared type name for `default_type_mismatch`.
+    detail: []const u8,
+    span: yaml_types.Span,
+};
+
+/// The `type:` values `workflow_dispatch` accepts. `workflow_call` uses the
+/// narrower `CallableInputType`: `choice` and `environment` are dispatch-only,
+/// because only the manual run form can render a picker.
+pub const DispatchInputType = enum {
+    string,
+    boolean,
+    number,
+    choice,
+    environment,
+
+    pub fn fromString(s: []const u8) ?DispatchInputType {
+        const map = std.StaticStringMap(DispatchInputType).initComptime(.{
+            .{ "string", .string },
+            .{ "boolean", .boolean },
+            .{ "number", .number },
+            .{ "choice", .choice },
+            .{ "environment", .environment },
+        });
+        return map.get(s);
+    }
+};
+
+pub const DispatchInputDef = struct {
+    name: []const u8,
+    name_span: yaml_types.Span,
+    /// Null when `type:` is absent (GitHub defaults to `string`) or invalid.
+    input_type: ?DispatchInputType = null,
+    type_span: ?yaml_types.Span = null,
+    options: []const []const u8 = &.{},
+    default_value: ?[]const u8 = null,
+    default_span: ?yaml_types.Span = null,
+};
+
+pub const WorkflowDispatchInputProblemKind = enum {
+    invalid_type,
+    missing_options,
+    empty_options,
+    options_without_choice,
+    default_not_in_options,
+    default_type_mismatch,
+};
+
+pub const WorkflowDispatchInputProblem = struct {
+    kind: WorkflowDispatchInputProblemKind,
+    input_name: []const u8,
+    /// Invalid type name, offending default value, or declared type name,
+    /// depending on `kind`. Empty when the message needs no second value.
     detail: []const u8,
     span: yaml_types.Span,
 };
@@ -249,9 +317,18 @@ pub const EventConfig = struct {
     name: []const u8 = "",
     name_span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     filter: ?EventFilter = null,
+    /// `types:` values as written, with a span each. SYN010 validates them
+    /// against the event's entry in the trigger table.
+    activity_types: FilterPatternList = .{},
+    /// Span of the `types:` key itself, so SYN010 can point at it for an event
+    /// that has no activity types at all.
+    types_key_span: ?yaml_types.Span = null,
+    config_keys: []const EventConfigKey = &.{},
     schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
+    workflow_dispatch_inputs: []const DispatchInputDef = &.{},
+    workflow_dispatch_input_problems: []const WorkflowDispatchInputProblem = &.{},
 };
 
 pub const Trigger = struct {
@@ -398,6 +475,8 @@ pub const Job = struct {
     needs: []const []const u8 = &.{},
     /// Value spans of `needs` entries, parallel to `needs`. Empty when absent.
     needs_spans: []const yaml_types.Span = &.{},
+    /// Keys of the job-level `outputs:` mapping in source order (for EXPR012).
+    outputs: []const OutputKey = &.{},
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
     /// `permissions:` entries rejected during parsing (PERM003).

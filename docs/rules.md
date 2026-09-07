@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **69 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **76 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -163,6 +163,8 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR007 | unsound-condition | warning | Bare literal in logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR009 | fromjson-literal | error | `fromJSON()` string literal argument must be valid JSON |
+| EXPR010 | undefined-step-reference | error | `steps.<id>` must name a step defined earlier in the same job, and only `outputs` / `conclusion` / `outcome` exist below it |
+| EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 
 ## Dependency Rules (DEP)
@@ -198,6 +200,19 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
+| RUNNER002 | unknown-runner | error | `runs-on` label is not a known GitHub-hosted runner (typos leave the job queued forever) |
+
+RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知のラベル」だけを報告する。
+セルフホストのフリートは列挙しようがないため、以下は報告しない:
+
+- 既知ラベルに接尾辞が付いたもの（`ubuntu-latest-4-cores` などの larger runner）
+- `self-hosted` / `linux` / `x64` などの慣用ラベル
+- 既知ラベルから遠く、`ubuntu-` / `windows-` / `macos-` でも始まらない独自ラベル（`gpu-box` など）
+- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は #210 で対応予定）
+
+既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
+提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
+`runner.labels` に列挙すれば既知として扱われる。
 
 ## Syntax Rules (SYN)
 
@@ -214,10 +229,14 @@ Validate the structural correctness of the workflow definition itself.
 | SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
+| SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
+| SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
+| SYN016 | invalid-timezone | error | `schedule` `timezone` is not a name in the IANA time zone database |
+| SYN017 | workflow-dispatch-inputs | error | `workflow_dispatch` input declares an invalid `type`, misuses `options`, or has a `default` that does not fit |
 
 ### SYN002 duplicate-key
 
@@ -318,6 +337,80 @@ on:
 A name containing a `${{ }}` expression is skipped, since the literal text says
 nothing about the name GitHub finally sees.
 
+### SYN010 invalid-activity-type
+
+`types:` narrows an event to a list of activity types. A name that is not one of
+them silently drops the event: nothing rejects the workflow, it simply stops
+firing for the activity the author meant.
+
+```yaml
+on:
+  issues:
+    types: [open, closed]    # error: invalid activity type "open" for "issues" event. did you mean "opened"?
+  pull_request:
+    types: [synchronised]    # error: invalid activity type "synchronised" for "pull_request" event. did you mean "synchronize"?
+  push:
+    types: [opened]          # error: "types" is not available for "push" event
+```
+
+The `push` case is the same bug from the other side: an event with no activity
+types at all ignores `types:` entirely, so the filter the author wrote never
+applies.
+
+Two events are exempt from the value check. `repository_dispatch` types are
+chosen by whoever POSTs the dispatch, and `image_version` has no documented
+closed set, so `types:` is accepted there without judging the names. A value
+containing a `${{ }}` expression is skipped for the same reason as in SYN009.
+
+```yaml
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  repository_dispatch:
+    types: [deploy-please]
+```
+
+### SYN011 unavailable-event-filter
+
+`branches`, `tags`, `paths` and their `-ignore` forms only exist for some
+events. Written under an event that does not read them they are not an error to
+GitHub — the workflow just runs on *every* occurrence of the event, which is the
+opposite of the intent.
+
+```yaml
+on:
+  issues:
+    branches: [main]     # error: "branches" filter is not available for "issues" event
+  pull_request:
+    tags: [v*]           # error: "tags" filter is not available for "pull_request" event
+  push:
+    brancehs: [main]     # error: unknown filter "brancehs" for "push" event. did you mean "branches"?
+```
+
+The available sets follow GitHub: `push` takes all six; `pull_request` and
+`pull_request_target` run on a branch so they take the four branch and path
+filters but not `tags`/`tags-ignore`; `workflow_run` takes only `branches` and
+`branches-ignore`; every other event takes none.
+
+The same check covers the non-filter keys an event accepts, so a misspelled
+`inputs` under `workflow_dispatch` is reported too. An event name SYN009 already
+flagged is left alone rather than reported twice.
+
+```yaml
+on:
+  push:
+    branches: [main]
+    paths: ['src/**']
+  pull_request:
+    branches-ignore: [wip/**]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+```
+
 ### SYN012 exclusive-event-filters
 
 GitHub Actions rejects a workflow that specifies both halves of a filter pair
@@ -369,6 +462,84 @@ on:
     branches: [main, releases/**, v[0-9].*]
     paths: [src/**/*.zig, '!src/vendor/**']
 ```
+
+---
+
+### SYN016 invalid-timezone
+
+`on.schedule[*].timezone` is resolved against the IANA time zone database.
+An abbreviation or a misspelled name is not silently ignored — the schedule
+never fires. Names are case-sensitive.
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Tokio'   # error: did you mean "Asia/Tokyo"?
+    - cron: '0 9 * * *'
+      timezone: 'JST'          # error: not an IANA time zone name
+```
+
+Valid examples:
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Tokyo'
+    - cron: '0 0 * * *'
+      timezone: 'UTC'
+```
+
+A `timezone` built from a `${{ }}` expression is not checked.
+
+---
+
+### SYN017 workflow-dispatch-inputs
+
+`workflow_dispatch` inputs have a small type system that GitHub enforces when
+the run form is rendered:
+
+- `type:` must be `string`, `boolean`, `number`, `choice`, or `environment`
+- `type: choice` requires a non-empty `options:` list, and `options:` is
+  meaningless for any other type
+- `default:` must be one of the `options:` for a choice, a bool for `boolean`,
+  and a number for `number`
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        default: staging       # error: not included in "options"
+        options: [dev, prod]
+      verbose:
+        type: boolean
+        default: "yes"         # error: not a valid "boolean" value
+      level:
+        type: enum             # error: invalid input type
+      target:
+        type: choice           # error: "options" is required
+```
+
+Valid examples:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        default: dev
+        options: [dev, staging, prod]
+      verbose:
+        type: boolean
+        default: false
+```
+
+An input with no `type:` defaults to `string` and is not reported. Reusable
+workflow inputs use a different type system and are checked by RW001.
 
 ---
 
