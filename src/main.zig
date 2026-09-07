@@ -440,13 +440,7 @@ fn applyFixesForFile(
     // Refuse to rewrite through a symlink: otherwise `--fix` on a crafted
     // `workflow.yml -> /etc/passwd` would read and then overwrite the link
     // target. `readLink` succeeding means the path itself is a symlink.
-    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (std.fs.cwd().readLink(file_path, &link_buf)) |_| {
-        return error.RefusingToFixSymlink;
-    } else |err| switch (err) {
-        error.NotLink => {},
-        else => return err,
-    }
+    if (try zghalint.util.isSymlink(std.fs.cwd(), file_path)) return error.RefusingToFixSymlink;
 
     const file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();

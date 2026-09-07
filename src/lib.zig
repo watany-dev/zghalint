@@ -49,6 +49,7 @@ pub const Config = config.Config;
 pub const OutputFormat = config.OutputFormat;
 pub const ColorMode = config.ColorMode;
 
+pub const util = @import("util.zig");
 pub const workspace = @import("workspace.zig");
 
 test {

@@ -3,7 +3,8 @@
 //! both of them use.
 
 const std = @import("std");
-const builtin = @import("builtin");
+
+const util = @import("../util.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -32,16 +33,7 @@ fn openUnder(allocator: Allocator, env_var: []const u8, comptime sub_path: []con
 /// destination, which swaps the directory entry without following a symlink
 /// at the target path.
 pub fn writeFileAtomic(dir: std.fs.Dir, name: []const u8, data: []const u8) !void {
-    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (dir.readLink(name, &link_buf)) |_| {
-        return error.IsSymlink;
-    } else |err| switch (err) {
-        error.NotLink, error.FileNotFound => {},
-        // Windows answers a plain file with STATUS_NOT_A_REPARSE_POINT, which
-        // the standard library has no mapping for and reports as `Unexpected`.
-        error.Unexpected => if (builtin.os.tag != .windows) return err,
-        else => return err,
-    }
+    if (try util.isSymlink(dir, name)) return error.IsSymlink;
 
     var write_buf: [4096]u8 = undefined;
     var af = try dir.atomicFile(name, .{ .write_buffer = &write_buf });
