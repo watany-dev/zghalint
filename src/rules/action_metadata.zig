@@ -298,30 +298,21 @@ fn checkBoolean(list: *DiagnosticList, def: Mapping, key: []const u8, context: [
     reportInvalid(list, message, entry.value.getSpan(), "use the boolean literal `true` or `false`");
 }
 
-const Section = enum {
-    inputs,
-    outputs,
-
-    fn name(self: Section) []const u8 {
-        return switch (self) {
-            .inputs => "inputs",
-            .outputs => "outputs",
-        };
-    }
-
-    fn singular(self: Section) []const u8 {
-        return switch (self) {
-            .inputs => "input",
-            .outputs => "output",
-        };
-    }
+/// The two names a message needs for one of the definition sections: the key
+/// it appears under, and how a single entry is called.
+const Section = struct {
+    plural: []const u8,
+    singular: []const u8,
 };
+
+const inputs_section = Section{ .plural = "inputs", .singular = "input" };
+const outputs_section = Section{ .plural = "outputs", .singular = "output" };
 
 /// `inputs:` / `outputs:` are both a mapping of name to definition mapping;
 /// only their key sets differ, so the shape checks are shared.
 fn definitionsOf(root: Mapping, section: Section, list: *DiagnosticList) ?Mapping {
-    const node = root.get(section.name()) orelse return null;
-    const key_span = root.getKeySpan(section.name()) orelse root.span;
+    const node = root.get(section.plural) orelse return null;
+    const key_span = root.getKeySpan(section.plural) orelse root.span;
 
     return switch (node) {
         .mapping => |m| m,
@@ -330,7 +321,7 @@ fn definitionsOf(root: Mapping, section: Section, list: *DiagnosticList) ?Mappin
             const message = std.fmt.allocPrint(
                 alloc,
                 "\"{s}\" must be a mapping of {s} name to definition",
-                .{ section.name(), section.singular() },
+                .{ section.plural, section.singular },
             ) catch return null;
             reportInvalid(
                 list,
@@ -355,7 +346,7 @@ fn definitionOf(list: *DiagnosticList, section: Section, entry: MappingEntry) ?D
     const context = std.fmt.allocPrint(
         alloc,
         "{s} \"{s}\"",
-        .{ section.singular(), entry.key.value },
+        .{ section.singular, entry.key.value },
     ) catch return null;
 
     const body = switch (entry.value) {
@@ -371,9 +362,9 @@ fn definitionOf(list: *DiagnosticList, section: Section, entry: MappingEntry) ?D
 }
 
 fn checkInputs(root: Mapping, list: *DiagnosticList) void {
-    const defs = definitionsOf(root, .inputs, list) orelse return;
+    const defs = definitionsOf(root, inputs_section, list) orelse return;
     for (defs.entries) |entry| {
-        const def = definitionOf(list, .inputs, entry) orelse continue;
+        const def = definitionOf(list, inputs_section, entry) orelse continue;
         checkUnknownKeys(list, def.body, &input_keys, def.context);
         checkBoolean(list, def.body, "required", def.context);
     }
@@ -382,9 +373,9 @@ fn checkInputs(root: Mapping, list: *DiagnosticList) void {
 /// `value` is required for composite actions and rejected everywhere else, so
 /// the outputs pass needs the runtime `runs.using` declared.
 fn checkOutputs(root: Mapping, runtime: ?Runtime, list: *DiagnosticList) void {
-    const defs = definitionsOf(root, .outputs, list) orelse return;
+    const defs = definitionsOf(root, outputs_section, list) orelse return;
     for (defs.entries) |entry| {
-        const def = definitionOf(list, .outputs, entry) orelse continue;
+        const def = definitionOf(list, outputs_section, entry) orelse continue;
         checkUnknownKeys(list, def.body, &output_keys, def.context);
 
         const rt = runtime orelse continue;
