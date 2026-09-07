@@ -113,6 +113,8 @@ jobs:
       # 引数パース・終了コード・`--fix` の書き戻しが閾値の対象から漏れる。
       - name: Run coverage measurement
         run: |
+          # kcov は出力先の親ディレクトリを自分では作らない。
+          mkdir -p coverage
           kcov --include-path=src/ coverage/lib zig-out/bin/cov-lib-test
           kcov --include-path=src/ coverage/exe zig-out/bin/cov-exe-test
           kcov --merge coverage/merged coverage/lib coverage/exe
