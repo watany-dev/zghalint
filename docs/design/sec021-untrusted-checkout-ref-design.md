@@ -234,3 +234,37 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `src/rules/security.zig:1472` — `security_rules` 配列
 - `src/workflow/types.zig:118-171` — `EventType`, `Trigger`, `EventConfig`
 - `src/workflow/types.zig:185-234` — `ActionRef.parse`
+
+## 追記: トリガー別 context 表とルール所有権 (#224)
+
+Alloy モデル `RuleOwnership.als` の反例が、本設計の「トリガー集合 × 文脈集合」判定
+に 2 つのノイズを示した。いずれも検出漏れではなく診断の質の問題。
+
+### 1. SEC021 は宣言されたトリガーに実在する context だけを見る
+
+直積判定は `on: repository_dispatch` のワークフローで `${{ github.event.inputs.x }}`
+を untrusted と見なしていた。`repository_dispatch` の payload に `inputs` は存在
+しないので、SEC021 のメッセージ（信頼できない入力による checkout）は状況を説明して
+いない。
+
+`trigger_context_table` がトリガーごとに実在する context を持ち、
+`untrustedRefContexts` が宣言済みトリガーの分だけを和集合として組み立てる。
+`inputs.*` の裸形は従来どおり `workflow_dispatch` が宣言され、かつその入力が
+untrusted と判定できるときにだけ加える。
+
+| トリガー | 見る context |
+| --- | --- |
+| `workflow_dispatch` | `github.event.inputs`（+ 条件付きで裸の `inputs`） |
+| `repository_dispatch` | `github.event.client_payload` |
+| `issues` | `github.event.issue.{title,body}` |
+| `issue_comment` | 上記 + `github.event.comment.body` |
+| `discussion` | `github.event.discussion.{title,body}` |
+| `discussion_comment` | 上記 + `github.event.comment.body` |
+
+### 2. 同じ step に SEC005 と SEC009 を同時に出さない
+
+`pull_request_target` と `workflow_run` を併記したワークフローの 1 つの checkout が
+PR head と workflow_run ref の両方を指すと、2 つのルールが独立に発火していた。
+より具体的な SEC005 が step を所有する。SEC009 は `pull_request_target` が宣言され、
+かつ同じ step が PR head 入力を持つときに限って発火を譲る（PR head を指さない
+step では従来どおり発火する）。
