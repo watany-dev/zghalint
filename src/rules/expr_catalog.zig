@@ -278,6 +278,14 @@ pub fn lookupContext(name: []const u8) ?TypeRef {
     return ctx.ty;
 }
 
+/// The canonical spelling of a known context, whatever ASCII casing the
+/// workflow wrote it in — context names are case-insensitive on GitHub.
+/// Returns null for a name no context has (EXPR002's finding).
+pub fn contextName(name: []const u8) ?[]const u8 {
+    const ctx = t.findByNameAsciiCaseInsensitive(ContextEntry, &contexts, name) orelse return null;
+    return ctx.name;
+}
+
 /// What a parameter accepts. Deliberately coarse: GitHub coerces scalars for
 /// every builtin, so only the containers a parameter can never take are
 /// modelled and EXPR018 stays free of false positives (ADR D3, #162).

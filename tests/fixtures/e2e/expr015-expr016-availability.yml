@@ -1,0 +1,28 @@
+# zghalint:expect EXPR015@16 EXPR016@21 EXPR016@24 EXPR016@25
+# zghalint:forbid EXPR002
+name: context and function availability
+on:
+  push:
+concurrency:
+  group: ${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    if: ${{ steps.setup.outputs.ready == 'true' }}
+    env:
+      LOCK: ${{ hashFiles('**/build.zig.zon') }}
+      RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+    concurrency:
+      group: build-${{ hashFiles('**/build.zig') }}
+    steps:
+      - id: setup
+        name: Report state ${{ always() }}
+        run: echo "done ${{ success() }}"
+      - name: Legal uses of both
+        if: ${{ always() && steps.setup.outcome == 'success' }}
+        run: echo "${{ hashFiles('**/build.zig') }} ${{ secrets.GITHUB_TOKEN }}"

@@ -19,6 +19,7 @@ const expression_sources: []const []const u8 = &.{
     @embedFile("rules/needs_context.zig"),
     @embedFile("rules/secrets_context.zig"),
     @embedFile("rules/steps_ref.zig"),
+    @embedFile("rules/expr_availability.zig"),
 };
 
 const testing = std.testing;

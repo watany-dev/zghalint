@@ -132,6 +132,9 @@ pub const PermissionProblem = struct {
 
 pub const Concurrency = struct {
     group: []const u8,
+    /// Value span and style of the `group` scalar, so an expression inside it
+    /// can be reported where it appears (EXPR015/EXPR016).
+    group_meta: ?ScalarValueMeta = null,
 };
 
 /// `defaults:` at workflow or job level. Only `run.shell` is modelled, since
@@ -430,6 +433,9 @@ pub const Step = struct {
     /// Span of the `id:` scalar value (for SYN005/SYN006 diagnostics).
     id_value_span: ?yaml_types.Span = null,
     name: ?[]const u8 = null,
+    /// Value span and style of the `name:` scalar, so an expression inside it
+    /// can be reported where it appears (EXPR016).
+    name_meta: ?ScalarValueMeta = null,
     uses: ?ActionRef = null,
     run: ?[]const u8 = null,
     shell: ?[]const u8 = null,
