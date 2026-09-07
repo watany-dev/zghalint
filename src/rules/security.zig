@@ -730,7 +730,8 @@ const workflow_run_untrusted_gate_contexts = [_][]const u8{
 const workflow_run_trust_anchors = [_][]const u8{
     "github.event.workflow_run.head_repository.full_name",
     "github.event.workflow_run.head_repository.id",
-    "github.event.workflow_run.head_repository.owner",
+    "github.event.workflow_run.head_repository.owner.login",
+    "github.event.workflow_run.head_repository.owner.id",
 };
 
 const workflow_run_fork_flag = "github.event.workflow_run.head_repository.fork";
@@ -780,17 +781,18 @@ fn hasWorkflowRunTrustAnchor(allocator: std.mem.Allocator, cond: []const u8) boo
 fn conditionExpressionSource(cond: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, cond, " \t\r\n");
     if (!std.mem.startsWith(u8, trimmed, "${{") or !std.mem.endsWith(u8, trimmed, "}}")) return trimmed;
-    const inner = trimmed[3 .. trimmed.len - 2];
-    if (std.mem.indexOf(u8, inner, "${{") != null) return trimmed;
-    return inner;
+    return trimmed[3 .. trimmed.len - 2];
 }
 
 /// Under an odd number of negations De Morgan swaps the operators, so there
 /// `||` is the conjunction and every leaf below reads inverted.
 fn anchorHolds(node: expressions.ExprNode, negated: bool) bool {
     switch (node.kind) {
+        // `!fork` asserts what `fork == false` does, and is the shorter way to
+        // write it.
+        .context_access => return negated and pathIsAnchor(parseContextPath(node.value, 0), workflow_run_fork_flag),
         .unary_op => {
-            if (node.children.len != 1 or !std.mem.eql(u8, node.value, "!")) return false;
+            if (node.children.len != 1) return false;
             return anchorHolds(node.children[0], !negated);
         },
         .binary_op => {
@@ -820,21 +822,24 @@ fn isTrustAnchorComparison(node: expressions.ExprNode, negated: bool) bool {
 fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, asserts_equal: bool) bool {
     if (ref.kind != .context_access) return false;
     const path = parseContextPath(ref.value, 0);
+    // Comparing the triggering run against itself asserts nothing about it.
+    if (other.kind == .context_access and
+        pathMatchesPattern(parseContextPath(other.value, 0), "github.event.workflow_run")) return false;
 
     for (workflow_run_trust_anchors) |anchor| {
         // `head_repository.full_name != github.repository` selects the fork
         // runs instead of excluding them, so only the equality anchors.
-        if (pathMatchesPattern(path, anchor)) return asserts_equal;
+        if (pathIsAnchor(path, anchor)) return asserts_equal;
     }
 
-    if (pathMatchesPattern(path, workflow_run_fork_flag)) {
+    if (pathIsAnchor(path, workflow_run_fork_flag)) {
         if (other.kind != .boolean_literal) return false;
         // `fork == false` and `fork != true` both say the run is the base
         // repository's; the two inversions of those gate *for* forks.
         return asserts_equal != std.mem.eql(u8, other.value, "true");
     }
 
-    if (pathMatchesPattern(path, workflow_run_event_context)) {
+    if (pathIsAnchor(path, workflow_run_event_context)) {
         // A fork cannot cause a `push` run in the base repository, so the
         // branch name in one is the base repository's. The compared literal is
         // what makes it an anchor, and a fork-reachable event makes it none.
@@ -843,6 +848,21 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
     }
 
     return false;
+}
+
+/// Anchors are matched segment for segment, unlike the untrusted-context table
+/// where a prefix and a wildcard are the safe direction. Here they are not:
+/// `head_repository.owner.type` is `User` for every fork, and a bracket access
+/// parses to a wildcard whose name the linter does not know.
+fn pathIsAnchor(path: ContextPath, pattern: []const u8) bool {
+    var idx: usize = 0;
+    var it = std.mem.splitScalar(u8, pattern, '.');
+    while (it.next()) |pat_seg| : (idx += 1) {
+        if (idx >= path.len) return false;
+        if (std.mem.eql(u8, path.segments[idx], wildcard_segment)) return false;
+        if (!std.ascii.eqlIgnoreCase(path.segments[idx], pat_seg)) return false;
+    }
+    return idx == path.len;
 }
 
 fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
@@ -2775,9 +2795,31 @@ test "SEC022: a negated exclusion is a sound gate" {
     try testing.expect(sec022JobCondition("github.event.workflow_run.head_repository.fork != true && github.event.workflow_run.head_branch == 'main'") == null);
 }
 
+test "SEC022: an anchor is matched segment for segment" {
+    // A bracket access hides the segment name, so it names no known field.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run['head_branch'] == 'main'"));
+    // `owner.type` is `User` for every fork, so it separates nothing.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.owner.type == 'User'"));
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.owner.login == github.repository_owner") == null);
+}
+
+test "SEC022: the triggering run cannot vouch for itself" {
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.full_name == github.event.workflow_run.head_repository.full_name && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: the fork flag also anchors as a bare truth test" {
+    try testing.expect(sec022JobCondition("!github.event.workflow_run.head_repository.fork && github.event.workflow_run.head_branch == 'main'") == null);
+    // Without the negation it gates *for* forks.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.fork && github.event.workflow_run.head_branch == 'main'"));
+}
+
 test "SEC022: a condition that does not parse is reported" {
     // Fail-closed: an unreadable gate is not evidence of a trust check.
     try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_branch == 'main' && ((github.event.workflow_run.event == 'push')"));
+    // Only a single `${{ }}` wrapping the whole condition is an expression;
+    // interpolation spliced into text is not one, and reaches the parser as
+    // the text it is.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("${{ github.event.workflow_run.head_branch == 'main' }} && ${{ github.event.workflow_run.event == 'push' }}"));
 }
 
 test "SEC022: immutable and unrelated contexts are not reported" {

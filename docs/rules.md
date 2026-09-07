@@ -104,9 +104,12 @@ on its own, so it anchors nothing. Negation is read through — `!(fork == true
 check it is written as. Read with that polarity, the anchor must assert
 identity: `head_repository.full_name != github.repository` selects the fork
 runs rather than excluding them, and `head_repository.fork == true` is a
-fork-only gate. `head_repository.name` is not an anchor at all — a fork
-inherits the name of the repository it came from. A condition that does not
-parse anchors nothing. Values that name one immutable commit — `head_sha`,
+fork-only gate (`fork == false`, `fork != true` and `!fork` are the sound
+spellings). The anchor is matched segment for segment, so only the fields that
+name the repository count — `head_repository.name` is not one of them, because
+a fork inherits the name of the repository it came from, and neither is
+`head_repository.owner.type`, which is `User` for every fork. A condition that
+does not parse anchors nothing. Values that name one immutable commit — `head_sha`,
 `head_commit.id` — are never reported. A trust check on the job covers the
 steps inside it.
 
