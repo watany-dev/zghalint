@@ -1,0 +1,24 @@
+# zghalint:forbid BP007
+name: line continuation
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: bp007-continuation
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create release
+        env:
+          TAG: v1.0.0
+          PRERELEASE_FLAG: ""
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            $PRERELEASE_FLAG \
+            artifacts/*

@@ -1569,9 +1569,27 @@ fn isAllUppercase(s: []const u8) bool {
     return true;
 }
 
+/// A trailing backslash joins the next physical line onto this one, so what
+/// follows is an argument rather than a command. An even run of backslashes is
+/// an escaped backslash and does not continue the line.
+fn endsWithLineContinuation(line: []const u8) bool {
+    var backslashes: usize = 0;
+    var i = line.len;
+    while (i > 0 and line[i - 1] == '\\') : (i -= 1) backslashes += 1;
+    return backslashes % 2 == 1;
+}
+
 fn containsVarAsCommand(s: []const u8) bool {
     var lines = std.mem.splitScalar(u8, s, '\n');
-    while (lines.next()) |line| {
+    var continued = false;
+    while (lines.next()) |raw| {
+        // Only `\r` is trimmed: a blank after the backslash cancels the
+        // continuation in a real shell, so it must not be trimmed away.
+        const line = std.mem.trimRight(u8, raw, "\r");
+        const is_continuation = continued;
+        continued = endsWithLineContinuation(line);
+        if (is_continuation) continue;
+
         const start = std.mem.indexOfNone(u8, line, " \t") orelse continue;
         const rest = line[start..];
         if (rest.len < 2 or rest[0] != '$') continue;
@@ -4707,6 +4725,24 @@ test "BP007: wget piped to sh" {
 
 test "BP007: variable as command at line start" {
     var list = runStep(.{ .run = "export CMD=\"malicious\"\n$CMD" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on a variable in a continuation line" {
+    var list = runStep(.{ .run = "gh release create \"$TAG\" \\\n  --title \"$TAG\" \\\n  $PRERELEASE_FLAG \\\n  artifacts/*" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a variable after a finished continuation is still a command" {
+    var list = runStep(.{ .run = "echo one \\\n  two\n$CMD --flag" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: an escaped backslash does not continue the line" {
+    var list = runStep(.{ .run = "echo a\\\\\n$CMD --flag" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
