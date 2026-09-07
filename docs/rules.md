@@ -145,11 +145,24 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
 | BP002 | missing-step-name | info | Step is missing a `name` field |
-| BP003 | deprecated-action-version | warning | Using a known deprecated action version |
+| BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or a local action declaring a retired `runs.using` runtime (error) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
+
+### BP003 の 2 つの判定
+
+- **バージョン表**: `actions/checkout` など置き換え先が判明しているアクションを
+  固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
+  `--fix` で `@vN` を書き換えられる。
+- **ランタイム判定**: `uses: ./{path}` が指すローカルアクションの `action.yml` を
+  読み、`runs.using` が GitHub の廃止済みランタイム（`node12` / `node16`）なら
+  `error` で報告する。呼び出し側では直せない（アクション自身の `action.yml` を
+  `using: node24` へ移行する必要がある）ため autofix は付かない。
+
+リモートアクションの `runs.using` はアクションメタデータのデータセット
+（DEP005、未実装）が必要なため、ランタイム判定はローカルアクションに限る。
 
 ## Permissions Rules (PERM)
 
