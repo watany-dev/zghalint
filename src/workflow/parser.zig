@@ -2755,3 +2755,22 @@ test "with_last_entry_end_byte is set only for an inline scalar in a block with:
         };
     }
 }
+
+test "a CRLF workflow parses like its LF twin" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A Windows checkout hands the linter CRLF; before the tokenizer treated
+    // `\r\n` as a break, every such file failed with MissingField.
+    const source = "name: ci\r\non:\r\n  push:\r\njobs:\r\n  build:\r\n    runs-on: ubuntu-latest\r\n    steps:\r\n      - uses: actions/checkout@v4\r\n";
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqualStrings("ci", wf.name.?);
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqualStrings("build", wf.jobs[0].id);
+    try testing.expectEqualStrings("ubuntu-latest", wf.jobs[0].runs_on.?);
+    try testing.expectEqualStrings("actions/checkout@v4", wf.jobs[0].steps[0].uses.?.raw);
+}

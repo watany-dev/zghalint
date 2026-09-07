@@ -3,6 +3,7 @@
 //! both of them use.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 
@@ -36,6 +37,9 @@ pub fn writeFileAtomic(dir: std.fs.Dir, name: []const u8, data: []const u8) !voi
         return error.IsSymlink;
     } else |err| switch (err) {
         error.NotLink, error.FileNotFound => {},
+        // Windows answers a plain file with STATUS_NOT_A_REPARSE_POINT, which
+        // the standard library has no mapping for and reports as `Unexpected`.
+        error.Unexpected => if (builtin.os.tag != .windows) return err,
         else => return err,
     }
 
