@@ -632,10 +632,14 @@ T5（EXPR018）は `FuncSig.args` / `.rest` に `ArgKind`（`any` / `string` /
 
 - `ArgKind` は「絶対に渡せないコンテナ」だけを弾く。スカラーは GitHub が
   文字列へ強制変換するので `number` / `bool` / `null` は常に受理する
-- overlay が付かず `catalog.loose_context` へ落ちたコンテキスト
+- overlay が付かず `catalog.unknown_context` へ落ちたコンテキスト
   （`steps` / `matrix` / `needs` / `inputs` / `jobs`）は
-  `catalog.isUnmodelledObject` がポインタ同一性で判別して沈黙する。
-  `github.event` は別の loose 型なので診断対象に残る
+  `ObjectShape.unknown` を持ち、`catalog.isUnmodelledObject` が shape で
+  判別して沈黙する。`github.event` と `fromJSON` のオブジェクトリテラルは
+  `loose` なので診断対象に残る。
+  shape を分けるのは、構造が同一の comptime 定数はアドレスが統合されうる
+  ため（実際 aarch64 で `type_loose_object` と同一視された）。
+  「unmodelled」はポインタ同一性ではなく型の構造で表す
 - 補間側は `${{ }}` 全体の型のみを見る。`toJSON()` や比較の内側にある
   コンテナは対象外
 - `if:` は値を評価するだけでレンダリングしないため、補間側の診断は出さない

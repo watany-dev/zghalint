@@ -253,7 +253,7 @@ pub const strategy: Type = .{
 /// the workflow declares one, and land here when it does not; `jobs` (reusable
 /// workflow outputs) has no overlay at all. Strictness here would be a false
 /// positive.
-pub const loose_context: Type = .{ .kind = .object, .shape = .loose };
+pub const unknown_context: Type = .{ .kind = .object, .shape = .unknown };
 
 const ContextEntry = struct { name: []const u8, ty: TypeRef };
 
@@ -261,14 +261,14 @@ const ContextEntry = struct { name: []const u8, ty: TypeRef };
 const contexts = [_]ContextEntry{
     .{ .name = "env", .ty = &t.type_map_string },
     .{ .name = "github", .ty = &github },
-    .{ .name = "inputs", .ty = &loose_context },
+    .{ .name = "inputs", .ty = &unknown_context },
     .{ .name = "job", .ty = &job },
-    .{ .name = "jobs", .ty = &loose_context },
-    .{ .name = "matrix", .ty = &loose_context },
-    .{ .name = "needs", .ty = &loose_context },
+    .{ .name = "jobs", .ty = &unknown_context },
+    .{ .name = "matrix", .ty = &unknown_context },
+    .{ .name = "needs", .ty = &unknown_context },
     .{ .name = "runner", .ty = &runner },
     .{ .name = "secrets", .ty = &t.type_map_string },
-    .{ .name = "steps", .ty = &loose_context },
+    .{ .name = "steps", .ty = &unknown_context },
     .{ .name = "strategy", .ty = &strategy },
     .{ .name = "vars", .ty = &t.type_map_string },
 };
@@ -337,11 +337,11 @@ pub fn lookupFunction(name: []const u8) ?*const FuncSig {
     return t.findByNameAsciiCaseInsensitive(FuncSig, &functions, name);
 }
 
-/// True for a context that fell back to `loose_context` because the workflow
+/// True for a context that fell back to `unknown_context` because the workflow
 /// declared nothing to overlay. Its `object` kind says "unknown", not "this is
 /// an object", so EXPR018 must stay silent on it (ADR D3, #162).
 pub fn isUnmodelledObject(ty: TypeRef) bool {
-    return ty == &loose_context;
+    return ty.kind == .object and ty.shape == .unknown;
 }
 
 fn isSorted(comptime T: type, items: []const T) bool {
@@ -440,10 +440,10 @@ test "catalog: isUnmodelledObject singles out the overlay fallback" {
     try std.testing.expect(!isUnmodelledObject(&t.type_loose_object));
 }
 
-test "catalog: workflow-defined contexts stay loose without an overlay" {
+test "catalog: workflow-defined contexts stay unknown without an overlay" {
     for ([_][]const u8{ "steps", "matrix", "needs", "inputs", "jobs" }) |name| {
         const ty = lookupContext(name).?;
-        try std.testing.expectEqual(t.ObjectShape.loose, ty.shape);
+        try std.testing.expectEqual(t.ObjectShape.unknown, ty.shape);
     }
 }
 

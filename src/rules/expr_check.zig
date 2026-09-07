@@ -164,7 +164,7 @@ fn derefProp(recv: TypeRef, name: []const u8, receiver_path: []const u8, origin:
             if (found) |ty| return .{ .ty = ty };
             return switch (recv.shape) {
                 .map => .{ .ty = recv.elem orelse any },
-                .loose => .{ .ty = any },
+                .loose, .unknown => .{ .ty = any },
                 .strict => .{ .ty = any, .problem = .{ .unknown_property = .{
                     .receiver_path = receiver_path,
                     .name = name,

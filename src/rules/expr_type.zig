@@ -18,9 +18,15 @@ pub const TypeKind = enum {
 pub const ObjectShape = enum {
     /// Unknown key is a type error (EXPR003). github / runner / job.
     strict,
-    /// Unknown key is `any`. github.event, and workflow-defined contexts that
-    /// got no overlay.
+    /// Unknown key is `any`. github.event, and object literals from fromJSON.
     loose,
+    /// Nothing at all is known about the object: a workflow-defined context
+    /// that got no overlay. Derefs behave like `loose`, but EXPR018 must stay
+    /// silent because `object` here means "unmodelled", not "an object"
+    /// (ADR D3, #162). A distinct variant rather than a distinguished
+    /// `loose` constant: identical comptime constants may share an address,
+    /// so identity comparison cannot tell the two apart.
+    unknown,
     /// Every key has the `elem` type. env / vars / secrets.
     map,
 };
@@ -126,7 +132,7 @@ fn write(ty: TypeRef, w: *std.Io.Writer, depth: u8) std.Io.Writer.Error!void {
                 }
                 try w.writeAll("}");
             },
-            .loose => try w.writeAll("object"),
+            .loose, .unknown => try w.writeAll("object"),
             .strict => {
                 if (depth >= 2) return w.writeAll("object");
                 try w.writeAll("{");
