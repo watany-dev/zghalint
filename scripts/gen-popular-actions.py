@@ -28,7 +28,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = REPO_ROOT / "scripts" / "popular-actions.txt"
 OUTPUT = REPO_ROOT / "src" / "rules" / "data" / "popular_actions.zig"
 
-ENTRY_RE = re.compile(r"^(?P<owner>[^/@\s]+)/(?P<repo>[^/@\s]+)(?P<path>(?:/[^@\s]+)?)@(?P<ref>\S+)$")
+ENTRY_RE = re.compile(
+    r"^(?P<owner>[^/@\s]+)/(?P<repo>[^/@\s]+)(?P<path>(?:/[^@\s]+)?)@(?P<ref>\S+)$"
+)
 
 
 @dataclass
@@ -84,7 +86,10 @@ def clone(owner: str, repo: str, ref: str, into: pathlib.Path) -> pathlib.Path:
             ["git", "-C", str(dest), "fetch", "--quiet", "--depth", "1", "origin", f"tags/{ref}"],
             check=True,
         )
-        subprocess.run(["git", "-C", str(dest), "reset", "--quiet", "--hard", "FETCH_HEAD"], check=True)
+        subprocess.run(
+            ["git", "-C", str(dest), "reset", "--quiet", "--hard", "FETCH_HEAD"],
+            check=True,
+        )
         return dest
     subprocess.run(
         [
@@ -181,7 +186,7 @@ def render(metas: list[ActionMeta]) -> str:
         "    repo: []const u8,",
         "    /// Sub-directory for an action that does not sit at the repository",
         "    /// root, such as `actions/cache/restore`. Empty for the root action.",
-        "    path: []const u8 = \"\",",
+        '    path: []const u8 = "",',
         "    /// The major version this entry describes; `uses: owner/repo@v4`",
         "    /// matches the entry with `major == 4`.",
         "    major: u16,",
