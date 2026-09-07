@@ -412,7 +412,7 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
     "deprecated-action-version": {
         "zghalint": ["BP003"],
         "zizmor": None,
-        "actionlint": None,
+        "actionlint": ["action"],
     },
     "redundant-checkout": {
         "zghalint": ["PERF002"],
@@ -427,6 +427,11 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
     "push-without-concurrency": {
         "zghalint": ["BP005"],
         "zizmor": None,
+        "actionlint": None,
+    },
+    "cache-poisoning": {
+        "zghalint": ["SEC016"],
+        "zizmor": ["cache-poisoning"],
         "actionlint": None,
     },
 }
