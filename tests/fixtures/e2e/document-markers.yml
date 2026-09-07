@@ -1,0 +1,18 @@
+# zghalint:expect BP008@17
+# zghalint:forbid BP002
+---
+name: workflow wrapped in explicit document markers
+on: push
+concurrency:
+  group: markers-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Emit a value
+        id: emit
+        run: echo "::set-output name=tag::v1"
+...
