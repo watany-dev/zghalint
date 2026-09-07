@@ -225,6 +225,26 @@ zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
 ```
 
+## Contributing
+
+Issue templates are provided for bug reports, false positives / false
+negatives, and new rules. Before opening a pull request, run the checks the CI
+runs:
+
+```bash
+zig build && zig fmt --check src/ build.zig && zig build test --summary all
+```
+
+User-visible changes go in [CHANGELOG.md](CHANGELOG.md) under `## [Unreleased]`,
+and a new or changed rule needs its row in [docs/rules.md](docs/rules.md) — a
+test fails the build if the two drift apart.
+
+## Security
+
+Do not open a public issue for a vulnerability in zghalint itself — including a
+workflow it fails to flag. See [SECURITY.md](SECURITY.md) for the private
+reporting path.
+
 ## License
 
 [Apache License 2.0](LICENSE)

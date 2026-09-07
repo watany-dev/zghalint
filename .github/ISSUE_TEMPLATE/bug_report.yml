@@ -1,0 +1,56 @@
+name: Bug report
+description: A crash, a wrong exit code, a broken output format, or a bad auto-fix.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a rule that fires when it should not (or the reverse), use the
+        **False positive / false negative** template instead — it asks for the
+        fields that report needs.
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command line, plus any input file or `.zghalint.yml` needed to trigger it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Full output, including any panic or stack trace.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: zghalint version
+      description: Output of `zghalint --version`, or the tag/commit you built from.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS, architecture, and Zig version (if built from source)
+      placeholder: macOS 15 aarch64, Zig 0.15.2
+    validations:
+      required: true
