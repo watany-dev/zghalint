@@ -1,3 +1,12 @@
 [tool.pytest.ini_options]
 testpaths = ["tests/pbt"]
 pythonpath = ["."]
+
+[tool.ruff]
+# tests/pbt/ is the only Python in the repository.
+src = ["."]
+line-length = 100
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, flake8-bugbear, flake8-comprehensions.
+select = ["E", "F", "I", "UP", "B", "C4"]

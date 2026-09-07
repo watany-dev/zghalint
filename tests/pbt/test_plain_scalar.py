@@ -5,14 +5,15 @@ only inside a flow collection.  In block context they belong to the value, so
 truncating there silently drops the rest of a `run:` / `if:` expression and the
 rules never see it.
 """
+
 from __future__ import annotations
 
-from hypothesis import given, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings
 
 from tests.pbt.conftest import lint_workflow_json
 from tests.pbt.strategies import (
-    workflow_with_plain_scalar_run,
     workflow_with_plain_scalar_if,
+    workflow_with_plain_scalar_run,
 )
 
 PBT_SETTINGS = settings(
@@ -51,6 +52,5 @@ def test_plain_if_scalar_keeps_commas(zghalint_bin, content):
         f"Detected rules: {ids}"
     )
     assert "EXPR001" not in ids, (
-        f"EXPR001 false positive from a truncated if: condition.\n"
-        f"Workflow:\n{content}"
+        f"EXPR001 false positive from a truncated if: condition.\nWorkflow:\n{content}"
     )
