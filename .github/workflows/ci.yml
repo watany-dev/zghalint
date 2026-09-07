@@ -49,11 +49,29 @@ jobs:
       - run: zig build
 
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, ${{ matrix.optimize }})
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3 OS × Debug で OS 分岐（ファイルモード・改行コード）の実行時挙動を
+        # 押さえ、ReleaseFast を 1 本だけ足して safety check の無い配布形態の
+        # UB を拾う。aarch64 は安価な ubuntu-24.04-arm の Debug のみ。
+        # macos-15 の固定理由は build ジョブのコメントを参照。
+        include:
+          - os: ubuntu-latest
+            optimize: Debug
+          - os: ubuntu-24.04-arm
+            optimize: Debug
+          - os: macos-15
+            optimize: Debug
+          - os: windows-latest
+            optimize: Debug
+          - os: ubuntu-latest
+            optimize: ReleaseFast
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -61,7 +79,8 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
-      - run: zig build test --summary all
+      - name: Run unit tests
+        run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
   coverage:
     name: Test Coverage
