@@ -209,11 +209,16 @@ fn collectDefaultActionFiles(
     var dir = std.fs.cwd().openDir(".github/actions", .{ .iterate = true }) catch return;
     defer dir.close();
 
+    // A directory that cannot be walked is treated like one that is not
+    // there: every other probe here is best-effort too, and a default-file
+    // scan should not fail the whole run.
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        if (entry.kind != .directory) continue;
+    while (iter.next() catch return) |entry| {
+        // The kind is not checked: a symlinked action directory is as valid
+        // as a real one, and `access` on the file below settles it either way.
         inline for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
             const path = try std.fmt.allocPrint(allocator, ".github/actions/{s}/{s}", .{ entry.name, name });
+            errdefer allocator.free(path);
             if (std.fs.cwd().access(path, .{})) |_| {
                 try files.append(allocator, path);
             } else |_| {
@@ -229,10 +234,14 @@ fn isDependabotFile(path: []const u8) bool {
 }
 
 /// Matches on the file name, not a suffix: `my-action.yml` is a workflow-shaped
-/// file name, not action metadata.
+/// file name, not action metadata. A file under `.github/workflows/` is a
+/// workflow whatever it is called, so `action.yml` there keeps its own rules.
 fn isActionMetadataFile(path: []const u8) bool {
     const base = std.fs.path.basename(path);
-    return std.mem.eql(u8, base, "action.yml") or std.mem.eql(u8, base, "action.yaml");
+    if (!std.mem.eql(u8, base, "action.yml") and !std.mem.eql(u8, base, "action.yaml")) return false;
+
+    const dir = std.fs.path.dirname(path) orelse return true;
+    return !std.mem.eql(u8, std.fs.path.basename(dir), "workflows");
 }
 
 fn readSourceFile(
@@ -749,12 +758,15 @@ test "isActionMetadataFile matches the file name only" {
     try std.testing.expect(isActionMetadataFile(".github/actions/build/action.yml"));
     try std.testing.expect(!isActionMetadataFile("my-action.yml"));
     try std.testing.expect(!isActionMetadataFile(".github/workflows/action.yml.bak"));
+    // A workflow keeps its own rules whatever it is named.
+    try std.testing.expect(!isActionMetadataFile(".github/workflows/action.yml"));
 }
 
 test "documentLintFn routes non-workflow files" {
     try std.testing.expect(documentLintFn(".github/dependabot.yml") != null);
     try std.testing.expect(documentLintFn(".github/actions/build/action.yml") != null);
     try std.testing.expect(documentLintFn(".github/workflows/ci.yml") == null);
+    try std.testing.expect(documentLintFn(".github/workflows/action.yml") == null);
 }
 
 test "hasErrors detects error severity" {

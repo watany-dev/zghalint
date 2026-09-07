@@ -75,6 +75,9 @@ const deprecated_node_using = [_][]const u8{ "node12", "node16" };
 
 const using_expected = "\"node20\", \"node24\", \"docker\", \"composite\"";
 
+/// YAML 1.2 core schema booleans, in every spelling it recognises.
+const yaml_booleans = [_][]const u8{ "FALSE", "False", "TRUE", "True", "false", "true" };
+
 const Runtime = enum { node, docker, composite };
 
 fn contains(haystack: []const []const u8, needle: []const u8) bool {
@@ -89,6 +92,17 @@ fn findEntry(m: Mapping, key: []const u8) ?MappingEntry {
         if (std.mem.eql(u8, entry.key.value, key)) return entry;
     }
     return null;
+}
+
+/// A key written with nothing after the colon (`main:`) reaches the runner as
+/// no value at all, so it counts as missing rather than present-but-empty.
+fn hasValue(m: Mapping, key: []const u8) bool {
+    const entry = findEntry(m, key) orelse return false;
+    return switch (entry.value) {
+        .null_value => false,
+        .scalar => |sc| sc.value.len > 0,
+        else => true,
+    };
 }
 
 fn missingKey(list: *DiagnosticList, key: []const u8, context: []const u8, span: Span) void {
@@ -252,11 +266,11 @@ fn checkRuns(root: Mapping, list: *DiagnosticList) ?Runtime {
     switch (runtime) {
         .node => {
             checkUnknownKeys(list, runs, &node_runs_keys, context);
-            if (runs.getKeySpan("main") == null) missingKey(list, "main", context, runs_span);
+            if (!hasValue(runs, "main")) missingKey(list, "main", context, runs_span);
         },
         .docker => {
             checkUnknownKeys(list, runs, &docker_runs_keys, context);
-            if (runs.getKeySpan("image") == null) missingKey(list, "image", context, runs_span);
+            if (!hasValue(runs, "image")) missingKey(list, "image", context, runs_span);
         },
         .composite => {
             checkUnknownKeys(list, runs, &composite_runs_keys, context);
@@ -279,15 +293,16 @@ fn checkRuns(root: Mapping, list: *DiagnosticList) ?Runtime {
     return runtime;
 }
 
-/// GitHub reads these as YAML 1.2 booleans, so `yes` / `on` are strings and
-/// would silently make the input optional.
+/// GitHub reads these as YAML 1.2 booleans. The core schema spells them in
+/// three cases and nothing else, so `yes` / `on` are strings and would
+/// silently make the input optional.
 fn checkBoolean(list: *DiagnosticList, def: Mapping, key: []const u8, context: []const u8) void {
     const entry = findEntry(def, key) orelse return;
     const value = switch (entry.value) {
         .scalar => |s| s.value,
         else => "",
     };
-    if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "false")) return;
+    if (contains(&yaml_booleans, value)) return;
 
     const alloc = list.fixAllocator();
     const message = std.fmt.allocPrint(
@@ -379,12 +394,11 @@ fn checkOutputs(root: Mapping, runtime: ?Runtime, list: *DiagnosticList) void {
         checkUnknownKeys(list, def.body, &output_keys, def.context);
 
         const rt = runtime orelse continue;
-        const value_span = def.body.getKeySpan("value");
         if (rt == .composite) {
-            if (value_span == null) missingKey(list, "value", def.context, entry.key.span);
+            if (!hasValue(def.body, "value")) missingKey(list, "value", def.context, entry.key.span);
             continue;
         }
-        const span = value_span orelse continue;
+        const span = def.body.getKeySpan("value") orelse continue;
         const alloc = list.fixAllocator();
         const message = std.fmt.allocPrint(
             alloc,
@@ -403,11 +417,18 @@ fn checkOutputs(root: Mapping, runtime: ?Runtime, list: *DiagnosticList) void {
 pub fn lintActionMetadata(root: Node, diag_list: *DiagnosticList) void {
     const mapping = switch (root) {
         .mapping => |m| m,
-        else => return,
+        // An empty file or a document that opens with a list is not action
+        // metadata at all; staying silent would report it as clean.
+        else => return reportInvalid(
+            diag_list,
+            "action metadata must be a mapping of keys such as `name:` and `runs:`",
+            root.getSpan(),
+            "write the file as `key: value` pairs at the top level",
+        ),
     };
 
     checkUnknownKeys(diag_list, mapping, &action_keys, "action metadata");
-    if (mapping.getKeySpan("name") == null) {
+    if (!hasValue(mapping, "name")) {
         missingKey(diag_list, "name", "action metadata", mapping.span);
     }
 
@@ -861,13 +882,108 @@ test "outputs are not judged when the runtime is unknown" {
     try std.testing.expect(!lint.has("ACT001"));
 }
 
-test "non-mapping document is gracefully handled" {
+test "ACT001: a key written with no value counts as missing" {
+    var lint = try Lint.run(
+        \\name:
+        \\description: Does something
+        \\runs:
+        \\  using: docker
+        \\  image:
+    );
+    defer lint.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), lint.diags.len());
+    try std.testing.expectEqualStrings(
+        "required key \"name\" is missing in action metadata",
+        lint.diags.get(0).message,
+    );
+    try std.testing.expectEqualStrings("ACT001", lint.diags.get(1).rule_id);
+    try std.testing.expectEqualStrings(
+        "required key \"image\" is missing in the \"runs\" section of a \"docker\" action",
+        lint.diags.get(1).message,
+    );
+}
+
+test "ACT001: an empty composite output value counts as missing" {
+    var lint = try Lint.run(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - run: echo hi
+        \\      shell: bash
+        \\outputs:
+        \\  result:
+        \\    description: The result
+        \\    value:
+    );
+    defer lint.deinit();
+
+    try std.testing.expect(lint.has("ACT001"));
+    try std.testing.expectEqualStrings(
+        "required key \"value\" is missing in output \"result\"",
+        lint.message("ACT001"),
+    );
+}
+
+test "ACT004: every YAML 1.2 boolean spelling is accepted for required" {
+    var lint = try Lint.run(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  using: node24
+        \\  main: dist/index.js
+        \\inputs:
+        \\  a:
+        \\    description: a
+        \\    required: True
+        \\  b:
+        \\    description: b
+        \\    required: FALSE
+    );
+    defer lint.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), lint.diags.len());
+}
+
+test "ACT004: yes is a string, not a boolean" {
+    var lint = try Lint.run(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  using: node24
+        \\  main: dist/index.js
+        \\inputs:
+        \\  a:
+        \\    description: a
+        \\    required: yes
+    );
+    defer lint.deinit();
+
+    try std.testing.expect(lint.has("ACT004"));
+}
+
+test "ACT004: a document that is not a mapping is reported, not skipped" {
     var lint = try Lint.run(
         \\- not an action
     );
     defer lint.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), lint.diags.len());
+    try std.testing.expectEqual(@as(usize, 1), lint.diags.len());
+    try std.testing.expectEqualStrings("ACT004", lint.diags.get(0).rule_id);
+    try std.testing.expectEqualStrings(
+        "action metadata must be a mapping of keys such as `name:` and `runs:`",
+        lint.diags.get(0).message,
+    );
+}
+
+test "ACT004: an empty document is reported" {
+    var lint = try Lint.run("");
+    defer lint.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), lint.diags.len());
+    try std.testing.expectEqualStrings("ACT004", lint.diags.get(0).rule_id);
 }
 
 test "diagnostics point at the offending line" {

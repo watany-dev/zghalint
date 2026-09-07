@@ -674,7 +674,7 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 | ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い |
 | ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
 | ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
-| ACT004 | action-invalid-definition | error | 値の形が仕様と違う（`runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
+| ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
 
 ### 検査対象になるファイル
 
@@ -685,7 +685,8 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 
 GitHub 自身が案内しているのはこの 2 つの配置なので既定はここまでとし、それ以外の
 場所に置いたメタデータはパスを直接渡す。判定はファイル名そのもので行うため、
-`my-action.yml` はワークフロー扱いのままになる。
+`my-action.yml` はワークフロー扱いのままになる。逆に `.github/workflows/` 配下の
+ファイルは名前が `action.yml` でもワークフローなので、ACT ルールは適用しない。
 
 ### ACT002 が受理する `using`
 
@@ -699,6 +700,10 @@ error として報告する（編集距離 2 以内で候補が一意に定ま�
 - `inputs.<name>` に置けるのは `description` / `required` / `default` /
   `deprecationMessage`、`outputs.<name>` に置けるのは `description` /
   `value`。未知のキーは ACT003、値の型が違うものは ACT004。
+- `main:` のように値を書かずにキーだけ置いた場合、ランナーには値が届かないので
+  ACT001（キーが無い）として扱う。
+- `required:` は YAML 1.2 core schema の真偽値（`true` / `True` / `TRUE` と
+  その否定形）だけを受理する。`yes` / `on` は文字列なので ACT004 として報告する。
 - `value:` は composite action だけが持つ。JavaScript / Docker action は実行時に
   出力を書き出すため、`value:` があれば ACT004 として報告する。`using` の値が
   解決できない場合は出力側の判定を行わない。
