@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **77 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **90 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -145,11 +145,24 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
 | BP002 | missing-step-name | info | Step is missing a `name` field |
-| BP003 | deprecated-action-version | warning | Using a known deprecated action version |
+| BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or a local action declaring a retired `runs.using` runtime (error) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
+
+### BP003 の 2 つの判定
+
+- **バージョン表**: `actions/checkout` など置き換え先が判明しているアクションを
+  固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
+  `--fix` で `@vN` を書き換えられる。
+- **ランタイム判定**: `uses: ./{path}` が指すローカルアクションの `action.yml` を
+  読み、`runs.using` が GitHub の廃止済みランタイム（`node12` / `node16`）なら
+  `error` で報告する。呼び出し側では直せない（アクション自身の `action.yml` を
+  `using: node24` へ移行する必要がある）ため autofix は付かない。
+
+リモートアクションの `runs.using` はアクションメタデータのデータセット
+（DEP005 / #97）が必要なため、ランタイム判定はローカルアクションに限る。
 
 ## Permissions Rules (PERM)
 
@@ -187,6 +200,8 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR013 | inputs-context | error | `inputs.<name>` must name an input declared by `workflow_dispatch.inputs` or `workflow_call.inputs`, and a workflow with neither trigger has no `inputs` context |
 | EXPR014 | secrets-context | error | `secrets.<name>` must name a secret declared under `on.workflow_call.secrets` (only checked when that section exists; `GITHUB_TOKEN` is always valid) |
+| EXPR015 | context-availability | error | A context used under a workflow key that does not provide it (e.g. `secrets` in `runs-on:`, `steps` in a job-level `if:`) |
+| EXPR016 | function-availability | error | `success()` / `failure()` / `always()` / `cancelled()` outside an `if:`, or `hashFiles()` under a key that does not provide it |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
 
@@ -200,6 +215,7 @@ action / reusable workflow references.
 | DEP001 | dependabot-cooldown | info | Dependabot updates should configure a cooldown period to avoid excessive PRs |
 | DEP002 | dependabot-execution | warning | `insecure-external-code-execution: allow` is a supply chain attack risk |
 | DEP003 | uses-format | error | `uses:` is not a supported action reference (step) or reusable workflow call (job) |
+| DEP004 | local-action-inputs | error | `with:` does not match the `inputs:` declared by the referenced local action, or the action has no `action.yml` |
 
 ### DEP003 で受理される形式
 
@@ -215,6 +231,23 @@ action / reusable workflow references.
 - `./.github/workflows/{file}.yml` — `@ref` を付けられない
 
 `uses:` の値が `${{ }}` を含む場合は実行時にしか決まらないため報告しない。
+
+### DEP004 のスコープ
+
+`uses: ./{path}` が指すディレクトリの `action.yml` / `action.yaml` を読み、
+呼び出し側の `with:` と突き合わせる。パスはリポジトリルート（`.git` を持つ
+ディレクトリ）からの相対として解決する。報告するのは 3 種類:
+
+- 参照先に `action.yml` も `action.yaml` も存在しない
+- `with:` のキーがアクションの `inputs:` に無い（編集距離 2 以内で候補が一意に
+  定まる場合は `did you mean ...?` を添える）
+- `required: true` かつ `default:` を持たない入力が渡されていない
+
+`runs.using: docker` のアクションでは `args:` / `entrypoint:` は入力ではなく
+Dockerfile の上書きなので報告しない。DEP003 が既に弾く形式の参照（`../` 始まり、
+`@ref` 付きなど）は二重報告を避けるため対象外。
+
+ディスクだけを読むので `--quick` / `--offline` でも動作する。
 
 ## Runner Rules (RUNNER)
 
@@ -676,6 +709,7 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 | ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
 | ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
 | ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
+| ACT005 | action-invalid-context | error | composite の step の式が、action 内では使えない context（`matrix` / `needs` / `secrets` / `strategy`）か、その action が宣言していない `inputs.<name>` を参照している |
 
 ### 検査対象になるファイル
 
@@ -708,8 +742,35 @@ error として報告する（編集距離 2 以内で候補が一意に定ま�
 - `value:` は composite action だけが持つ。JavaScript / Docker action は実行時に
   出力を書き出すため、`value:` があれば ACT004 として報告する。`using` の値が
   解決できない場合は出力側の判定を行わない。
-- composite の `runs.steps` はシーケンスであることだけを確認する。既存の step
-  ルールや式検証を steps に適用するのは #254。
+### composite の `runs.steps`
+
+composite action の step は、ワークフローの step と同じ実体なので、ワークフロー
+側で既に持っているルールをそのまま適用する。適用するのは、ワークフローもジョブも
+無い状態で正しく判定できる step 単位のルールに限る:
+
+- `uses:` 系: SEC001（SHA ピン止め）、DEP003（`uses:` の形式）、DEP004（ローカル
+  action の入力）、SC002（改竄されたリリース）、BP003（廃止されたバージョン）
+- `run:` 系: SEC002（スクリプトインジェクション）、SEC008（`GITHUB_ENV` 汚染）、
+  SEC017、BP007、BP008
+- その他: SEC003、SEC006、SEC014、SEC018
+
+適用しないものにも理由がある。ワークフロー / ジョブ単位のルール（SEC004、BP001 など）
+は判定対象が無い。`secrets` を見るルール（SEC011 / SEC012 / SEC019）は composite に
+`secrets` context が無いため、ACT005 が代わりに報告する。ネットワークを使うルール
+（SC003-SC006、SC008）はメタデータのリントでは prefetch が走らないため常に無反応に
+なる。BP002（step の `name`）はワークフローのログ表示のための規約で、action 側が
+決めることではない。
+
+さらに composite 固有の判定として:
+
+- `run:` を持つ step には `shell:` が必須。既定のシェルも `defaults.run` も無く、
+  GitHub は実行時にエラーにするため、ACT001（必須キーが無い）として報告する。
+  `shell:` の値そのものの妥当性は BP004 と同じ表で判定する。
+- 式検証（EXPR 系）は composite 用の context で行う。`inputs.<name>` はその action
+  自身の `inputs:` を指すため、宣言されていない名前は ACT005 として報告する
+  （`inputs:` の形が壊れている場合は判定しない）。`matrix` / `needs` / `secrets` /
+  `strategy` は composite action では解決できないので、参照していれば ACT005。
+  `steps.<id>` はその step より前に現れた step の `id` に対して解決する。
 
 ---
 

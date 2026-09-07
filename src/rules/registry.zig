@@ -14,11 +14,14 @@ const secrets_context = @import("secrets_context.zig");
 const needs_context = @import("needs_context.zig");
 const dependabot = @import("dependabot.zig");
 const action_metadata = @import("action_metadata.zig");
+const composite_steps = @import("composite_steps.zig");
 const runner = @import("runner.zig");
 const syntax = @import("syntax.zig");
 const uses = @import("uses.zig");
+const local_action = @import("local_action.zig");
 const reusable_workflow = @import("reusable_workflow.zig");
 const steps_ref = @import("steps_ref.zig");
+const expr_availability = @import("expr_availability.zig");
 
 pub const all_rules = security.security_rules ++
     best_practices.rules ++
@@ -30,11 +33,14 @@ pub const all_rules = security.security_rules ++
     inputs_context.rules ++
     secrets_context.rules ++
     steps_ref.rules ++
+    expr_availability.rules ++
     dependabot.rules ++
     action_metadata.rules ++
+    composite_steps.rules ++
     runner.rules ++
     syntax.rules ++
     uses.rules ++
+    local_action.rules ++
     reusable_workflow.rules;
 
 /// Every rule ID that can appear in a diagnostic, and therefore every ID that

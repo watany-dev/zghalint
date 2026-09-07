@@ -1,11 +1,11 @@
-//! Shared traversal for the contextual-typing rules (EXPR010-EXPR014).
+//! Shared traversal for the contextual rules (EXPR010-EXPR016).
 //!
 //! Each of those rules answers the same question in a different context: walk
 //! every `${{ }}` expression reachable from a step or a job, and resolve the
 //! context paths inside it against workflow data. Only the resolution differs,
-//! so the walk lives here and the caller supplies a visitor with a
-//! `checkPath(path, span)` method and an `alloc` field backing the expression
-//! parse trees.
+//! so the walk lives here and the caller supplies a visitor with an `alloc`
+//! field backing the expression parse trees and either or both of
+//! `checkPath(path, span)` and `checkCall(name, span)`.
 //!
 //! Spans are node-precise: a path is reported at its own byte range inside the
 //! scalar, not at the whole step.
@@ -32,6 +32,14 @@ fn Walk(comptime Visitor: type) type {
 
         const Self = @This();
 
+        comptime {
+            // A visitor whose hook is misspelled or not `pub` would walk every
+            // expression and report nothing, silently disabling its rule.
+            if (!@hasDecl(Visitor, "checkPath") and !@hasDecl(Visitor, "checkCall")) {
+                @compileError(@typeName(Visitor) ++ " declares neither a pub checkPath nor a pub checkCall");
+            }
+        }
+
         fn spanOf(self: Self, node: *const ExprNode) Span {
             const start = self.expr_offset + node.start_byte;
             const len = if (node.end_byte > node.start_byte) node.end_byte - node.start_byte else 0;
@@ -39,9 +47,19 @@ fn Walk(comptime Visitor: type) type {
         }
 
         fn walk(self: Self, node: *const ExprNode) void {
-            if (node.kind == .context_access) {
-                self.visitor.checkPath(node.value, self.spanOf(node));
-                return;
+            switch (node.kind) {
+                .context_access => {
+                    if (@hasDecl(Visitor, "checkPath")) {
+                        self.visitor.checkPath(node.value, self.spanOf(node));
+                    }
+                    return;
+                },
+                .function_call => {
+                    if (@hasDecl(Visitor, "checkCall")) {
+                        self.visitor.checkCall(node.value, self.spanOf(node));
+                    }
+                },
+                else => {},
             }
             for (node.children) |*child| self.walk(child);
         }
@@ -133,13 +151,16 @@ pub fn scanJobFields(visitor: anytype, job: *const Job) void {
     scanScalarMap(visitor, job.env, job.env_meta, job.span);
     scanScalarMap(visitor, job.with, null, job.span);
     if (job.runs_on) |runs_on| {
-        scanText(visitor, runs_on, Anchor.fromMeta(runsOnMeta(job), job.span));
+        scanText(visitor, runs_on, runsOnAnchor(job));
     }
 }
 
-fn runsOnMeta(job: *const Job) ?workflow_types.ScalarValueMeta {
-    const span = job.runs_on_value_span orelse return null;
-    return .{ .value_span = span, .style = job.runs_on_value_style };
+/// `runs-on` keeps its span and style in two separate fields rather than a
+/// `ScalarValueMeta`. The span is set whenever `job.runs_on` is, so the
+/// fallback only satisfies `Anchor`'s shape.
+pub fn runsOnAnchor(job: *const Job) Anchor {
+    const span = job.runs_on_value_span orelse return Anchor{ .fallback = job.span };
+    return Anchor.fromMeta(.{ .value_span = span, .style = job.runs_on_value_style }, job.span);
 }
 
 /// Every scalar of a job: its own fields and those of each step.

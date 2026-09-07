@@ -1388,7 +1388,9 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     checkStepEnv(step, list, &expr_check.TypeEnv.empty);
 }
 
-fn checkStepEnv(step: *const Step, list: *DiagnosticList, env: *const expr_check.TypeEnv) void {
+/// Public so a caller with its own context can supply one: composite action
+/// steps see the action's `inputs:` and no `matrix` / `secrets` at all (#254).
+pub fn checkStepEnv(step: *const Step, list: *DiagnosticList, env: *const expr_check.TypeEnv) void {
     const allocator = getArenaAllocator();
 
     // `run:` scalar style is not tracked and it is usually a block scalar,
