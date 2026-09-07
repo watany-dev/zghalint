@@ -527,6 +527,9 @@ pub const Job = struct {
     /// Span of the `runs-on:` scalar value (for RUNNER001 autofix).
     /// Null when `runs-on` is absent or given as a sequence.
     runs_on_value_span: ?yaml_types.Span = null,
+    /// Scalar style of the `runs-on:` value, so a `${{ }}` inside it can be
+    /// located within the token (EXPR011).
+    runs_on_value_style: yaml_types.ScalarStyle = .plain,
     /// `runs-on` labels in source order, normalized from all three spellings:
     /// a scalar, a sequence, or the `labels:` list of a runner-group mapping.
     runs_on_labels: []const []const u8 = &.{},

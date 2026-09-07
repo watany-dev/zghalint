@@ -674,7 +674,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     job.runs_on = m.getScalar("runs-on");
     if (m.get("runs-on")) |n| {
         switch (n) {
-            .scalar => |s| job.runs_on_value_span = s.span,
+            .scalar => |s| {
+                job.runs_on_value_span = s.span;
+                job.runs_on_value_style = s.style;
+            },
             else => {},
         }
         // A runner group (`runs-on: {group:, labels:}`) keeps its labels one
