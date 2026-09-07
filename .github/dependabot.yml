@@ -1,0 +1,33 @@
+# SHA でピンした action と PBT の pip 依存に更新経路を用意する (#234)。
+version: 2
+updates:
+  # SHA ピンは更新 PR で `# vX.Y.Z` コメントも一緒に書き換わる。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # リリース直後の版を掴まないよう待つ (DEP001)。
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      # actions/* は同時にリリースされることが多く、個別 PR にすると
+      # CI (3 OS ビルド + coverage + PBT) が無駄に積み上がる。
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+  - package-ecosystem: pip
+    directory: /tests/pbt
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      pbt:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "test"

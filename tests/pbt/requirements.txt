@@ -1,2 +1,6 @@
-pytest>=8.0
-hypothesis>=6.100
+# PBT の再現性のためバージョンを固定する (#235)。
+# Hypothesis は生成戦略とシュリンク挙動がリリース間で変わるため、
+# `>=` のままだとコード変更なしに CI の結果が変わる。
+# 更新は Dependabot の pip エコシステム (.github/dependabot.yml) 経由。
+pytest==8.4.2
+hypothesis==6.140.3
