@@ -9,6 +9,12 @@ zghalint の 4 つのコンポーネントについて、**ドキュメントが
 | RuleOwnership | SEC005 / SEC009 / SEC021 の担当分け (`src/rules/security.zig`) | Alloy 6 | [`rule_ownership/`](rule_ownership/) |
 | SEC022 | `workflow_run` ゲートの信頼アンカー判定 (`src/rules/security.zig`) | Z3 (python) | [`sec022/`](sec022/) |
 
+## このドキュメントの位置づけ
+
+**解析対象**: `82fad14`（2026-09-07 時点の `main`）。本文中の行番号もこの時点のもの。モデル化した 4 ファイル（`src/fix/engine.zig`, `src/rules/prefetch.zig`, `src/rules/security.zig`, `src/rules/graphql.zig`）は `11f3a17` 時点でも変更されていないので、以下の反例はいずれもまだ有効。
+
+**保守方針**: これは特定時点のスナップショットであり、CI では検査していない。TLA+ / Alloy / Z3 はこのリポジトリのツールチェーンに入っておらず（ゼロ依存方針）、モデルの再実行は手動。コードが変われば反例やファイル参照が古くなりうるので、「常に正しい仕様書」ではなく「この時点で見つかった問題とその証拠」として読むこと。再実行の手順は末尾にある。
+
 ## 進め方
 
 1. 各モデルのヘッダーに「宣言された仕様 S1..」と「コード由来の仕様 C1..」を並記した。S はドキュメント（ADR、`docs/design/*.md`、ルール解説、テストの意図）から、C はコードを読んで抽出した。
@@ -17,20 +23,20 @@ zghalint の 4 つのコンポーネントについて、**ドキュメントが
 
 ## 発見の一覧（重要度順）
 
-| # | モデル | 症状 | 重要度 | ドメインでの意味 |
-| --- | --- | --- | --- | --- |
-| 1 | RuleOwnership | `repository:` が PR head / workflow_run 由来でも無報告 | **高** | fork の PR が `with.repository` 経由で特権トークン付き実行を得られるのに、どのルールも黙る |
-| 2 | RuleOwnership | `workflow_call` を足すと `inputs.*` の検出が消える | **高** | `workflow_dispatch` と `workflow_call` を併記するだけで SEC021 を無効化できる |
-| 3 | SEC022 | `\|\|` や `!` の中のアンカーで条件全体が抑制される | **高** | `contains(message,'x') \|\| full_name == github.repository` が「検証済み」扱い |
-| 4 | Prefetch | RateLimited が「中断」ではなく REST 再試行になる | 中 | レート制限直後に同じ API を REST で叩く |
-| 5 | Prefetch | GraphQL 2 バッチ目失敗で 1 バッチ目の成功結果が `unknown` に上書き | 中 | 一時的失敗で正しい結果を捨て、解決できない旨の診断を出す（31 以上のアクションリポジトリを参照する場合） |
-| 6 | Prefetch | ディスクキャッシュは「最後に問い合わせた SHA」だけを覚える | 中 | pin を 1 つ足す、ブランチを行き来する、SC004 を切る、のいずれでもウォームランが成立しない |
-| 7 | FixEngine | 複数編集の Fix が半分だけ適用される | 中 | 修正後のファイルがどのルールの意図とも一致しない中間状態になる |
-| 8 | FixEngine | 同一範囲の置換は先に登録したルールが黙って勝つ | 低 | `--fix` で片方の修正が無言で捨てられる |
-| 9 | FixEngine | 同一バイトへの挿入順がレジストリの並びで決まる | 低 | ルール追加でゴールデン出力が変わる |
-| 10 | RuleOwnership | `pull_request_target` + `workflow_run` で同じ `ref` に二重報告 | 低 | ノイズのみ |
-| 11 | RuleOwnership | `repository_dispatch` で `github.event.inputs` に発火 | 低 | 誤設定の指摘としては有用な誤検知 |
-| 12 | SEC022 | `head_repository.fork` / `!=` 比較がアンカーにならない誤検知 | 低 | fork を正しく弾いている条件が報告される |
+| # | モデル | 症状 | 重要度 | ドメインでの意味 | イシュー |
+| --- | --- | --- | --- | --- | --- |
+| 1 | RuleOwnership | `repository:` が PR head / workflow_run 由来でも無報告 | **高** | fork の PR が `with.repository` 経由で特権トークン付き実行を得られるのに、どのルールも黙る | #218 |
+| 2 | RuleOwnership | `workflow_call` を足すと `inputs.*` の検出が消える | **高** | `workflow_dispatch` と `workflow_call` を併記するだけで SEC021 を無効化できる | #219 |
+| 3 | SEC022 | `\|\|` や `!` の中のアンカーで条件全体が抑制される | **高** | `contains(message,'x') \|\| full_name == github.repository` が「検証済み」扱い | #220 |
+| 4 | Prefetch | RateLimited が「中断」ではなく REST 再試行になる | 中 | レート制限直後に同じ API を REST で叩く | #222 |
+| 5 | Prefetch | GraphQL 2 バッチ目失敗で 1 バッチ目の成功結果が `unknown` に上書き | 中 | 一時的失敗で正しい結果を捨て、解決できない旨の診断を出す（31 以上のアクションリポジトリを参照する場合） | #222 |
+| 6 | Prefetch | ディスクキャッシュは「最後に問い合わせた SHA」だけを覚える | 中 | pin を 1 つ足す、ブランチを行き来する、SC004 を切る、のいずれでもウォームランが成立しない | #221 |
+| 7 | FixEngine | 複数編集の Fix が半分だけ適用される | 中 | 修正後のファイルがどのルールの意図とも一致しない中間状態になる | #223 |
+| 8 | FixEngine | 同一範囲の置換は先に登録したルールが黙って勝つ | 低 | `--fix` で片方の修正が無言で捨てられる | #223 |
+| 9 | FixEngine | 同一バイトへの挿入順がレジストリの並びで決まる | 低 | ルール追加でゴールデン出力が変わる | #223 |
+| 10 | RuleOwnership | `pull_request_target` + `workflow_run` で同じ `ref` に二重報告 | 低 | ノイズのみ | #224 |
+| 11 | RuleOwnership | `repository_dispatch` で `github.event.inputs` に発火 | 低 | 誤設定の指摘としては有用な誤検知 | #224 |
+| 12 | SEC022 | `head_repository.fork` / `!=` 比較がアンカーにならない誤検知 | 低 | fork を正しく弾いている条件が報告される | #220 |
 
 ## 各発見のドメイン説明
 
