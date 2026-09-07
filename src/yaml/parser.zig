@@ -33,8 +33,8 @@ pub const max_parse_depth: u16 = 256;
 /// the cap stops a hostile file from exhausting CI memory.
 pub const max_alias_expansion_nodes: usize = 100_000;
 
-/// The YAML merge key. `<<: *anchor` folds the referenced mapping's entries
-/// into the surrounding mapping.
+/// `<<: *anchor` folds the referenced mapping's entries into the surrounding
+/// mapping.
 const merge_key = "<<";
 
 pub const Parser = struct {
@@ -264,8 +264,7 @@ pub const Parser = struct {
                 if (std.mem.eql(u8, existing.key.value, entry.key.value)) continue :outer;
             }
             var copy = entry;
-            // The entry's text belongs to the merge source, not to this
-            // mapping, so it is not a range any autofix may rewrite here.
+            // The entry's text lives at the merge source, not here.
             copy.full_span = null;
             merged.append(self.allocator, copy) catch return ParseError.OutOfMemory;
         }
