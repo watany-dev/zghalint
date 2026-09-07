@@ -1,0 +1,28 @@
+# zghalint:expect EXPR010@18 EXPR010@20 EXPR010@22
+name: step references
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Setup
+        id: setup
+        run: echo "v=1" >> "$GITHUB_OUTPUT"
+      - name: Misspelled step id
+        run: echo "${{ steps.stup.outputs.v }}"
+      - name: Misspelled property
+        run: echo "${{ steps.setup.output.v }}"
+      - name: Forward reference
+        run: echo "${{ steps.later.outputs.v }}"
+      - name: Valid reference
+        if: steps.setup.conclusion == 'success'
+        run: echo "${{ steps.setup.outputs.v }}"
+      - name: Later
+        id: later
+        run: echo hi

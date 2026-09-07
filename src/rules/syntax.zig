@@ -650,6 +650,7 @@ fn reportGlobErrors(
 }
 
 const cron = @import("../workflow/cron.zig");
+const timezones = @import("../workflow/timezones.zig");
 
 fn checkScheduleCronSyntax(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.on.events) |event| {
@@ -691,6 +692,99 @@ fn checkScheduleCronFrequency(wf: *const Workflow, list: *DiagnosticList) void {
                 ) catch "scheduled job runs too frequently. the shortest interval is once every 5 minutes",
                 .span = entry.cron_span,
                 .fix_hint = "set the minute field so scheduled runs are at least 5 minutes apart",
+            }) catch return;
+        }
+    }
+}
+
+fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.on.events) |event| {
+        if (event.event != .schedule) continue;
+        for (event.schedules) |entry| {
+            const tz = entry.timezone orelse continue;
+            // A name built from an expression is not a literal zone name at all.
+            if (std.mem.indexOf(u8, tz, "${{") != null) continue;
+            if (timezones.isKnown(tz)) continue;
+
+            var suffix_buf: [96]u8 = undefined;
+            const suffix = if (util.didYouMean(tz, &timezones.timezone_names)) |s|
+                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+            else
+                "";
+
+            list.append(.{
+                .rule_id = "SYN016",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "invalid timezone \"{s}\" in schedule event{s}",
+                    .{ tz, suffix },
+                ) catch "invalid timezone in schedule event",
+                .span = entry.timezone_span orelse entry.cron_span,
+                .fix_hint = "use a name from the IANA time zone database, such as \"Asia/Tokyo\" or \"UTC\"",
+            }) catch return;
+        }
+    }
+}
+
+fn workflowDispatchInputMessage(
+    alloc: std.mem.Allocator,
+    problem: workflow_types.WorkflowDispatchInputProblem,
+) ?[]const u8 {
+    return switch (problem.kind) {
+        .invalid_type => std.fmt.allocPrint(
+            alloc,
+            "invalid input type \"{s}\" for workflow_dispatch input \"{s}\". available types are \"string\", \"boolean\", \"number\", \"choice\" and \"environment\"",
+            .{ problem.detail, problem.input_name },
+        ) catch null,
+        .missing_options => std.fmt.allocPrint(
+            alloc,
+            "\"options\" is required for workflow_dispatch input \"{s}\" of type \"choice\"",
+            .{problem.input_name},
+        ) catch null,
+        .empty_options => std.fmt.allocPrint(
+            alloc,
+            "\"options\" of workflow_dispatch input \"{s}\" is empty",
+            .{problem.input_name},
+        ) catch null,
+        .options_without_choice => std.fmt.allocPrint(
+            alloc,
+            "\"options\" is only available for type \"choice\", but workflow_dispatch input \"{s}\" has type \"{s}\"",
+            .{ problem.input_name, problem.detail },
+        ) catch null,
+        .default_not_in_options => std.fmt.allocPrint(
+            alloc,
+            "default \"{s}\" of workflow_dispatch input \"{s}\" is not included in its \"options\"",
+            .{ problem.detail, problem.input_name },
+        ) catch null,
+        .default_type_mismatch => std.fmt.allocPrint(
+            alloc,
+            "default of workflow_dispatch input \"{s}\" is not a valid \"{s}\" value",
+            .{ problem.input_name, problem.detail },
+        ) catch null,
+    };
+}
+
+fn checkWorkflowDispatchInputs(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.on.events) |event| {
+        if (event.event != .workflow_dispatch) continue;
+        for (event.workflow_dispatch_input_problems) |problem| {
+            const message = workflowDispatchInputMessage(alloc, problem) orelse continue;
+            list.append(.{
+                .rule_id = "SYN017",
+                .severity = .@"error",
+                .message = message,
+                .span = problem.span,
+                .fix_hint = switch (problem.kind) {
+                    .invalid_type => "use `string`, `boolean`, `number`, `choice`, or `environment`",
+                    .missing_options => "add an `options:` list, or drop `type: choice`",
+                    .empty_options => "list at least one value under `options:`",
+                    .options_without_choice => "remove `options:`, or set `type: choice`",
+                    .default_not_in_options => "use one of the listed options as the default, or add it to `options:`",
+                    .default_type_mismatch => "write the default as a value of the declared type",
+                },
             }) catch return;
         }
     }
@@ -834,6 +928,22 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkScheduleCronFrequency,
+    },
+    .{
+        .id = "SYN016",
+        .name = "invalid-timezone",
+        .description = "schedule timezone is not a name in the IANA time zone database",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkScheduleTimezone,
+    },
+    .{
+        .id = "SYN017",
+        .name = "workflow-dispatch-inputs",
+        .description = "workflow_dispatch input declares an invalid type, options, or default",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkWorkflowDispatchInputs,
     },
 };
 
@@ -3192,6 +3302,7 @@ fn runScheduleRules(source: []const u8) !DiagnosticList {
     var list = DiagnosticList.init(testing.allocator);
     checkScheduleCronSyntax(&wf, &list);
     checkScheduleCronFrequency(&wf, &list);
+    checkScheduleTimezone(&wf, &list);
     return list;
 }
 
@@ -3341,4 +3452,277 @@ test "SYN014/SYN015: valid daily schedule is clean" {
 
     try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
     try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN015"));
+}
+
+test "SYN016: unknown timezone names are reported" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * * *'
+        \\      timezone: 'Asia/Tokio'
+        \\    - cron: '0 9 * * *'
+        \\      timezone: 'JST'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN016"));
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"Asia/Tokyo\"") != null);
+    try testing.expectEqual(@as(usize, 4), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"JST\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "did you mean") == null);
+}
+
+test "SYN016: IANA names and expression values are clean" {
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: '0 0 * * *'
+        \\      timezone: 'Asia/Tokyo'
+        \\    - cron: '0 1 * * *'
+        \\      timezone: UTC
+        \\    - cron: '0 2 * * *'
+        \\      timezone: ${{ vars.TZ }}
+        \\    - cron: '0 3 * * *'
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn017(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkWorkflowDispatchInputs(&wf, &list);
+    return list;
+}
+
+test "SYN017: invalid workflow_dispatch inputs from the issue example" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      env:
+        \\        type: choice
+        \\        default: staging
+        \\        options: [dev, prod]
+        \\      verbose:
+        \\        type: boolean
+        \\        default: "yes"
+        \\      level:
+        \\        type: enum
+        \\      target:
+        \\        type: choice
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 4), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"staging\"") != null);
+    try testing.expectEqual(@as(usize, 6), diags.get(0).span.start_line);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "is not a valid \"boolean\" value") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(2).message, "invalid input type \"enum\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(3).message, "\"options\" is required") != null);
+}
+
+test "SYN017: options outside type choice and an empty options list are reported" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      name:
+        \\        type: string
+        \\        options: [a, b]
+        \\      pick:
+        \\        type: choice
+        \\        options: []
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "only available for type \"choice\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "is empty") != null);
+}
+
+test "SYN017: number default and untyped inputs" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      retries:
+        \\        type: number
+        \\        default: many
+        \\      note:
+        \\        description: free text
+        \\        default: hello
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "is not a valid \"number\" value") != null);
+}
+
+test "SYN017: valid workflow_dispatch inputs are clean" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      env:
+        \\        type: choice
+        \\        default: dev
+        \\        options: [dev, staging, prod]
+        \\      verbose:
+        \\        type: boolean
+        \\        default: false
+        \\      retries:
+        \\        type: number
+        \\        default: 3
+        \\      target:
+        \\        type: environment
+        \\        default: production
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN017: an untyped input carrying options is still reported" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      env:
+        \\        options: [dev, prod]
+        \\        default: staging
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "only available for type \"choice\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "has type \"string\"") != null);
+}
+
+test "SYN017: a malformed options list does not abort the parse" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      pick:
+        \\        type: choice
+        \\        options:
+        \\          - dev
+        \\          - nested: value
+        \\        default: prod
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"prod\"") != null);
+}
+
+test "SYN017: YAML 1.2 boolean spellings are accepted as defaults" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      a:
+        \\        type: boolean
+        \\        default: True
+        \\      b:
+        \\        type: boolean
+        \\        default: FALSE
+        \\      c:
+        \\        type: boolean
+        \\        default: yes
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    // `yes` is YAML 1.1 only, so it stays a string and is still reported.
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"c\"") != null);
+}
+
+test "SYN017: a scalar options value counts as no options" {
+    const source =
+        \\on:
+        \\  workflow_dispatch:
+        \\    inputs:
+        \\      pick:
+        \\        type: choice
+        \\        options: dev
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn017(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "is empty") != null);
 }

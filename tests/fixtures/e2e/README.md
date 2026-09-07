@@ -38,10 +38,14 @@ non-comment line. A fixture with neither directive fails the test.
 | `sec022-workflow-run-branch-gate.yml` | #143 repro: `head_branch` gate on a `workflow_run` job |
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
+| `expr010-step-refs.yml` | EXPR010: unknown / misspelled / forward `steps.<id>` references |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
+| `syn016-schedule-timezone.yml` | #72: `schedule` `timezone` names outside the IANA database |
+| `syn017-workflow-dispatch-inputs.yml` | #73: `workflow_dispatch` input type, `options`, and `default` mismatches |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
+| `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |

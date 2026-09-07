@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **71 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **76 rules** across 9 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -163,6 +163,8 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR007 | unsound-condition | warning | Bare literal in logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR009 | fromjson-literal | error | `fromJSON()` string literal argument must be valid JSON |
+| EXPR010 | undefined-step-reference | error | `steps.<id>` must name a step defined earlier in the same job, and only `outputs` / `conclusion` / `outcome` exist below it |
+| EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 
 ## Dependency Rules (DEP)
@@ -198,6 +200,19 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
+| RUNNER002 | unknown-runner | error | `runs-on` label is not a known GitHub-hosted runner (typos leave the job queued forever) |
+
+RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知のラベル」だけを報告する。
+セルフホストのフリートは列挙しようがないため、以下は報告しない:
+
+- 既知ラベルに接尾辞が付いたもの（`ubuntu-latest-4-cores` などの larger runner）
+- `self-hosted` / `linux` / `x64` などの慣用ラベル
+- 既知ラベルから遠く、`ubuntu-` / `windows-` / `macos-` でも始まらない独自ラベル（`gpu-box` など）
+- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は #210 で対応予定）
+
+既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
+提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
+`runner.labels` に列挙すれば既知として扱われる。
 
 ## Syntax Rules (SYN)
 
@@ -220,6 +235,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
+| SYN016 | invalid-timezone | error | `schedule` `timezone` is not a name in the IANA time zone database |
+| SYN017 | workflow-dispatch-inputs | error | `workflow_dispatch` input declares an invalid `type`, misuses `options`, or has a `default` that does not fit |
 
 ### SYN002 duplicate-key
 
@@ -445,6 +462,84 @@ on:
     branches: [main, releases/**, v[0-9].*]
     paths: [src/**/*.zig, '!src/vendor/**']
 ```
+
+---
+
+### SYN016 invalid-timezone
+
+`on.schedule[*].timezone` is resolved against the IANA time zone database.
+An abbreviation or a misspelled name is not silently ignored — the schedule
+never fires. Names are case-sensitive.
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Tokio'   # error: did you mean "Asia/Tokyo"?
+    - cron: '0 9 * * *'
+      timezone: 'JST'          # error: not an IANA time zone name
+```
+
+Valid examples:
+
+```yaml
+on:
+  schedule:
+    - cron: '0 0 * * *'
+      timezone: 'Asia/Tokyo'
+    - cron: '0 0 * * *'
+      timezone: 'UTC'
+```
+
+A `timezone` built from a `${{ }}` expression is not checked.
+
+---
+
+### SYN017 workflow-dispatch-inputs
+
+`workflow_dispatch` inputs have a small type system that GitHub enforces when
+the run form is rendered:
+
+- `type:` must be `string`, `boolean`, `number`, `choice`, or `environment`
+- `type: choice` requires a non-empty `options:` list, and `options:` is
+  meaningless for any other type
+- `default:` must be one of the `options:` for a choice, a bool for `boolean`,
+  and a number for `number`
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        default: staging       # error: not included in "options"
+        options: [dev, prod]
+      verbose:
+        type: boolean
+        default: "yes"         # error: not a valid "boolean" value
+      level:
+        type: enum             # error: invalid input type
+      target:
+        type: choice           # error: "options" is required
+```
+
+Valid examples:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        default: dev
+        options: [dev, staging, prod]
+      verbose:
+        type: boolean
+        default: false
+```
+
+An input with no `type:` defaults to `string` and is not reported. Reusable
+workflow inputs use a different type system and are checked by RW001.
 
 ---
 

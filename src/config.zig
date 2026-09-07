@@ -51,6 +51,8 @@ pub const Perf001Override = struct {
 pub const Config = struct {
     rule_overrides: std.StringHashMap(RuleOverride),
     ignore_patterns: std.ArrayList([]const u8),
+    /// Extra `runs-on` labels accepted by RUNNER002 (`runner.labels`).
+    runner_labels: std.ArrayList([]const u8),
     output_format: OutputFormat = .terminal,
     color_mode: ColorMode = .auto,
     repo_visibility: Visibility = .unknown,
@@ -64,6 +66,7 @@ pub const Config = struct {
         return .{
             .rule_overrides = std.StringHashMap(RuleOverride).init(allocator),
             .ignore_patterns = .{},
+            .runner_labels = .{},
             .allocator = allocator,
             .strings_arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -72,6 +75,7 @@ pub const Config = struct {
     pub fn deinit(self: *Config) void {
         self.rule_overrides.deinit();
         self.ignore_patterns.deinit(self.allocator);
+        self.runner_labels.deinit(self.allocator);
         self.strings_arena.deinit();
     }
 
@@ -170,6 +174,30 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                         .scalar => |s| {
                             const pattern = try strings.dupe(u8, s.value);
                             try config.ignore_patterns.append(allocator, pattern);
+                        },
+                        else => {},
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (root.get("runner")) |runner_node| {
+        switch (runner_node) {
+            .mapping => |m| {
+                if (m.get("labels")) |labels_node| {
+                    switch (labels_node) {
+                        .sequence => |seq| {
+                            for (seq.items) |item| {
+                                switch (item) {
+                                    .scalar => |sc| {
+                                        const label = try strings.dupe(u8, sc.value);
+                                        try config.runner_labels.append(allocator, label);
+                                    },
+                                    else => {},
+                                }
+                            }
                         },
                         else => {},
                     }
@@ -584,6 +612,34 @@ test "config outlives source buffer (ignore pattern)" {
 
     try std.testing.expect(config.isIgnored(".github/workflows/legacy-deploy.yml"));
     try std.testing.expect(!config.isIgnored(".github/workflows/ci.yml"));
+}
+
+test "parse runner.labels" {
+    const src =
+        \\runner:
+        \\  labels:
+        \\    - ubuntu-nvidia
+        \\    - build-box
+        \\
+    ;
+    var config = try parseConfig(std.testing.allocator, src);
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), config.runner_labels.items.len);
+    try std.testing.expectEqualStrings("ubuntu-nvidia", config.runner_labels.items[0]);
+    try std.testing.expectEqualStrings("build-box", config.runner_labels.items[1]);
+}
+
+test "config outlives source buffer (runner label)" {
+    const alloc = std.testing.allocator;
+    const src = try alloc.dupe(u8, "runner:\n  labels:\n    - ubuntu-nvidia\n");
+    defer alloc.free(src);
+
+    var config = try parseConfigFromFreedSource(alloc, src);
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), config.runner_labels.items.len);
+    try std.testing.expectEqualStrings("ubuntu-nvidia", config.runner_labels.items[0]);
 }
 
 /// Mirrors `main.loadConfig`: the YAML source buffer is freed before the Config
