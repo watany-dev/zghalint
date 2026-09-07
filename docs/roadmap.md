@@ -1,27 +1,29 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`a2215d9`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`11f3a17`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数 | 76（`docs/rules.md` の表・見出しとも 76 で一致） |
-| `src/**/*.zig` | 37,719 行 |
-| ユニットテスト | 1388 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **32 close 済み（59%）** |
+| ルール数 | 77（`docs/rules.md` の表・見出しとも 77 で一致） |
+| `src/**/*.zig` | 38,151 行 |
+| ユニットテスト | 1402 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **33 close 済み（61%）** |
 | 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129、引数型検査は #162 |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（26 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（27 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。#170 / #171 / #172 の回帰 strategy を収録済み |
 | ADR | `docs/adr/0001`〜`0011`（0011 は RUNNER002） |
-| オープン PR | #207（本ロードマップ）、#212（SYN018 / #74）、#217（形式仕様とモデル検査） |
-| オープン issue | 28 件。内訳は #55 本体 1、#55 の sub-issue 22、それ以外 5（#124 #135 #159 #162 #210） |
+| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査） |
+| オープン issue | 34 件。内訳は #55 本体 1、#55 の sub-issue 21、それ以外 12（#124 #135 #159 #162 #210 と新規バグ 7 件） |
 | 実装済みだが未 close の issue | **#72 / #73 / #86**（SYN016・SYN017・EXPR010 は main に入っているが issue が open のまま） |
-| 既知バグ | **なし**。#170〜#173 は PR #205 で修正済み |
+| 既知バグ | **7 件（#218〜#224）**。PR #217 の形式検証（Alloy / TLA+）が出した反例から起票された未修正バグ。うち #218 / #219 / #220 は security |
 
 トリガー `on:` 群（Phase 1）は SYN009〜SYN011 / SYN016 / SYN017 が出揃って完了した。
-残っているのは #55 parity の sub-issue 22 件と、それ以外の 5 件（#124 #135 #159 #162 #210）である。
+matrix 値重複の SYN018（#74）も入り、Phase 2 は #75 / #210 / #77 の 3 件を残すのみ。
+新たに PR #217 の形式検証が **未修正バグ 7 件（#218〜#224）** を掘り出しており、これが新規ルールより優先する。
+残る parity は sub-issue 21 件、バグ 7 件を除いたそれ以外は 5 件（#124 #135 #159 #162 #210）である。
 #124 と #162 は型検査エンジンに、#210 は matrix 展開に依存するのでそれぞれ Phase 3 / Phase 2 に置き、
 #135 / #159 / #64 を並行トラックとして扱う。
 
@@ -44,14 +46,14 @@ cron（#70 / #71）と glob（#69）は `src/workflow/cron.zig` / `src/rules/glo
 
 ### Phase 2: job / step / matrix
 
-`Strategy` 型の拡張（matrix 軸・include / exclude の保持）が起点。RUNNER002 本体（#76）は完了済み。
+`Strategy` 型の matrix 構造は SYN018（#74、PR #212）で入り、`src/workflow/parser.zig` + `src/rules/syntax.zig` に着地した。
+RUNNER002 本体（#76）も完了済み。以後は同じ matrix 構造を使う 3 件が残る。
 
 | 順 | issue | ルール | 依存 |
 |---|---|---|---|
-| 1 | #74 | SYN018 matrix 値重複 | `Strategy` に matrix 構造を追加。**PR #212 でレビュー中** |
-| 2 | #75 | SYN019 include / exclude 整合 | #74 |
-| 3 | #210 | RUNNER002 第二段階: `runs-on: ${{ matrix.<key> }}` を matrix 展開して検証 | #74（matrix 構造）。RUNNER002 本体（#76）は ADR-0011 とともに実装済み。展開できない式は従来どおりスキップし、span は matrix 値側に向ける |
-| 4 | #77 | RUNNER003 ラベル衝突 | RUNNER002 のラベル表（`src/rules/runner.zig`）を再利用 |
+| 1 | #75 | SYN019 include / exclude 整合 | #74 の matrix 構造（実装済み） |
+| 2 | #210 | RUNNER002 第二段階: `runs-on: ${{ matrix.<key> }}` を matrix 展開して検証 | matrix 構造は実装済み。RUNNER002 本体（#76）は ADR-0011 とともに完了。展開できない式は従来どおりスキップし、span は matrix 値側に向ける |
+| 3 | #77 | RUNNER003 ラベル衝突 | RUNNER002 のラベル表（`src/rules/runner.zig`）を再利用 |
 
 ### Phase 3: contextual typing（エンジン T4 = #129）
 
@@ -61,7 +63,7 @@ EXPR010（`src/rules/steps_ref.zig`）と EXPR012（`src/rules/needs_context.zig
 | 順 | issue | ルール | 依存 |
 |---|---|---|---|
 | 1 | #89 | EXPR013 `inputs.<name>` | SYN017（#73）で入った `workflow_dispatch` inputs 構造を使う |
-| 2 | #87 | EXPR011 `matrix.<key>` | #74（matrix 構造） |
+| 2 | #87 | EXPR011 `matrix.<key>` | #74 で入った matrix 構造を使う（着手可能） |
 | 3 | #90 | EXPR014 `secrets.<name>` | RW001（#104）で入った `workflow_call` の定義構造を使う |
 | 4 | #129 | T4: 存在検証（`steps_ref.zig` / `needs_context.zig` + #87 #89 #90）を `expr_check.zig` の overlay に接続し、エンジン側に寄せる | #87 / #89 / #90 |
 | 5 | #162 | EXPR018 関数の引数型と補間値（object / array / null）の型検査 | #129。loose object（overlay 未接続の context）は診断しない |
@@ -91,20 +93,22 @@ EXPR010（`src/rules/steps_ref.zig`）と EXPR012（`src/rules/needs_context.zig
 |---|---|
 | #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
 | #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator`（:1009）が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が集中する Phase 1〜3 の**前**に済ませると衝突が少ない |
+| **#218〜#224 形式検証由来のバグ 7 件** | PR #217 の Alloy / TLA+ が出した反例。#218（SEC005 / SEC009 が `with.repository` を見ない）・#219（SEC021 が `workflow_call` 併記で無効化）・#220（SEC022 の信頼アンカー判定）は検出漏れなので **新規ルールより優先**。#221 / #222 は prefetch キャッシュ、#223 は `--fix` の原子性、#224 は二重報告 |
 | #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する。#172 / #173 の修正が入って同ファイルが落ち着いたので、着手可能になった |
 
 ## 3. 直近の着手順（上位 6 件）
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | #74 | PR #212 がレビュー中。これが入ると #75 / #210 / #87 の 3 件が同時に動かせる |
-| 2 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める |
-| 3 | #89 | SYN017 の inputs 構造が入ったので即着手できる。#129 の overlay 材料も揃う |
-| 4 | #135 | 設計済み・オフライン完結・他と非競合。並列で流せる |
-| 5 | #64 | `yaml/` が落ち着いた今が着手時期。matrix / anchor 併用ワークフローに効く |
-| 6 | #129 | 最大の山。存在検証が出揃ってから overlay へ寄せる |
+| 1 | #218 | SEC005 / SEC009 の検出漏れ。fork PR の任意コード実行がそのまま通る。既存ルールの検査対象に `with.repository` を足すだけで、影響範囲が小さいわりに効果が最大 |
+| 2 | #219 | SEC021 が `workflow_call` 併記で無効化される。#218 と同じ `security.zig` を触るので続けて片付ける |
+| 3 | #220 | SEC022 の信頼アンカー判定を文字列出現から AST ベースへ。security 3 件をここで打ち止め |
+| 4 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める。security 修正が `security.zig` に閉じるので並行して進められる |
+| 5 | #87 | #74 の matrix 構造が入ったので即着手できる。#129 の overlay 材料も揃う |
+| 6 | #89 | SYN017 の inputs 構造を使う。#87 と同じ contextual typing の形なので連続して書ける |
 
-#162 は #129 の overlay が入った直後に続ける。Phase 1 が終わり、以後は matrix（Phase 2）と contextual typing（Phase 3）が主線になる。
+#135 / #64 / #129 はその後に続け、#162 は #129 の overlay が入った直後に着手する。
+Phase 1 と SYN018 が終わったので、以後は形式検証由来のバグ修正が最優先、次いで contextual typing（Phase 3）が主線になる。
 `docs/rules.md` に行があるのに issue が open のままの #72 / #73 / #86 は close する。
 
 ## 4. 進め方の注意
