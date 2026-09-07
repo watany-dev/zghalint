@@ -63,18 +63,26 @@ picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
 `discussion_comment`.
 
+All three read both `with.ref` and `with.repository`: pointing `repository` at
+the PR head repository checks out the fork's code without `ref` being touched
+at all (#218). A step whose `ref` and `repository` are fed from the same
+payload is one mistake, so it is reported once.
+
 A workflow can declare several of those triggers at once, so ownership is
 decided per value rather than per workflow: SEC021 stays quiet on exactly the
-`with.ref` values SEC005 or SEC009 already reports, and no other. Skipping the
-whole workflow would hide a `ref` fed from a comment body just because
-`pull_request_target` also appears in `on:`, and would hide `with.repository`
-entirely, since neither of the other two rules looks at it.
+values SEC005 or SEC009 already reports, and no other. Skipping the whole
+workflow would hide a `ref` fed from a comment body just because
+`pull_request_target` also appears in `on:`.
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
 `github.event.client_payload.*`) and the free text of an issue, comment or
-discussion. The bare `inputs.*` shorthand counts too, except in a workflow that
-also declares `workflow_call`: there it names what a caller passes, and
-analysing callers is out of scope.
+discussion. The bare `inputs.*` shorthand counts too, unless every way into the
+workflow fills it from a caller — a `workflow_call` workflow with no
+`workflow_dispatch`, or one whose `workflow_dispatch` declares no inputs of its
+own. Analysing callers is out of scope. A `workflow_call` declared beside a
+`workflow_dispatch` that has inputs keeps the shorthand untrusted: the same
+`inputs.ref` is still what a dispatching user types, so three lines of
+`workflow_call:` must not silence the rule (#219).
 
 ### SEC022 vs. SEC006
 
@@ -88,11 +96,22 @@ case: `on: workflow_run` only, and only for the attributes the fork authors
 `display_title`). A condition that also verifies the triggering repository —
 `github.event.workflow_run.head_repository.full_name == github.repository`, or
 `github.event.workflow_run.event == 'push'` — is sound, and is not reported.
-The anchor must be an equality check: `head_repository.full_name !=
-github.repository` selects the fork runs rather than excluding them, and
-`head_repository.fork == true` is a fork-only gate, so neither counts. Values
-that name one immutable commit — `head_sha`, `head_commit.id` — are never
-reported. A trust check on the job covers the steps inside it.
+The condition is parsed, and the anchor only counts where it is
+guaranteed to have held: joined with `||` it leaves the branch gate reachable
+on its own, so it anchors nothing. Negation is read through — `!(fork == true
+|| head_branch == 'main')` excludes exactly the fork runs and is sound, while
+`!(head_repository.full_name == github.repository)` asserts the opposite of the
+check it is written as. Read with that polarity, the anchor must assert
+identity: `head_repository.full_name != github.repository` selects the fork
+runs rather than excluding them, and `head_repository.fork == true` is a
+fork-only gate (`fork == false`, `fork != true` and `!fork` are the sound
+spellings). The anchor is matched segment for segment, so only the fields that
+name the repository count — `head_repository.name` is not one of them, because
+a fork inherits the name of the repository it came from, and neither is
+`head_repository.owner.type`, which is `User` for every fork. A condition that
+does not parse anchors nothing. Values that name one immutable commit — `head_sha`,
+`head_commit.id` — are never reported. A trust check on the job covers the
+steps inside it.
 
 ## Supply Chain Security Rules (SC)
 
