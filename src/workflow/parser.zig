@@ -221,6 +221,9 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
                         config.workflow_call_inputs = parsed.inputs;
                         config.workflow_call_input_problems = parsed.problems;
                     }
+                    if (m.get("secrets")) |secrets_node| {
+                        config.workflow_call_secrets = try parseWorkflowCallSecrets(allocator, secrets_node);
+                    }
                 },
                 .workflow_dispatch => {
                     if (m.get("inputs")) |inputs_node| {
@@ -325,6 +328,32 @@ fn defaultMatchesCallableInputType(input_type: types.CallableInputType, node: No
         .number => isYamlNumber(node),
         .string => node == .scalar,
     };
+}
+
+/// `secrets:` is a mapping of secret name to an optional
+/// `{required:, description:}` mapping. A `secrets:` whose value is not a
+/// mapping declares nothing, so it yields an empty list — same as an absent
+/// key, which is what EXPR014 needs to stay quiet on.
+fn parseWorkflowCallSecrets(allocator: std.mem.Allocator, node: Node) ParseError![]const types.SecretDef {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    var secrets = try std.ArrayList(types.SecretDef).initCapacity(allocator, m.entries.len);
+    for (m.entries) |entry| {
+        var def = types.SecretDef{ .name = entry.key.value, .name_span = entry.key.span };
+        switch (entry.value) {
+            .mapping => |sm| {
+                if (sm.get("required")) |required_node| {
+                    def.required = parseYamlBool(required_node);
+                }
+            },
+            else => {},
+        }
+        secrets.appendAssumeCapacity(def);
+    }
+    return secrets.toOwnedSlice(allocator);
 }
 
 fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowCallInputs {

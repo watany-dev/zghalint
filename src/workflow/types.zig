@@ -199,6 +199,14 @@ pub const InputDef = struct {
     default_span: ?yaml_types.Span = null,
 };
 
+/// One entry of `on.workflow_call.secrets`. The declaration is what makes a
+/// reusable workflow's secret set closed, which is what EXPR014 checks against.
+pub const SecretDef = struct {
+    name: []const u8,
+    name_span: yaml_types.Span,
+    required: ?bool = null,
+};
+
 pub const WorkflowCallInputProblemKind = enum {
     missing_type,
     invalid_type,
@@ -327,6 +335,7 @@ pub const EventConfig = struct {
     schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
+    workflow_call_secrets: []const SecretDef = &.{},
     workflow_dispatch_inputs: []const DispatchInputDef = &.{},
     workflow_dispatch_input_problems: []const WorkflowDispatchInputProblem = &.{},
 };

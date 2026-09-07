@@ -186,6 +186,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR011 | matrix-context | error | `matrix.<key>` must name a key declared in the job's `strategy.matrix` (including keys added by `include:`), and a job without `strategy.matrix` has no `matrix` context |
 | EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR013 | inputs-context | error | `inputs.<name>` must name an input declared by `workflow_dispatch.inputs` or `workflow_call.inputs`, and a workflow with neither trigger has no `inputs` context |
+| EXPR014 | secrets-context | error | `secrets.<name>` must name a secret declared under `on.workflow_call.secrets` (only checked when that section exists; `GITHUB_TOKEN` is always valid) |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
 
 ## Dependency Rules (DEP)

@@ -72,6 +72,7 @@ test {
     _ = @import("rules/needs_context.zig");
     _ = @import("rules/matrix_context.zig");
     _ = @import("rules/inputs_context.zig");
+    _ = @import("rules/secrets_context.zig");
     _ = @import("rules/steps_ref.zig");
     _ = @import("rules/security.zig");
     _ = @import("rules/performance.zig");

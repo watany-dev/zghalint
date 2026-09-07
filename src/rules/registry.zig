@@ -9,6 +9,7 @@ const permissions = @import("permissions.zig");
 const expressions = @import("expressions.zig");
 const inputs_context = @import("inputs_context.zig");
 const matrix_context = @import("matrix_context.zig");
+const secrets_context = @import("secrets_context.zig");
 const needs_context = @import("needs_context.zig");
 const dependabot = @import("dependabot.zig");
 const runner = @import("runner.zig");
@@ -25,6 +26,7 @@ pub const all_rules = security.security_rules ++
     needs_context.rules ++
     matrix_context.rules ++
     inputs_context.rules ++
+    secrets_context.rules ++
     steps_ref.rules ++
     dependabot.rules ++
     runner.rules ++
