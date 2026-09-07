@@ -224,6 +224,9 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
                     if (m.get("secrets")) |secrets_node| {
                         config.workflow_call_secrets = try parseWorkflowCallSecrets(allocator, secrets_node);
                     }
+                    if (m.get("outputs")) |outputs_node| {
+                        config.workflow_call_outputs = try parseWorkflowCallOutputs(allocator, outputs_node);
+                    }
                 },
                 .workflow_dispatch => {
                     if (m.get("inputs")) |inputs_node| {
@@ -294,14 +297,6 @@ fn parseCallableInputType(type_name: []const u8) ?types.CallableInputType {
     return null;
 }
 
-fn callableInputTypeName(input_type: types.CallableInputType) []const u8 {
-    return switch (input_type) {
-        .string => "string",
-        .number => "number",
-        .boolean => "boolean",
-    };
-}
-
 fn parseYamlBool(node: Node) ?bool {
     return switch (node) {
         .scalar => |s| blk: {
@@ -323,11 +318,11 @@ fn isYamlNumber(node: Node) bool {
 }
 
 fn defaultMatchesCallableInputType(input_type: types.CallableInputType, node: Node) bool {
-    return switch (input_type) {
-        .boolean => parseYamlBool(node) != null,
-        .number => isYamlNumber(node),
-        .string => node == .scalar,
+    const scalar = switch (node) {
+        .scalar => |s| s,
+        else => return false,
     };
+    return input_type.matchesScalar(scalar.value);
 }
 
 /// `secrets:` is a mapping of secret name to an optional
@@ -354,6 +349,33 @@ fn parseWorkflowCallSecrets(allocator: std.mem.Allocator, node: Node) ParseError
         secrets.appendAssumeCapacity(def);
     }
     return secrets.toOwnedSlice(allocator);
+}
+
+/// `outputs:` is a mapping of output name to a `{value:, description:}`
+/// mapping. An entry whose value is not a mapping still declares the name, so
+/// it is kept with no `value` rather than dropped.
+fn parseWorkflowCallOutputs(allocator: std.mem.Allocator, node: Node) ParseError![]const types.CallOutputDef {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const outputs = try allocator.alloc(types.CallOutputDef, m.entries.len);
+    for (m.entries, outputs) |entry, *def| {
+        def.* = .{ .name = entry.key.value, .name_span = entry.key.span };
+        const om = switch (entry.value) {
+            .mapping => |om| om,
+            else => continue,
+        };
+        switch (om.get("value") orelse continue) {
+            .scalar => |s| {
+                def.value = s.value;
+                def.value_meta = .{ .value_span = s.span, .style = s.style };
+            },
+            else => {},
+        }
+    }
+    return outputs;
 }
 
 fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowCallInputs {
@@ -442,7 +464,7 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
                     try problems.append(allocator, .{
                         .kind = .default_type_mismatch,
                         .input_name = input_name,
-                        .detail = callableInputTypeName(input_type),
+                        .detail = input_type.name(),
                         .span = default_node.getSpan(),
                     });
                 }
@@ -830,12 +852,14 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         try recordEmpty(&empty, ctx.allocator, "with", n);
         if (!isEmptyContainer(n)) {
             job.with = try parseStringMap(ctx.allocator, n);
+            job.with_args = try parseCallArgs(ctx.allocator, n);
         }
     }
     if (m.get("secrets")) |n| {
         try recordEmpty(&empty, ctx.allocator, "secrets", n);
         if (!isEmptyContainer(n)) {
             job.secrets = try parseSecretsConfig(ctx.allocator, n);
+            job.secrets_args = try parseCallArgs(ctx.allocator, n);
         }
     }
     if (m.get("container")) |n| {
@@ -1347,6 +1371,29 @@ fn parseEnvKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const typ
         key.* = .{ .name = entry.key.value, .span = entry.key.span };
     }
     return keys;
+}
+
+/// Like `parseEnvKeys`, but for the `with:` / `secrets:` mapping of a
+/// reusable workflow call: the RW rules validate key names, so no entry may be
+/// dropped for having a non-scalar value.
+fn parseCallArgs(allocator: std.mem.Allocator, node: Node) ParseError![]const types.CallArg {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const args = try allocator.alloc(types.CallArg, m.entries.len);
+    for (m.entries, args) |entry, *arg| {
+        arg.* = .{ .name = entry.key.value, .name_span = entry.key.span };
+        switch (entry.value) {
+            .scalar => |s| {
+                arg.value = s.value;
+                arg.value_span = s.span;
+            },
+            else => {},
+        }
+    }
+    return args;
 }
 
 fn parseOutputKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const types.OutputKey {

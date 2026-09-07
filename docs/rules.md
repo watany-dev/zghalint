@@ -779,11 +779,15 @@ composite action の step は、ワークフローの step と同じ実体なの
 ## Reusable Workflow Rules (RW)
 
 Validate the `on.workflow_call` interface a reusable workflow exposes to its
-callers.
+callers, and the calls made against it.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted |
+| RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
+| RW003 | workflow-call-input-values | error | A job calling a local reusable workflow passes an input it does not declare, or a value that does not match the declared type |
+| RW004 | workflow-call-secrets | error | A job calling a local reusable workflow omits one of its `required` secrets, or passes a secret it does not declare |
+| RW005 | workflow-call-outputs | error | A `workflow_call` output reads a job or job output that does not exist, or a caller reads an output the called local workflow does not declare |
 
 ### RW001 workflow-call-inputs
 
@@ -814,6 +818,156 @@ on a required input is never applied — so declaring both is always a mistake i
 one direction or the other. Fix by giving every input an explicit `type` of
 `string`, `number` or `boolean`, matching the `default` to it, and dropping
 either `required: true` or `default`.
+
+### RW002 workflow-call-required-inputs
+
+A job that calls a reusable workflow must pass every input the called workflow
+declares `required: true`. A missing one fails the run at dispatch time, before
+any step executes.
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+```
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  build:
+    uses: ./.github/workflows/reusable.yml   # `version` is never passed
+```
+
+Fix by adding the input under the job's `with:`.
+
+Only a **local** call (`./path/to/workflow.yml`) is checked: a call into another
+repository names a file zghalint cannot read, so it is left alone. The called
+file is read one level deep and never followed further, so workflows that call
+each other cannot loop. An input that is both `required` and defaulted is
+reported on the definition side by [RW001](#rw001-workflow-call-inputs) and is
+not demanded of the caller.
+
+### RW003 workflow-call-input-values
+
+The `with:` of a reusable workflow call may only name inputs the called
+workflow declares, and each value must fit the input's declared `type`.
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+      retries:
+        type: number
+```
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    with:
+      verison: '1.0'    # unknown input — did you mean `version`?
+      retries: three    # not a number
+```
+
+Quoting is not consulted: `retries: '3'` is accepted, the way the runner
+coerces the value. A value built by an expression (`${{ … }}`) is only known at
+run time and is never type-checked, and an input whose `type:` is missing or
+invalid is reported on the definition side by
+[RW001](#rw001-workflow-call-inputs) instead.
+
+Like [RW002](#rw002-workflow-call-required-inputs), only a **local** call is
+checked.
+
+### RW004 workflow-call-secrets
+
+The `secrets:` of a reusable workflow call is checked against the secrets the
+called workflow declares, in both directions: every `required: true` secret must
+be passed, and no name may be passed that is not declared.
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    secrets:
+      npm_token:
+        required: true
+      slack_webhook:
+        required: false
+```
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    secrets:
+      slack_webhook: ${{ secrets.SLACK }}
+      aws_key: ${{ secrets.AWS }}   # not declared by the called workflow
+      # required secret `npm_token` is never passed
+```
+
+`secrets: inherit` hands the caller's whole secret set over, so a job that uses
+it is not checked at all. Neither is a call whose target declares no
+`workflow_call.secrets`: without a declaration there is no closed set to check
+against. Like [RW002](#rw002-workflow-call-required-inputs), only a **local**
+call is checked.
+
+This is the caller-side counterpart of EXPR014, which checks `secrets.<name>`
+uses inside the called workflow against the same declaration.
+
+### RW005 workflow-call-outputs
+
+The outputs of a reusable workflow are checked from both sides.
+
+In the reusable workflow, `on.workflow_call.outputs.<name>.value` may only read
+`jobs.<id>.outputs.<x>`, and both names must exist:
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    outputs:
+      version:
+        value: ${{ jobs.build.outputs.version }}
+      bad:
+        value: ${{ jobs.nonexistent.outputs.x }}   # no such job
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1" >> "$GITHUB_OUTPUT"
+```
+
+In the caller, `needs.<job>.outputs.<name>` on a job that calls a local
+reusable workflow must name an output that workflow declares:
+
+```yaml
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+  use:
+    needs: [call]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ needs.call.outputs.ver }}"   # not declared by the called workflow
+```
+
+EXPR012 checks the same references against a plain
+job's `outputs:`; it hands a job with a `uses:` over to this rule because the
+declaration lives in another file. A job whose outputs come from a further
+reusable workflow is not resolved on the definition side, and, like
+[RW002](#rw002-workflow-call-required-inputs), only a **local** call is checked.
 
 ---
 

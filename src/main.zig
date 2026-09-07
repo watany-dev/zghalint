@@ -568,6 +568,10 @@ fn initWorkspaceContext(
     root: []const u8,
     config: *const Config,
 ) void {
+    // The RW rules resolve a local `uses:` against the root, so it is set
+    // whether or not the lockfile probe below runs.
+    zghalint.workspace.setRepoRoot(root);
+
     // PERF001 is the sole consumer of the probe, so a disabled rule makes the
     // directory scan pure startup cost.
     if (!config.isRuleEnabled("PERF001")) return;
@@ -651,7 +655,8 @@ pub fn main() !u8 {
         return 0;
     }
 
-    // Probe the workspace for lockfiles so PERF001 can emit concrete
+    // Resolve the repository root (the RW rules read a called workflow
+    // relative to it) and probe it for lockfiles so PERF001 can emit concrete
     // `cache: <manager>` fixes for setup-node / setup-python / setup-go.
     var workspace_arena = std.heap.ArenaAllocator.init(allocator);
     defer workspace_arena.deinit();

@@ -98,6 +98,7 @@ test {
     _ = @import("rules/composite_steps.zig");
     _ = @import("rules/local_action.zig");
     _ = @import("rules/reusable_workflow.zig");
+    _ = @import("rules/called_workflow.zig");
     _ = @import("rules/http_client.zig");
     _ = @import("rules/prefetch.zig");
     _ = @import("rules/graphql.zig");
