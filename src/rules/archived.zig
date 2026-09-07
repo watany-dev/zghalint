@@ -72,6 +72,14 @@ pub fn setCachedResult(owner: []const u8, repo: []const u8, is_archived: bool) v
     archived_cache.put(alloc, key, is_archived) catch return;
 }
 
+/// Lets the prefetch pipeline tell "already answered" apart from "still to
+/// fetch" without triggering the REST fallback `lookupOrFetch` would.
+pub fn hasCachedResult(owner: []const u8, repo: []const u8) bool {
+    var buf: [512]u8 = undefined;
+    const key = std.fmt.bufPrint(&buf, "{s}/{s}", .{ owner, repo }) catch return false;
+    return archived_cache.contains(key);
+}
+
 fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
     // Build lookup key on stack to avoid allocation on cache hit
     var buf: [512]u8 = undefined;
