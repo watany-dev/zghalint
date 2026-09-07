@@ -1,34 +1,36 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`36faabf`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`015f8b5`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数 | 表は 79 行、見出しは 77 のまま。**不一致**（SYN019 / RUNNER003 の行追加時に見出しを更新し忘れ）。RW001 が表に無い件と併せて #242 が同期テストを起票済み |
-| `src/**/*.zig` | 39,635 行 |
-| ユニットテスト | 1444 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **34 close 済み（63%）** |
-| 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129、引数型検査は #162 |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（33 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
-| PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。#170 / #171 / #172 の回帰 strategy を収録済み |
+| ルール数 | `docs/rules.md` の表は 87 行で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストするようになり、RW001 の欠落も解消した。残る不一致は**見出しの「77 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
+| `src/**/*.zig` | 42,552 行 |
+| ユニットテスト | 1530 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **37 close 済み（69%）** |
+| 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129 で、PR #256 が実装中。引数型検査は #162 |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（38 本）と `tests/fixtures/e2e-action/*.yml`（6 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
+| ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241） |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
-| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査） |
-| オープン issue | 50 件。内訳は #55 本体 1、#55 の sub-issue 20、形式検証由来のバグ残 4（#221〜#224）、リポジトリ運用・CI 基盤 17（#228〜#244）、その他 8 |
+| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#256（#129 の overlay 接続）、#249 / #252（Dependabot） |
+| オープン issue | 43 件。内訳は #55 本体 1、#55 の sub-issue 17、parity ラベルだが sub でないもの 3（#162 #210 #254）、形式検証由来のバグ 7（#218〜#224）、リポジトリ運用・CI 基盤 12（#230 #234〜#244）、その他 3（#124 #135 #159） |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
-| 実装済みだが未 close の issue | **14 件** — ルール系 8（#72 #73 #75 #86 #210 #218 #219 #220）と PR #246 で対応済みの CI 系 6（#234〜#239）。いずれも main に実装が入っているのに open のまま。棚卸しの最大のノイズ源 |
-| 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は **修正済み**（issue は未 close）。未修正は #221〜#224 と #229（BP007 誤検知）/ #232（release.yml のランナー不一致） |
+| 実装済みだが未 close の issue | **22 件** — ルール系 10（#72 #73 #75 #86 #100 #124 #210 #218 #219 #220）と CI・運用系 12（#230 #234〜#244）。いずれも main に実装が入っているのに open のまま。棚卸しの最大のノイズ源 |
+| 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は修正済み（issue は未 close）。未修正は #221 / #222（prefetch キャッシュ）、#223（`--fix` の原子性）、#224（二重報告）の 4 件 |
 
-Phase 1（トリガー `on:` 群）と Phase 2（job / step / matrix）はどちらも完了した。
-形式検証が出した security 3 件（#218 / #219 / #220）も修正済みで、残る反例は #221〜#224 の 4 件。
-主線は **Phase 3（contextual typing）** に移り、#87 / #89 は依存が解けて即着手できる状態にある。
+Phase 1（トリガー `on:` 群）と Phase 2（job / step / matrix）は完了済み。
+Phase 3（contextual typing）も存在検証 4 本（#86 #87 #89 #90）が着地し、残るのは
+overlay 接続（#129 = PR #256）と、その先の #162 / #91 / #92 だけになった。
+Phase 4 も基盤の #100（action.yml メタデータ = ACT001〜ACT004）が入り、後続の複数ファイル横断ルールが着手可能になっている。
 
-一方で、リポジトリ運用・CI 基盤の issue が 17 件（#228〜#244）起票され、うち 6 件（#234〜#239）は
-PR #246 で対応済み。ルール実装とはファイルが重ならない（`.github/` と `docs/` 中心）ので並行トラックとして扱うが、
-#228（自リポジトリの dogfooding）と #242（`docs/rules.md` と `registry.all_rules` の同期テスト）は
-本書の棚卸しコストを直接下げるので優先度を上げる。
+リポジトリ運用・CI 基盤トラックはほぼ片付いた。CI は fmt / build / test に加えて
+クロスコンパイル・3 OS スモーク・自リポジトリの dogfooding・外部静的解析（actionlint / zizmor / shellcheck / ruff）・
+ファズ・coverage を回し、release は provenance attestation とバイナリスモークを持つ。
+ただし該当 issue（#230 #234〜#244）が 12 件すべて open のまま残っている。
 
 ## 2. ロードマップ
 
@@ -37,7 +39,7 @@ PR #246 で対応済み。ルール実装とはファイルが重ならない（
 - 1 issue = 1 PR = 1 ルール。TDD（Red → Green → Refactor）、完了時に `docs/rules.md` へ行追加
 - 同一ファイル（`types.zig` / `parser.zig` / `security.zig`）を触る issue は直列にし、rebase 地獄を避ける
 - 誤検出ゼロを優先。不確かなものは検出しない（ADR-0009 の方針を全ルールに適用）
-- 新ルールは `src/rules/registry.zig` へ登録し、`tests/fixtures/e2e/` に `# zghalint:expect RULE@line` つきの fixture を 1 本足す
+- 新ルールは `src/rules/registry.zig` へ登録し、`tests/fixtures/e2e/` に `# zghalint:expect RULE@line` つきの fixture を 1 本足す。`docs/rules.md` の行を忘れると `src/docs_sync_test.zig` が落ちる
 
 ### Phase 1: トリガー `on:` 群 — 完了
 
@@ -53,31 +55,40 @@ cron（#70 / #71）と glob（#69）は `src/workflow/cron.zig` / `src/rules/glo
 SYN019（#75）の include / exclude 整合、RUNNER002 の matrix 展開（#210、ADR-0012）、
 RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
 ラベル表は `src/rules/runner.zig` にあり、self-hosted のフリート表記は RUNNER002 / RUNNER003 とも対象外にしてある。
-この matrix 構造は Phase 3 の EXPR011（#87）がそのまま使う。
+この matrix 構造は Phase 3 の EXPR011 がそのまま使っている。
 
-### Phase 3: contextual typing（エンジン T4 = #129）
+### Phase 3: contextual typing（エンジン T4 = #129）— 残り 4 件
 
-EXPR010（`src/rules/steps_ref.zig`）と EXPR012（`src/rules/needs_context.zig`）は実装済み。
-残りの存在検証を同じ形で足し、最後に `TypeEnv` overlay へ接続する（ADR-0009 の二重メンテ期間を短くするため Phase 3 内で一気に片付ける）。
+存在検証は 4 本とも実装済み。式の走査は `src/rules/expr_scan.zig` に切り出され、
+各 context ルールは同じ形（`<context>_context.zig`）で並んでいる。
 
-| 順 | issue | ルール | 依存 |
+| ルール | issue | 実装 | 状態 |
 |---|---|---|---|
-| 1 | #89 | EXPR013 `inputs.<name>` | SYN017（#73）で入った `workflow_dispatch` inputs 構造を使う |
-| 2 | #87 | EXPR011 `matrix.<key>` | Phase 2 で入った matrix 構造を使う（着手可能） |
-| 3 | #90 | EXPR014 `secrets.<name>` | RW001（#104）で入った `workflow_call` の定義構造を使う |
-| 4 | #129 | T4: 存在検証（`steps_ref.zig` / `needs_context.zig` + #87 #89 #90）を `expr_check.zig` の overlay に接続し、エンジン側に寄せる | #87 / #89 / #90 |
-| 5 | #162 | EXPR018 関数の引数型と補間値（object / array / null）の型検査 | #129。loose object（overlay 未接続の context）は診断しない |
-| 6 | #91 | EXPR015 キーごとの context 利用可否 | 式を検証する箇所に「どのキーか」を渡す配線が必要 |
-| 7 | #92 | EXPR016 特殊関数の利用可否 | #91 の配線 |
-| 8 | #124 | curated scalar overlay（`github.event.issue.number: number` 等） | EXPR017 の到達範囲拡大 |
+| EXPR010 `steps.<id>` | #86 | `src/rules/steps_ref.zig` | 実装済み（issue 未 close） |
+| EXPR011 `matrix.<key>` | #87 | `src/rules/matrix_context.zig` | 完了 |
+| EXPR012 `needs.<job>` | — | `src/rules/needs_context.zig` | 完了 |
+| EXPR013 `inputs.<name>` | #89 | `src/rules/inputs_context.zig` | 完了 |
+| EXPR014 `secrets.<name>` | #90 | `src/rules/secrets_context.zig` | 完了 |
+| EXPR017 curated `github.event` overlay | #124 | `src/rules/expr_catalog.zig` | 実装済み（issue 未 close） |
+
+残りの着手順:
+
+| 順 | issue | 内容 | 依存 |
+|---|---|---|---|
+| 1 | #129 | T4: 存在検証 5 本を `expr_check.zig` の `TypeEnv` overlay に接続し、エンジン側へ寄せる | **PR #256 で実装中**。ADR-0009 の二重メンテ期間を閉じる |
+| 2 | #162 | EXPR018 関数の引数型と補間値（object / array / null）の型検査 | #129。loose object（overlay 未接続の context）は診断しない |
+| 3 | #91 | EXPR015 キーごとの context 利用可否 | 式を検証する箇所に「どのキーか」を渡す配線が必要 |
+| 4 | #92 | EXPR016 特殊関数の利用可否 | #91 の配線 |
 
 ### Phase 4: action.yml / reusable workflow（複数ファイル横断）
 
-「他ファイルを読む」仕組みが共通基盤。`action.yml` ローダーと `workflow_call` ローダーを 1 つのモジュールにまとめる。
+基盤の #100 が着地した。`src/rules/action_metadata.zig` が ACT001〜ACT004（必須キー / `runs.using` /
+未知キー / 定義の型）を見て、`tests/fixtures/e2e-action/` が fixture を持つ。
+残りは「他ファイルを読む」ローダーが共通基盤で、`action.yml` ローダーと `workflow_call` ローダーを 1 つのモジュールにまとめる。
 
 | 順 | issue | ルール | 依存 |
 |---|---|---|---|
-| 1 | #100 | 基盤: action.yml をリント対象化 + メタデータ構文 | `main.zig` の対象判定拡張、`workflow/action_meta.zig` 新設 |
+| 1 | #254 | composite の `runs.steps` に既存の step ルールと式検証を適用する | #100。今のメタデータ検証は steps の中身を見ていない |
 | 2 | #96 | DEP004 ローカルアクション inputs | #100 のローダー。`uses` 形式の検証は DEP003（`src/rules/uses.zig`）を再利用 |
 | 3 | #99 | BP003 拡張 node12 / node16 | ローカルは #100、リモートは `prefetch.zig` 経由で `action.yml` を取得（オフライン時はスキップ） |
 | 4 | #105 | RW002 required inputs 欠落 | ローカル reusable workflow ローダー（#100 と同モジュール）+ `reusable_workflow.zig` |
@@ -92,34 +103,36 @@ EXPR010（`src/rules/steps_ref.zig`）と EXPR012（`src/rules/needs_context.zig
 | 項目 | 位置づけ |
 |---|---|
 | #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
-| #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator`（:1009）が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が集中する Phase 1〜3 の**前**に済ませると衝突が少ない |
+| #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator` が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が続く Phase 3〜4 の**前**に済ませると衝突が少ない |
 | 形式検証由来の残バグ #221〜#224 | security 3 件（#218 / #219 / #220）は修正済み。残りは #221 / #222 が prefetch キャッシュ（ウォームランが成立しない・RateLimited の劣化）、#223 が `--fix` の原子性、#224 が二重報告。いずれも `src/rules/` の外なのでルール実装と並行できる |
-| その他のバグ #229 / #232 | #229 は BP007 が行継続（`\`）の続き行を誤検知する。#232 は `release.yml` の macOS ランナーが `macos-latest` のままで `ci.yml` と不一致 |
-| リポジトリ運用・CI 基盤 #228〜#244（17 件） | `.github/` と `docs/` 中心でルール実装とファイルが重ならない。#234〜#239 は PR #246 で対応済み（Dependabot 設定・PBT 依存固定・Zig 版の一元化・coverage 拡張）。残るのは #228 #230 #231 #232 #233 #240 #241 #242 #243 #244 で、**#228（自リポジトリを zghalint で lint する dogfooding）と #242（`docs/rules.md` と `registry.all_rules` の同期テスト）を先に通す** — 本書の棚卸しで毎回手で数えている数字が自動で守られる |
-| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する。#172 / #173 の修正が入って同ファイルが落ち着いたので、着手可能になった |
+| PR #217 形式仕様 | Alloy（ルール所有権）と TLA+（prefetch / autofix）の仕様と反例。#218〜#224 の出所。マージすれば以後の反例追加が同じ場所に載る |
+| リポジトリ運用・CI 基盤 #230 #234〜#244（12 件） | **12 件すべて実装が main に入っている**（Dependabot / PBT 依存固定 / Zig 版一元化 / coverage / concurrency / 外部静的解析 / ファズ / 自リポジトリ dogfooding / action.yml スモーク / メタファイル / release provenance / タグ整合 / `docs/rules.md` 同期テスト）。残作業は close だけ |
+| #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する |
 
 ## 3. 直近の着手順（上位 6 件）
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | 実装済み issue の close（ルール系 #72 #73 #75 #86 #210 #218 #219 #220 と CI 系 #234〜#239） | コードは main にあるのに 14 件が open のまま。棚卸しのたびに実装状況を手で突き合わせる原因になっており、コスト 0 で解消できる |
-| 2 | #242 | `docs/rules.md` と `registry.all_rules` の同期テスト。表 79 行・見出し 77・RW001 欠落という現状の不一致がそのまま再発防止になる |
-| 3 | #159 | エンジンの arena。Phase 3 でルール追加が集中する前に `Rule` シグネチャを固める |
-| 4 | #87 | Phase 2 の matrix 構造が入ったので即着手できる。#129 の overlay 材料も揃う |
-| 5 | #89 | SYN017 の inputs 構造を使う。#87 と同じ contextual typing の形なので連続して書ける |
-| 6 | #228 | 自リポジトリの dogfooding。#229 / #232 のような自前ワークフローの不備を CI で拾えるようになる |
+| 1 | 実装済み issue の close（ルール系 #72 #73 #75 #86 #100 #124 #210 #218 #219 #220 と CI・運用系 #230 #234〜#244） | コードは main にあるのに 22 件が open のまま。open issue 43 件の半数がこれで、棚卸しのたびに実装状況を手で突き合わせる原因になっている。コスト 0 で解消できる |
+| 2 | `docs/rules.md` の見出し修正 | 表は 87 行で registry と同期済みなのに、見出しが「77 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
+| 3 | #129（PR #256） | Phase 3 の締め。存在検証 5 本を overlay に寄せ、ADR-0009 の二重メンテを終わらせる。#162 の前提でもある |
+| 4 | #159 | エンジンの arena。Phase 4 でルール追加が再び集中する前に `Rule` シグネチャを固める |
+| 5 | #254 | composite の `runs.steps` を既存ルールに通す。#100 の基盤がそのまま使え、Phase 4 の他ルールより依存が浅い |
+| 6 | #221 / #222 | prefetch キャッシュ。ウォームランが成立しないのは実利用のレイテンシに直結する |
 
-#90 → #129 → #162 と Phase 3 を進め、#135 / #64 / #221〜#224 は競合しないので並行で流す。
-Phase 1・Phase 2 が終わったので、以後は contextual typing（Phase 3）が主線、
-リポジトリ運用・CI 基盤（#228〜#244）が並行トラックという二本立てになる。
+#129 → #162 → #91 → #92 で Phase 3 を閉じ、Phase 4 は #254 → #96 → #105 の順で
+ローダー基盤を育てる。#135 / #64 / #221〜#224 は競合しないので並行で流す。
 
 ## 4. 進め方の注意
 
-- Phase 1 以降は `types.zig` の拡張を伴うため、同 Phase 内は直列にする
+- Phase 4 は `types.zig` の拡張を伴うため、同 Phase 内は直列にする
 - エージェント PR は CI 緑でもマージ前に main へ rebase する
-- ルールを追加・変更したら `tests/fixtures/e2e/` に fixture を足し、`# zghalint:expect RULE@line` で行まで含めてアサートする（インラインテストだけでは `Step` 構造体を直接組み立ててパーサを通らない経路が残る）
+- ルールを追加・変更したら `tests/fixtures/e2e/`（ワークフロー）または `tests/fixtures/e2e-action/`（action.yml）に fixture を足し、`# zghalint:expect RULE@line` で行まで含めてアサートする
+- `docs/rules.md` への行追加は任意ではない。`src/docs_sync_test.zig` が registry との ID 差分でビルドを落とす
 - 新ルールのテストは `Step` / `Job` を手で組まず、`src/test_support.zig` の `parseWorkflowSource`（YAML から `Workflow` を起こす）と `lintAndFix`（リント + autofix を 1 度に検証）を使う。`runStep` / `runJob` / `runWorkflow` は `security.zig` にあるファイル内ヘルパーなので、他ファイルからは呼べない
+- 式を走査するルールは `src/rules/expr_scan.zig` を使う。`${{ }}` の切り出しを各ルールで書き直さない
 - autofix を伴うルールは、フロースタイル（`{}` / `[]`）とブロックスカラー（`|` / `>`）の入力を必ずテストに含める（#171 / #172 はどちらもこの 2 形式の抜けだった）。`tests/pbt/strategies.py` に両形式の strategy があるので PBT 側にも足す
+- CRLF のワークフローも入力になる（Windows CI で顕在化した）。行末を跨ぐ処理を書いたら `\r` を落とす経路を確認する
 - 深い再帰を持つパーサには上限を入れる（YAML は `max_parse_depth = 256`、式は `max_expr_depth = 256`）。新しい再帰下降を書いたら同じガードを必ず付ける
 - 実装が終わったら `/wrapup`（`.claude/skills/wrapup`）で正しさ・過剰設計・コメントの 3 点を見てからコミットする。コメントは「コードから復元できない why」だけ残す（`/cleanup-comments` の基準）
 - 各 Phase 完了時に `docs/rules.md` のルール数と #55 の進捗を確認する
