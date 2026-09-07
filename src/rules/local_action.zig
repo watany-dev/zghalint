@@ -15,7 +15,7 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const spans = @import("spans.zig");
 const uses = @import("uses.zig");
-const util = @import("../util.zig");
+const with_inputs = @import("with_inputs.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
 
@@ -39,13 +39,12 @@ pub fn isDeprecatedRuntime(using: []const u8) bool {
     return false;
 }
 
-/// One entry of the referenced action's `inputs:` mapping. `has_default`
-/// matters because a `required: true` input that also carries a `default:` is
-/// satisfied without the caller passing anything.
+/// One entry of the referenced action's `inputs:` mapping. A `required: true`
+/// input that also carries a `default:` is satisfied without the caller
+/// passing anything, so it is not recorded as required.
 pub const Input = struct {
     name: []const u8,
     required: bool = false,
-    has_default: bool = false,
 };
 
 pub const Meta = struct {
@@ -187,7 +186,7 @@ fn parseInputs(alloc: Allocator, m: yaml_types.Mapping) []const Input {
             if (spec.get("required")) |req| {
                 if (req == .scalar) input.required = isYamlTrue(req.scalar.value);
             }
-            input.has_default = spec.get("default") != null;
+            input.required = input.required and spec.get("default") == null;
         }
         out[i] = input;
     }
@@ -196,30 +195,6 @@ fn parseInputs(alloc: Allocator, m: yaml_types.Mapping) []const Input {
 
 fn isYamlTrue(value: []const u8) bool {
     return std.ascii.eqlIgnoreCase(value, "true");
-}
-
-/// The runner matches a `with:` key to an `inputs:` entry without regard to
-/// case, so both directions of the comparison do too.
-fn hasInput(inputs: []const Input, name: []const u8) bool {
-    for (inputs) |input| {
-        if (std.ascii.eqlIgnoreCase(input.name, name)) return true;
-    }
-    return false;
-}
-
-fn containsIgnoreCase(names: []const []const u8, name: []const u8) bool {
-    for (names) |candidate| {
-        if (std.ascii.eqlIgnoreCase(candidate, name)) return true;
-    }
-    return false;
-}
-
-/// `args:` and `entrypoint:` override the Dockerfile rather than naming an
-/// input, so a docker action accepts them without declaring them.
-fn isDockerOverride(meta: Meta, key: []const u8) bool {
-    const using = meta.using orelse return false;
-    if (!std.mem.eql(u8, using, "docker")) return false;
-    return std.mem.eql(u8, key, "args") or std.mem.eql(u8, key, "entrypoint");
 }
 
 fn report(
@@ -268,58 +243,11 @@ fn reportMissingManifest(step: *const Step, raw: []const u8, list: *DiagnosticLi
 }
 
 fn checkWith(step: *const Step, meta: Meta, list: *DiagnosticList) void {
-    const alloc = list.fixAllocator();
-
-    if (step.with) |with| {
-        const names = alloc.alloc([]const u8, meta.inputs.len) catch return;
-        for (meta.inputs, 0..) |input, i| names[i] = input.name;
-
-        for (with.keys()) |key| {
-            if (hasInput(meta.inputs, key)) continue;
-            if (isDockerOverride(meta, key)) continue;
-
-            const message = std.fmt.allocPrint(
-                alloc,
-                "input \"{s}\" is not declared by local action \"{s}\"",
-                .{ key, step.uses.?.raw },
-            ) catch return;
-            const hint = if (util.didYouMean(key, names)) |suggestion|
-                std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{suggestion}) catch return
-            else
-                "remove the input or declare it under `inputs:` in the action";
-
-            report(list, message, withKeySpan(step, key), hint);
-        }
-    }
-
-    for (meta.inputs) |input| {
-        if (!input.required or input.has_default) continue;
-        if (step.with) |with| {
-            if (containsIgnoreCase(with.keys(), input.name)) continue;
-        }
-
-        const message = std.fmt.allocPrint(
-            alloc,
-            "required input \"{s}\" of local action \"{s}\" is not provided",
-            .{ input.name, step.uses.?.raw },
-        ) catch return;
-        const hint = std.fmt.allocPrint(
-            alloc,
-            "add `{s}:` under `with:`",
-            .{input.name},
-        ) catch return;
-
-        report(list, message, spans.usesSpan(step), hint);
-    }
-}
-
-/// The `with:` entry's value span when the parser captured it, so the caret
-/// lands on the offending entry rather than on `uses:`.
-fn withKeySpan(step: *const Step, key: []const u8) spans.Span {
-    if (step.with_meta) |meta| {
-        if (meta.get(key)) |m| return m.value_span;
-    }
-    return spans.usesSpan(step);
+    with_inputs.check(Input, step, meta.inputs, meta.using, .{
+        .rule_id = "DEP004",
+        .noun = "local action",
+        .unknown_hint = "remove the input or declare it under `inputs:` in the action",
+    }, list);
 }
 
 pub const rules = [_]Rule{

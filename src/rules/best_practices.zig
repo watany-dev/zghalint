@@ -187,7 +187,6 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
         return;
     }
 
-    const action_name = util.actionBaseName(action_ref.raw);
     const version = action_ref.ref orelse return;
 
     if (popular_actions.lookup(action_ref)) |meta| {
@@ -197,23 +196,16 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
         }
     }
 
-    const major = majorTag(version);
-    for (deprecated_actions) |dep| {
-        if (std.mem.eql(u8, action_name, dep.action) and
-            major != null and major.? >= 1 and major.? < dep.deprecated_below)
-        {
-            var diag = Diagnostic{
-                .rule_id = "BP003",
-                .severity = .warning,
-                .message = "Using deprecated action version. Consider upgrading.",
-                .span = step.span,
-                .fix_hint = "Upgrade to a newer version.",
-            };
-            diag.fix = buildDeprecatedActionFix(diag_list, step, version, dep.replacement);
-            diag_list.append(diag) catch return;
-            return;
-        }
-    }
+    const replacement = replacementVersion(action_ref) orelse return;
+    var diag = Diagnostic{
+        .rule_id = "BP003",
+        .severity = .warning,
+        .message = "Using deprecated action version. Consider upgrading.",
+        .span = step.span,
+        .fix_hint = "Upgrade to a newer version.",
+    };
+    diag.fix = buildDeprecatedActionFix(diag_list, step, version, replacement);
+    diag_list.append(diag) catch return;
 }
 
 /// The action itself has to move off the runtime, but the caller can often get

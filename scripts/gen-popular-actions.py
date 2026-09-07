@@ -45,7 +45,6 @@ class ActionMeta:
     repo: str
     path: str
     major: int
-    ref: str
     using: str
     inputs: list[Input] = field(default_factory=list)
 
@@ -87,7 +86,6 @@ def clone(owner: str, repo: str, ref: str, into: pathlib.Path) -> pathlib.Path:
             "--single-branch",
             "--branch",
             ref,
-            "--filter=blob:none",
             f"https://github.com/{owner}/{repo}",
             str(dest),
         ],
@@ -105,12 +103,6 @@ def read_manifest_yaml(checkout: pathlib.Path, path: str) -> dict:
     raise SystemExit(f"no action manifest under {directory}")
 
 
-def is_true(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    return isinstance(value, str) and value.strip().lower() == "true"
-
-
 def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) -> ActionMeta:
     doc = read_manifest_yaml(checkout, path)
     runs = doc.get("runs") or {}
@@ -124,7 +116,7 @@ def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) 
             inputs.append(
                 Input(
                     name=str(name),
-                    required=is_true(spec.get("required")),
+                    required=bool(spec.get("required")),
                     has_default="default" in spec,
                     deprecation=spec.get("deprecationMessage"),
                 )
@@ -135,7 +127,6 @@ def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) 
         repo=repo,
         path=path,
         major=major_of(ref),
-        ref=ref,
         using=using,
         inputs=inputs,
     )
@@ -174,8 +165,6 @@ def render(metas: list[ActionMeta]) -> str:
         "    /// The major version this entry describes; `uses: owner/repo@v4`",
         "    /// matches the entry with `major == 4`.",
         "    major: u16,",
-        "    /// The ref the metadata was read from, kept for provenance.",
-        "    ref: []const u8,",
         "    /// `runs.using` as declared by the action.",
         "    using: []const u8,",
         "    inputs: []const Input,",
@@ -191,7 +180,6 @@ def render(metas: list[ActionMeta]) -> str:
         if meta.path:
             out.append(f"        .path = {zig_string(meta.path)},")
         out.append(f"        .major = {meta.major},")
-        out.append(f"        .ref = {zig_string(meta.ref)},")
         out.append(f"        .using = {zig_string(meta.using)},")
         if not meta.inputs:
             out.append("        .inputs = &.{},")
@@ -219,7 +207,6 @@ def main() -> int:
         type=pathlib.Path,
         help="reuse checkouts across runs instead of cloning into a temp dir",
     )
-    parser.add_argument("--output", type=pathlib.Path, default=OUTPUT)
     args = parser.parse_args()
 
     entries = parse_manifest(MANIFEST.read_text(encoding="utf-8"))
@@ -237,9 +224,9 @@ def main() -> int:
         if args.cache_dir is None:
             shutil.rmtree(workdir, ignore_errors=True)
 
-    args.output.write_text(render(metas), encoding="utf-8")
-    subprocess.run(["zig", "fmt", str(args.output)], check=True)
-    print(f"wrote {args.output} ({len(metas)} actions)", file=sys.stderr)
+    OUTPUT.write_text(render(metas), encoding="utf-8")
+    subprocess.run(["zig", "fmt", str(OUTPUT)], check=True)
+    print(f"wrote {OUTPUT} ({len(metas)} actions)", file=sys.stderr)
     return 0
 
 

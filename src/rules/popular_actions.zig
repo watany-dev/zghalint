@@ -14,7 +14,7 @@
 const std = @import("std");
 const engine = @import("engine.zig");
 const spans = @import("spans.zig");
-const util = @import("../util.zig");
+const with_inputs = @import("with_inputs.zig");
 const workflow_types = @import("../workflow/types.zig");
 const data = @import("data/popular_actions.zig");
 
@@ -23,8 +23,8 @@ const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const ActionRef = workflow_types.ActionRef;
 
-pub const ActionMeta = data.ActionMeta;
-pub const Input = data.Input;
+const ActionMeta = data.ActionMeta;
+const Input = data.Input;
 
 /// The metadata for `action`, or null when nothing can be said about it.
 ///
@@ -68,92 +68,13 @@ fn majorFromRef(ref: []const u8) ?u16 {
     return std.fmt.parseInt(u16, ref[start..i], 10) catch null;
 }
 
-fn findInput(meta: ActionMeta, name: []const u8) ?Input {
-    // The runner matches a `with:` key to an `inputs:` entry without regard to
-    // case, so this does too.
-    for (meta.inputs) |input| {
-        if (std.ascii.eqlIgnoreCase(input.name, name)) return input;
-    }
-    return null;
-}
-
-/// `args:` and `entrypoint:` override the Dockerfile rather than naming an
-/// input, so a docker action accepts them without declaring them.
-fn isDockerOverride(meta: ActionMeta, key: []const u8) bool {
-    if (!std.mem.eql(u8, meta.using, "docker")) return false;
-    return std.mem.eql(u8, key, "args") or std.mem.eql(u8, key, "entrypoint");
-}
-
-/// The `with:` entry's value span when the parser captured it, so the caret
-/// lands on the offending entry rather than on `uses:`.
-fn withKeySpan(step: *const Step, key: []const u8) spans.Span {
-    if (step.with_meta) |meta| {
-        if (meta.get(key)) |m| return m.value_span;
-    }
-    return spans.usesSpan(step);
-}
-
 pub fn checkPopularActionInputs(step: *const Step, list: *DiagnosticList) void {
-    const action = step.uses orelse return;
-    const meta = lookup(action) orelse return;
-    const alloc = list.fixAllocator();
-
-    if (step.with) |with| {
-        const names = alloc.alloc([]const u8, meta.inputs.len) catch return;
-        for (meta.inputs, 0..) |input, i| names[i] = input.name;
-
-        for (with.keys()) |key| {
-            if (findInput(meta, key) != null) continue;
-            if (isDockerOverride(meta, key)) continue;
-
-            const message = std.fmt.allocPrint(
-                alloc,
-                "input \"{s}\" is not declared by action \"{s}\"",
-                .{ key, action.raw },
-            ) catch return;
-            const hint = if (util.didYouMean(key, names)) |suggestion|
-                std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{suggestion}) catch return
-            else
-                "remove the input; the action ignores keys it does not declare";
-
-            list.append(.{
-                .rule_id = "DEP005",
-                .severity = .@"error",
-                .message = message,
-                .span = withKeySpan(step, key),
-                .fix_hint = hint,
-            }) catch return;
-        }
-    }
-
-    for (meta.inputs) |input| {
-        if (!input.required) continue;
-        if (step.with) |with| {
-            if (containsIgnoreCase(with.keys(), input.name)) continue;
-        }
-
-        const message = std.fmt.allocPrint(
-            alloc,
-            "required input \"{s}\" of action \"{s}\" is not provided",
-            .{ input.name, action.raw },
-        ) catch return;
-        const hint = std.fmt.allocPrint(alloc, "add `{s}:` under `with:`", .{input.name}) catch return;
-
-        list.append(.{
-            .rule_id = "DEP005",
-            .severity = .@"error",
-            .message = message,
-            .span = spans.usesSpan(step),
-            .fix_hint = hint,
-        }) catch return;
-    }
-}
-
-fn containsIgnoreCase(names: []const []const u8, name: []const u8) bool {
-    for (names) |candidate| {
-        if (std.ascii.eqlIgnoreCase(candidate, name)) return true;
-    }
-    return false;
+    const meta = lookup(step.uses orelse return) orelse return;
+    with_inputs.check(Input, step, meta.inputs, meta.using, .{
+        .rule_id = "DEP005",
+        .noun = "action",
+        .unknown_hint = "remove the input; the action ignores keys it does not declare",
+    }, list);
 }
 
 pub fn checkDeprecatedInputs(step: *const Step, list: *DiagnosticList) void {
@@ -163,29 +84,25 @@ pub fn checkDeprecatedInputs(step: *const Step, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
 
     for (with.keys()) |key| {
-        const input = findInput(meta, key) orelse continue;
+        const input = with_inputs.find(Input, meta.inputs, key) orelse continue;
         const deprecation = input.deprecation orelse continue;
 
         const message = std.fmt.allocPrint(
             alloc,
             "input \"{s}\" of action \"{s}\" is deprecated: {s}",
-            .{ key, action.raw, trimTrailingNewlines(deprecation) },
+            // `deprecationMessage:` is often a block scalar, whose trailing
+            // newline would break a one-line diagnostic.
+            .{ key, action.raw, std.mem.trimRight(u8, deprecation, " \t\r\n") },
         ) catch return;
 
         list.append(.{
             .rule_id = "DEP006",
             .severity = .warning,
             .message = message,
-            .span = withKeySpan(step, key),
+            .span = with_inputs.keySpan(step, key),
             .fix_hint = "follow the action's deprecation notice, or drop the input",
         }) catch return;
     }
-}
-
-/// `deprecationMessage:` is often a block scalar, which keeps a trailing
-/// newline that would break a one-line diagnostic.
-fn trimTrailingNewlines(message: []const u8) []const u8 {
-    return std.mem.trimRight(u8, message, " \t\r\n");
 }
 
 pub const rules = [_]Rule{
