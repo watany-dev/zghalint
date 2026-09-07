@@ -39,13 +39,13 @@ const NeedsVisitor = struct {
 
     /// Diagnostic messages are formatted into the list's own allocator, so
     /// nothing from the parse tree outlives this call and the arena is freed
-    /// here rather than leaked the way `expressions.zig` has to.
+    /// here.
     pub fn onExpression(self: *const NeedsVisitor, expr: []const u8, span: Span) void {
         // Most expressions never mention `needs`; parsing them would be pure
         // overhead on a large workflow.
         if (std.ascii.indexOfIgnoreCase(expr, "needs") == null) return;
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(self.list.allocator);
         defer arena.deinit();
 
         var parser = expressions.ExprParser.init(arena.allocator(), expr);

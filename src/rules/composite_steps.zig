@@ -106,10 +106,10 @@ pub fn checkCompositeSteps(root: Mapping, steps_node: Node, list: *DiagnosticLis
         else => return,
     };
 
-    // The document lint path hands rules no arena, so this one owns the memory
-    // the parsed steps and the overlays need. Diagnostic messages come from the
-    // list's own arena and outlive it.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // Scratch for the parsed steps and the overlays: diagnostic messages come
+    // from the list's own arena and outlive it, and the list's allocator keeps
+    // this under the run's leak detection (#159).
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 

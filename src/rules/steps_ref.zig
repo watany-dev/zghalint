@@ -194,9 +194,9 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     if (job.steps.len == 0) return;
 
-    // The engine hands rules no arena (#159), so this one owns the memory the
-    // expression parser needs and frees it as soon as the job is scanned.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // Scratch for the expression parser: no diagnostic points at it, and
+    // the list's allocator keeps it under the run's leak detection (#159).
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 

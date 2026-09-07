@@ -53,9 +53,11 @@ pub fn isActive() bool {
     return impostor_cache != null;
 }
 
-/// prefetch stages cache keys and fix_hint candidate strings here so they
-/// outlive the rule run.
-pub fn getArenaAllocator() ?Allocator {
+/// prefetch stages cache keys and fix_hint candidate strings here so they live
+/// as long as the cache itself; `deinitImpostor` frees them. Diagnostic message
+/// memory does not belong here — that comes from the diagnostic list's own
+/// arena (#159).
+pub fn cacheAllocator() ?Allocator {
     return if (impostor_arena) |*arena| arena.allocator() else null;
 }
 
@@ -201,7 +203,7 @@ fn runWithImpostorCache(entries: ?[]const ImpostorCacheEntry, uses_ref: ?[]const
 
     if (entries) |es| {
         for (es) |entry| {
-            const alloc = getArenaAllocator() orelse return error.NotInitialized;
+            const alloc = cacheAllocator() orelse return error.NotInitialized;
             const key = try alloc.dupe(u8, entry.key);
             try impostor_cache.?.put(key, entry.result);
         }
