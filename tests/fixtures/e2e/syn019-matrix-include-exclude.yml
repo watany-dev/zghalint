@@ -1,0 +1,45 @@
+# zghalint:expect SYN019@18 SYN019@20 SYN019@24
+# zghalint:forbid SYN019@37 SYN019@40 SYN019@42
+name: matrix include and exclude
+on: [push]
+concurrency: ci
+permissions:
+  contents: read
+jobs:
+  mistyped:
+    name: Mistyped exclude
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20]
+        exclude:
+          - os: windows-latest
+            node: 18
+          - oss: ubuntu-latest
+            node: 20
+        include:
+          - os: ubuntu-latest
+            nodes: 22
+    steps:
+      - name: Report
+        run: echo hi
+  consistent:
+    name: Consistent exclude
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20]
+        exclude:
+          - os: macos-latest
+            node: 18
+        include:
+          - os: ubuntu-latest
+            node: 20
+            experimental: true
+    steps:
+      - name: Report
+        run: echo hi

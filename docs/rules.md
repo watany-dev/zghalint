@@ -209,11 +209,17 @@ RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知の
 - 既知ラベルに接尾辞が付いたもの（`ubuntu-latest-4-cores` などの larger runner）
 - `self-hosted` / `linux` / `x64` などの慣用ラベル
 - 既知ラベルから遠く、`ubuntu-` / `windows-` / `macos-` でも始まらない独自ラベル（`gpu-box` など）
-- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は #210 で対応予定）
+- 展開できない式（`fromJSON`、他コンテキスト参照、文字列連結）を含む `runs-on`
 
 既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
 提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
 `runner.labels` に列挙すれば既知として扱われる。
+
+`runs-on: ${{ matrix.os }}` のように値が `${{ matrix.<key> }}` 単体の式である
+場合は、`strategy.matrix.<key>`（`include` 由来の値を含む）を展開して各値を
+判定する。診断と autofix は matrix の値側を指す。`exclude` の値は組み合わせを
+除外するだけなのでランナーを名乗らず、報告の対象外とする（`--fix-unsafe` は
+軸の値を直す際に、同じラベルを名指しする `exclude` の値も併せて書き換える）。
 
 RUNNER001 / RUNNER002 は `runs-on: [self-hosted, linux, x64]` のような配列指定と
 ランナーグループ（`runs-on: {group:, labels:}`）にも対応し、ラベルごとに検査する。
@@ -251,6 +257,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN016 | invalid-timezone | error | `schedule` `timezone` is not a name in the IANA time zone database |
 | SYN017 | workflow-dispatch-inputs | error | `workflow_dispatch` input declares an invalid `type`, misuses `options`, or has a `default` that does not fit |
 | SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis |
+| SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
 
 ### SYN002 duplicate-key
 
@@ -584,6 +591,55 @@ on:
 
 An input with no `type:` defaults to `string` and is not reported. Reusable
 workflow inputs use a different type system and are checked by RW001.
+
+---
+
+### SYN019 matrix-include-exclude
+
+`exclude` removes combinations the matrix already produces. An entry naming an
+axis the matrix does not declare, or a value the axis never takes, removes
+nothing — the combination the author meant to drop still runs.
+
+```yaml
+strategy:
+  matrix:
+    os: [ubuntu-latest, macos-latest]
+    node: [18, 20]
+    exclude:
+      - os: windows-latest   # warning: "windows-latest" does not exist in "os" axis
+        node: 18
+      - oss: ubuntu-latest   # warning: unknown key "oss" in "exclude". did you mean "os"?
+        node: 20
+```
+
+`include` is allowed to add keys the matrix does not declare, so a new key is
+left alone. Only a key one edit away from an existing axis is reported, and not
+even then when some entry sets both the key and that axis — a key used beside
+the axis it resembles is a deliberate addition, not a typo.
+
+```yaml
+strategy:
+  matrix:
+    os: [ubuntu-latest, macos-latest]
+    node: [18, 20]
+    exclude:
+      - os: macos-latest     # valid: the matrix produces this combination
+        node: 18
+    include:
+      - os: ubuntu-latest
+        node: 20
+        experimental: true   # valid: 'include' may add a new key
+      - os: macos-latest
+        nodes: 22            # warning: unknown key "nodes" in "include". did you mean "node"?
+```
+
+`exclude` is matched against the axes only. GitHub applies `exclude` to the base
+matrix and merges `include` afterwards, so a combination that only `include`
+contributes is never removed and naming it in `exclude` is reported as well. An
+axis built from an expression (`os: ${{ fromJSON(...) }}`) carries no values to
+compare against, so the value check is skipped for it. Plain `1.10` and `1.1`,
+or `True` and `true`, are the same YAML value and do not count as a mismatch;
+quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
 
 ---
 

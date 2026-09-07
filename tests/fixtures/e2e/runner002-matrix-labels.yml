@@ -1,0 +1,28 @@
+# zghalint:expect RUNNER002@11 RUNNER002@13
+# zghalint:forbid RUNNER002@10 RUNNER002@12 RUNNER002@15 RUNNER002@23 RUNNER002@25
+name: matrix runner labels
+on: push
+jobs:
+  expanded:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubunut-latest
+        include:
+          - os: macos-99
+            node: 20
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
+  unexpandable:
+    strategy:
+      matrix:
+        os:
+          - ubunut-latest
+    # Concatenated into surrounding text: the label is not the matrix value.
+    runs-on: ${{ matrix.os }}-4-cores
+    timeout-minutes: 5
+    steps:
+      - run: echo hi
