@@ -1573,9 +1573,7 @@ fn isAllUppercase(s: []const u8) bool {
 /// follows is an argument rather than a command. An even run of backslashes is
 /// an escaped backslash and does not continue the line.
 fn endsWithLineContinuation(line: []const u8) bool {
-    var backslashes: usize = 0;
-    var i = line.len;
-    while (i > 0 and line[i - 1] == '\\') : (i -= 1) backslashes += 1;
+    const backslashes = line.len - std.mem.trimRight(u8, line, "\\").len;
     return backslashes % 2 == 1;
 }
 

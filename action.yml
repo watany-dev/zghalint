@@ -113,10 +113,7 @@ runs:
           EXE=".exe"
         fi
 
-        BIN="./zghalint$EXE"
-        if [ -n "$INPUT_BINARY" ]; then
-          BIN="$INPUT_BINARY"
-        fi
+        BIN="${INPUT_BINARY:-./zghalint$EXE}"
 
         # The default config path is optional; only a config that exists is
         # passed, since a missing explicit --config is an error.
