@@ -257,13 +257,14 @@ fn applyCacheEntry(
                     .unknown => .unknown,
                 };
                 stale_refs.setCachedTagResult(owner, repo, s.sha, mapped);
-                hits += 1;
                 // SC005 and SC008 share the (owner, repo, sha) tuple. A cache
                 // file written by a run with SC008 off carries no impostor
                 // verdict, so dropping the SHA here would keep it out of the
-                // batch and silence SC008 for the rest of the TTL.
+                // batch and silence SC008 for the rest of the TTL. It is not a
+                // hit either: the ref still has to be fetched.
                 if (active.impostor and !hasImpostorEntry(entry, s.sha)) continue;
                 _ = sets.sha_refs.remove(key);
+                hits += 1;
             }
         }
     }
@@ -1270,6 +1271,21 @@ test "applyCacheEntry: keeps a SHA whose SC008 verdict the cache file lacks" {
 
     try testing.expectEqual(@as(usize, 1), sets.sha_refs.count());
     try testing.expectEqual(@as(usize, 1), sets.repos.count());
+
+    // The same file with the verdict present must still satisfy the SHA,
+    // otherwise the guard above would silently disable the whole SC005 cache.
+    var sets2 = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets2.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets2.sha_refs.put(alloc, "o/r@" ++ sha, .{ .owner = "o", .repo = "r", .sha = sha });
+
+    const imp = [_]disk_cache.ImpostorEntry{.{ .sha = sha, .status = .legitimate }};
+    const full = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .shas = &shas, .impostor = &imp };
+
+    _ = applyCacheEntry(&sets2, "o", "r", full, active);
+    pruneSatisfiedRepos(alloc, &sets2, active);
+
+    try testing.expectEqual(@as(usize, 0), sets2.sha_refs.count());
+    try testing.expectEqual(@as(usize, 0), sets2.repos.count());
 }
 
 test "mergeEntries: fresh results win over the cached ones for the same key" {

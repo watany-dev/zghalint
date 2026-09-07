@@ -92,11 +92,18 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
     const selected = try allocator.alloc(Edit, idx);
     errdefer allocator.free(selected);
 
+    // Who each dropped fix lost to. Counting skips inside the sweep would be
+    // premature: a winner can itself be dropped by a later pass, and a fix
+    // that lost to a dropped one is not re-runnable either.
+    const no_loser = std.math.maxInt(usize);
+    const lost_to = try allocator.alloc(usize, fixes.len);
+    defer allocator.free(lost_to);
+    @memset(lost_to, no_loser);
+
     // Dropping a fix can free the range its winner had claimed, so the sweep
     // restarts after each drop. Every pass drops at most one fix, so this
     // terminates in at most `fixes.len` passes.
     var count: usize = 0;
-    var fixes_skipped: usize = 0;
     while (true) {
         count = 0;
         var last_end: usize = 0;
@@ -106,9 +113,7 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
             if (dropped[oe.fix_index]) continue;
             if (count > 0 and oe.edit.start_byte < last_end) {
                 dropped[oe.fix_index] = true;
-                // Only a fix that lost to another one is worth reporting: its
-                // diagnostic comes back and a second run applies it.
-                if (oe.fix_index != last_fix) fixes_skipped += 1;
+                lost_to[oe.fix_index] = last_fix;
                 dropped_one = true;
                 break;
             }
@@ -118,6 +123,15 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
             count += 1;
         }
         if (!dropped_one) break;
+    }
+
+    // Report only a fix a second run would actually apply: it must have lost
+    // to a *different* fix (a self-overlapping fix never applies), and that
+    // winner must have survived so its diagnostic is gone next time.
+    var fixes_skipped: usize = 0;
+    for (lost_to, 0..) |winner, i| {
+        if (winner == no_loser or winner == i) continue;
+        if (!dropped[winner]) fixes_skipped += 1;
     }
 
     if (count == 0) {
@@ -383,6 +397,29 @@ test "a fix whose own edits overlap applies none of them" {
     try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
     // Not reported: re-running would drop it again, so telling the user to
     // re-run would never stop being true.
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "a fix that loses to a self-conflicting fix is not reported" {
+    const allocator = std.testing.allocator;
+    const source = "ABCDEFGHIJ";
+    // fix1's first edit beats fix2, then fix1 falls to its own second edit.
+    // Nothing was applied, so pointing the user at a re-run would be a lie:
+    // the same two fixes would collide the same way again.
+    const edits1 = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 6, .replacement = "1" },
+        .{ .start_byte = 2, .end_byte = 8, .replacement = "1" },
+    };
+    const edits2 = [_]Edit{.{ .start_byte = 1, .end_byte = 3, .replacement = "2" }};
+    const fixes = [_]Fix{
+        .{ .description = "self-conflicting", .safety = .safe, .edits = &edits1 },
+        .{ .description = "victim", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("ABCDEFGHIJ", result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
     try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
 }
 
