@@ -11,11 +11,11 @@ machine and the same files:
                 (`--no-cache`) and warm, zizmor `--offline` and online
 
 Wall time comes from `hyperfine --warmup N` when it is installed, otherwise
-from an in-process loop with the same warmup; peak RSS is the `ru_maxrss` of
-one extra run, the same number `/usr/bin/time -v` prints as "Maximum resident
-set size". The network scenario is only reported when the network actually
-answers: an environment that blocks `api.github.com` would otherwise post the
-cost of a failed connection as if it were a fetch.
+from an in-process loop with the same warmup; peak RSS is what GNU time
+reports for one extra run ("Maximum resident set size"), or unmeasured when
+GNU time is not installed. The network scenario is only reported when the
+network actually answers: an environment that blocks `api.github.com` would
+otherwise post the cost of a failed connection as if it were a fetch.
 """
 
 from __future__ import annotations
@@ -26,20 +26,16 @@ import os
 import platform
 import shlex
 import shutil
-import signal
 import statistics
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CORPUS_DIR = REPO_ROOT / "bench" / "corpus"
-
-TOOLS = ("zghalint", "actionlint", "zizmor")
 
 #: Per-invocation ceiling, generous because the network variants wait on
 #: GitHub. A run past it is recorded as an error, never as a slow mean.
@@ -76,9 +72,10 @@ def _line_count(cwd: Path, files: list[str]) -> int:
 def workflow_files(cases_dir: Path) -> list[Path]:
     """Every case file that all three tools read as a workflow.
 
-    `*.action.yml` and `*.dependabot.yml` are only recognised under their
-    staged names (see `bench.py`); passed as-is they cost each tool a
-    different failure path, which is not what this scenario measures.
+    `*.action.yml` (or a bare `action.yml`) and `*.dependabot.yml` are only
+    recognised under their staged names (see `bench.py`); passed as-is they
+    cost each tool a different failure path, which is not what this scenario
+    measures.
     """
     return sorted(
         p
@@ -86,6 +83,7 @@ def workflow_files(cases_dir: Path) -> list[Path]:
         if p.is_file()
         and p.suffix in (".yml", ".yaml")
         and not p.name.endswith((".action.yml", ".action.yaml"))
+        and p.stem != "action"
         and not p.name.endswith((".dependabot.yml", ".dependabot.yaml"))
     )
 
@@ -193,10 +191,6 @@ def huge_scenario(tmp: Path) -> Scenario:
     )
 
 
-def corpus_files(corpus_dir: Path) -> list[Path]:
-    return sorted(p for p in corpus_dir.rglob("*") if p.is_file() and p.suffix in (".yml", ".yaml"))
-
-
 def many_small_scenario(corpus_dir: Path, tmp: Path) -> Scenario:
     """The corpus tiled to `MANY_SMALL_FILES` files in one flat directory.
 
@@ -205,7 +199,7 @@ def many_small_scenario(corpus_dir: Path, tmp: Path) -> Scenario:
     refreshes.
     """
     description = f"多数小ファイル (実コーパス {MANY_SMALL_FILES:,} 件)"
-    sources = corpus_files(corpus_dir) if corpus_dir.is_dir() else []
+    sources = sorted(p for p in corpus_dir.rglob("*") if p.suffix in (".yml", ".yaml"))
     if not sources:
         return Scenario(
             "many-small",
@@ -293,52 +287,71 @@ class Measurement:
     error: str | None = None
 
 
-def _run_once(cmd: Command, cwd: Path) -> tuple[float, int, int, str]:
-    """One run: (wall seconds, exit code, peak RSS in KiB, last stderr line).
+def _run_once(cmd: Command, cwd: Path) -> tuple[float, int]:
+    """One plain run: (wall seconds, exit code)."""
+    start = time.perf_counter()
+    proc = subprocess.run(
+        cmd.argv,
+        cwd=str(cwd),
+        env=cmd.env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=TIMEOUT_SEC,
+    )
+    return time.perf_counter() - start, proc.returncode
 
-    `os.wait4` returns the rusage of exactly the process it reaps — the number
-    `/usr/bin/time -v` prints as "Maximum resident set size" — where a shared
-    `RUSAGE_CHILDREN` reading would be the maximum over hyperfine and git too.
-    stderr goes to a file so the read cannot deadlock against `wait4`.
+
+def gnu_time() -> str | None:
+    """Path of GNU time, or None when peak RSS cannot be measured.
+
+    `os.wait4` looks like the obvious source, but Linux credits the spawning
+    process's resident set to the child at exec, so anything launched from
+    this ~15 MiB interpreter reads as at least 15 MiB — more than zghalint
+    uses. GNU time forks from a ~1 MiB process and prints the same number
+    `time -v` calls "Maximum resident set size". BSD time (macOS) has no
+    `-f` and is treated as absent.
     """
-    with tempfile.TemporaryFile() as stderr:
-        start = time.perf_counter()
-        proc = subprocess.Popen(
-            cmd.argv, cwd=str(cwd), env=cmd.env, stdout=subprocess.DEVNULL, stderr=stderr
+    path = shutil.which("time")
+    if path is None:
+        return None
+    try:
+        probe = subprocess.run([path, "-f", "%M", "true"], capture_output=True, timeout=30)
+    except OSError:
+        return None
+    return path if probe.returncode == 0 else None
+
+
+def _peak_rss(gnu_time: str, cmd: Command, cwd: Path) -> tuple[int, int]:
+    """(peak RSS in KiB, exit code) of one run under GNU time."""
+    with tempfile.NamedTemporaryFile("r", suffix=".rss") as out:
+        proc = subprocess.run(
+            [gnu_time, "-f", "%M", "-o", out.name, *cmd.argv],
+            cwd=str(cwd),
+            env=cmd.env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=TIMEOUT_SEC,
         )
-        killer = threading.Timer(TIMEOUT_SEC, proc.kill)
-        killer.start()
-        try:
-            _, status, rusage = os.wait4(proc.pid, 0)
-        finally:
-            killer.cancel()
-        wall = time.perf_counter() - start
-        # Popen still believes the child is running; tell it otherwise so its
-        # finaliser does not wait on an already reaped pid.
-        proc.returncode = os.waitstatus_to_exitcode(status)
-        if proc.returncode == -signal.SIGKILL:
-            raise subprocess.TimeoutExpired(cmd.argv, TIMEOUT_SEC)
-        stderr.seek(0)
-        tail = stderr.read().decode("utf-8", "replace").strip().splitlines()
-    return wall, proc.returncode, rusage.ru_maxrss, tail[-1][:160] if tail else ""
+        # A non-zero exit adds a "Command exited with ..." line before %M.
+        return int(out.read().splitlines()[-1]), proc.returncode
 
 
-def measure(cmd: Command, cwd: Path, runs: int, warmup: int, hyperfine: bool) -> Measurement:
+def measure(
+    cmd: Command, cwd: Path, runs: int, warmup: int, hyperfine: bool, rss_tool: str | None
+) -> Measurement:
     if shutil.which(cmd.argv[0]) is None and not Path(cmd.argv[0]).is_file():
         return Measurement(error=f"{cmd.argv[0]} が見つからない")
-    if cmd.prepare is not None:
-        subprocess.run(
-            cmd.prepare, cwd=str(cwd), env=cmd.env, capture_output=True, timeout=TIMEOUT_SEC
-        )
     try:
+        if cmd.prepare is not None:
+            subprocess.run(
+                cmd.prepare, cwd=str(cwd), env=cmd.env, capture_output=True, timeout=TIMEOUT_SEC
+            )
         if hyperfine:
             result = _measure_hyperfine(cmd, cwd, runs, warmup)
         else:
             result = _measure_loop(cmd, cwd, runs, warmup)
-        if result.error is None and result.max_rss_kb is None:
-            _, exit_code, result.max_rss_kb, _ = _run_once(cmd, cwd)
-            if result.exit_code is None:
-                result.exit_code = exit_code
+        if result.error is None and rss_tool is not None:
+            result.max_rss_kb, result.exit_code = _peak_rss(rss_tool, cmd, cwd)
     except subprocess.TimeoutExpired:
         return Measurement(error=f"{TIMEOUT_SEC}s でタイムアウト")
     except OSError as exc:
@@ -347,34 +360,35 @@ def measure(cmd: Command, cwd: Path, runs: int, warmup: int, hyperfine: bool) ->
 
 
 def _measure_hyperfine(cmd: Command, cwd: Path, runs: int, warmup: int) -> Measurement:
-    export = cwd / f".hyperfine-{cmd.tool}.json"
-    argv = [
-        "hyperfine",
-        "--shell=none",
-        "--style",
-        "none",
-        "--ignore-failure",
-        "--warmup",
-        str(warmup),
-        "--runs",
-        str(runs),
-        "--export-json",
-        str(export),
-        shlex.join(cmd.argv),
-    ]
-    proc = subprocess.run(
-        argv,
-        cwd=str(cwd),
-        env=cmd.env,
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT_SEC * (runs + warmup),
-    )
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout).strip().splitlines()
-        return Measurement(error=f"hyperfine exit {proc.returncode}: {tail[-1] if tail else ''}")
-    data = json.loads(export.read_text(encoding="utf-8"))["results"][0]
-    export.unlink()
+    with tempfile.NamedTemporaryFile("r", suffix=".json") as export:
+        argv = [
+            "hyperfine",
+            "--shell=none",
+            "--style",
+            "none",
+            "--ignore-failure",
+            "--warmup",
+            str(warmup),
+            "--runs",
+            str(runs),
+            "--export-json",
+            export.name,
+            shlex.join(cmd.argv),
+        ]
+        proc = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            env=cmd.env,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SEC * (runs + warmup),
+        )
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout).strip().splitlines()
+            return Measurement(
+                error=f"hyperfine exit {proc.returncode}: {tail[-1] if tail else ''}"
+            )
+        data = json.load(export)["results"][0]
     codes = data.get("exit_codes") or [None]
     return Measurement(
         runs=len(data["times"]),
@@ -390,19 +404,16 @@ def _measure_loop(cmd: Command, cwd: Path, runs: int, warmup: int) -> Measuremen
     for _ in range(warmup):
         _run_once(cmd, cwd)
     times = []
-    rss = []
     exit_code = None
     for _ in range(runs):
-        wall, exit_code, max_rss, _ = _run_once(cmd, cwd)
+        wall, exit_code = _run_once(cmd, cwd)
         times.append(wall)
-        rss.append(max_rss)
     return Measurement(
         runs=len(times),
         mean=statistics.fmean(times),
         stddev=statistics.stdev(times) if len(times) > 1 else None,
         min=min(times),
         max=max(times),
-        max_rss_kb=max(rss),
         exit_code=exit_code,
     )
 
@@ -417,30 +428,42 @@ def network_unavailable(
 ) -> str | None:
     """Reason the network rows cannot be trusted, or None when they can.
 
-    zghalint reports a failed prefetch only by leaving the cache empty (it
-    degrades to offline rules rather than failing the lint), so the probe is
-    "did a cold run write a cache entry". zizmor aborts the whole run instead,
-    which its exit status 1 and `fatal:` line make visible.
+    Both tools need `GITHUB_TOKEN`: zghalint persists its cache only from
+    the GraphQL path, and zizmor silently drops to offline mode without a
+    token. zghalint reports a failed prefetch only by leaving the cache
+    empty (it degrades to offline rules rather than failing the lint), so
+    its probe is "did a cold run write a cache entry". zizmor aborts the
+    whole run instead, which its exit status 1 and `fatal:` line make
+    visible.
     """
+    if not os.environ.get("GITHUB_TOKEN"):
+        return (
+            "GITHUB_TOKEN が未設定 (zghalint のキャッシュ書き込みと zizmor のオンライン監査に必要)"
+        )
     env = dict(os.environ, XDG_CACHE_HOME=str(cache_home))
-    probe = files[: min(len(files), 20)]
-    subprocess.run(
-        [str(zghalint), "--format", "json", "--color", "never", "--no-cache", *probe],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        timeout=TIMEOUT_SEC,
-    )
-    if not any(cache_home.rglob("*.json")):
-        return "zghalint のコールド実行でキャッシュが書かれない (api.github.com に到達できない)"
-    proc = subprocess.run(
-        ["zizmor", "--format", "json", "--no-progress", *probe],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT_SEC,
-    )
+    probe = files[:20]
+    try:
+        subprocess.run(
+            [str(zghalint), "--format", "json", "--color", "never", "--no-cache", *probe],
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            timeout=TIMEOUT_SEC,
+        )
+        if not any(cache_home.rglob("*.json")):
+            return "zghalint のコールド実行でキャッシュが書かれない (api.github.com に到達できない)"
+        if shutil.which("zizmor") is None:
+            return None
+        proc = subprocess.run(
+            ["zizmor", "--format", "json", "--no-progress", *probe],
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        return f"接続確認が {TIMEOUT_SEC}s でタイムアウト"
     if proc.returncode == 1:
         tail = proc.stderr.strip().splitlines()
         return f"zizmor のオンライン実行が失敗: {tail[-1][:160] if tail else 'exit 1'}"
@@ -472,6 +495,7 @@ def run_perf(
     zghalint: Path, cases_dir: Path, corpus_dir: Path, runs: int, warmup: int, tmp: Path
 ) -> PerfReport:
     hyperfine = shutil.which("hyperfine") is not None
+    rss_tool = gnu_time()
     scenarios = [
         cases_scenario(cases_dir),
         huge_scenario(tmp),
@@ -491,7 +515,7 @@ def run_perf(
                     scenario.name,
                     cmd.tool,
                     cmd.condition,
-                    measure(cmd, scenario.cwd, runs, warmup, hyperfine),
+                    measure(cmd, scenario.cwd, runs, warmup, hyperfine, rss_tool),
                 )
             )
 
@@ -509,7 +533,7 @@ def run_perf(
                     "network",
                     cmd.tool,
                     cmd.condition,
-                    measure(cmd, cases.cwd, runs, warmup, hyperfine),
+                    measure(cmd, cases.cwd, runs, warmup, hyperfine, rss_tool),
                 )
             )
 
@@ -519,6 +543,7 @@ def run_perf(
         "cpu": f"{os.cpu_count()} logical CPUs",
         "runs": f"{runs} (warmup {warmup})",
         "timer": _version(["hyperfine", "--version"]) if hyperfine else "in-process loop",
+        "rss": f"GNU time `{rss_tool} -f %M`" if rss_tool else "未計測 (GNU time が無い)",
         "zghalint": f"`{zghalint}` {_version([str(zghalint), '--version'])}",
         "actionlint": _version(["actionlint", "-version"]).splitlines()[0],
         "zizmor": _version(["zizmor", "--version"]),

@@ -106,15 +106,15 @@ def main(argv: list[str] | None = None) -> int:
         metavar="OWNER/REPO",
         help="fetch this repository in addition to the manifest (repeatable)",
     )
-    parser.add_argument("--limit", type=int, help="stop after this many repositories")
+    parser.add_argument("--limit", type=int, help="only the first N manifest repositories")
     args = parser.parse_args(argv)
 
     repos = repos_from_manifest(MANIFEST.read_text(encoding="utf-8"))
+    if args.limit is not None:
+        repos = repos[: args.limit]
     for extra in args.repo:
         if extra not in repos:
             repos.append(extra)
-    if args.limit is not None:
-        repos = repos[: args.limit]
 
     # Start from a clean directory: a repository dropped from the manifest
     # must not linger and skew the file count.

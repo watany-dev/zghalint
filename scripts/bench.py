@@ -1264,7 +1264,8 @@ def main_perf(args: argparse.Namespace) -> int:
         print(text)
     if args.json:
         args.json.write_text(
-            json.dumps(bench_perf.as_json(report), indent=2, ensure_ascii=False) + "\n"
+            json.dumps(bench_perf.as_json(report), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
     return 0
 

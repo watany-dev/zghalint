@@ -149,20 +149,25 @@ python3 scripts/bench.py --perf --runs 3 --warmup 1 # 手元での確認用
 
 各コマンドは `hyperfine --warmup 3` (既定; `--runs` / `--warmup` で変更) で
 測り、hyperfine が無ければ同じ回数の in-process ループで代用する。最大 RSS
-はもう 1 回だけ実行して `wait4(2)` の `ru_maxrss` を取る — `/usr/bin/time -v`
-の "Maximum resident set size" と同じ値。zghalint / actionlint / zizmor は
-すべて `bench/` の採点と同じフラグ (`--offline`, `-no-color`,
-`--offline --no-progress`) で走らせる。
+は GNU time (`/usr/bin/time -f %M`、Debian/Ubuntu は `apt-get install time`)
+でもう 1 回だけ実行して取る — `time -v` の "Maximum resident set size"。
+Python から直接 `wait4(2)` で読むと Linux が親プロセスの RSS を子に
+計上するため 15 MiB 前後で床打ちされ、zghalint の実値 (数 MiB) が見えない。
+GNU time が無い環境 (macOS の BSD time を含む) では RSS 列は `–` になる。
+zghalint / actionlint / zizmor はすべて `bench/` の採点と同じフラグ
+(`--offline`, `-no-color`, `--offline --no-progress`) で走らせる。
 
 終了コードは表に載せる。zghalint の 2 は「lint できなかったファイルがある」
 の意味で、コーパスには自前パーサが拒否する実ファイルが含まれるため、
 many-small では 2 が出るのが現状の挙動 (堅牢性の観察点)。
 
-network シナリオは、計測前に zghalint の cold 実行がキャッシュを書き、
-zizmor のオンライン実行が監査を完了することを確かめてから走らせる。
-どちらかが失敗する環境 (api.github.com へ届かない) では「計測できなかった
-シナリオ」として理由つきで載せ、接続失敗のコストを取得コストとして
-報告しない。`bench/corpus/` が空なら many-small も同じ扱いになる。
+network シナリオは `GITHUB_TOKEN` が要る (zghalint は GraphQL 経路でしか
+キャッシュを書かず、zizmor はトークン無しだと黙ってオフラインになる)。
+計測前に zghalint の cold 実行がキャッシュを書き、zizmor のオンライン実行が
+監査を完了することを確かめてから走らせる。トークンが無い、または
+api.github.com へ届かない環境では「計測できなかったシナリオ」として理由つきで
+載せ、接続失敗のコストを取得コストとして報告しない。`bench/corpus/` が空なら
+many-small も同じ扱いになる。
 
 ### コーパス (`scripts/fetch-corpus.py`)
 
@@ -170,8 +175,9 @@ zizmor のオンライン実行が監査を完了することを確かめてか�
 sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集める。
 上流のライセンスをそのまま持つファイルなので `bench/corpus/` は git 管理外
 にし、代わりに `bench/corpus/manifest.json` に取得元 (リポジトリ・コミット・
-ファイル名) と取得時刻を残す。`--repo owner/repo` で追加、`--limit N` で
-先頭 N リポジトリだけ取得できる。
+ファイル名) と取得時刻を残す。`--limit N` で manifest の先頭 N 件に絞り、
+`--repo owner/repo` で manifest に無いリポジトリを対象に加える。取得は毎回
+`bench/corpus/` を作り直す。
 
 ## ケースを追加する
 
