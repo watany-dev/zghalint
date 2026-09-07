@@ -420,6 +420,205 @@ fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
     }
 }
 
+/// `include` and `exclude` sit in the axis list beside the real axes, but they
+/// configure the matrix rather than adding a dimension to it.
+fn isMatrixModifier(name: []const u8) bool {
+    return std.mem.eql(u8, name, "include") or std.mem.eql(u8, name, "exclude");
+}
+
+fn findMatrixAxis(matrix: workflow_types.Matrix, name: []const u8) ?workflow_types.MatrixAxis {
+    for (matrix.axes) |axis| {
+        if (isMatrixModifier(axis.name)) continue;
+        if (std.mem.eql(u8, axis.name, name)) return axis;
+    }
+    return null;
+}
+
+fn matrixModifier(matrix: workflow_types.Matrix, name: []const u8) ?workflow_types.MatrixAxis {
+    for (matrix.axes) |axis| {
+        if (std.mem.eql(u8, axis.name, name)) return axis;
+    }
+    return null;
+}
+
+fn isExpression(node: Node) bool {
+    return switch (node) {
+        .scalar => |s| std.mem.indexOf(u8, s.value, "${{") != null,
+        else => false,
+    };
+}
+
+/// YAML resolves `1.10` and `1.1` to the same number and `True` and `true` to
+/// the same boolean, so comparing the source text alone would flag a value the
+/// axis does list.
+fn scalarsEquivalent(a: []const u8, b: []const u8) bool {
+    if (std.mem.eql(u8, a, b)) return true;
+    if (isBooleanSpelling(a) and isBooleanSpelling(b)) {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+    const num_a = std.fmt.parseFloat(f64, a) catch return false;
+    const num_b = std.fmt.parseFloat(f64, b) catch return false;
+    return num_a == num_b;
+}
+
+fn isBooleanSpelling(text: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(text, "true") or std.ascii.eqlIgnoreCase(text, "false");
+}
+
+/// Whether the axis `key` takes `value`, or null when the answer is not knowable
+/// from the source alone (an expression, or an axis that is not a list).
+///
+/// `include` is deliberately not consulted: GitHub applies `exclude` to the base
+/// matrix and merges `include` afterwards, so a combination only `include`
+/// contributes is never removed by `exclude`.
+fn axisTakesValue(axis: workflow_types.MatrixAxis, value: Node) ?bool {
+    if (isExpression(value)) return null;
+    // An axis built from an expression carries no values to compare against.
+    if (axis.values.len == 0) return null;
+
+    for (axis.values) |candidate| {
+        if (isExpression(candidate)) return null;
+        if (candidate == .scalar and value == .scalar) {
+            if (scalarsEquivalent(candidate.scalar.value, value.scalar.value)) return true;
+        } else if (candidate.eql(value)) return true;
+    }
+    return false;
+}
+
+/// The axis names an `include` / `exclude` key may plausibly have meant. Capped
+/// because the list only feeds a "did you mean" suggestion.
+fn collectAxisNames(matrix: workflow_types.Matrix, buf: [][]const u8) [][]const u8 {
+    var len: usize = 0;
+    for (matrix.axes) |axis| {
+        if (isMatrixModifier(axis.name)) continue;
+        if (len == buf.len) break;
+        buf[len] = axis.name;
+        len += 1;
+    }
+    return buf[0..len];
+}
+
+/// An `exclude` entry that names a key or a value the matrix never produces
+/// removes nothing, so the matrix still runs the combination the author meant to
+/// drop.
+fn checkMatrixExclude(
+    matrix: workflow_types.Matrix,
+    axis_names: []const []const u8,
+    list: *DiagnosticList,
+) void {
+    const exclude = matrixModifier(matrix, "exclude") orelse return;
+    const alloc = list.fixAllocator();
+
+    for (exclude.values) |entry| {
+        const mapping = switch (entry) {
+            .mapping => |m| m,
+            else => continue,
+        };
+        for (mapping.entries) |kv| {
+            const key = kv.key.value;
+            if (std.mem.indexOf(u8, key, "${{") != null) continue;
+
+            const axis = findMatrixAxis(matrix, key) orelse {
+                var suffix_buf: [64]u8 = undefined;
+                const suffix = if (util.didYouMean(key, axis_names)) |s|
+                    std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+                else
+                    "";
+
+                list.append(.{
+                    .rule_id = "SYN019",
+                    .severity = .warning,
+                    .message = std.fmt.allocPrint(
+                        alloc,
+                        "unknown key \"{s}\" in \"exclude\"{s}",
+                        .{ key, suffix },
+                    ) catch "unknown key in \"exclude\"",
+                    .span = kv.key.span,
+                    .fix_hint = "name one of the matrix axes, or drop the entry",
+                }) catch return;
+                continue;
+            };
+
+            // Only a scalar has text the message can quote back.
+            const quoted = switch (kv.value) {
+                .scalar => |s| s.value,
+                else => continue,
+            };
+
+            const takes = axisTakesValue(axis, kv.value) orelse continue;
+            if (takes) continue;
+
+            list.append(.{
+                .rule_id = "SYN019",
+                .severity = .warning,
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "\"{s}\" does not exist in \"{s}\" axis",
+                    .{ quoted, key },
+                ) catch "value does not exist in the matrix axis",
+                .span = kv.value.getSpan(),
+                .fix_hint = "use a value the axis produces; this entry excludes no combination",
+            }) catch return;
+        }
+    }
+}
+
+/// `include` is free to add keys, so only a key one edit away from an existing
+/// axis — and only when the entry does not set that axis itself — reads as a typo.
+fn checkMatrixInclude(
+    matrix: workflow_types.Matrix,
+    axis_names: []const []const u8,
+    list: *DiagnosticList,
+) void {
+    const include = matrixModifier(matrix, "include") orelse return;
+    const alloc = list.fixAllocator();
+
+    for (include.values) |entry| {
+        const mapping = switch (entry) {
+            .mapping => |m| m,
+            else => continue,
+        };
+        for (mapping.entries) |kv| {
+            const key = kv.key.value;
+            if (std.mem.indexOf(u8, key, "${{") != null) continue;
+            if (findMatrixAxis(matrix, key) != null) continue;
+
+            // `node: 18` beside `mode: fast` is two deliberate keys, not a typo.
+            var near: ?[]const u8 = null;
+            var near_count: usize = 0;
+            for (axis_names) |name| {
+                if (util.levenshteinDistance(key, name) != 1) continue;
+                if (mapping.getKeySpan(name) != null) continue;
+                near = name;
+                near_count += 1;
+            }
+            if (near_count != 1) continue;
+
+            list.append(.{
+                .rule_id = "SYN019",
+                .severity = .warning,
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "unknown key \"{s}\" in \"include\". did you mean \"{s}\"?",
+                    .{ key, near.? },
+                ) catch "unknown key in \"include\"",
+                .span = kv.key.span,
+                .fix_hint = "rename the key to the axis it shadows, or keep it if the new key is intentional",
+            }) catch return;
+        }
+    }
+}
+
+fn checkMatrixIncludeExclude(job: *const Job, list: *DiagnosticList) void {
+    const matrix = (job.strategy orelse return).matrix orelse return;
+
+    var name_buf: [32][]const u8 = undefined;
+    const axis_names = collectAxisNames(matrix, &name_buf);
+
+    checkMatrixExclude(matrix, axis_names, list);
+    checkMatrixInclude(matrix, axis_names, list);
+}
+
 fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.on.events) |event| {
@@ -989,6 +1188,14 @@ pub const rules = [_]Rule{
         .severity = .warning,
         .category = .syntax,
         .check_job = &checkDuplicateMatrixValues,
+    },
+    .{
+        .id = "SYN019",
+        .name = "matrix-include-exclude",
+        .description = "'strategy.matrix' include/exclude names a key or value the matrix never produces",
+        .severity = .warning,
+        .category = .syntax,
+        .check_job = &checkMatrixIncludeExclude,
     },
 };
 
@@ -3945,6 +4152,265 @@ test "SYN018: a job without a strategy is clean" {
     ;
 
     var diags = try runSyn018(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn019(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    for (wf.jobs) |*job| checkMatrixIncludeExclude(job, &list);
+    return list;
+}
+
+test "SYN019: exclude naming a missing value and an unknown key is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        node: [18, 20]
+        \\        exclude:
+        \\          - os: windows-latest
+        \\            node: 18
+        \\          - oss: ubuntu-latest
+        \\            node: 20
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expectEqualStrings("SYN019", diags.get(0).rule_id);
+    try testing.expectEqualStrings(
+        "\"windows-latest\" does not exist in \"os\" axis",
+        diags.get(0).message,
+    );
+    try testing.expectEqualStrings(
+        "unknown key \"oss\" in \"exclude\". did you mean \"os\"?",
+        diags.get(1).message,
+    );
+}
+
+test "SYN019: a valid exclude and an include adding a new key are clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        node: [18, 20]
+        \\        exclude:
+        \\          - os: macos-latest
+        \\            node: 18
+        \\        include:
+        \\          - os: ubuntu-latest
+        \\            node: 20
+        \\            experimental: true
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN019: an include key one edit from an axis is reported as a typo" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        node: [18, 20]
+        \\        include:
+        \\          - os: ubuntu-latest
+        \\            nodes: 22
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "unknown key \"nodes\" in \"include\". did you mean \"node\"?",
+        diags.get(0).message,
+    );
+}
+
+test "SYN019: a value only include contributes is still an empty exclude" {
+    // GitHub applies `exclude` to the base matrix and merges `include`
+    // afterwards, so neither entry here removes the windows combination.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        include:
+        \\          - os: windows-latest
+        \\            experimental: true
+        \\        exclude:
+        \\          - os: windows-latest
+        \\          - experimental: true
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expectEqualStrings(
+        "\"windows-latest\" does not exist in \"os\" axis",
+        diags.get(0).message,
+    );
+    try testing.expectEqualStrings(
+        "unknown key \"experimental\" in \"exclude\"",
+        diags.get(1).message,
+    );
+}
+
+test "SYN019: an include key beside the axis it resembles is not a typo" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        node: [18, 20]
+        \\        include:
+        \\          - os: ubuntu-latest
+        \\            node: 18
+        \\            mode: fast
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN019: YAML-equivalent numbers and booleans are not missing values" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        version: [1.0, 1.10]
+        \\        debug: [true, false]
+        \\        exclude:
+        \\          - version: 1.1
+        \\            debug: True
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN019: an axis built from an expression suppresses the value check" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: ${{ fromJSON(needs.setup.outputs.os) }}
+        \\        exclude:
+        \\          - os: windows-latest
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN019: an expression among the axis values suppresses the value check" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, "${{ env.EXTRA_OS }}"]
+        \\        exclude:
+        \\          - os: windows-latest
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN019: an unrelated include key stays unreported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\        include:
+        \\          - os: ubuntu-latest
+        \\            coverage: true
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN019: a job without a matrix is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
