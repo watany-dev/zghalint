@@ -19,6 +19,7 @@ const types = @import("../workflow/types.zig");
 pub const Interface = struct {
     inputs: []const types.InputDef = &.{},
     secrets: []const types.SecretDef = &.{},
+    outputs: []const types.CallOutputDef = &.{},
 };
 
 /// Test seam: when set, sources come from memory instead of the filesystem, so
@@ -76,6 +77,7 @@ pub fn load(arena: std.mem.Allocator, uses: []const u8) ?Interface {
         return .{
             .inputs = event.workflow_call_inputs,
             .secrets = event.workflow_call_secrets,
+            .outputs = event.workflow_call_outputs,
         };
     }
     return null;
@@ -115,6 +117,9 @@ test "load returns the workflow_call interface of the called file" {
         \\    secrets:
         \\      npm_token:
         \\        required: true
+        \\    outputs:
+        \\      artifact:
+        \\        value: ${{ jobs.build.outputs.artifact }}
         \\jobs:
         \\  build:
         \\    runs-on: ubuntu-latest
@@ -133,6 +138,9 @@ test "load returns the workflow_call interface of the called file" {
     try testing.expectEqualStrings("version", iface.inputs[0].name);
     try testing.expectEqual(@as(usize, 1), iface.secrets.len);
     try testing.expectEqualStrings("npm_token", iface.secrets[0].name);
+    try testing.expectEqual(@as(usize, 1), iface.outputs.len);
+    try testing.expectEqualStrings("artifact", iface.outputs[0].name);
+    try testing.expectEqualStrings("${{ jobs.build.outputs.artifact }}", iface.outputs[0].value.?);
 }
 
 test "load returns null for a workflow without workflow_call" {

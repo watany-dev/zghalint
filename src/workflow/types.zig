@@ -238,6 +238,20 @@ pub const SecretDef = struct {
     required: ?bool = null,
 };
 
+/// One entry of `on.workflow_call.outputs`. RW005 checks the `value:`
+/// expression against the jobs of the declaring workflow, and a caller's
+/// `needs.<job>.outputs.<name>` against these names.
+pub const CallOutputDef = struct {
+    name: []const u8,
+    name_span: yaml_types.Span,
+    /// The `value:` scalar as written, null when `value:` is absent or is not
+    /// a scalar — neither carries an expression to resolve.
+    value: ?[]const u8 = null,
+    /// Span and style of that scalar, so a diagnostic can point at the
+    /// offending path inside the expression rather than at the whole entry.
+    value_meta: ?ScalarValueMeta = null,
+};
+
 pub const WorkflowCallInputProblemKind = enum {
     missing_type,
     invalid_type,
@@ -367,6 +381,7 @@ pub const EventConfig = struct {
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
     workflow_call_secrets: []const SecretDef = &.{},
+    workflow_call_outputs: []const CallOutputDef = &.{},
     workflow_dispatch_inputs: []const DispatchInputDef = &.{},
     workflow_dispatch_input_problems: []const WorkflowDispatchInputProblem = &.{},
 };

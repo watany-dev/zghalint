@@ -224,6 +224,9 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
                     if (m.get("secrets")) |secrets_node| {
                         config.workflow_call_secrets = try parseWorkflowCallSecrets(allocator, secrets_node);
                     }
+                    if (m.get("outputs")) |outputs_node| {
+                        config.workflow_call_outputs = try parseWorkflowCallOutputs(allocator, outputs_node);
+                    }
                 },
                 .workflow_dispatch => {
                     if (m.get("inputs")) |inputs_node| {
@@ -346,6 +349,33 @@ fn parseWorkflowCallSecrets(allocator: std.mem.Allocator, node: Node) ParseError
         secrets.appendAssumeCapacity(def);
     }
     return secrets.toOwnedSlice(allocator);
+}
+
+/// `outputs:` is a mapping of output name to a `{value:, description:}`
+/// mapping. An entry whose value is not a mapping still declares the name, so
+/// it is kept with no `value` rather than dropped.
+fn parseWorkflowCallOutputs(allocator: std.mem.Allocator, node: Node) ParseError![]const types.CallOutputDef {
+    const m = switch (node) {
+        .mapping => |m| m,
+        else => return &.{},
+    };
+
+    const outputs = try allocator.alloc(types.CallOutputDef, m.entries.len);
+    for (m.entries, outputs) |entry, *def| {
+        def.* = .{ .name = entry.key.value, .name_span = entry.key.span };
+        const om = switch (entry.value) {
+            .mapping => |om| om,
+            else => continue,
+        };
+        switch (om.get("value") orelse continue) {
+            .scalar => |s| {
+                def.value = s.value;
+                def.value_meta = .{ .value_span = s.span, .style = s.style };
+            },
+            else => {},
+        }
+    }
+    return outputs;
 }
 
 fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowCallInputs {
