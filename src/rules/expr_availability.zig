@@ -198,10 +198,8 @@ fn visitor(comptime Visitor: type, key: Key, alloc: std.mem.Allocator, list: *Di
 /// One traversal per rule: EXPR015 and EXPR016 are registered separately, and
 /// a visitor without the matching hook walks the same tree for free.
 fn scanWorkflow(comptime Visitor: type, wf: *const Workflow, list: *DiagnosticList) void {
-    // The parse tree is scratch, so this arena owns it and frees it as soon
-    // as the scan is done; diagnostic messages go to the list's own arena
-    // instead. Backing it with the list's allocator keeps it under the same
-    // leak detection as the rest of the run (#159).
+    // Scratch for the expression parser: no diagnostic points at it, and
+    // the list's allocator keeps it under the run's leak detection (#159).
     var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

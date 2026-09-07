@@ -1192,10 +1192,7 @@ fn isSingleWrappedExpression(s: []const u8) bool {
 }
 
 fn isConstantBooleanExpression(allocator: std.mem.Allocator, expr: []const u8) ?bool {
-    // The parse tree is read here and nowhere else, so it dies with the call.
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    var parser = ExprParser.init(arena.allocator(), expr);
+    var parser = ExprParser.init(allocator, expr);
     const node = parser.parse() catch return null;
     if (node.kind != .boolean_literal) return null;
     return std.mem.eql(u8, node.value, "true");
@@ -1206,7 +1203,7 @@ fn checkIfConstantBoolean(
     span: Span,
     list: *DiagnosticList,
 ) void {
-    const value = isConstantBooleanExpression(list.allocator, expr) orelse return;
+    const value = isConstantBooleanExpression(list.fixAllocator(), expr) orelse return;
     const msg = if (value)
         "if condition is always true"
     else
@@ -1239,12 +1236,10 @@ const IfExprBlock = struct {
     inner: []const u8,
 };
 
-/// The returned slice is owned by the caller; `inner` borrows from `if_val`.
+/// `allocator` must be an arena: the blocks are not freed individually.
+/// `inner` borrows from `if_val`.
 fn findIfExprBlocks(allocator: std.mem.Allocator, if_val: []const u8) ?[]const IfExprBlock {
     var blocks: std.ArrayList(IfExprBlock) = .empty;
-    // Every bail-out below returns null, so the scratch list is released here
-    // and only the duplicated slice escapes.
-    defer blocks.deinit(allocator);
     var pos: usize = 0;
     while (pos + 2 < if_val.len) {
         if (!(if_val[pos] == '$' and if_val[pos + 1] == '{' and if_val[pos + 2] == '{')) {
@@ -1265,7 +1260,7 @@ fn findIfExprBlocks(allocator: std.mem.Allocator, if_val: []const u8) ?[]const I
         pos = close_end;
     }
     if (blocks.items.len == 0) return null;
-    return allocator.dupe(IfExprBlock, blocks.items) catch null;
+    return blocks.items;
 }
 
 fn buildIfConditionMergeFix(
@@ -1274,13 +1269,12 @@ fn buildIfConditionMergeFix(
     base: ?usize,
 ) ?Fix {
     const base_byte = base orelse return null;
-    const blocks = findIfExprBlocks(list.allocator, if_val) orelse return null;
-    defer list.allocator.free(blocks);
+    const alloc = list.fixAllocator();
+    const blocks = findIfExprBlocks(alloc, if_val) orelse return null;
     if (blocks.len < 2) return null;
 
     var prev_end: usize = 0;
     var combined: std.ArrayList(u8) = .empty;
-    const alloc = list.fixAllocator();
 
     for (blocks, 0..) |block, i| {
         if (!gapIsMergeable(if_val[prev_end..block.open])) return null;
@@ -1384,15 +1378,6 @@ fn checkScalarMap(
     }
 }
 
-/// Diagnostic messages must outlive the check that emits them, so they are
-/// allocated from the diagnostic list's own arena, which the list owns and
-/// frees in `deinit` (#159). Expression parsing scratch shares that arena
-/// rather than threading a second allocator through every validator; it is
-/// bounded by the expressions in one workflow and dies with the list.
-fn messageAllocator(list: *DiagnosticList) std.mem.Allocator {
-    return list.fixAllocator();
-}
-
 /// The overlay-free path, kept for unit tests and for callers that have only
 /// a step: `checkWorkflow` is what the engine runs.
 pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
@@ -1402,7 +1387,11 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
 /// Public so a caller with its own context can supply one: composite action
 /// steps see the action's `inputs:` and no `matrix` / `secrets` at all (#254).
 pub fn checkStepEnv(step: *const Step, list: *DiagnosticList, env: *const expr_check.TypeEnv) void {
-    const allocator = messageAllocator(list);
+    // Diagnostic messages must outlive this call, so they come from the list's
+    // own arena, which the list frees in `deinit` (#159). Expression parsing
+    // scratch shares it rather than threading a second allocator through every
+    // validator.
+    const allocator = list.fixAllocator();
 
     // `run:` scalar style is not tracked and it is usually a block scalar,
     // whose content-start byte cannot be recovered; never derive fix ranges
@@ -1427,7 +1416,7 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
 }
 
 fn checkJobEnv(job: *const Job, list: *DiagnosticList, env: *const expr_check.TypeEnv) void {
-    const allocator = messageAllocator(list);
+    const allocator = list.fixAllocator();
 
     checkIfCondition(allocator, job.if_condition, job.if_condition_meta, job.span, list, env);
 
@@ -1440,11 +1429,8 @@ fn checkJobEnv(job: *const Job, list: *DiagnosticList, env: *const expr_check.Ty
 /// traversal order matches what the engine would do — each job, then that
 /// job's steps — so diagnostic order is unchanged.
 pub fn checkWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
-    // The overlays are scratch: nothing in a diagnostic points at them, so
-    // this arena is freed as soon as the workflow is checked. Backing it with
-    // the list's allocator keeps it under the same leak detection as the rest
-    // of the run. Diagnostic messages come from `messageAllocator` instead and
-    // outlive it.
+    // Scratch for the overlays: no diagnostic points at them, and the list's
+    // allocator keeps this under the run's leak detection (#159).
     var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

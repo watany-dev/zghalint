@@ -474,10 +474,8 @@ fn callsLocalWorkflow(wf: *const Workflow) bool {
 }
 
 fn checkCallOutputs(wf: *const Workflow, list: *DiagnosticList) void {
-    // The parse tree is scratch, so this arena owns it and frees it as soon
-    // as the scan is done; diagnostic messages go to the list's own arena
-    // instead. Backing it with the list's allocator keeps it under the same
-    // leak detection as the rest of the run (#159).
+    // Scratch for the expression parser: no diagnostic points at it, and
+    // the list's allocator keeps it under the run's leak detection (#159).
     var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
