@@ -1620,6 +1620,24 @@ fn containsBase64PipeExec(s: []const u8) bool {
     return false;
 }
 
+/// Blanks plus any `\`-newline joins among them: a shell reads
+/// `eval \` + newline + `  $CMD` as the single command `eval $CMD`.
+fn skipBlanksAndJoins(s: []const u8, start: usize) usize {
+    var j = start;
+    while (j < s.len) {
+        if (s[j] == ' ' or s[j] == '\t') {
+            j += 1;
+            continue;
+        }
+        if (s[j] != '\\') break;
+        var k = j + 1;
+        if (k < s.len and s[k] == '\r') k += 1;
+        if (k >= s.len or s[k] != '\n') break;
+        j = k + 1;
+    }
+    return j;
+}
+
 fn containsEvalVarExpansion(s: []const u8) bool {
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
@@ -1627,7 +1645,8 @@ fn containsEvalVarExpansion(s: []const u8) bool {
 
         var j = i + "eval".len;
         if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
-        j = std.mem.indexOfNonePos(u8, s, j, " \t") orelse continue;
+        j = skipBlanksAndJoins(s, j);
+        if (j >= s.len) continue;
         // A quoted argument still expands, so look past the opening quote.
         if (s[j] == '"' or s[j] == '\'') j += 1;
         if (j >= s.len or s[j] != '$') continue;
@@ -4954,6 +4973,24 @@ test "BP007: a variable after a finished continuation is still a command" {
 
 test "BP007: an escaped backslash does not continue the line" {
     var list = runStep(.{ .run = "echo a\\\\\n$CMD --flag" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: eval reaches its variable across a line continuation" {
+    var list = runStep(.{ .run = "eval \\\n  $USER_INPUT" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a CRLF continuation still suppresses the false positive" {
+    var list = runStep(.{ .run = "gh release create \\\r\n  $PRERELEASE_FLAG\r\n" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a blank after the backslash cancels the continuation" {
+    var list = runStep(.{ .run = "echo a \\ \n$CMD --flag" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }

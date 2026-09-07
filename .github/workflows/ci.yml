@@ -237,15 +237,16 @@ jobs:
             cat smoke/workflows/fixable.yml
             exit 1
           fi
-      # nullglob が効いていれば、マッチしないパターンは引数から消えて CLI 既定の
-      # .github/workflows 探索に落ちる（このリポジトリ自身なので終了コード 0）。
-      # 効いていなければパターンが literal で渡り、存在しないファイルとして
-      # 終了コード 2 になる。
+      # nullglob が効いていれば、マッチしない .yaml パターンは引数から消え、
+      # clean.yml だけが渡って終了コード 0。効いていなければパターンが literal
+      # で渡り、存在しないファイルとして終了コード 2 になる。常にマッチする
+      # clean.yml を併記するのは、引数が空になって CLI 既定の .github/workflows
+      # 探索に落ち、この判定がリポジトリ自身の指摘内容に左右されるのを防ぐため。
       - name: Run action (glob matching nothing)
         uses: ./
         with:
           binary: zig-out/bin/zghalint${{ matrix.exe }}
-          paths: 'smoke/workflows/*.yaml'
+          paths: 'smoke/workflows/*.yaml smoke/workflows/clean.yml'
           offline: 'true'
 
   self-lint:
@@ -277,8 +278,15 @@ jobs:
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
       - name: Lint own workflows (terminal)
         run: ./zig-out/bin/zghalint --offline --color always -- .github/workflows/*.yml || true
+      # fork からの PR では GITHUB_TOKEN が read-only で upload-sarif が 403 に
+      # なる。終了コード 2 のときは SARIF が途中で切れているため、上げると
+      # パースエラーになって下の説明的なエラーが埋もれる。どちらも上げない。
       - name: Upload SARIF
-        if: always()
+        if: >-
+          always()
+          && steps.lint.outputs.exit_code != '2'
+          && (github.event_name != 'pull_request'
+              || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
         with:
           sarif_file: zghalint.sarif

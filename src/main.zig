@@ -26,25 +26,39 @@ const CliArgs = struct {
     show_help: bool = false,
     show_version: bool = false,
     fix_mode: FixMode = .off,
+    /// Copies of the process arguments. `files` and `config_path` point into
+    /// these, so they must outlive the argument iterator.
+    argv_storage: []const []const u8 = &.{},
 
     fn deinit(self: *CliArgs) void {
         self.files.deinit(self.allocator);
+        for (self.argv_storage) |arg| self.allocator.free(arg);
+        self.allocator.free(self.argv_storage);
     }
 };
 
 fn parseArgs(allocator: std.mem.Allocator, stderr: *std.Io.Writer) !CliArgs {
     var raw_args = std.ArrayList([]const u8){};
-    defer raw_args.deinit(allocator);
+    errdefer {
+        for (raw_args.items) |arg| allocator.free(arg);
+        raw_args.deinit(allocator);
+    }
 
     var iter = try std.process.argsWithAllocator(allocator);
     defer iter.deinit();
 
     _ = iter.next();
+    // On Windows the iterator owns the argument strings and frees them in
+    // `deinit`, so everything kept past this function has to be copied. On
+    // POSIX they point into static process memory, which hides the mistake.
     while (iter.next()) |arg| {
-        try raw_args.append(allocator, arg);
+        try raw_args.append(allocator, try allocator.dupe(u8, arg));
     }
 
-    return parseArgsSlice(allocator, raw_args.items, stderr);
+    var args = try parseArgsSlice(allocator, raw_args.items, stderr);
+    errdefer args.deinit();
+    args.argv_storage = try raw_args.toOwnedSlice(allocator);
+    return args;
 }
 
 const ArgError = error{
@@ -719,6 +733,17 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--offline") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--no-cache") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "--fix") != null);
+}
+
+test "CliArgs frees the argument copies it owns" {
+    // The argument iterator's strings are freed on Windows when `parseArgs`
+    // returns, so `deinit` has to release the copies it took.
+    const storage = try std.testing.allocator.alloc([]const u8, 1);
+    storage[0] = try std.testing.allocator.dupe(u8, "a.yml");
+
+    var args = CliArgs{ .files = .{}, .allocator = std.testing.allocator, .argv_storage = storage };
+    defer args.deinit();
+    try args.files.append(std.testing.allocator, storage[0]);
 }
 
 test "parseArgsSlice parses offline flag" {

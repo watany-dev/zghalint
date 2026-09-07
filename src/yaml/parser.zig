@@ -58,7 +58,7 @@ pub const Parser = struct {
         self.depth += 1;
         defer self.depth -= 1;
 
-        self.skipNewlines();
+        self.skipNewlinesAndComments();
 
         if (self.current.kind == .eof) {
             return Node{ .null_value = self.spanFromToken(self.current) };
@@ -88,11 +88,6 @@ pub const Parser = struct {
         }
 
         if (self.current.kind == .mapping_value) {
-            self.advance();
-            return self.parseNode(min_indent);
-        }
-
-        if (self.current.kind == .comment) {
             self.advance();
             return self.parseNode(min_indent);
         }
@@ -744,4 +739,22 @@ test "a run of comments between mapping entries does not end the mapping" {
     const job = root.mapping.entries[0].value.mapping;
 
     try std.testing.expectEqual(@as(usize, 2), job.entries.len);
+}
+
+test "a comment run longer than the depth limit does not abort the parse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Comments used to be skipped by recursing into `parseNode`, so a run
+    // longer than `max_parse_depth` exhausted the budget and the whole
+    // document failed to parse.
+    var source = std.ArrayList(u8){};
+    defer source.deinit(std.testing.allocator);
+    for (0..max_parse_depth * 2) |_| try source.appendSlice(std.testing.allocator, "# skip me\n");
+    try source.appendSlice(std.testing.allocator, "name: ci\n");
+
+    var parser = Parser.init(arena.allocator(), source.items);
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings("ci", root.mapping.entries[0].value.scalar.value);
 }
