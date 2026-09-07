@@ -429,6 +429,13 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "zizmor": None,
         "actionlint": None,
     },
+    #: No zghalint rule flags a workflow file with no content at all; the
+    #: case records the gap against actionlint's `workflow is empty`.
+    "empty-workflow": {
+        "zghalint": None,
+        "zizmor": None,
+        "actionlint": ["syntax-check~empty"],
+    },
     "cache-poisoning": {
         "zghalint": ["SEC016"],
         "zizmor": ["cache-poisoning"],
@@ -536,9 +543,11 @@ def parse_case(path: Path, root: Path) -> Case:
 
     Parsing stops at the first line that is not a comment or blank, so the
     header cannot pick up directives from a case body that quotes them.
+    `utf-8-sig` because a robustness case may carry a BOM, which would
+    otherwise hide the first directive behind an invisible character.
     """
     case = Case(path=path, name=path.relative_to(root).as_posix())
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     for lineno, raw in enumerate(text.splitlines(), start=1):
         stripped = raw.strip()
         if not stripped:
@@ -658,7 +667,7 @@ def parse_tree_case(tree: Path, root: Path) -> Case:
 
 
 def _has_header(path: Path) -> bool:
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
         stripped = raw.strip()
         if not stripped:
             continue
@@ -711,6 +720,10 @@ def run_zghalint(binary: Path, staged: Staged) -> ToolRun:
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
+        return ToolRun(returncode=proc.returncode, error=_stderr_summary(proc))
+    if proc.returncode == 2:
+        # Exit 2 is "the file could not be linted at all": the JSON is valid
+        # but empty, so without this a refused file would score as clean.
         return ToolRun(returncode=proc.returncode, error=_stderr_summary(proc))
     findings = [
         Finding(ident=d["rule_id"], line=int(d["line"]), message=d.get("message", ""))

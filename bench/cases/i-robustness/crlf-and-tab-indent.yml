@@ -1,0 +1,16 @@
+# bench:expect deprecated-workflow-command@16
+name: file saved with CRLF line endings
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Emit a value
+        id: emit
+        run: echo "::set-output name=tag::v1"
