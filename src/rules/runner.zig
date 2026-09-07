@@ -11,6 +11,7 @@ const DiagnosticList = engine.DiagnosticList;
 const Severity = engine.Severity;
 const Diagnostic = diagnostics_mod.Diagnostic;
 const Fix = diagnostics_mod.Fix;
+const Edit = diagnostics_mod.Edit;
 const Span = yaml_types.Span;
 
 const LabelStatus = enum {
@@ -222,7 +223,6 @@ fn looksLikeHostedLabel(label: []const u8) bool {
 }
 
 const UnknownLabel = struct {
-    /// Nearest currently-offered label, when one can be named without guessing.
     suggestion: ?[]const u8,
 };
 
@@ -238,29 +238,20 @@ fn classifyLabel(label: []const u8) ?UnknownLabel {
     return .{ .suggestion = suggestion };
 }
 
-/// `span` positions the diagnostic; `fix_span` is the byte range the autofix
-/// may rewrite, null when no such range is known.
 fn reportUnknownLabel(
     unknown: UnknownLabel,
     span: Span,
-    fix_span: ?Span,
+    edits: ?[]const Edit,
     diag_list: *DiagnosticList,
 ) void {
     const hint: ?[]const u8 = if (unknown.suggestion) |name|
         std.fmt.allocPrint(diag_list.fixAllocator(), "did you mean \"{s}\"?", .{name}) catch null
     else
         null;
-    const fix: ?Fix = if (unknown.suggestion != null and fix_span != null) blk: {
-        const edits = diag_list.allocEdit(.{
-            .start_byte = fix_span.?.start_byte,
-            .end_byte = fix_span.?.end_byte,
-            .replacement = unknown.suggestion.?,
-        }) orelse break :blk null;
-        break :blk Fix{
-            .description = "Replace with the nearest known runner label",
-            .safety = .unsafe,
-            .edits = edits,
-        };
+    const fix: ?Fix = if (edits) |e| Fix{
+        .description = "Replace with the nearest known runner label",
+        .safety = .unsafe,
+        .edits = e,
     } else null;
 
     diag_list.append(.{
@@ -308,7 +299,7 @@ fn checkMatrixRunner(job: *const Job, key: []const u8, diag_list: *DiagnosticLis
         if (std.ascii.eqlIgnoreCase(axis.name, "exclude")) continue;
 
         if (std.ascii.eqlIgnoreCase(axis.name, key)) {
-            for (axis.values) |value| checkMatrixValue(job, value, diag_list);
+            for (axis.values) |value| checkMatrixValue(matrix, key, value, diag_list);
         } else if (std.ascii.eqlIgnoreCase(axis.name, "include")) {
             for (axis.values) |entry| {
                 const mapping = switch (entry) {
@@ -317,7 +308,7 @@ fn checkMatrixRunner(job: *const Job, key: []const u8, diag_list: *DiagnosticLis
                 };
                 for (mapping.entries) |item| {
                     if (std.ascii.eqlIgnoreCase(item.key.value, key)) {
-                        checkMatrixValue(job, item.value, diag_list);
+                        checkMatrixValue(matrix, key, item.value, diag_list);
                     }
                 }
             }
@@ -325,7 +316,12 @@ fn checkMatrixRunner(job: *const Job, key: []const u8, diag_list: *DiagnosticLis
     }
 }
 
-fn checkMatrixValue(job: *const Job, value: yaml_types.Node, diag_list: *DiagnosticList) void {
+fn checkMatrixValue(
+    matrix: workflow_types.Matrix,
+    key: []const u8,
+    value: yaml_types.Node,
+    diag_list: *DiagnosticList,
+) void {
     const scalar = switch (value) {
         .scalar => |s| s,
         else => return,
@@ -334,11 +330,66 @@ fn checkMatrixValue(job: *const Job, value: yaml_types.Node, diag_list: *Diagnos
     if (std.mem.indexOf(u8, scalar.value, "${{") != null) return;
 
     const unknown = classifyLabel(scalar.value) orelse return;
-    // The scalar's token span covers any quotes; the fix must not eat them.
-    const span = spans.Anchor
-        .fromMeta(.{ .value_span = scalar.span, .style = scalar.style }, job.span)
+    const edits: ?[]const Edit = if (unknown.suggestion) |name|
+        matrixLabelEdits(matrix, key, scalar, name, diag_list)
+    else
+        null;
+    reportUnknownLabel(unknown, scalarSpan(scalar), edits, diag_list);
+}
+
+/// The scalar's token span covers the surrounding quotes; diagnostics and
+/// edits address the value itself.
+fn scalarSpan(scalar: yaml_types.Scalar) Span {
+    return spans.Anchor
+        .fromMeta(.{ .value_span = scalar.span, .style = scalar.style }, scalar.span)
         .at(scalar.value, 0, scalar.value.len);
-    reportUnknownLabel(unknown, span, span, diag_list);
+}
+
+/// Null for block scalars, whose byte range covers the `|` indicator line as
+/// well, so a byte-level swap cannot rewrite them.
+fn labelEdit(scalar: yaml_types.Scalar, replacement: []const u8) ?Edit {
+    switch (scalar.style) {
+        .literal, .folded => return null,
+        else => {},
+    }
+    const span = scalarSpan(scalar);
+    return .{ .start_byte = span.start_byte, .end_byte = span.end_byte, .replacement = replacement };
+}
+
+/// The axis value and every `exclude` entry naming it are rewritten together:
+/// correcting the axis alone would leave an exclusion matching nothing, which
+/// quietly revives the combination the author removed.
+fn matrixLabelEdits(
+    matrix: workflow_types.Matrix,
+    key: []const u8,
+    scalar: yaml_types.Scalar,
+    replacement: []const u8,
+    diag_list: *DiagnosticList,
+) ?[]const Edit {
+    const alloc = diag_list.fixAllocator();
+    var edits = std.ArrayList(Edit){};
+    edits.append(alloc, labelEdit(scalar, replacement) orelse return null) catch return null;
+
+    for (matrix.axes) |axis| {
+        if (!std.ascii.eqlIgnoreCase(axis.name, "exclude")) continue;
+        for (axis.values) |entry| {
+            const mapping = switch (entry) {
+                .mapping => |m| m,
+                else => continue,
+            };
+            for (mapping.entries) |item| {
+                if (!std.ascii.eqlIgnoreCase(item.key.value, key)) continue;
+                const excluded = switch (item.value) {
+                    .scalar => |s| s,
+                    else => continue,
+                };
+                if (!eqlLabel(excluded.value, scalar.value)) continue;
+                const edit = labelEdit(excluded, replacement) orelse continue;
+                edits.append(alloc, edit) catch return null;
+            }
+        }
+    }
+    return edits.toOwnedSlice(alloc) catch null;
 }
 
 fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
@@ -351,7 +402,15 @@ fn checkUnknownRunner(job: *const Job, diag_list: *DiagnosticList) void {
     }
 
     const unknown = classifyLabel(runs_on) orelse return;
-    reportUnknownLabel(unknown, job.runs_on_value_span orelse job.span, job.runs_on_value_span, diag_list);
+    const edits: ?[]const Edit = if (unknown.suggestion) |name| blk: {
+        const value_span = job.runs_on_value_span orelse break :blk null;
+        break :blk diag_list.allocEdit(.{
+            .start_byte = value_span.start_byte,
+            .end_byte = value_span.end_byte,
+            .replacement = name,
+        });
+    } else null;
+    reportUnknownLabel(unknown, job.runs_on_value_span orelse job.span, edits, diag_list);
 }
 
 pub const rules = [_]Rule{
@@ -795,4 +854,33 @@ test "RUNNER002: matrix autofix rewrites the value, not the runs-on line" {
     // The quotes around the value survive the replacement.
     try testing.expect(std.mem.indexOf(u8, result.content, "os: [\"ubuntu-latest\"]") != null);
     try testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ${{ matrix.os }}") != null);
+}
+
+test "RUNNER002: the autofix rewrites the matching exclude entry too" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, windwos-latest]
+        \\        node: [18, 20]
+        \\        exclude:
+        \\          - os: windwos-latest
+        \\            node: 18
+        \\    runs-on: ${{ matrix.os }}
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnknownRunner }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 2), result.edits_applied);
+    // Leaving the exclusion behind would revive the combination it removed.
+    try testing.expect(std.mem.indexOf(u8, result.content, "windwos") == null);
+    try testing.expect(std.mem.indexOf(u8, result.content, "- os: windows-latest") != null);
 }

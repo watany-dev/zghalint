@@ -217,7 +217,8 @@ RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知の
 `runs-on: ${{ matrix.os }}` のように値が `${{ matrix.<key> }}` 単体の式である
 場合は、`strategy.matrix.<key>`（`include` 由来の値を含む）を展開して各値を
 判定する。診断と autofix は matrix の値側を指す。`exclude` の値は組み合わせを
-除外するだけなのでランナーを名乗らず、対象外とする。
+除外するだけなのでランナーを名乗らず、報告の対象外とする（`--fix-unsafe` は
+軸の値を直す際に、同じラベルを名指しする `exclude` の値も併せて書き換える）。
 
 ## Syntax Rules (SYN)
 

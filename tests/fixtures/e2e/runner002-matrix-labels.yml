@@ -1,5 +1,5 @@
 # zghalint:expect RUNNER002@11 RUNNER002@13
-# zghalint:forbid RUNNER002@10 RUNNER002@12 RUNNER002@15 RUNNER002@25
+# zghalint:forbid RUNNER002@10 RUNNER002@12 RUNNER002@15 RUNNER002@23 RUNNER002@25
 name: matrix runner labels
 on: push
 jobs:
