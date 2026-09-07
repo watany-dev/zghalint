@@ -41,7 +41,6 @@ DEFAULT_CORPUS_DIR = REPO_ROOT / "bench" / "corpus"
 #: GitHub. A run past it is recorded as an error, never as a slow mean.
 TIMEOUT_SEC = 300
 
-#: Target sizes of the synthetic scenarios.
 HUGE_LINES = 10_000
 MANY_SMALL_FILES = 1000
 
@@ -61,7 +60,6 @@ class Scenario:
     files: list[str]
     #: Total line count of `files`, taken while the staged copies still exist.
     lines: int = 0
-    #: Set for a scenario that cannot be built (no corpus fetched).
     unavailable: str | None = None
 
 
@@ -283,7 +281,6 @@ class Measurement:
     max: float | None = None
     max_rss_kb: int | None = None
     exit_code: int | None = None
-    #: Set when the command could not be measured at all.
     error: str | None = None
 
 
