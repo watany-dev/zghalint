@@ -749,9 +749,12 @@ pub fn main() !u8 {
             stderr.print("Applied {d} fix(es).\n", .{total_fixed}) catch {};
         }
         if (total_skipped > 0) {
+            // Name the flag the user actually passed: `--fix` would not apply
+            // an unsafe fix that `--fix-unsafe` skipped.
+            const flag = if (include_unsafe) "--fix-unsafe" else "--fix";
             stderr.print(
-                "{d} fix(es) skipped: they overlap a fix that was applied. Re-run with --fix to apply them.\n",
-                .{total_skipped},
+                "{d} fix(es) skipped: they overlap a fix that was applied. Re-run with {s} to apply them.\n",
+                .{ total_skipped, flag },
             ) catch {};
         }
     }

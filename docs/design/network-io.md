@@ -287,6 +287,7 @@ main.zig
   │         │    ├─ markResolved で解決済み ref を set から除去
   │         │    │  （REST フォールバックは未解決分だけを取り直す）
   │         │    └─ persistRepoResult で既存エントリとマージして保存
+  │         │       （`cached_at` は最古の持ち越し分に合わせる = TTL 不変）
   │         └─ REST fallback
   │              ├─ fetchRepos / fetchShaRefs / fetchNamedRefs
   │              │    └─ rest_fallback.fetchArchiveStatus /
@@ -346,11 +347,13 @@ main.zig
 - `prefetch.buildRepoInputs`: repo 単位での sha/named グルーピング、
   inactive ルールで対応スライスが空になること。
 - `prefetch.applyCacheEntry`: ヒット時の rule cache 注入と set からの
-  削除、inactive カテゴリのスキップ。
+  削除、inactive カテゴリのスキップ、SC008 有効時に impostor 判定を持たない
+  SHA を残すこと。
 - `prefetch.pruneSatisfiedRepos`: 残 ref のある repo の保持、SC004 無効時の
   全除去。
 - `prefetch.mergeEntries` / `persistRepoResult`: 既存エントリとのマージ
-  （新しい結果が勝ち、問い合わせなかった SHA は残る）。
+  （新しい結果が勝ち、問い合わせなかった SHA は残る）。持ち越しでは
+  `cached_at` を更新しない — 更新すると毎日触る repo が永久に再検証されない。
 - `prefetch.markResolved`: 解決済み ref の除去と `unknown` の保持。
 - `prefetch.applyResults`: `missing=true` のスキップ、`persist_dir`
   指定時の tmpDir への書き込み検証。

@@ -257,8 +257,13 @@ fn applyCacheEntry(
                     .unknown => .unknown,
                 };
                 stale_refs.setCachedTagResult(owner, repo, s.sha, mapped);
-                _ = sets.sha_refs.remove(key);
                 hits += 1;
+                // SC005 and SC008 share the (owner, repo, sha) tuple. A cache
+                // file written by a run with SC008 off carries no impostor
+                // verdict, so dropping the SHA here would keep it out of the
+                // batch and silence SC008 for the rest of the TTL.
+                if (active.impostor and !hasImpostorEntry(entry, s.sha)) continue;
+                _ = sets.sha_refs.remove(key);
             }
         }
     }
@@ -291,6 +296,13 @@ fn applyCacheEntry(
     }
 
     return hits;
+}
+
+fn hasImpostorEntry(entry: disk_cache.CachedRepo, sha: []const u8) bool {
+    for (entry.impostor) |e| {
+        if (std.mem.eql(u8, e.sha, sha)) return true;
+    }
+    return false;
 }
 
 /// Drops repositories that have nothing left to ask GitHub about: no
@@ -420,6 +432,11 @@ fn mergeWithCached(
     } orelse return entry;
 
     var merged = entry;
+    // The TTL is per file, so re-stamping it with `now` after carrying old
+    // entries over would keep them alive for another day on every run: a
+    // repository touched daily would never be re-checked. The file expires
+    // when its oldest content does.
+    merged.cached_at = @min(entry.cached_at, old.cached_at);
     merged.shas = mergeEntries(disk_cache.ShaEntry, "sha", scratch, old.shas, entry.shas);
     merged.named = mergeEntries(disk_cache.NamedEntry, "ref", scratch, old.named, entry.named);
     merged.branches = mergeEntries(disk_cache.BranchEntry, "name", scratch, old.branches, entry.branches);
@@ -1180,6 +1197,79 @@ test "persistRepoResult: merges with the on-disk entry instead of overwriting it
     // Run 2 never asked about `archived`, so run 1's answer survives.
     try testing.expect(loaded.archived != null);
     try testing.expect(!loaded.archived.?);
+}
+
+test "persistRepoResult: carrying old entries over does not renew the TTL (#221)" {
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var env = try test_support.EnvGuard.setDir(testing.allocator, "XDG_CACHE_HOME", tmp.dir);
+    defer env.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sha_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const sha_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    // An entry written some hours ago, still inside the TTL.
+    const stamped = std.time.timestamp() - 3600;
+    const first_shas = [_]disk_cache.ShaEntry{.{ .sha = sha_a, .resolution = .has_tag }};
+    var dir = disk_cache.getCacheDir(alloc) orelse return error.TestExpectedNonNull;
+    defer dir.close();
+    try disk_cache.saveToDir(dir, alloc, "o", "r", .{
+        .cached_at = stamped,
+        .archived = false,
+        .shas = &first_shas,
+    });
+
+    const second_shas = [_]graphql.ShaTagResult{.{ .sha = sha_b, .resolution = .no_tag }};
+    persistRepoResult(alloc, .{ .owner = "o", .repo = "r", .sha_results = &second_shas }, null);
+
+    const loaded = disk_cache.load(testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer {
+        for (loaded.shas) |e| testing.allocator.free(e.sha);
+        testing.allocator.free(loaded.shas);
+        testing.allocator.free(loaded.named);
+        testing.allocator.free(loaded.branches);
+        testing.allocator.free(loaded.impostor);
+    }
+
+    try testing.expectEqual(@as(usize, 2), loaded.shas.len);
+    // The carried-over answer keeps its age, so the file still expires on time.
+    try testing.expectEqual(stamped, loaded.cached_at);
+}
+
+test "applyCacheEntry: keeps a SHA whose SC008 verdict the cache file lacks" {
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sha = "cccccccccccccccccccccccccccccccccccccccc";
+    var sets = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets.sha_refs.put(alloc, "o/r@" ++ sha, .{ .owner = "o", .repo = "r", .sha = sha });
+
+    // Written by a run with SC008 off: the tag resolution is there, the
+    // impostor verdict is not.
+    const shas = [_]disk_cache.ShaEntry{.{ .sha = sha, .resolution = .has_tag }};
+    const entry = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .shas = &shas };
+    const active = ActiveRules{ .archived = false, .stale = true, .refconf = false, .impostor = true };
+
+    _ = applyCacheEntry(&sets, "o", "r", entry, active);
+    pruneSatisfiedRepos(alloc, &sets, active);
+
+    try testing.expectEqual(@as(usize, 1), sets.sha_refs.count());
+    try testing.expectEqual(@as(usize, 1), sets.repos.count());
 }
 
 test "mergeEntries: fresh results win over the cached ones for the same key" {
