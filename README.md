@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **76 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **77 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 
@@ -148,9 +148,9 @@ Dependabot cooldown configuration, insecure external code execution settings,
 Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
 detection (typos such as `ubunut-latest`).
 
-### Syntax (17 rules)
+### Syntax (18 rules)
 
-Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `workflow_dispatch` input definitions.
+Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values.
 
 ## Configuration
 
