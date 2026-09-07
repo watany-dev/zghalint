@@ -1,31 +1,33 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`11f3a17`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`5fc66a7`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数 | 77（`docs/rules.md` の表・見出しとも 77 で一致） |
-| `src/**/*.zig` | 38,151 行 |
-| ユニットテスト | 1402 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **33 close 済み（61%）** |
+| ルール数 | 表は 79 行、見出しは 77 のまま。**不一致**（SYN019 / RUNNER003 の行追加時に見出しを更新し忘れ）。RW001 が表に無い件と併せて #242 が同期テストを起票済み |
+| `src/**/*.zig` | 39,635 行 |
+| ユニットテスト | 1444 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **34 close 済み（63%）** |
 | 型検査エンジン | T0〜T3 実装済み。T4（overlay 接続）は #129、引数型検査は #162 |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（27 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（33 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。#170 / #171 / #172 の回帰 strategy を収録済み |
-| ADR | `docs/adr/0001`〜`0011`（0011 は RUNNER002） |
-| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査） |
-| オープン issue | 34 件。内訳は #55 本体 1、#55 の sub-issue 21、それ以外 12（#124 #135 #159 #162 #210 と新規バグ 7 件） |
-| 実装済みだが未 close の issue | **#72 / #73 / #86**（SYN016・SYN017・EXPR010 は main に入っているが issue が open のまま） |
-| 既知バグ | **7 件（#218〜#224）**。PR #217 の形式検証（Alloy / TLA+）が出した反例から起票された未修正バグ。うち #218 / #219 / #220 は security |
+| ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
+| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#246（CI 基盤 / #234〜#239） |
+| オープン issue | 50 件。内訳は #55 本体 1、#55 の sub-issue 20、形式検証由来のバグ残 4（#221〜#224）、リポジトリ運用・CI 基盤 17（#228〜#244）、その他 8 |
+| 実装済みだが未 close の issue | **#72 / #73 / #75 / #86 / #210 / #218 / #219 / #220**（いずれも main に実装が入っているのに issue が open のまま。棚卸しの最大のノイズ源） |
+| 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は **修正済み**（issue は未 close）。未修正は #221〜#224 と #229（BP007 誤検知）/ #232（release.yml のランナー不一致） |
 
-トリガー `on:` 群（Phase 1）は SYN009〜SYN011 / SYN016 / SYN017 が出揃って完了した。
-matrix 値重複の SYN018（#74）も入り、Phase 2 は #75 / #210 / #77 の 3 件を残すのみ。
-新たに PR #217 の形式検証が **未修正バグ 7 件（#218〜#224）** を掘り出しており、これが新規ルールより優先する。
-残る parity は sub-issue 21 件、バグ 7 件を除いたそれ以外は 5 件（#124 #135 #159 #162 #210）である。
-#124 と #162 は型検査エンジンに、#210 は matrix 展開に依存するのでそれぞれ Phase 3 / Phase 2 に置き、
-#135 / #159 / #64 を並行トラックとして扱う。
+Phase 1（トリガー `on:` 群）と Phase 2（job / step / matrix）はどちらも完了した。
+形式検証が出した security 3 件（#218 / #219 / #220）も修正済みで、残る反例は #221〜#224 の 4 件。
+主線は **Phase 3（contextual typing）** に移り、#87 / #89 は依存が解けて即着手できる状態にある。
+
+一方で、リポジトリ運用・CI 基盤の issue が 17 件（#228〜#244）新たに起票された。
+ルール実装とはファイルが重ならない（`.github/` と `docs/` 中心）ので並行トラックとして扱うが、
+#228（自リポジトリの dogfooding）と #242（`docs/rules.md` と `registry.all_rules` の同期テスト）は
+本書の棚卸しコストを直接下げるので優先度を上げる。
 
 ## 2. ロードマップ
 
@@ -44,16 +46,13 @@ SYN017 の `workflow_dispatch` inputs は `workflow/parser.zig` + `rules/syntax.
 cron（#70 / #71）と glob（#69）は `src/workflow/cron.zig` / `src/rules/glob.zig` として実装済み。
 `events.zig` / `timezones.zig` の表は後続 Phase から再利用する。
 
-### Phase 2: job / step / matrix
+### Phase 2: job / step / matrix — 完了
 
-`Strategy` 型の matrix 構造は SYN018（#74、PR #212）で入り、`src/workflow/parser.zig` + `src/rules/syntax.zig` に着地した。
-RUNNER002 本体（#76）も完了済み。以後は同じ matrix 構造を使う 3 件が残る。
-
-| 順 | issue | ルール | 依存 |
-|---|---|---|---|
-| 1 | #75 | SYN019 include / exclude 整合 | #74 の matrix 構造（実装済み） |
-| 2 | #210 | RUNNER002 第二段階: `runs-on: ${{ matrix.<key> }}` を matrix 展開して検証 | matrix 構造は実装済み。RUNNER002 本体（#76）は ADR-0011 とともに完了。展開できない式は従来どおりスキップし、span は matrix 値側に向ける |
-| 3 | #77 | RUNNER003 ラベル衝突 | RUNNER002 のラベル表（`src/rules/runner.zig`）を再利用 |
+`Strategy` の matrix 構造は SYN018（#74）で `src/workflow/parser.zig` + `src/rules/syntax.zig` に入り、
+SYN019（#75）の include / exclude 整合、RUNNER002 の matrix 展開（#210、ADR-0012）、
+RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
+ラベル表は `src/rules/runner.zig` にあり、self-hosted のフリート表記は RUNNER002 / RUNNER003 とも対象外にしてある。
+この matrix 構造は Phase 3 の EXPR011（#87）がそのまま使う。
 
 ### Phase 3: contextual typing（エンジン T4 = #129）
 
@@ -63,7 +62,7 @@ EXPR010（`src/rules/steps_ref.zig`）と EXPR012（`src/rules/needs_context.zig
 | 順 | issue | ルール | 依存 |
 |---|---|---|---|
 | 1 | #89 | EXPR013 `inputs.<name>` | SYN017（#73）で入った `workflow_dispatch` inputs 構造を使う |
-| 2 | #87 | EXPR011 `matrix.<key>` | #74 で入った matrix 構造を使う（着手可能） |
+| 2 | #87 | EXPR011 `matrix.<key>` | Phase 2 で入った matrix 構造を使う（着手可能） |
 | 3 | #90 | EXPR014 `secrets.<name>` | RW001（#104）で入った `workflow_call` の定義構造を使う |
 | 4 | #129 | T4: 存在検証（`steps_ref.zig` / `needs_context.zig` + #87 #89 #90）を `expr_check.zig` の overlay に接続し、エンジン側に寄せる | #87 / #89 / #90 |
 | 5 | #162 | EXPR018 関数の引数型と補間値（object / array / null）の型検査 | #129。loose object（overlay 未接続の context）は診断しない |
@@ -93,23 +92,25 @@ EXPR010（`src/rules/steps_ref.zig`）と EXPR012（`src/rules/needs_context.zig
 |---|---|
 | #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
 | #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator`（:1009）が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が集中する Phase 1〜3 の**前**に済ませると衝突が少ない |
-| **#218〜#224 形式検証由来のバグ 7 件** | PR #217 の Alloy / TLA+ が出した反例。#218（SEC005 / SEC009 が `with.repository` を見ない）・#219（SEC021 が `workflow_call` 併記で無効化）・#220（SEC022 の信頼アンカー判定）は検出漏れなので **新規ルールより優先**。#221 / #222 は prefetch キャッシュ、#223 は `--fix` の原子性、#224 は二重報告 |
+| 形式検証由来の残バグ #221〜#224 | security 3 件（#218 / #219 / #220）は修正済み。残りは #221 / #222 が prefetch キャッシュ（ウォームランが成立しない・RateLimited の劣化）、#223 が `--fix` の原子性、#224 が二重報告。いずれも `src/rules/` の外なのでルール実装と並行できる |
+| その他のバグ #229 / #232 | #229 は BP007 が行継続（`\`）の続き行を誤検知する。#232 は `release.yml` の macOS ランナーが `macos-latest` のままで `ci.yml` と不一致 |
+| リポジトリ運用・CI 基盤 #228〜#244（17 件） | `.github/` と `docs/` 中心でルール実装とファイルが重ならない。#246 が #234〜#239 をまとめて対応中。**#228（自リポジトリを zghalint で lint する dogfooding）と #242（`docs/rules.md` と `registry.all_rules` の同期テスト）を先に通す** — 本書の棚卸しで毎回手で数えている数字が自動で守られる |
 | #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する。#172 / #173 の修正が入って同ファイルが落ち着いたので、着手可能になった |
 
 ## 3. 直近の着手順（上位 6 件）
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | #218 | SEC005 / SEC009 の検出漏れ。fork PR の任意コード実行がそのまま通る。既存ルールの検査対象に `with.repository` を足すだけで、影響範囲が小さいわりに効果が最大 |
-| 2 | #219 | SEC021 が `workflow_call` 併記で無効化される。#218 と同じ `security.zig` を触るので続けて片付ける |
-| 3 | #220 | SEC022 の信頼アンカー判定を文字列出現から AST ベースへ。security 3 件をここで打ち止め |
-| 4 | #159 | エンジンの arena。ルール追加が本格化する前に `Rule` シグネチャを固める。security 修正が `security.zig` に閉じるので並行して進められる |
-| 5 | #87 | #74 の matrix 構造が入ったので即着手できる。#129 の overlay 材料も揃う |
-| 6 | #89 | SYN017 の inputs 構造を使う。#87 と同じ contextual typing の形なので連続して書ける |
+| 1 | 実装済み issue の close（#72 #73 #75 #86 #210 #218 #219 #220） | コードは main にあるのに 8 件が open のまま。棚卸しのたびに実装状況を手で突き合わせる原因になっており、コスト 0 で解消できる |
+| 2 | #242 | `docs/rules.md` と `registry.all_rules` の同期テスト。表 79 行・見出し 77・RW001 欠落という現状の不一致がそのまま再発防止になる |
+| 3 | #159 | エンジンの arena。Phase 3 でルール追加が集中する前に `Rule` シグネチャを固める |
+| 4 | #87 | Phase 2 の matrix 構造が入ったので即着手できる。#129 の overlay 材料も揃う |
+| 5 | #89 | SYN017 の inputs 構造を使う。#87 と同じ contextual typing の形なので連続して書ける |
+| 6 | #228 | 自リポジトリの dogfooding。#229 / #232 のような自前ワークフローの不備を CI で拾えるようになる |
 
-#135 / #64 / #129 はその後に続け、#162 は #129 の overlay が入った直後に着手する。
-Phase 1 と SYN018 が終わったので、以後は形式検証由来のバグ修正が最優先、次いで contextual typing（Phase 3）が主線になる。
-`docs/rules.md` に行があるのに issue が open のままの #72 / #73 / #86 は close する。
+#90 → #129 → #162 と Phase 3 を進め、#135 / #64 / #221〜#224 は競合しないので並行で流す。
+Phase 1・Phase 2 が終わったので、以後は contextual typing（Phase 3）が主線、
+リポジトリ運用・CI 基盤（#228〜#244）が並行トラックという二本立てになる。
 
 ## 4. 進め方の注意
 
