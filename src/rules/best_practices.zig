@@ -171,9 +171,8 @@ fn buildDeprecatedActionFix(
 /// exhaustive complement: any action whose `runs.using` GitHub has retired is
 /// reported, without a version to upgrade to, because there is none to name.
 ///
-/// Only local actions can be checked this way today: reading a remote
-/// action's `runs.using` needs the action metadata dataset (DEP005), which
-/// does not exist yet.
+/// Only local actions can be checked this way: reading a remote action's
+/// `runs.using` needs the action metadata dataset of #97 (DEP005).
 fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
     if (action_ref.is_docker) return;

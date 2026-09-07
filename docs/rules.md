@@ -162,7 +162,7 @@ Enforce workflow best practices for maintainability and reliability.
   `using: node24` へ移行する必要がある）ため autofix は付かない。
 
 リモートアクションの `runs.using` はアクションメタデータのデータセット
-（DEP005、未実装）が必要なため、ランタイム判定はローカルアクションに限る。
+（DEP005 / #97）が必要なため、ランタイム判定はローカルアクションに限る。
 
 ## Permissions Rules (PERM)
 
