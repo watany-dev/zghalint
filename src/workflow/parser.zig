@@ -1352,7 +1352,12 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
                 try values.put(entry.key.value, s.value);
                 try meta.put(entry.key.value, scalarMeta(s));
             },
-            else => {},
+            // A key whose value is a sequence, a mapping, or nothing at all is
+            // still a key the workflow wrote. Dropping it made DEP004/DEP005
+            // report the input as not provided; it is recorded with an empty
+            // value instead, and without meta, because there is no scalar span
+            // to point a diagnostic at.
+            else => try values.put(entry.key.value, ""),
         }
     }
     return .{ .values = values, .meta = meta };
@@ -1848,6 +1853,22 @@ test "parseStringMapWithMeta" {
     try testing.expectEqual(yaml.ScalarStyle.double_quoted, parsed.meta.get("QUOTED").?.style);
     try testing.expectEqual(@as(usize, 10), parsed.meta.get("PLAIN").?.value_span.start_byte);
     try testing.expectEqual(@as(usize, 26), parsed.meta.get("QUOTED").?.value_span.end_byte);
+}
+
+test "parseStringMapWithMeta keeps a key whose value is not a scalar" {
+    // DEP004 / DEP005 read the key set to decide whether a required input was
+    // provided, so a `path:` written as a sequence must not look absent.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var items = [_]Node{mkScalar("~/.cache")};
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("path"), .value = mkSequence(&items), .span = mkSpan() },
+    };
+
+    const parsed = try parseStringMapWithMeta(arena.allocator(), mkMapping(&entries));
+    try testing.expectEqualStrings("", parsed.values.get("path").?);
+    try testing.expect(parsed.meta.get("path") == null);
 }
 
 test "parseStrategy with fail-fast and max-parallel" {

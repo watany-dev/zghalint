@@ -1,0 +1,42 @@
+# zghalint:expect DEP005@16 DEP005@18 DEP005@24 DEP006@28 BP003@26
+# zghalint:forbid DEP004
+name: action inputs
+on: [push]
+concurrency: ci
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Misspelled input
+        uses: actions/checkout@v4
+        with:
+          fetch-dept: 0
+      - name: Missing required input
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache
+      - name: Unknown input on a pinned major
+        uses: actions/setup-node@v4
+        with:
+          node-verison: '20'
+      - name: Retired runtime
+        uses: actions/setup-node@v2
+        with:
+          version: '20'
+      - name: Correct usage
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Required input written as a sequence
+        uses: actions/cache@v4
+        with:
+          path:
+            - ~/.cache
+          key: k
+      - name: Action outside the dataset
+        uses: some-org/unknown-action@v1
+        with:
+          anything: ok

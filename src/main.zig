@@ -471,12 +471,19 @@ fn lintFile(
     appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
+const FixOutcome = struct {
+    applied: usize = 0,
+    /// Fixes dropped because they overlapped one that won. Reported so the
+    /// user knows a second `--fix` run still has work to do.
+    skipped: usize = 0,
+};
+
 fn applyFixesForFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
     all_diags: *zghalint.DiagnosticList,
     include_unsafe: bool,
-) !usize {
+) !FixOutcome {
     var file_diags = std.ArrayList(zghalint.Diagnostic){};
     defer file_diags.deinit(allocator);
 
@@ -489,12 +496,12 @@ fn applyFixesForFile(
         }
     }
 
-    if (file_diags.items.len == 0) return 0;
+    if (file_diags.items.len == 0) return .{};
 
     const fixes = try zghalint.fix.collectFixes(allocator, file_diags.items, include_unsafe);
     defer allocator.free(fixes);
 
-    if (fixes.len == 0) return 0;
+    if (fixes.len == 0) return .{};
 
     // Refuse to rewrite through a symlink: otherwise `--fix` on a crafted
     // `workflow.yml -> /etc/passwd` would read and then overwrite the link
@@ -510,7 +517,7 @@ fn applyFixesForFile(
     const result = try zghalint.fix.applyFixes(allocator, source, fixes);
     defer result.deinit(allocator);
 
-    if (result.edits_applied == 0) return 0;
+    if (result.edits_applied == 0) return .{ .skipped = result.fixes_skipped };
 
     // Atomically replace the file: write a random-named sibling and rename
     // it into place. `rename(2)` replaces the directory entry itself, so if
@@ -528,7 +535,7 @@ fn applyFixesForFile(
     try af.file_writer.interface.writeAll(result.content);
     try af.finish();
 
-    return result.edits_applied;
+    return .{ .applied = result.edits_applied, .skipped = result.fixes_skipped };
 }
 
 fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
@@ -727,17 +734,28 @@ pub fn main() !u8 {
     if (cli_args.fix_mode != .off) {
         const include_unsafe = cli_args.fix_mode == .all;
         var total_fixed: usize = 0;
+        var total_skipped: usize = 0;
         for (files) |file_path| {
             if (config.isIgnored(file_path)) continue;
-            const fixed = applyFixesForFile(allocator, file_path, &all_diags, include_unsafe) catch |err| {
+            const outcome = applyFixesForFile(allocator, file_path, &all_diags, include_unsafe) catch |err| {
                 stderr.print("error: failed to apply fixes to '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
                 had_fatal = true;
                 continue;
             };
-            total_fixed += fixed;
+            total_fixed += outcome.applied;
+            total_skipped += outcome.skipped;
         }
         if (total_fixed > 0) {
             stderr.print("Applied {d} fix(es).\n", .{total_fixed}) catch {};
+        }
+        if (total_skipped > 0) {
+            // Name the flag the user actually passed: `--fix` would not apply
+            // an unsafe fix that `--fix-unsafe` skipped.
+            const flag = if (include_unsafe) "--fix-unsafe" else "--fix";
+            stderr.print(
+                "{d} fix(es) skipped: they overlap a fix that was applied. Re-run with {s} to apply them.\n",
+                .{ total_skipped, flag },
+            ) catch {};
         }
     }
 

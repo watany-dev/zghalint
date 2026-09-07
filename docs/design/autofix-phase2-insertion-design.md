@@ -120,6 +120,10 @@ dependabot は raw `Mapping` で処理している（`src/rules/dependabot.zig`�
 
 `src/fix/engine.zig` の overlap 判定（`flattenAndSort`）は `e.start_byte < last_end` で、ゼロ幅 edit は `start_byte == last_end` となるため両方が通る。逆順適用で 2 件が隣接して挿入され、構文的に valid な YAML が得られる。挿入順序は sort の tie-break に依存するが、ゴールデンテストでピン止めする。
 
+> 追記（#223）: tie-break は `all_rules` 上の登録順を明示的な第 3 キー
+> （`fix_index`）で比較するようになった。sort の安定性に頼らないため、
+> ルールを増やしても同 byte 挿入の順序は登録順のまま変わらない。
+
 本設計では engine / parser 側の変更は行わず、PBT とゴールデンテストで構文保全を担保する。
 
 ## データフロー

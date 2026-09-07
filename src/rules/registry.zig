@@ -19,6 +19,7 @@ const runner = @import("runner.zig");
 const syntax = @import("syntax.zig");
 const uses = @import("uses.zig");
 const local_action = @import("local_action.zig");
+const popular_actions = @import("popular_actions.zig");
 const reusable_workflow = @import("reusable_workflow.zig");
 const steps_ref = @import("steps_ref.zig");
 const expr_availability = @import("expr_availability.zig");
@@ -41,6 +42,7 @@ pub const all_rules = security.security_rules ++
     syntax.rules ++
     uses.rules ++
     local_action.rules ++
+    popular_actions.rules ++
     reusable_workflow.rules;
 
 /// Every rule ID that can appear in a diagnostic, and therefore every ID that

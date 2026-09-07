@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Generate `src/rules/data/popular_actions.zig` from real `action.yml` files.
+
+The alternative to generating this table would be to copy another linter's
+snapshot, which inherits that project's staleness. Here the input is the list
+in `scripts/popular-actions.txt`, and the data is read from the actions
+themselves, so a refresh is `python3 scripts/gen-popular-actions.py`.
+
+Each manifest line is `owner/repo[/path]@ref`. The repository is cloned
+shallowly at `ref`, `action.yml` (or `action.yaml`) is parsed, and the inputs
+plus `runs.using` are emitted as Zig source.
+"""
+
+from __future__ import annotations
+
+import argparse
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+
+import yaml
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+MANIFEST = REPO_ROOT / "scripts" / "popular-actions.txt"
+OUTPUT = REPO_ROOT / "src" / "rules" / "data" / "popular_actions.zig"
+
+ENTRY_RE = re.compile(
+    r"^(?P<owner>[^/@\s]+)/(?P<repo>[^/@\s]+)(?P<path>(?:/[^@\s]+)?)@(?P<ref>\S+)$"
+)
+
+
+@dataclass
+class Input:
+    name: str
+    #: `required: true` without a `default:` — a default satisfies the input
+    #: whether or not the caller passes anything.
+    required: bool = False
+    deprecation: str | None = None
+
+
+@dataclass
+class ActionMeta:
+    owner: str
+    repo: str
+    path: str
+    major: int
+    using: str
+    inputs: list[Input] = field(default_factory=list)
+
+
+def parse_manifest(text: str) -> list[tuple[str, str, str, str]]:
+    entries = []
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = ENTRY_RE.match(line)
+        if m is None:
+            raise SystemExit(f"malformed manifest entry: {raw!r}")
+        entries.append(
+            (m["owner"], m["repo"], m["path"].lstrip("/"), m["ref"]),
+        )
+    return entries
+
+
+def major_of(ref: str) -> int:
+    """The major `src/rules/popular_actions.zig` will key this entry by.
+
+    The ref has to be a version the linter itself reads as one; anything looser
+    here (`v4-beta`, `4.x-maintenance`) would file the entry under a major that
+    users reference with a different tag entirely.
+    """
+    m = re.fullmatch(r"v(\d+)(?:\.\d+)*", ref)
+    if m is None:
+        raise SystemExit(f"ref {ref!r} is not a version tag of the form v4 or v4.2.2")
+    return int(m.group(1))
+
+
+def clone(owner: str, repo: str, ref: str, into: pathlib.Path) -> pathlib.Path:
+    """Shallow-clone `owner/repo` at `ref`, once per run.
+
+    `actions/cache`, `actions/cache/restore` and `actions/cache/save` are three
+    manifest entries in one repository; the checkout is shared between them.
+    """
+    dest = into / f"{owner}__{repo}__{ref}"
+    if dest.exists():
+        return dest
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--branch",
+            ref,
+            f"https://github.com/{owner}/{repo}",
+            str(dest),
+        ],
+        check=True,
+    )
+    return dest
+
+
+def read_manifest_yaml(checkout: pathlib.Path, path: str) -> dict:
+    directory = checkout / path if path else checkout
+    for name in ("action.yml", "action.yaml"):
+        candidate = directory / name
+        if candidate.is_file():
+            return yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+    raise SystemExit(f"no action manifest under {directory}")
+
+
+def is_true(value: object) -> bool:
+    """`required:` as the runner reads it. A quoted `"false"` is not true."""
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() == "true"
+
+
+def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) -> ActionMeta:
+    doc = read_manifest_yaml(checkout, path)
+    if not isinstance(doc, dict):
+        raise SystemExit(f"{owner}/{repo}@{ref}: the action manifest is not a mapping")
+
+    # BP003 reads `using` and DEP005 reads every declared input, so a manifest
+    # shaped differently than expected has to stop the run rather than reach
+    # the table as an entry that claims the action declares nothing.
+    runs = doc.get("runs")
+    if not isinstance(runs, dict) or not runs.get("using"):
+        raise SystemExit(f"{owner}/{repo}@{ref}: `runs.using` is missing")
+    using = str(runs["using"])
+
+    inputs = []
+    declared = doc.get("inputs") or {}
+    # An entry that silently ends up with no inputs would make DEP005 reject
+    # every `with:` key the action actually accepts.
+    if not isinstance(declared, dict):
+        raise SystemExit(f"{owner}/{repo}@{ref}: `inputs:` is not a mapping")
+    for name, spec in declared.items():
+        spec = spec if isinstance(spec, dict) else {}
+        inputs.append(
+            Input(
+                name=str(name),
+                required=is_true(spec.get("required")) and "default" not in spec,
+                deprecation=spec.get("deprecationMessage"),
+            )
+        )
+
+    return ActionMeta(
+        owner=owner,
+        repo=repo,
+        path=path,
+        major=major_of(ref),
+        using=using,
+        inputs=inputs,
+    )
+
+
+def zig_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    return f'"{escaped}"'
+
+
+HEADER = """\
+//! Metadata of widely used actions: what `with:` keys they accept and
+//! which runtime they declare. DEP005, DEP006 and BP003 read this table.
+//!
+//! GENERATED FILE — do not edit by hand. Regenerate with
+//! `python3 scripts/gen-popular-actions.py` after changing
+//! `scripts/popular-actions.txt`; see docs/maintenance.md.
+
+pub const Input = struct {
+    name: []const u8,
+    /// `required: true` without a `default:`. An input with a default is
+    /// satisfied whether or not the caller passes it.
+    required: bool = false,
+    /// The action's own `deprecationMessage:`, reported verbatim by DEP006.
+    deprecation: ?[]const u8 = null,
+};
+
+pub const ActionMeta = struct {
+    owner: []const u8,
+    repo: []const u8,
+    /// Sub-directory for an action that does not sit at the repository
+    /// root, such as `actions/cache/restore`. Empty for the root action.
+    path: []const u8 = "",
+    /// The major version this entry describes; `uses: owner/repo@v4`
+    /// matches the entry with `major == 4`.
+    major: u16,
+    /// `runs.using` as declared by the action.
+    using: []const u8,
+    inputs: []const Input,
+};
+
+pub const popular_actions = [_]ActionMeta{"""
+
+
+def render(metas: list[ActionMeta]) -> str:
+    out = [HEADER]
+
+    for meta in metas:
+        out.append("    .{")
+        out.append(f"        .owner = {zig_string(meta.owner)},")
+        out.append(f"        .repo = {zig_string(meta.repo)},")
+        if meta.path:
+            out.append(f"        .path = {zig_string(meta.path)},")
+        out.append(f"        .major = {meta.major},")
+        out.append(f"        .using = {zig_string(meta.using)},")
+        if not meta.inputs:
+            out.append("        .inputs = &.{},")
+        else:
+            out.append("        .inputs = &.{")
+            for inp in meta.inputs:
+                fields = [f".name = {zig_string(inp.name)}"]
+                if inp.required:
+                    fields.append(".required = true")
+                if inp.deprecation:
+                    fields.append(f".deprecation = {zig_string(str(inp.deprecation))}")
+                out.append("            .{ " + ", ".join(fields) + " },")
+            out.append("        },")
+        out.append("    },")
+
+    out.append("};")
+    out.append("")
+    return "\n".join(out)
+
+
+def main() -> int:
+    argparse.ArgumentParser(description=__doc__).parse_args()
+
+    entries = parse_manifest(MANIFEST.read_text(encoding="utf-8"))
+    workdir = pathlib.Path(tempfile.mkdtemp(prefix="popular-actions-"))
+
+    metas = []
+    try:
+        for owner, repo, path, ref in entries:
+            print(f"fetching {owner}/{repo}{'/' + path if path else ''}@{ref}", file=sys.stderr)
+            checkout = clone(owner, repo, ref, workdir)
+            metas.append(collect(owner, repo, path, ref, checkout))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    # `lookup` is keyed by (owner, repo, path, major) and returns the first
+    # match, so a second entry under the same key would be dead data that no
+    # test can distinguish from the first.
+    seen: dict[tuple[str, str, str, int], str] = {}
+    for meta, (_, _, _, ref) in zip(metas, entries, strict=True):
+        key = (meta.owner.lower(), meta.repo.lower(), meta.path, meta.major)
+        if key in seen:
+            raise SystemExit(
+                f"{meta.owner}/{meta.repo}@{ref} and @{seen[key]} both describe major v{meta.major}"
+            )
+        seen[key] = ref
+
+    OUTPUT.write_text(render(metas), encoding="utf-8")
+    subprocess.run(["zig", "fmt", str(OUTPUT)], check=True)
+    print(f"wrote {OUTPUT} ({len(metas)} actions)", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

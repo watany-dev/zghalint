@@ -24,54 +24,127 @@ pub fn collectFixes(
     return list.toOwnedSlice(allocator);
 }
 
-/// Edits come back sorted by start_byte descending so they can be applied
-/// back-to-front without offset shifting. Overlapping edits are dropped (first
-/// wins by position), as are edits with invalid byte ranges.
-fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []const u8) ![]Edit {
+/// Which fix an edit came from, so a conflict can be resolved for the fix as a
+/// whole rather than for the single edit that happened to lose.
+const OwnedEdit = struct {
+    edit: Edit,
+    fix_index: usize,
+};
+
+const Selection = struct {
+    /// Sorted by start_byte descending, so `applyFixes` can copy back-to-front
+    /// without offset shifting.
+    edits: []Edit,
+    /// Fixes dropped whole because one of their edits overlapped a *different*
+    /// fix that won. Surfaced to the user: those diagnostics come back, and a
+    /// second run applies them. A fix whose own edits overlap each other is
+    /// dropped without being counted — a rule that emits such a fix is buggy,
+    /// and re-running would drop it again.
+    fixes_skipped: usize,
+};
+
+/// Selects the edits to apply. When two edits overlap, the one that starts
+/// earlier wins and the *other edit's whole fix* is dropped: applying only
+/// part of a multi-edit fix produces a file that matches no rule's intent
+/// (#223). The loser is decided at the overlap, so the fix that survives is
+/// the one owning the earlier edit of the conflicting pair, not necessarily
+/// the one that starts earlier in the file.
+/// Edits with invalid byte ranges are dropped without penalising their fix.
+fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []const u8) !Selection {
     const source_len = source.len;
     var total: usize = 0;
     for (fixes) |f| {
         total += f.edits.len;
     }
 
-    if (total == 0) return &.{};
+    if (total == 0) return .{ .edits = &.{}, .fixes_skipped = 0 };
 
-    const edits = try allocator.alloc(Edit, total);
-    errdefer allocator.free(edits);
+    const owned = try allocator.alloc(OwnedEdit, total);
+    defer allocator.free(owned);
 
     var idx: usize = 0;
-    for (fixes) |f| {
+    for (fixes, 0..) |f, fix_index| {
         for (f.edits) |e| {
             if (!isValidEdit(e, source_len)) continue;
-            edits[idx] = snapInsertionToLineEnd(e, source);
+            owned[idx] = .{ .edit = snapInsertionToLineEnd(e, source), .fix_index = fix_index };
             idx += 1;
         }
     }
 
-    const filtered = edits[0..idx];
+    const flat = owned[0..idx];
 
-    // Ascending for overlap detection; reversed below.
-    std.mem.sort(Edit, filtered, {}, struct {
-        fn lessThan(_: void, a: Edit, b: Edit) bool {
-            if (a.start_byte != b.start_byte) return a.start_byte < b.start_byte;
-            return a.end_byte < b.end_byte;
+    // Ascending for overlap detection; reversed below. `fix_index` is an
+    // explicit tie-break rather than a reliance on sort stability, so two
+    // insertions at the same byte keep the registry order `all_rules` gives
+    // them however the sort is implemented.
+    std.mem.sort(OwnedEdit, flat, {}, struct {
+        fn lessThan(_: void, a: OwnedEdit, b: OwnedEdit) bool {
+            if (a.edit.start_byte != b.edit.start_byte) return a.edit.start_byte < b.edit.start_byte;
+            if (a.edit.end_byte != b.edit.end_byte) return a.edit.end_byte < b.edit.end_byte;
+            return a.fix_index < b.fix_index;
         }
     }.lessThan);
 
-    var write_idx: usize = 0;
-    var last_end: usize = 0;
-    for (filtered) |e| {
-        if (write_idx > 0 and e.start_byte < last_end) {
-            continue;
+    const dropped = try allocator.alloc(bool, fixes.len);
+    defer allocator.free(dropped);
+    @memset(dropped, false);
+
+    const selected = try allocator.alloc(Edit, idx);
+    errdefer allocator.free(selected);
+
+    // Who each dropped fix lost to. Counting skips inside the sweep would be
+    // premature: a winner can itself be dropped by a later pass, and a fix
+    // that lost to a dropped one is not re-runnable either.
+    const no_loser = std.math.maxInt(usize);
+    const lost_to = try allocator.alloc(usize, fixes.len);
+    defer allocator.free(lost_to);
+    @memset(lost_to, no_loser);
+
+    // Dropping a fix can free the range its winner had claimed, so the sweep
+    // restarts after each drop. Every pass drops at most one fix, so this
+    // terminates in at most `fixes.len` passes.
+    var count: usize = 0;
+    while (true) {
+        count = 0;
+        var last_end: usize = 0;
+        var last_fix: usize = 0;
+        var dropped_one = false;
+        for (flat) |oe| {
+            if (dropped[oe.fix_index]) continue;
+            if (count > 0 and oe.edit.start_byte < last_end) {
+                dropped[oe.fix_index] = true;
+                lost_to[oe.fix_index] = last_fix;
+                dropped_one = true;
+                break;
+            }
+            selected[count] = oe.edit;
+            last_end = oe.edit.end_byte;
+            last_fix = oe.fix_index;
+            count += 1;
         }
-        filtered[write_idx] = e;
-        last_end = e.end_byte;
-        write_idx += 1;
+        if (!dropped_one) break;
+    }
+
+    // Report only a fix a second run would actually apply: it must have lost
+    // to a *different* fix (a self-overlapping fix never applies), and that
+    // winner must have survived so its diagnostic is gone next time.
+    var fixes_skipped: usize = 0;
+    for (lost_to, 0..) |winner, i| {
+        if (winner == no_loser or winner == i) continue;
+        if (!dropped[winner]) fixes_skipped += 1;
+    }
+
+    if (count == 0) {
+        allocator.free(selected);
+        return .{ .edits = &.{}, .fixes_skipped = fixes_skipped };
     }
 
     // Hand back an exactly-sized allocation so the caller can free it directly.
-    std.mem.reverse(Edit, filtered[0..write_idx]);
-    return allocator.realloc(edits, write_idx);
+    std.mem.reverse(Edit, selected[0..count]);
+    return .{
+        .edits = try allocator.realloc(selected, count),
+        .fixes_skipped = fixes_skipped,
+    };
 }
 
 /// A pure insertion whose replacement opens a new line is meant to land after
@@ -112,11 +185,16 @@ pub fn applyFixes(
     source: []const u8,
     fixes: []const Fix,
 ) !ApplyResult {
-    const edits = try flattenAndSort(allocator, fixes, source);
+    const selection = try flattenAndSort(allocator, fixes, source);
+    const edits = selection.edits;
     defer allocator.free(edits);
 
     if (edits.len == 0) {
-        return .{ .content = try allocator.dupe(u8, source), .edits_applied = 0 };
+        return .{
+            .content = try allocator.dupe(u8, source),
+            .edits_applied = 0,
+            .fixes_skipped = selection.fixes_skipped,
+        };
     }
 
     var result_len: usize = source.len;
@@ -144,12 +222,19 @@ pub fn applyFixes(
         @memcpy(result[dst_pos..][0..src_pos], source[0..src_pos]);
     }
 
-    return .{ .content = result, .edits_applied = edits.len };
+    return .{
+        .content = result,
+        .edits_applied = edits.len,
+        .fixes_skipped = selection.fixes_skipped,
+    };
 }
 
 pub const ApplyResult = struct {
     content: []const u8,
     edits_applied: usize,
+    /// Fixes that conflicted with a fix that won and were dropped whole.
+    /// Non-zero means a second `--fix` run has work left to do.
+    fixes_skipped: usize = 0,
 
     pub fn deinit(self: ApplyResult, allocator: std.mem.Allocator) void {
         allocator.free(self.content);
@@ -240,6 +325,149 @@ test "overlapping edits — first by position wins" {
 
     try std.testing.expectEqualStrings("ABXXFGH", result.content);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "a losing fix is dropped whole, not edit by edit (#223)" {
+    const allocator = std.testing.allocator;
+    const source = "AB";
+    // The counterexample from the TLA+ model: fix2's insertion does not
+    // overlap anything, but its replacement loses to fix1. Applying only the
+    // insertion would leave a file matching neither rule's intent.
+    const edits1 = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 1, .replacement = "X" },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 0, .replacement = "ins" },
+        .{ .start_byte = 0, .end_byte = 1, .replacement = "Y" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("XB", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 1), result.fixes_skipped);
+}
+
+test "dropping a fix frees the range it had claimed" {
+    const allocator = std.testing.allocator;
+    const source = "ABCDEFGH";
+    // fix1 wins at 0..2, so fix2 is dropped whole — including its edit at
+    // 4..6, which then leaves fix3 free to apply there.
+    const edits1 = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 2, .replacement = "1" },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = 1, .end_byte = 3, .replacement = "2" },
+        .{ .start_byte = 4, .end_byte = 6, .replacement = "2" },
+    };
+    const edits3 = [_]Edit{
+        .{ .start_byte = 5, .end_byte = 7, .replacement = "3" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+        .{ .description = "fix3", .safety = .safe, .edits = &edits3 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("1CDE3H", result.content);
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 1), result.fixes_skipped);
+}
+
+test "a fix whose own edits overlap applies none of them" {
+    const allocator = std.testing.allocator;
+    const source = "ABCD";
+    const edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 2, .replacement = "X" },
+        .{ .start_byte = 1, .end_byte = 3, .replacement = "Y" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "self-conflicting", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("ABCD", result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+    // Not reported: re-running would drop it again, so telling the user to
+    // re-run would never stop being true.
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "a fix that loses to a self-conflicting fix is not reported" {
+    const allocator = std.testing.allocator;
+    const source = "ABCDEFGHIJ";
+    // fix1's first edit beats fix2, then fix1 falls to its own second edit.
+    // Nothing was applied, so pointing the user at a re-run would be a lie:
+    // the same two fixes would collide the same way again.
+    const edits1 = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 6, .replacement = "1" },
+        .{ .start_byte = 2, .end_byte = 8, .replacement = "1" },
+    };
+    const edits2 = [_]Edit{.{ .start_byte = 1, .end_byte = 3, .replacement = "2" }};
+    const fixes = [_]Fix{
+        .{ .description = "self-conflicting", .safety = .safe, .edits = &edits1 },
+        .{ .description = "victim", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("ABCDEFGHIJ", result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "a drop that frees a range takes two sweeps to settle" {
+    const allocator = std.testing.allocator;
+    const source = "ABCDEFGHIJ";
+    // fix1 wins at 0..2 and drops fix2; fix2's 4..6 edit going away lets fix3
+    // in at 5..7, which in turn drops fix4 — a second sweep decides fix4.
+    const edits1 = [_]Edit{.{ .start_byte = 0, .end_byte = 2, .replacement = "1" }};
+    const edits2 = [_]Edit{
+        .{ .start_byte = 1, .end_byte = 3, .replacement = "2" },
+        .{ .start_byte = 4, .end_byte = 6, .replacement = "2" },
+    };
+    const edits3 = [_]Edit{.{ .start_byte = 5, .end_byte = 7, .replacement = "3" }};
+    const edits4 = [_]Edit{.{ .start_byte = 6, .end_byte = 8, .replacement = "4" }};
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+        .{ .description = "fix3", .safety = .safe, .edits = &edits3 },
+        .{ .description = "fix4", .safety = .safe, .edits = &edits4 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("1CDE3HIJ", result.content);
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 2), result.fixes_skipped);
+}
+
+test "two insertions at the same byte both survive, in registry order" {
+    const allocator = std.testing.allocator;
+    const source = "AB";
+    const edits1 = [_]Edit{
+        .{ .start_byte = 1, .end_byte = 1, .replacement = "1" },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = 1, .end_byte = 1, .replacement = "2" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("A12B", result.content);
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
 }
 
 test "empty fixes — returns source unchanged" {

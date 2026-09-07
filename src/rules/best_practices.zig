@@ -8,6 +8,7 @@ const fix_builder = @import("../fix/builder.zig");
 const util = @import("../util.zig");
 const spans = @import("spans.zig");
 const local_action = @import("local_action.zig");
+const popular_actions = @import("popular_actions.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -116,13 +117,6 @@ const deprecated_actions = [_]DeprecatedAction{
     .{ .action = "actions/cache", .deprecated_below = 3, .replacement = "v4" },
 };
 
-/// Single digit only, as every deprecated tag is.
-fn majorTag(version: []const u8) ?u8 {
-    if (version.len != 2 or version[0] != 'v') return null;
-    if (!std.ascii.isDigit(version[1])) return null;
-    return version[1] - '0';
-}
-
 fn buildDeprecatedActionFix(
     list: *DiagnosticList,
     step: *const Step,
@@ -171,8 +165,12 @@ fn buildDeprecatedActionFix(
 /// exhaustive complement: any action whose `runs.using` GitHub has retired is
 /// reported, without a version to upgrade to, because there is none to name.
 ///
-/// Only local actions can be checked this way: reading a remote action's
-/// `runs.using` needs the action metadata dataset of #97 (DEP005).
+/// A local action's runtime is read from its `action.yml` on disk; a popular
+/// remote action's comes from the embedded metadata table (`popular_actions`).
+/// Either way the runtime verdict wins over the version table when both apply,
+/// because a retired runtime fails the run outright while an old-but-alive
+/// version is only worth a warning. The autofix survives that: it is attached
+/// to the runtime finding whenever the version table names a replacement.
 fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
     if (action_ref.is_docker) return;
@@ -182,26 +180,76 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
         return;
     }
 
-    const action_name = util.actionBaseName(action_ref.raw);
     const version = action_ref.ref orelse return;
 
-    const major = majorTag(version);
-    for (deprecated_actions) |dep| {
-        if (std.mem.eql(u8, action_name, dep.action) and
-            major != null and major.? >= 1 and major.? < dep.deprecated_below)
-        {
-            var diag = Diagnostic{
-                .rule_id = "BP003",
-                .severity = .warning,
-                .message = "Using deprecated action version. Consider upgrading.",
-                .span = step.span,
-                .fix_hint = "Upgrade to a newer version.",
-            };
-            diag.fix = buildDeprecatedActionFix(diag_list, step, version, dep.replacement);
-            diag_list.append(diag) catch return;
+    if (popular_actions.lookup(action_ref)) |meta| {
+        if (local_action.isDeprecatedRuntime(meta.using)) {
+            reportRetiredRemoteRuntime(step, action_ref, meta.using, diag_list);
             return;
         }
     }
+
+    const replacement = replacementVersion(action_ref) orelse return;
+    var diag = Diagnostic{
+        .rule_id = "BP003",
+        .severity = .warning,
+        .message = "Using deprecated action version. Consider upgrading.",
+        .span = step.span,
+        .fix_hint = "Upgrade to a newer version.",
+    };
+    diag.fix = buildDeprecatedActionFix(diag_list, step, version, replacement);
+    diag_list.append(diag) catch return;
+}
+
+/// The action itself has to move off the runtime, but the caller can often get
+/// there by upgrading: when the version table names a replacement major, the
+/// same `@vN` rewrite BP003's other half would have produced is attached here.
+fn reportRetiredRemoteRuntime(
+    step: *const Step,
+    action_ref: ActionRef,
+    using: []const u8,
+    diag_list: *DiagnosticList,
+) void {
+    const alloc = diag_list.fixAllocator();
+    const message = std.fmt.allocPrint(
+        alloc,
+        "action \"{s}\" runs on the retired runtime \"{s}\"",
+        .{ action_ref.raw, using },
+    ) catch return;
+
+    var diag = Diagnostic{
+        .rule_id = "BP003",
+        .severity = .@"error",
+        .message = message,
+        .span = spans.usesSpan(step),
+        .fix_hint = "upgrade to a version of the action that runs on a supported runtime",
+    };
+
+    if (replacementVersion(action_ref)) |replacement| {
+        diag.fix_hint = std.fmt.allocPrint(
+            alloc,
+            "upgrade to \"{s}\"",
+            .{replacement},
+        ) catch diag.fix_hint;
+        diag.fix = buildDeprecatedActionFix(diag_list, step, action_ref.ref.?, replacement);
+    }
+
+    diag_list.append(diag) catch return;
+}
+
+/// The version table's replacement for `action_ref`, when it has one and the
+/// reference is actually older than it.
+fn replacementVersion(action_ref: ActionRef) ?[]const u8 {
+    const action_name = util.actionBaseName(action_ref.raw);
+    // The same reading of a ref the metadata table uses, so that a reference
+    // the retired-runtime half matched (`@v2.3.4`) can carry its `@vN` fix.
+    const major = popular_actions.majorFromRef(action_ref.ref orelse return null) orelse return null;
+
+    for (deprecated_actions) |dep| {
+        if (!std.mem.eql(u8, action_name, dep.action)) continue;
+        if (major >= 1 and major < dep.deprecated_below) return dep.replacement;
+    }
+    return null;
 }
 
 /// A retired runtime cannot be fixed from the caller's side — the action's own
@@ -785,6 +833,77 @@ test "BP003: detect deprecated checkout v2" {
 
 test "BP003: no warning for current version" {
     const step = Step{ .uses = ActionRef.parse("actions/checkout@v4") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP003: a remote action on a retired runtime is an error" {
+    // `actions/setup-node@v2` is in the embedded table with `using: node12`,
+    // and the version table has no replacement below v2 to attach.
+    const step = Step{ .uses = ActionRef.parse("actions/setup-node@v2") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const d = diags.get(0);
+    try std.testing.expectEqualStrings("BP003", d.rule_id);
+    try std.testing.expect(d.severity == .@"error");
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "node12") != null);
+}
+
+test "BP003: the retired-runtime finding keeps the version table's autofix" {
+    // "actions/checkout@v2" ends at byte 25, version "v2" occupies bytes 23..25.
+    const step = Step{
+        .uses = ActionRef.parse("actions/checkout@v2"),
+        .uses_value_end_byte = 25,
+        .uses_value_style = .plain,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const d = diags.get(0);
+    try std.testing.expect(d.severity == .@"error");
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("v4", fix.edits[0].replacement);
+}
+
+test "BP003: a patch-level ref is read like the major it names" {
+    // "actions/checkout@v2.3.4" ends at byte 30, the version occupies 23..30.
+    const step = Step{
+        .uses = ActionRef.parse("actions/checkout@v2.3.4"),
+        .uses_value_end_byte = 30,
+        .uses_value_style = .plain,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const d = diags.get(0);
+    try std.testing.expect(d.severity == .@"error");
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("v4", fix.edits[0].replacement);
+}
+
+test "BP003: a version the table does not cover falls back to the version table" {
+    // The metadata table stops at `actions/checkout@v2`, so v1 has no runtime
+    // to read and stays the version table's warning.
+    const step = Step{ .uses = ActionRef.parse("actions/checkout@v1") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).severity == .warning);
+}
+
+test "BP003: an action outside the table is only judged by the version table" {
+    const step = Step{ .uses = ActionRef.parse("some-org/old-action@v1") };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
