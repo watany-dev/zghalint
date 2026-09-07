@@ -451,13 +451,17 @@ fn isExpression(node: Node) bool {
 /// YAML resolves `1.10` and `1.1` to the same number and `True` and `true` to
 /// the same boolean, so comparing the source text alone would flag a value the
 /// axis does list.
-fn scalarsEquivalent(a: []const u8, b: []const u8) bool {
-    if (std.mem.eql(u8, a, b)) return true;
-    if (isBooleanSpelling(a) and isBooleanSpelling(b)) {
-        return std.ascii.eqlIgnoreCase(a, b);
+fn scalarsEquivalent(a: yaml_types.Scalar, b: yaml_types.Scalar) bool {
+    if (std.mem.eql(u8, a.value, b.value)) return true;
+
+    // Quoting makes a scalar a string, and `"3.10"` and `"3.1"` are two strings.
+    if (a.style != .plain or b.style != .plain) return false;
+
+    if (isBooleanSpelling(a.value) and isBooleanSpelling(b.value)) {
+        return std.ascii.eqlIgnoreCase(a.value, b.value);
     }
-    const num_a = std.fmt.parseFloat(f64, a) catch return false;
-    const num_b = std.fmt.parseFloat(f64, b) catch return false;
+    const num_a = std.fmt.parseFloat(f64, a.value) catch return false;
+    const num_b = std.fmt.parseFloat(f64, b.value) catch return false;
     return num_a == num_b;
 }
 
@@ -479,7 +483,7 @@ fn axisTakesValue(axis: workflow_types.MatrixAxis, value: Node) ?bool {
     for (axis.values) |candidate| {
         if (isExpression(candidate)) return null;
         if (candidate == .scalar and value == .scalar) {
-            if (scalarsEquivalent(candidate.scalar.value, value.scalar.value)) return true;
+            if (scalarsEquivalent(candidate.scalar, value.scalar)) return true;
         } else if (candidate.eql(value)) return true;
     }
     return false;
@@ -563,8 +567,26 @@ fn checkMatrixExclude(
     }
 }
 
+/// A key that shares an entry with the axis it resembles is a deliberate second
+/// key rather than a misspelling, and that holds for every entry in the block:
+/// `mode` beside `node` once makes `mode` a real key throughout `include`.
+fn includePairsKeyWithAxis(
+    include: workflow_types.MatrixAxis,
+    key: []const u8,
+    axis_name: []const u8,
+) bool {
+    for (include.values) |entry| {
+        const mapping = switch (entry) {
+            .mapping => |m| m,
+            else => continue,
+        };
+        if (mapping.getKeySpan(key) != null and mapping.getKeySpan(axis_name) != null) return true;
+    }
+    return false;
+}
+
 /// `include` is free to add keys, so only a key one edit away from an existing
-/// axis — and only when the entry does not set that axis itself — reads as a typo.
+/// axis — and never one the block pairs with that axis — reads as a typo.
 fn checkMatrixInclude(
     matrix: workflow_types.Matrix,
     axis_names: []const []const u8,
@@ -583,12 +605,11 @@ fn checkMatrixInclude(
             if (std.mem.indexOf(u8, key, "${{") != null) continue;
             if (findMatrixAxis(matrix, key) != null) continue;
 
-            // `node: 18` beside `mode: fast` is two deliberate keys, not a typo.
             var near: ?[]const u8 = null;
             var near_count: usize = 0;
             for (axis_names) |name| {
                 if (util.levenshteinDistance(key, name) != 1) continue;
-                if (mapping.getKeySpan(name) != null) continue;
+                if (includePairsKeyWithAxis(include, key, name)) continue;
                 near = name;
                 near_count += 1;
             }
@@ -4289,20 +4310,22 @@ test "SYN019: a value only include contributes is still an empty exclude" {
     );
 }
 
-test "SYN019: an include key beside the axis it resembles is not a typo" {
+test "SYN019: an include key paired with the axis it resembles is not a typo" {
+    // `mode` shares the first entry with `node`, which settles it as a real key
+    // for the whole block — the second entry must not be reported either.
     const source =
         \\on: push
         \\jobs:
         \\  test:
         \\    strategy:
         \\      matrix:
-        \\        os: [ubuntu-latest, macos-latest]
         \\        node: [18, 20]
         \\        include:
-        \\          - os: ubuntu-latest
-        \\            node: 18
+        \\          - node: 18
         \\            mode: fast
-        \\    runs-on: ${{ matrix.os }}
+        \\          - node: 20
+        \\            mode: slow
+        \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - run: echo hi
     ;
@@ -4311,6 +4334,31 @@ test "SYN019: an include key beside the axis it resembles is not a typo" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN019: quoted numeric strings are compared as text" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    strategy:
+        \\      matrix:
+        \\        python-version: ["3.10", "3.11"]
+        \\        exclude:
+        \\          - python-version: "3.1"
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn019(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "\"3.1\" does not exist in \"python-version\" axis",
+        diags.get(0).message,
+    );
 }
 
 test "SYN019: YAML-equivalent numbers and booleans are not missing values" {

@@ -594,9 +594,9 @@ strategy:
 ```
 
 `include` is allowed to add keys the matrix does not declare, so a new key is
-left alone. Only a key one edit away from an existing axis — and only when the
-entry does not already set that axis — is reported, since that reads as a typo
-rather than an addition.
+left alone. Only a key one edit away from an existing axis is reported, and not
+even then when some entry sets both the key and that axis — a key used beside
+the axis it resembles is a deliberate addition, not a typo.
 
 ```yaml
 strategy:
@@ -618,8 +618,9 @@ strategy:
 matrix and merges `include` afterwards, so a combination that only `include`
 contributes is never removed and naming it in `exclude` is reported as well. An
 axis built from an expression (`os: ${{ fromJSON(...) }}`) carries no values to
-compare against, so the value check is skipped for it. `1.10` and `1.1`, or
-`True` and `true`, are the same YAML value and do not count as a mismatch.
+compare against, so the value check is skipped for it. Plain `1.10` and `1.1`,
+or `True` and `true`, are the same YAML value and do not count as a mismatch;
+quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
 
 ---
 
