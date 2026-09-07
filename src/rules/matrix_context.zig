@@ -137,9 +137,11 @@ fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
 }
 
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
-    // The engine hands rules no arena (#159), so this one owns the memory the
-    // expression parser needs and frees it as soon as the job is scanned.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // The parse tree is scratch, so this arena owns it and frees it as soon
+    // as the scan is done; diagnostic messages go to the list's own arena
+    // instead. Backing it with the list's allocator keeps it under the same
+    // leak detection as the rest of the run (#159).
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
