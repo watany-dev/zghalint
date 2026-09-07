@@ -208,11 +208,16 @@ RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知の
 - 既知ラベルに接尾辞が付いたもの（`ubuntu-latest-4-cores` などの larger runner）
 - `self-hosted` / `linux` / `x64` などの慣用ラベル
 - 既知ラベルから遠く、`ubuntu-` / `windows-` / `macos-` でも始まらない独自ラベル（`gpu-box` など）
-- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は #210 で対応予定）
+- 展開できない式（`fromJSON`、他コンテキスト参照、文字列連結）を含む `runs-on`
 
 既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
 提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
 `runner.labels` に列挙すれば既知として扱われる。
+
+`runs-on: ${{ matrix.os }}` のように値が `${{ matrix.<key> }}` 単体の式である
+場合は、`strategy.matrix.<key>`（`include` 由来の値を含む）を展開して各値を
+判定する。診断と autofix は matrix の値側を指す。`exclude` の値は組み合わせを
+除外するだけなのでランナーを名乗らず、対象外とする。
 
 ## Syntax Rules (SYN)
 
