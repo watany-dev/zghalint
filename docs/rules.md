@@ -96,11 +96,19 @@ case: `on: workflow_run` only, and only for the attributes the fork authors
 `display_title`). A condition that also verifies the triggering repository —
 `github.event.workflow_run.head_repository.full_name == github.repository`, or
 `github.event.workflow_run.event == 'push'` — is sound, and is not reported.
-The anchor must be an equality check: `head_repository.full_name !=
-github.repository` selects the fork runs rather than excluding them, and
-`head_repository.fork == true` is a fork-only gate, so neither counts. Values
-that name one immutable commit — `head_sha`, `head_commit.id` — are never
-reported. A trust check on the job covers the steps inside it.
+The condition is parsed, and the anchor only counts where it is
+guaranteed to have held: joined with `||` it leaves the branch gate reachable
+on its own, so it anchors nothing. Negation is read through — `!(fork == true
+|| head_branch == 'main')` excludes exactly the fork runs and is sound, while
+`!(head_repository.full_name == github.repository)` asserts the opposite of the
+check it is written as. Read with that polarity, the anchor must assert
+identity: `head_repository.full_name != github.repository` selects the fork
+runs rather than excluding them, and `head_repository.fork == true` is a
+fork-only gate. `head_repository.name` is not an anchor at all — a fork
+inherits the name of the repository it came from. A condition that does not
+parse anchors nothing. Values that name one immutable commit — `head_sha`,
+`head_commit.id` — are never reported. A trust check on the job covers the
+steps inside it.
 
 ## Supply Chain Security Rules (SC)
 

@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const engine = @import("engine.zig");
+const expressions = @import("expressions.zig");
 const spans = @import("spans.zig");
 const fix_builder = @import("../fix/builder.zig");
 const advisory = @import("advisory.zig");
@@ -723,14 +724,17 @@ const workflow_run_untrusted_gate_contexts = [_][]const u8{
 };
 
 /// Identity checks that make the gate sound: they name the repository the run
-/// came from, which a fork cannot forge. `head_repository.fork` is absent on
-/// purpose — `fork == true` gates *for* forks, the opposite of a trust check.
+/// came from, which a fork cannot forge. `head_repository.name` is absent
+/// because a fork inherits the name of the repository it was forked from, so
+/// it separates nothing (#220).
 const workflow_run_trust_anchors = [_][]const u8{
     "github.event.workflow_run.head_repository.full_name",
-    "github.event.workflow_run.head_repository.name",
     "github.event.workflow_run.head_repository.id",
     "github.event.workflow_run.head_repository.owner",
 };
+
+const workflow_run_fork_flag = "github.event.workflow_run.head_repository.fork";
+const workflow_run_event_context = "github.event.workflow_run.event";
 
 fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
     if (!wf.hasEvent(.workflow_run)) return;
@@ -738,7 +742,7 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         var job_verified = false;
         if (job.if_condition) |cond| {
-            job_verified = hasWorkflowRunTrustAnchor(cond);
+            job_verified = hasWorkflowRunTrustAnchor(list.allocator, cond);
             if (!job_verified) reportWorkflowRunBranchGate(cond, ifAnchorJob(job), list);
         }
 
@@ -746,7 +750,7 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
             const step_cond = step.if_condition orelse continue;
             // A step only runs when its job's condition already passed, so a
             // trust check on the job covers every step inside it.
-            if (job_verified or hasWorkflowRunTrustAnchor(step_cond)) continue;
+            if (job_verified or hasWorkflowRunTrustAnchor(list.allocator, step_cond)) continue;
             reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), list);
         }
     }
@@ -756,18 +760,89 @@ fn reportWorkflowRunBranchGate(cond: []const u8, anchor: Anchor, list: *Diagnost
     reportConditionContexts(cond, anchor, &workflow_run_untrusted_gate_contexts, "SEC022", .@"error", "workflow_run gate compares an attribute of the triggering run that a fork controls, so a fork can satisfy it and reach this privileged job", "gate on the triggering repository instead — `github.event.workflow_run.head_repository.full_name == github.repository` or `github.event.workflow_run.event == 'push'` — and identify the commit with `head_sha`", list);
 }
 
-/// An anchor has to be an *equality* check: `head_repository.full_name !=
-/// github.repository` selects the fork runs instead of excluding them, which is
-/// the very hole this rule reports.
+/// A gate is only sound when every run that satisfies the condition also
+/// satisfied the anchor. The anchor merely occurring in the text does not say
+/// that: `||` leaves a path around it, and `!` inverts what it asserts (#220).
+/// So the condition is parsed and walked carrying its negation polarity.
 ///
-/// `workflow_run.event == 'push'` is an anchor of its own: a fork cannot cause
-/// a push run in the base repository, so the branch name there is the base
-/// repository's. The compared literal is what makes it one, so a condition that
-/// mentions a pull_request event is not treated as verified.
-fn hasWorkflowRunTrustAnchor(cond: []const u8) bool {
-    if (matchesAnyContext(cond, &workflow_run_trust_anchors, .equality_operand)) return true;
-    if (!matchesAnyContext(cond, &[_][]const u8{"github.event.workflow_run.event"}, .equality_operand)) return false;
-    return std.mem.indexOf(u8, cond, "pull_request") == null;
+/// A condition that does not parse anchors nothing: SEC022 would rather report
+/// a sound gate it cannot read than miss a fork-reachable one.
+fn hasWorkflowRunTrustAnchor(allocator: std.mem.Allocator, cond: []const u8) bool {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var parser = expressions.ExprParser.init(arena.allocator(), conditionExpressionSource(cond));
+    const root = parser.parse() catch return false;
+    return anchorHolds(root, false);
+}
+
+/// An `if:` is an expression already, but may also be written wrapped in a
+/// single `${{ }}`. Any other shape is handed to the parser, which rejects it.
+fn conditionExpressionSource(cond: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, cond, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "${{") or !std.mem.endsWith(u8, trimmed, "}}")) return trimmed;
+    const inner = trimmed[3 .. trimmed.len - 2];
+    if (std.mem.indexOf(u8, inner, "${{") != null) return trimmed;
+    return inner;
+}
+
+/// Under an odd number of negations De Morgan swaps the operators, so there
+/// `||` is the conjunction and every leaf below reads inverted.
+fn anchorHolds(node: expressions.ExprNode, negated: bool) bool {
+    switch (node.kind) {
+        .unary_op => {
+            if (node.children.len != 1 or !std.mem.eql(u8, node.value, "!")) return false;
+            return anchorHolds(node.children[0], !negated);
+        },
+        .binary_op => {
+            if (node.children.len != 2) return false;
+            const conjunctive = if (std.mem.eql(u8, node.value, "&&"))
+                !negated
+            else if (std.mem.eql(u8, node.value, "||"))
+                negated
+            else
+                return isTrustAnchorComparison(node, negated);
+            if (!conjunctive) return false;
+            return anchorHolds(node.children[0], negated) or anchorHolds(node.children[1], negated);
+        },
+        else => return false,
+    }
+}
+
+fn isTrustAnchorComparison(node: expressions.ExprNode, negated: bool) bool {
+    const is_eq = std.mem.eql(u8, node.value, "==");
+    if (!is_eq and !std.mem.eql(u8, node.value, "!=")) return false;
+    // `!(a != b)` asserts exactly what `a == b` does.
+    const asserts_equal = is_eq != negated;
+    return isTrustAnchorOperand(node.children[0], node.children[1], asserts_equal) or
+        isTrustAnchorOperand(node.children[1], node.children[0], asserts_equal);
+}
+
+fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, asserts_equal: bool) bool {
+    if (ref.kind != .context_access) return false;
+    const path = parseContextPath(ref.value, 0);
+
+    for (workflow_run_trust_anchors) |anchor| {
+        // `head_repository.full_name != github.repository` selects the fork
+        // runs instead of excluding them, so only the equality anchors.
+        if (pathMatchesPattern(path, anchor)) return asserts_equal;
+    }
+
+    if (pathMatchesPattern(path, workflow_run_fork_flag)) {
+        if (other.kind != .boolean_literal) return false;
+        // `fork == false` and `fork != true` both say the run is the base
+        // repository's; the two inversions of those gate *for* forks.
+        return asserts_equal != std.mem.eql(u8, other.value, "true");
+    }
+
+    if (pathMatchesPattern(path, workflow_run_event_context)) {
+        // A fork cannot cause a `push` run in the base repository, so the
+        // branch name in one is the base repository's. The compared literal is
+        // what makes it an anchor, and a fork-reachable event makes it none.
+        if (!asserts_equal or other.kind != .string_literal) return false;
+        return std.mem.indexOf(u8, other.value, "pull_request") == null;
+    }
+
+    return false;
 }
 
 fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
@@ -1234,14 +1309,6 @@ const ContextPath = struct {
 /// Function calls need no special handling: `join(...)` and `toJSON(...)`
 /// arguments are themselves references and are visited the same way.
 fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
-    return matchesAnyContext(expr, contexts, .any);
-}
-
-/// `.equality_operand` is what separates a check that excludes untrusted runs
-/// from one that selects them.
-const ContextMatch = enum { any, equality_operand };
-
-fn matchesAnyContext(expr: []const u8, contexts: []const []const u8, mode: ContextMatch) bool {
     var i: usize = 0;
     while (i < expr.len) {
         if (expr[i] == '\'') {
@@ -1257,26 +1324,11 @@ fn matchesAnyContext(expr: []const u8, contexts: []const []const u8, mode: Conte
         // `steps.meta.outputs.github.head_ref` are never mistaken for a root.
         const path = parseContextPath(expr, i);
         for (contexts) |ctx| {
-            if (!pathMatchesPattern(path, ctx)) continue;
-            switch (mode) {
-                .any => return true,
-                .equality_operand => if (isEqualityOperand(expr, i, path.end)) return true,
-            }
+            if (pathMatchesPattern(path, ctx)) return true;
         }
         i = if (path.end > i) path.end else i + 1;
     }
     return false;
-}
-
-/// `==` may sit on either side of the reference.
-fn isEqualityOperand(expr: []const u8, start: usize, end: usize) bool {
-    var after = end;
-    while (after < expr.len and (expr[after] == ' ' or expr[after] == '\t')) after += 1;
-    if (after + 1 < expr.len and expr[after] == '=' and expr[after + 1] == '=') return true;
-
-    var before = start;
-    while (before > 0 and (expr[before - 1] == ' ' or expr[before - 1] == '\t')) before -= 1;
-    return before >= 2 and expr[before - 1] == '=' and expr[before - 2] == '=';
 }
 
 fn skipStringLiteral(expr: []const u8, start: usize) usize {
@@ -2698,6 +2750,34 @@ test "SEC022: an anchor must exclude untrusted runs, not select them" {
     // `fork == true` is a fork-only gate, so it is not in the anchor table.
     try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.fork == true && github.event.workflow_run.head_branch == 'main'"));
     try testing.expect(sec022JobCondition("github.repository == github.event.workflow_run.head_repository.full_name && github.event.workflow_run.head_branch == 'main'") == null);
+}
+
+test "SEC022: an anchor on a bypassable path anchors nothing" {
+    // #220: `||` leaves the branch gate reachable on its own.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.full_name == github.repository || github.event.workflow_run.head_branch == 'main'"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.event == 'push' || github.event.workflow_run.head_branch == 'main'"));
+    // A negated anchor asserts the opposite of the check it is written as.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("!(github.event.workflow_run.head_branch != 'main') && !(github.event.workflow_run.event == 'push')"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("!(github.event.workflow_run.head_repository.full_name == github.repository) && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: the forked repository keeps the name it was forked from" {
+    // #220: `head_repository.name` is `repo` for `attacker/repo` too.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.name == 'zghalint' && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: a negated exclusion is a sound gate" {
+    // #220: `!(fork == true || head_branch == 'main')` is `fork == false &&
+    // head_branch != 'main'`, so the fork runs never reach the job.
+    try testing.expect(sec022JobCondition("!(github.event.workflow_run.head_repository.fork == true || github.event.workflow_run.head_branch == 'main')") == null);
+    try testing.expect(sec022JobCondition("!(github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_repository.full_name != github.repository)") == null);
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_repository.fork == false && github.event.workflow_run.head_branch == 'main'") == null);
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_repository.fork != true && github.event.workflow_run.head_branch == 'main'") == null);
+}
+
+test "SEC022: a condition that does not parse is reported" {
+    // Fail-closed: an unreadable gate is not evidence of a trust check.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_branch == 'main' && ((github.event.workflow_run.event == 'push')"));
 }
 
 test "SEC022: immutable and unrelated contexts are not reported" {
