@@ -36,6 +36,32 @@ The binary will be at `./zig-out/bin/zghalint`.
 Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are available on the [Releases](https://github.com/watany-dev/zghalint/releases) page.
 The first public tag is `v0.0.1-rc.1`, published as a prerelease while the installation flow and CLI contract are still being validated.
 
+#### Verifying a release artifact
+
+Every release archive is published with a `SHA256SUMS` file and a
+[SLSA build provenance attestation](https://slsa.dev/), so a download can be
+checked against both the published checksum and the workflow that produced it.
+
+```bash
+TAG=v0.0.1-rc.1
+ARCHIVE=zghalint-linux-x86_64.tar.gz
+BASE=https://github.com/watany-dev/zghalint/releases/download/$TAG
+
+curl -fSL -O "$BASE/$ARCHIVE"
+curl -fSL -O "$BASE/SHA256SUMS"
+
+# 1. Checksum published with the release
+sha256sum --ignore-missing -c SHA256SUMS
+
+# 2. Provenance: the archive was built by this repository's release workflow
+gh attestation verify "$ARCHIVE" --repo watany-dev/zghalint
+```
+
+`gh attestation verify` requires GitHub CLI 2.49 or later. It prints the
+workflow (`.github/workflows/release.yml`) and the commit the artifact was
+built from; a mismatch or a missing attestation means the archive did not come
+from this repository's release pipeline.
+
 ### Use as a GitHub Action
 
 ```yaml

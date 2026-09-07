@@ -34,3 +34,5 @@ still be renumbered before 1.0.
 - A composite action (`watany-dev/zghalint@<tag>`) that downloads the release
   binary and verifies it against the published `SHA256SUMS`.
 - Prebuilt binaries for Linux, macOS and Windows on x86_64 and aarch64.
+- SLSA build provenance attestations on every release archive, verifiable with
+  `gh attestation verify` (see the README).
