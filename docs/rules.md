@@ -63,18 +63,26 @@ picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
 `discussion_comment`.
 
+All three read both `with.ref` and `with.repository`: pointing `repository` at
+the PR head repository checks out the fork's code without `ref` being touched
+at all (#218). A step whose `ref` and `repository` are fed from the same
+payload is one mistake, so it is reported once.
+
 A workflow can declare several of those triggers at once, so ownership is
 decided per value rather than per workflow: SEC021 stays quiet on exactly the
-`with.ref` values SEC005 or SEC009 already reports, and no other. Skipping the
-whole workflow would hide a `ref` fed from a comment body just because
-`pull_request_target` also appears in `on:`, and would hide `with.repository`
-entirely, since neither of the other two rules looks at it.
+values SEC005 or SEC009 already reports, and no other. Skipping the whole
+workflow would hide a `ref` fed from a comment body just because
+`pull_request_target` also appears in `on:`.
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
 `github.event.client_payload.*`) and the free text of an issue, comment or
-discussion. The bare `inputs.*` shorthand counts too, except in a workflow that
-also declares `workflow_call`: there it names what a caller passes, and
-analysing callers is out of scope.
+discussion. The bare `inputs.*` shorthand counts too, unless every way into the
+workflow fills it from a caller — a `workflow_call` workflow with no
+`workflow_dispatch`, or one whose `workflow_dispatch` declares no inputs of its
+own. Analysing callers is out of scope. A `workflow_call` declared beside a
+`workflow_dispatch` that has inputs keeps the shorthand untrusted: the same
+`inputs.ref` is still what a dispatching user types, so three lines of
+`workflow_call:` must not silence the rule (#219).
 
 ### SEC022 vs. SEC006
 
@@ -88,11 +96,22 @@ case: `on: workflow_run` only, and only for the attributes the fork authors
 `display_title`). A condition that also verifies the triggering repository —
 `github.event.workflow_run.head_repository.full_name == github.repository`, or
 `github.event.workflow_run.event == 'push'` — is sound, and is not reported.
-The anchor must be an equality check: `head_repository.full_name !=
-github.repository` selects the fork runs rather than excluding them, and
-`head_repository.fork == true` is a fork-only gate, so neither counts. Values
-that name one immutable commit — `head_sha`, `head_commit.id` — are never
-reported. A trust check on the job covers the steps inside it.
+The condition is parsed, and the anchor only counts where it is
+guaranteed to have held: joined with `||` it leaves the branch gate reachable
+on its own, so it anchors nothing. Negation is read through — `!(fork == true
+|| head_branch == 'main')` excludes exactly the fork runs and is sound, while
+`!(head_repository.full_name == github.repository)` asserts the opposite of the
+check it is written as. Read with that polarity, the anchor must assert
+identity: `head_repository.full_name != github.repository` selects the fork
+runs rather than excluding them, and `head_repository.fork == true` is a
+fork-only gate (`fork == false`, `fork != true` and `!fork` are the sound
+spellings). The anchor is matched segment for segment, so only the fields that
+name the repository count — `head_repository.name` is not one of them, because
+a fork inherits the name of the repository it came from, and neither is
+`head_repository.owner.type`, which is `User` for every fork. A condition that
+does not parse anchors nothing. Values that name one immutable commit — `head_sha`,
+`head_commit.id` — are never reported. A trust check on the job covers the
+steps inside it.
 
 ## Supply Chain Security Rules (SC)
 
@@ -201,6 +220,7 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
 | RUNNER002 | unknown-runner | error | `runs-on` label is not a known GitHub-hosted runner (typos leave the job queued forever) |
+| RUNNER003 | runner-label-conflict | error | `runs-on` の複数ラベルが異なる OS を指しており、条件を満たすランナーが存在しない |
 
 RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知のラベル」だけを報告する。
 セルフホストのフリートは列挙しようがないため、以下は報告しない:
@@ -208,11 +228,29 @@ RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知の
 - 既知ラベルに接尾辞が付いたもの（`ubuntu-latest-4-cores` などの larger runner）
 - `self-hosted` / `linux` / `x64` などの慣用ラベル
 - 既知ラベルから遠く、`ubuntu-` / `windows-` / `macos-` でも始まらない独自ラベル（`gpu-box` など）
-- `runs-on: ${{ matrix.os }}` のような式（matrix 展開は #210 で対応予定）
+- 展開できない式（`fromJSON`、他コンテキスト参照、文字列連結）を含む `runs-on`
 
 既知ラベルと編集距離 2 以内で候補が一意に定まる場合のみ `did you mean ...?` を
 提示し、`--fix-unsafe` で置換する。独自ラベルは `.zghalint.yml` の
 `runner.labels` に列挙すれば既知として扱われる。
+
+`runs-on: ${{ matrix.os }}` のように値が `${{ matrix.<key> }}` 単体の式である
+場合は、`strategy.matrix.<key>`（`include` 由来の値を含む）を展開して各値を
+判定する。診断と autofix は matrix の値側を指す。`exclude` の値は組み合わせを
+除外するだけなのでランナーを名乗らず、報告の対象外とする（`--fix-unsafe` は
+軸の値を直す際に、同じラベルを名指しする `exclude` の値も併せて書き換える）。
+
+RUNNER001 / RUNNER002 は `runs-on: [self-hosted, linux, x64]` のような配列指定と
+ランナーグループ（`runs-on: {group:, labels:}`）にも対応し、ラベルごとに検査する。
+ただし `self-hosted` を含む集合では、残りのラベルはフリート運用者が付けた名前と
+みなして RUNNER002 を報告しない。
+
+RUNNER003 は同一ランナーが同時に満たせないラベルの併記を報告する。ジョブは
+すべてのラベルを備えた 1 台のランナーで実行されるため、`ubuntu-latest` と
+`windows-latest` のように OS が異なるラベルを並べると永久に queued のままになる。
+OS の判定に使うのは既知ラベルだけで、`self-hosted` / `x64` や自前フリートの独自
+ラベル（Linux マシンに付けた `macos-m1` など）は判定に使わない。`${{ }}` を含む
+ラベルがあるジョブは matrix 展開が必要なため報告しない。
 
 ## Syntax Rules (SYN)
 
@@ -238,6 +276,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN016 | invalid-timezone | error | `schedule` `timezone` is not a name in the IANA time zone database |
 | SYN017 | workflow-dispatch-inputs | error | `workflow_dispatch` input declares an invalid `type`, misuses `options`, or has a `default` that does not fit |
 | SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis |
+| SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
 
 ### SYN002 duplicate-key
 
@@ -571,6 +610,55 @@ on:
 
 An input with no `type:` defaults to `string` and is not reported. Reusable
 workflow inputs use a different type system and are checked by RW001.
+
+---
+
+### SYN019 matrix-include-exclude
+
+`exclude` removes combinations the matrix already produces. An entry naming an
+axis the matrix does not declare, or a value the axis never takes, removes
+nothing — the combination the author meant to drop still runs.
+
+```yaml
+strategy:
+  matrix:
+    os: [ubuntu-latest, macos-latest]
+    node: [18, 20]
+    exclude:
+      - os: windows-latest   # warning: "windows-latest" does not exist in "os" axis
+        node: 18
+      - oss: ubuntu-latest   # warning: unknown key "oss" in "exclude". did you mean "os"?
+        node: 20
+```
+
+`include` is allowed to add keys the matrix does not declare, so a new key is
+left alone. Only a key one edit away from an existing axis is reported, and not
+even then when some entry sets both the key and that axis — a key used beside
+the axis it resembles is a deliberate addition, not a typo.
+
+```yaml
+strategy:
+  matrix:
+    os: [ubuntu-latest, macos-latest]
+    node: [18, 20]
+    exclude:
+      - os: macos-latest     # valid: the matrix produces this combination
+        node: 18
+    include:
+      - os: ubuntu-latest
+        node: 20
+        experimental: true   # valid: 'include' may add a new key
+      - os: macos-latest
+        nodes: 22            # warning: unknown key "nodes" in "include". did you mean "node"?
+```
+
+`exclude` is matched against the axes only. GitHub applies `exclude` to the base
+matrix and merges `include` afterwards, so a combination that only `include`
+contributes is never removed and naming it in `exclude` is reported as well. An
+axis built from an expression (`os: ${{ fromJSON(...) }}`) carries no values to
+compare against, so the value check is skipped for it. Plain `1.10` and `1.1`,
+or `True` and `true`, are the same YAML value and do not count as a mismatch;
+quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
 
 ---
 

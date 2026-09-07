@@ -111,7 +111,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **77 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **78 rules** across 9 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 
@@ -143,14 +143,15 @@ invalid permission levels.
 Dependabot cooldown configuration, insecure external code execution settings,
 `uses:` reference format for actions and reusable workflow calls.
 
-### Runner (2 rules)
+### Runner (3 rules)
 
 Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
-detection (typos such as `ubunut-latest`).
+detection (typos such as `ubunut-latest`), and conflicting label sets that no
+single runner can satisfy (`runs-on: [ubuntu-latest, windows-latest]`).
 
-### Syntax (18 rules)
+### Syntax (19 rules)
 
-Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values.
+Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency.
 
 ## Configuration
 

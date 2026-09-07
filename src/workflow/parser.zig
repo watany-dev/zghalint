@@ -677,6 +677,25 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
             .scalar => |s| job.runs_on_value_span = s.span,
             else => {},
         }
+        // A runner group (`runs-on: {group:, labels:}`) keeps its labels one
+        // level down; every other form is the label list itself.
+        const labels_node: ?Node = switch (n) {
+            .mapping => |rm| rm.get("labels"),
+            .scalar, .sequence => n,
+            else => null,
+        };
+        if (labels_node) |ln| {
+            const parsed = parseStringArrayWithSpans(ctx.allocator, ln) catch |err| switch (err) {
+                // A non-scalar entry is not a label zghalint can read; the
+                // rest of the job still parses.
+                error.InvalidValue, error.MissingField => null,
+                else => return err,
+            };
+            if (parsed) |p| {
+                job.runs_on_labels = p.values;
+                job.runs_on_label_spans = p.spans;
+            }
+        }
     }
     job.if_condition = m.getScalar("if");
     if (m.get("if")) |n| {
@@ -1918,6 +1937,113 @@ test "parseDefaults leaves defaults null when run.shell is absent" {
     try testing.expect(wf.defaults == null);
     try testing.expect(wf.jobs[0].defaults == null);
     try testing.expect(wf.jobs[0].steps[0].shell_value_span == null);
+}
+
+test "parseJob collects runs_on_labels for a scalar runs-on" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const labels = wf.jobs[0].runs_on_labels;
+    try testing.expectEqual(@as(usize, 1), labels.len);
+    try testing.expectEqualStrings("ubuntu-latest", labels[0]);
+    const span = wf.jobs[0].runs_on_label_spans[0];
+    try testing.expectEqualStrings("ubuntu-latest", source[span.start_byte..span.end_byte]);
+}
+
+test "parseJob collects runs_on_labels for a sequence runs-on" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: [self-hosted, linux, x64]
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const job = wf.jobs[0];
+    try testing.expect(job.runs_on == null);
+    try testing.expect(job.runs_on_value_span == null);
+    try testing.expectEqual(@as(usize, 3), job.runs_on_labels.len);
+    try testing.expectEqualStrings("self-hosted", job.runs_on_labels[0]);
+    try testing.expectEqualStrings("linux", job.runs_on_labels[1]);
+    try testing.expectEqualStrings("x64", job.runs_on_labels[2]);
+    try testing.expectEqual(@as(usize, 3), job.runs_on_label_spans.len);
+    const span = job.runs_on_label_spans[1];
+    try testing.expectEqualStrings("linux", source[span.start_byte..span.end_byte]);
+}
+
+test "parseJob collects runs_on_labels from a runner group mapping" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on:
+        \\      group: ubuntu-runners
+        \\      labels: [ubuntu-latest, x64]
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const labels = wf.jobs[0].runs_on_labels;
+    try testing.expectEqual(@as(usize, 2), labels.len);
+    try testing.expectEqualStrings("ubuntu-latest", labels[0]);
+    try testing.expectEqualStrings("x64", labels[1]);
+}
+
+test "parseJob leaves runs_on_labels empty for a group without labels" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on:
+        \\      group: ubuntu-runners
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].runs_on_labels.len);
 }
 
 test "parseJob leaves runs_on_value_span null for missing runs-on" {
