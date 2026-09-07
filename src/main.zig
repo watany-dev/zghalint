@@ -546,7 +546,7 @@ fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
 /// to one of them would make DEP004 report missing manifests for the others.
 fn resolveWorkspaceRoot(arena: std.mem.Allocator, files: []const []const u8) ?[]const u8 {
     const hint = if (files.len > 0) files[0] else ".";
-    const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch null orelse return null;
+    const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch return null;
 
     // Files in a directory already checked cannot resolve to another root, so
     // the common case (one directory of workflows) costs a single walk.
