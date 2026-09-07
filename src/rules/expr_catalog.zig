@@ -164,7 +164,6 @@ pub fn lookupContext(name: []const u8) ?TypeRef {
 /// every builtin, so only the containers a parameter can never take are
 /// modelled and EXPR018 stays free of false positives (ADR D3, #162).
 pub const ArgKind = enum {
-    /// Takes anything.
     any,
     /// Rejects object and array.
     string,
@@ -192,7 +191,6 @@ pub const FuncSig = struct {
     /// Type of every argument past `args`, for the variadic tail.
     rest: ArgKind = .any,
 
-    /// `index` is 0-based; anything past `args` takes the variadic type.
     pub fn argKind(self: *const FuncSig, index: usize) ArgKind {
         if (index < self.args.len) return self.args[index];
         return self.rest;
