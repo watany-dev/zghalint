@@ -1,6 +1,6 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`5fc66a7`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`36faabf`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
@@ -15,17 +15,18 @@
 | E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（33 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。#170 / #171 / #172 の回帰 strategy を収録済み |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
-| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#246（CI 基盤 / #234〜#239） |
+| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査） |
 | オープン issue | 50 件。内訳は #55 本体 1、#55 の sub-issue 20、形式検証由来のバグ残 4（#221〜#224）、リポジトリ運用・CI 基盤 17（#228〜#244）、その他 8 |
-| 実装済みだが未 close の issue | **#72 / #73 / #75 / #86 / #210 / #218 / #219 / #220**（いずれも main に実装が入っているのに issue が open のまま。棚卸しの最大のノイズ源） |
+| バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
+| 実装済みだが未 close の issue | **14 件** — ルール系 8（#72 #73 #75 #86 #210 #218 #219 #220）と PR #246 で対応済みの CI 系 6（#234〜#239）。いずれも main に実装が入っているのに open のまま。棚卸しの最大のノイズ源 |
 | 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は **修正済み**（issue は未 close）。未修正は #221〜#224 と #229（BP007 誤検知）/ #232（release.yml のランナー不一致） |
 
 Phase 1（トリガー `on:` 群）と Phase 2（job / step / matrix）はどちらも完了した。
 形式検証が出した security 3 件（#218 / #219 / #220）も修正済みで、残る反例は #221〜#224 の 4 件。
 主線は **Phase 3（contextual typing）** に移り、#87 / #89 は依存が解けて即着手できる状態にある。
 
-一方で、リポジトリ運用・CI 基盤の issue が 17 件（#228〜#244）新たに起票された。
-ルール実装とはファイルが重ならない（`.github/` と `docs/` 中心）ので並行トラックとして扱うが、
+一方で、リポジトリ運用・CI 基盤の issue が 17 件（#228〜#244）起票され、うち 6 件（#234〜#239）は
+PR #246 で対応済み。ルール実装とはファイルが重ならない（`.github/` と `docs/` 中心）ので並行トラックとして扱うが、
 #228（自リポジトリの dogfooding）と #242（`docs/rules.md` と `registry.all_rules` の同期テスト）は
 本書の棚卸しコストを直接下げるので優先度を上げる。
 
@@ -94,14 +95,14 @@ EXPR010（`src/rules/steps_ref.zig`）と EXPR012（`src/rules/needs_context.zig
 | #159 rule engine の arena 提供 | `expressions.zig` の `getArenaAllocator`（:1009）が `page_allocator` を返して意図的にリークしている。`engine.zig` がルール実行単位の arena を配り、`impostor.zig` の同名関数と意味を揃える。`engine.zig` の `Rule` シグネチャに触るので、ルール追加が集中する Phase 1〜3 の**前**に済ませると衝突が少ない |
 | 形式検証由来の残バグ #221〜#224 | security 3 件（#218 / #219 / #220）は修正済み。残りは #221 / #222 が prefetch キャッシュ（ウォームランが成立しない・RateLimited の劣化）、#223 が `--fix` の原子性、#224 が二重報告。いずれも `src/rules/` の外なのでルール実装と並行できる |
 | その他のバグ #229 / #232 | #229 は BP007 が行継続（`\`）の続き行を誤検知する。#232 は `release.yml` の macOS ランナーが `macos-latest` のままで `ci.yml` と不一致 |
-| リポジトリ運用・CI 基盤 #228〜#244（17 件） | `.github/` と `docs/` 中心でルール実装とファイルが重ならない。#246 が #234〜#239 をまとめて対応中。**#228（自リポジトリを zghalint で lint する dogfooding）と #242（`docs/rules.md` と `registry.all_rules` の同期テスト）を先に通す** — 本書の棚卸しで毎回手で数えている数字が自動で守られる |
+| リポジトリ運用・CI 基盤 #228〜#244（17 件） | `.github/` と `docs/` 中心でルール実装とファイルが重ならない。#234〜#239 は PR #246 で対応済み（Dependabot 設定・PBT 依存固定・Zig 版の一元化・coverage 拡張）。残るのは #228 #230 #231 #232 #233 #240 #241 #242 #243 #244 で、**#228（自リポジトリを zghalint で lint する dogfooding）と #242（`docs/rules.md` と `registry.all_rules` の同期テスト）を先に通す** — 本書の棚卸しで毎回手で数えている数字が自動で守られる |
 | #64 YAML anchor / alias / merge key | パーサ基盤。GitHub Actions が anchor をサポートしたため実用価値あり。`yaml/parser.zig` の整理を Tidy First で先に行い、PBT にラウンドトリップ / 循環参照テストを追加する。#172 / #173 の修正が入って同ファイルが落ち着いたので、着手可能になった |
 
 ## 3. 直近の着手順（上位 6 件）
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | 実装済み issue の close（#72 #73 #75 #86 #210 #218 #219 #220） | コードは main にあるのに 8 件が open のまま。棚卸しのたびに実装状況を手で突き合わせる原因になっており、コスト 0 で解消できる |
+| 1 | 実装済み issue の close（ルール系 #72 #73 #75 #86 #210 #218 #219 #220 と CI 系 #234〜#239） | コードは main にあるのに 14 件が open のまま。棚卸しのたびに実装状況を手で突き合わせる原因になっており、コスト 0 で解消できる |
 | 2 | #242 | `docs/rules.md` と `registry.all_rules` の同期テスト。表 79 行・見出し 77・RW001 欠落という現状の不一致がそのまま再発防止になる |
 | 3 | #159 | エンジンの arena。Phase 3 でルール追加が集中する前に `Rule` シグネチャを固める |
 | 4 | #87 | Phase 2 の matrix 構造が入ったので即着手できる。#129 の overlay 材料も揃う |
@@ -122,4 +123,5 @@ Phase 1・Phase 2 が終わったので、以後は contextual typing（Phase 3�
 - 深い再帰を持つパーサには上限を入れる（YAML は `max_parse_depth = 256`、式は `max_expr_depth = 256`）。新しい再帰下降を書いたら同じガードを必ず付ける
 - 実装が終わったら `/wrapup`（`.claude/skills/wrapup`）で正しさ・過剰設計・コメントの 3 点を見てからコミットする。コメントは「コードから復元できない why」だけ残す（`/cleanup-comments` の基準）
 - 各 Phase 完了時に `docs/rules.md` のルール数と #55 の進捗を確認する
+- Zig の版を上げるときは `build.zig.zon` の `minimum_zig_version` だけを触る。CI / release / `scripts/setup-zig.sh` はそこから読むので、他所に版を書かない（`docs/maintenance.md`）
 - `zig build` は build.zig 一本で、`scripts/setup-zig.sh` の wrapper は `-fllvm` 注入のみ。**古い wrapper が `/usr/local/bin/zig` に残っていると `no module named 'build_options'` でビルドが落ちる**。main を取り込んだら `bash scripts/setup-zig.sh` を流し直す
