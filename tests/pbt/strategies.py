@@ -1,4 +1,5 @@
 """Hypothesis custom strategies for zghalint PBT."""
+
 from __future__ import annotations
 
 from hypothesis import strategies as st
@@ -63,8 +64,15 @@ expression_text = st.text(
 # High-level strategies (structurally valid workflows)
 # ============================================================
 
-_triggers = ["push", "pull_request", "pull_request_target",
-             "workflow_dispatch", "release", "issues", "issue_comment"]
+_triggers = [
+    "push",
+    "pull_request",
+    "pull_request_target",
+    "workflow_dispatch",
+    "release",
+    "issues",
+    "issue_comment",
+]
 
 _runners = ["ubuntu-latest", "ubuntu-22.04", "macos-latest", "windows-latest"]
 
@@ -107,9 +115,7 @@ _dangerous_contexts = [
 # condition only yields a boolean, so ref-shaped inputs such as
 # `github.head_ref` are a routing idiom there rather than an injection
 # vector (#138).  They stay untrusted for SEC002 / SEC008.
-_condition_dangerous_contexts = [
-    c for c in _dangerous_contexts if c != "github.head_ref"
-]
+_condition_dangerous_contexts = [c for c in _dangerous_contexts if c != "github.head_ref"]
 
 # Prefixes that SEC003 detects as hardcoded secrets
 _secret_values = [
@@ -238,15 +244,23 @@ def workflow_with_perm002(draw: st.DrawFn) -> str:
     PERM002 fires.
     """
     runner = draw(st.sampled_from(_runners))
-    action = draw(st.sampled_from([
-        "some-org/some-action@a5ac7e51b41094c92402da3b24376905380afc29",
-        "another-org/tool@a5ac7e51b41094c92402da3b24376905380afc29",
-    ]))
+    action = draw(
+        st.sampled_from(
+            [
+                "some-org/some-action@a5ac7e51b41094c92402da3b24376905380afc29",
+                "another-org/tool@a5ac7e51b41094c92402da3b24376905380afc29",
+            ]
+        )
+    )
     # A block-scalar `runs-on:` used to make the fix land inside `steps:` (#172).
-    runs_on = draw(st.sampled_from([
-        f"    runs-on: {runner}\n",
-        f"    runs-on: |\n      {runner}\n",
-    ]))
+    runs_on = draw(
+        st.sampled_from(
+            [
+                f"    runs-on: {runner}\n",
+                f"    runs-on: |\n      {runner}\n",
+            ]
+        )
+    )
     return (
         "name: CI\n"
         "on: push\n"
@@ -269,11 +283,25 @@ def workflow_with_perm001_individual_write(draw: st.DrawFn) -> str:
     The workflow sets one permission scope to write (excluding id-token, which
     has a dedicated hint without autofix). Other rules may fire as well.
     """
-    scope = draw(st.sampled_from([
-        "contents", "pull-requests", "issues", "actions", "packages",
-        "deployments", "checks", "statuses", "security-events",
-        "attestations", "discussions", "pages", "repository-projects",
-    ]))
+    scope = draw(
+        st.sampled_from(
+            [
+                "contents",
+                "pull-requests",
+                "issues",
+                "actions",
+                "packages",
+                "deployments",
+                "checks",
+                "statuses",
+                "security-events",
+                "attestations",
+                "discussions",
+                "pages",
+                "repository-projects",
+            ]
+        )
+    )
     return (
         "name: CI\n"
         "on: push\n"
@@ -424,10 +452,10 @@ def dependabot_with_dep001(draw: st.DrawFn) -> str:
     return (
         "version: 2\n"
         "updates:\n"
-        f"  - package-ecosystem: \"{ecosystem}\"\n"
-        "    directory: \"/\"\n"
+        f'  - package-ecosystem: "{ecosystem}"\n'
+        '    directory: "/"\n'
         "    schedule:\n"
-        f"      interval: \"{interval}\"\n"
+        f'      interval: "{interval}"\n'
     )
 
 
@@ -446,12 +474,14 @@ def workflow_pair_monotonic(draw: st.DrawFn) -> tuple[str, str]:
     for i in range(num_extra):
         job_id = f"  extra{i}:"
         action = draw(st.sampled_from(_unpinned_actions))
-        extra_jobs.extend([
-            job_id,
-            "    runs-on: ubuntu-latest",
-            "    steps:",
-            f"      - uses: {action}",
-        ])
+        extra_jobs.extend(
+            [
+                job_id,
+                "    runs-on: ubuntu-latest",
+                "    steps:",
+                f"      - uses: {action}",
+            ]
+        )
 
     extended = base.rstrip("\n") + "\n" + "\n".join(extra_jobs) + "\n"
     return base, extended
@@ -537,13 +567,17 @@ def workflow_with_flow_with(draw: st.DrawFn) -> str:
     SEC018 fires on every variant, but the flow collections, block scalar and
     empty `with:` all broke the `with:` append autofix before #171.
     """
-    with_block = draw(st.sampled_from([
-        "        with: {fetch-depth: 0}\n",
-        "        with:\n          sparse-checkout: [a, b]\n",
-        "        with:\n          sparse-checkout: |\n            a\n            b\n",
-        "        with: {}\n",
-        "        with:\n",
-    ]))
+    with_block = draw(
+        st.sampled_from(
+            [
+                "        with: {fetch-depth: 0}\n",
+                "        with:\n          sparse-checkout: [a, b]\n",
+                "        with:\n          sparse-checkout: |\n            a\n            b\n",
+                "        with: {}\n",
+                "        with:\n",
+            ]
+        )
+    )
     return (
         "name: CI\n"
         "on: push\n"

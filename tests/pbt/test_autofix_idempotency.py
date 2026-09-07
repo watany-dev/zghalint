@@ -1,4 +1,5 @@
 """Auto-fix idempotency: applying --fix and re-linting must reduce fixable diagnostics."""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from hypothesis import given, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from tests.pbt.conftest import run_zghalint, write_temp_workflow
@@ -33,6 +34,7 @@ PBT_SETTINGS = settings(
 def _count_diagnostics_json(binary, path: str) -> tuple[int, set[str]]:
     """Lint a file with JSON output and return (count, set_of_rule_ids)."""
     import json
+
     result = run_zghalint(binary, "--format", "json", "--color", "never", path)
     if not result.stdout.strip():
         return 0, set()
@@ -97,8 +99,7 @@ def test_fix_does_not_crash(zghalint_bin, content):
     try:
         result = run_zghalint(zghalint_bin, "--fix", path)
         assert result.returncode >= 0, (
-            f"--fix signal-terminated: returncode={result.returncode}, "
-            f"stderr={result.stderr[:300]}"
+            f"--fix signal-terminated: returncode={result.returncode}, stderr={result.stderr[:300]}"
         )
     finally:
         os.unlink(path)
@@ -127,14 +128,16 @@ def _cleanup_dependabot(path: str) -> None:
     os.rmdir(os.path.dirname(path))
 
 
-@given(content=st.one_of(
-    workflow_with_bp005(),
-    workflow_with_perm002(),
-    workflow_with_perm001_individual_write(),
-    workflow_with_bp004(),
-    workflow_with_perf001_setup_go(),
-    workflow_with_flow_with(),
-))
+@given(
+    content=st.one_of(
+        workflow_with_bp005(),
+        workflow_with_perm002(),
+        workflow_with_perm001_individual_write(),
+        workflow_with_bp004(),
+        workflow_with_perf001_setup_go(),
+        workflow_with_flow_with(),
+    )
+)
 @PBT_SETTINGS
 def test_unsafe_fix_reduces_diagnostics_workflow(zghalint_bin, content):
     """After --fix-unsafe, re-linting a workflow must not show more diagnostics."""
@@ -168,14 +171,16 @@ def test_unsafe_fix_reduces_diagnostics_dependabot(zghalint_bin, content):
         _cleanup_dependabot(path)
 
 
-@given(content=st.one_of(
-    workflow_with_bp005(),
-    workflow_with_perm002(),
-    workflow_with_perm001_individual_write(),
-    workflow_with_bp004(),
-    workflow_with_perf001_setup_go(),
-    workflow_with_flow_with(),
-))
+@given(
+    content=st.one_of(
+        workflow_with_bp005(),
+        workflow_with_perm002(),
+        workflow_with_perm001_individual_write(),
+        workflow_with_bp004(),
+        workflow_with_perf001_setup_go(),
+        workflow_with_flow_with(),
+    )
+)
 @PBT_SETTINGS
 def test_double_unsafe_fix_is_idempotent_workflow(zghalint_bin, content):
     """Applying --fix-unsafe twice must produce the same file content as applying once."""

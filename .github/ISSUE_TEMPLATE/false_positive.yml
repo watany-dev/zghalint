@@ -1,0 +1,69 @@
+name: False positive / false negative
+description: A rule fires on a workflow that is fine, or stays silent on one that is not.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A detection report is only reproducible with the workflow that
+        produced it. The four fields below — the fragment, the expected
+        result, the actual output, and the version — are what make it so.
+
+  - type: input
+    id: rule_id
+    attributes:
+      label: Rule ID
+      description: The rule involved, e.g. `SEC002` or `EXPR003`. See docs/rules.md.
+      placeholder: SEC002
+    validations:
+      required: true
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Which way is it wrong?
+      options:
+        - False positive — the rule fires but the workflow is fine
+        - False negative — the workflow has the problem but the rule stays silent
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow fragment
+      description: The smallest `.yml` that still shows the behaviour. Redact secrets and internal hostnames.
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output
+      description: What zghalint printed. `--format json` output is welcome.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What should have been reported instead, and why the workflow is (or is not) safe.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: zghalint version
+      description: Output of `zghalint --version`, or the tag/commit you built from.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and how you ran it
+      placeholder: ubuntu-24.04, via the composite action / built from source

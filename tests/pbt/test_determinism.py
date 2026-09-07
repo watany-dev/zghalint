@@ -1,9 +1,10 @@
 """Determinism: identical inputs must always produce identical outputs."""
+
 from __future__ import annotations
 
 import os
 
-from hypothesis import given, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings
 
 from tests.pbt.conftest import run_zghalint, write_temp_workflow
 from tests.pbt.strategies import workflow_yaml, yaml_like_text

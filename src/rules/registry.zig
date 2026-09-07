@@ -1,6 +1,7 @@
 //! The CLI, the SARIF renderer, and the fixture-driven E2E tests all run the
 //! same rule set, so it lives here instead of in `main.zig`.
 
+const std = @import("std");
 const engine = @import("engine.zig");
 const security = @import("security.zig");
 const best_practices = @import("best_practices.zig");
@@ -33,3 +34,24 @@ pub const all_rules = security.security_rules ++
     syntax.rules ++
     uses.rules ++
     reusable_workflow.rules;
+
+/// Every rule ID that can appear in a diagnostic, and therefore every ID that
+/// `docs/rules.md` must document. This is `all_rules` with the umbrella `EXPR`
+/// entry expanded into the IDs it actually emits.
+pub const documented_rule_ids: []const []const u8 = blk: {
+    var ids: [all_rules.len + expressions.sub_rule_ids.len]([]const u8) = undefined;
+    var n: usize = 0;
+    for (all_rules) |rule| {
+        if (std.mem.eql(u8, rule.id, expressions.expression_rule.id)) {
+            for (expressions.sub_rule_ids) |sub_id| {
+                ids[n] = sub_id;
+                n += 1;
+            }
+            continue;
+        }
+        ids[n] = rule.id;
+        n += 1;
+    }
+    const final = ids[0..n].*;
+    break :blk &final;
+};

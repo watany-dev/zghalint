@@ -1,0 +1,16 @@
+# Default owner for everything in the repository.
+* @watany-dev
+
+# Workflows run with repository credentials; every change to them needs a
+# review.
+/.github/ @watany-dev
+
+# Security rules and the vulnerability data behind them: a wrong entry here
+# either hides a real vulnerability or fails every user's CI.
+/src/rules/data/ @watany-dev
+/src/rules/security.zig @watany-dev
+/src/rules/advisory.zig @watany-dev
+
+# The composite action downloads and verifies the release binary.
+/action.yml @watany-dev
+/SECURITY.md @watany-dev

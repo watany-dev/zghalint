@@ -1,0 +1,31 @@
+name: Feature request / new rule
+description: A new lint rule, a CLI capability, or an output format.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What goes unnoticed or is awkward today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like zghalint to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example workflow
+      description: For a new rule — a workflow that should be reported, and, if it is close to a passing case, one that should not be.
+      render: yaml
+
+  - type: input
+    id: prior_art
+    attributes:
+      label: Prior art
+      description: Does actionlint, zizmor, or another tool cover this? A link helps.

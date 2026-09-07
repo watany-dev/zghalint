@@ -1,20 +1,21 @@
 """Monotonicity: more issues in the input → diagnostic count does not decrease.
 Also: disabling rules via config never increases diagnostic count."""
+
 from __future__ import annotations
 
 import os
 
-from hypothesis import given, settings, HealthCheck, assume
+from hypothesis import HealthCheck, assume, given, settings
 
 from tests.pbt.conftest import (
     lint_workflow_json,
-    write_temp_workflow,
-    write_temp_config,
     run_zghalint,
+    write_temp_config,
+    write_temp_workflow,
 )
 from tests.pbt.strategies import (
-    workflow_yaml,
     workflow_pair_monotonic,
+    workflow_yaml,
 )
 
 PBT_SETTINGS = settings(
@@ -63,17 +64,21 @@ def test_disabling_rule_does_not_increase_diagnostics(zghalint_bin, content):
     try:
         result = run_zghalint(
             zghalint_bin,
-            "--format", "json", "--color", "never",
-            "--config", config_path,
+            "--format",
+            "json",
+            "--color",
+            "never",
+            "--config",
+            config_path,
             wf_path,
         )
         import json
+
         data = json.loads(result.stdout)
         reduced_count = len(data["diagnostics"])
 
         assert reduced_count <= baseline_count, (
-            f"Disabling {rule_to_disable} increased diagnostics: "
-            f"{baseline_count} → {reduced_count}"
+            f"Disabling {rule_to_disable} increased diagnostics: {baseline_count} → {reduced_count}"
         )
         # The disabled rule should not appear
         disabled_ids = {d["rule_id"] for d in data["diagnostics"]}
@@ -103,11 +108,16 @@ def test_disabling_all_rules_yields_zero_diagnostics(zghalint_bin, content):
     try:
         result = run_zghalint(
             zghalint_bin,
-            "--format", "json", "--color", "never",
-            "--config", config_path,
+            "--format",
+            "json",
+            "--color",
+            "never",
+            "--config",
+            config_path,
             wf_path,
         )
         import json
+
         data = json.loads(result.stdout)
         remaining = [d["rule_id"] for d in data["diagnostics"]]
         remaining_in_disabled = [r for r in remaining if r in rule_ids]

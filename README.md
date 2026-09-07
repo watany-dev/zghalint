@@ -37,6 +37,32 @@ Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are availabl
 The first public tag is `v0.0.1-rc.1`, published as a prerelease while the installation flow and CLI contract are still being validated.
 Tags follow `v<semver>`, with prereleases as `v<semver>-rc.<N>`; see [docs/maintenance.md](docs/maintenance.md) for the release procedure.
 
+#### Verifying a release artifact
+
+Every release archive is published with a `SHA256SUMS` file and a
+[SLSA build provenance attestation](https://slsa.dev/), so a download can be
+checked against both the published checksum and the workflow that produced it.
+
+```bash
+TAG=v0.0.1-rc.1
+ARCHIVE=zghalint-linux-x86_64.tar.gz
+BASE=https://github.com/watany-dev/zghalint/releases/download/$TAG
+
+curl -fSL -O "$BASE/$ARCHIVE"
+curl -fSL -O "$BASE/SHA256SUMS"
+
+# 1. Checksum published with the release
+sha256sum --ignore-missing -c SHA256SUMS
+
+# 2. Provenance: the archive was built by this repository's release workflow
+gh attestation verify "$ARCHIVE" --repo watany-dev/zghalint
+```
+
+`gh attestation verify` requires GitHub CLI 2.49 or later. It prints the
+workflow (`.github/workflows/release.yml`) and the commit the artifact was
+built from; a mismatch or a missing attestation means the archive did not come
+from this repository's release pipeline.
+
 ### Use as a GitHub Action
 
 ```yaml
@@ -224,7 +250,36 @@ zig build test                      # Run all unit tests
 zig build test --summary all        # With detailed summary
 zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
+zig build fuzz                      # Fuzz targets over their seed corpus
 ```
+
+The parsers that consume untrusted input (the YAML tokenizer, the YAML parser
+and the `${{ }}` expression parser) have fuzz targets in `src/fuzz_test.zig`.
+`zig build fuzz` replays their seed corpus as ordinary regression tests;
+`zig build fuzz --fuzz --webui=127.0.0.1` starts continuous, coverage-guided
+fuzzing and runs until interrupted. See
+[docs/design/pbt-strategy.md](docs/design/pbt-strategy.md) §6-4 for the corpus
+and regression policy.
+
+## Contributing
+
+Issue templates are provided for bug reports, false positives / false
+negatives, and new rules. Before opening a pull request, run the checks the CI
+runs:
+
+```bash
+zig build && zig fmt --check src/ build.zig && zig build test --summary all
+```
+
+User-visible changes go in [CHANGELOG.md](CHANGELOG.md) under `## [Unreleased]`,
+and a new or changed rule needs its row in [docs/rules.md](docs/rules.md) — a
+test fails the build if the two drift apart.
+
+## Security
+
+Do not open a public issue for a vulnerability in zghalint itself — including a
+workflow it fails to flag. See [SECURITY.md](SECURITY.md) for the private
+reporting path.
 
 ## License
 

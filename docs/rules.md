@@ -665,6 +665,47 @@ quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
 
 ---
 
+## Reusable Workflow Rules (RW)
+
+Validate the `on.workflow_call` interface a reusable workflow exposes to its
+callers.
+
+| ID | Name | Severity | Description |
+|----|------|----------|-------------|
+| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted |
+
+### RW001 workflow-call-inputs
+
+`workflow_call` inputs use a different type system from `workflow_dispatch`
+inputs (which are checked by [SYN017](#syn017-workflow-dispatch-inputs)):
+`type` is **required**, and `choice` / `environment` are not available.
+
+```yaml
+on:
+  workflow_call:
+    inputs:
+      environment:        # missing `type`
+        required: true
+      mode:
+        type: choice      # not a workflow_call type
+        options: [a, b]
+      retries:
+        type: number
+        default: three    # default is not a number
+      target:
+        type: string
+        required: true
+        default: main     # required and defaulted at the same time
+```
+
+A caller that omits a `required` input fails at dispatch time, and a `default`
+on a required input is never applied — so declaring both is always a mistake in
+one direction or the other. Fix by giving every input an explicit `type` of
+`string`, `number` or `boolean`, matching the `default` to it, and dropping
+either `required: true` or `default`.
+
+---
+
 ## Configuring Rules
 
 You can override rule severity or disable rules in `.zghalint.yml`:

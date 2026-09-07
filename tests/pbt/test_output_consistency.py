@@ -1,10 +1,11 @@
 """Output consistency: JSON/SARIF structural validity, cross-format agreement,
 summary arithmetic, span validity, and sort stability."""
+
 from __future__ import annotations
 
 import json
 
-from hypothesis import given, settings, HealthCheck, assume
+from hypothesis import HealthCheck, given, settings
 
 from tests.pbt.conftest import (
     lint_workflow,
@@ -123,9 +124,7 @@ def test_sarif_rule_ids_in_driver_rules(zghalint_bin, content):
     run = data["runs"][0]
     known_ids = {r["id"] for r in run["tool"]["driver"]["rules"]}
     for result in run["results"]:
-        assert result["ruleId"] in known_ids, (
-            f"ruleId '{result['ruleId']}' not in driver.rules"
-        )
+        assert result["ruleId"] in known_ids, f"ruleId '{result['ruleId']}' not in driver.rules"
 
 
 # ============================================================
@@ -156,9 +155,7 @@ def test_json_sarif_rule_ids_match(zghalint_bin, content):
 
     json_ids = sorted(d["rule_id"] for d in json_data["diagnostics"])
     sarif_ids = sorted(r["ruleId"] for r in sarif_data["runs"][0]["results"])
-    assert json_ids == sarif_ids, (
-        f"Rule IDs differ: JSON={json_ids} SARIF={sarif_ids}"
-    )
+    assert json_ids == sarif_ids, f"Rule IDs differ: JSON={json_ids} SARIF={sarif_ids}"
 
 
 # ============================================================
@@ -207,6 +204,4 @@ def test_json_diagnostics_are_sorted(zghalint_bin, content):
         a, b = diags[i], diags[i + 1]
         key_a = (a["file"], a["line"], a["column"])
         key_b = (b["file"], b["line"], b["column"])
-        assert key_a <= key_b, (
-            f"Diagnostics not sorted: {key_a} > {key_b}"
-        )
+        assert key_a <= key_b, f"Diagnostics not sorted: {key_a} > {key_b}"
