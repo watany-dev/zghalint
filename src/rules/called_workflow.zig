@@ -16,8 +16,6 @@ const yaml_parser = @import("../yaml/parser.zig");
 const workflow_parser = @import("../workflow/parser.zig");
 const types = @import("../workflow/types.zig");
 
-/// The `on.workflow_call` interface of a called workflow: what a caller is
-/// allowed to pass, and what it must.
 pub const Interface = struct {
     inputs: []const types.InputDef = &.{},
     secrets: []const types.SecretDef = &.{},
@@ -99,7 +97,6 @@ test "localPath rejects references it cannot resolve" {
     try testing.expect(localPath("./.github/workflows/ci.yml@main") == null);
 }
 
-/// The fixture `source_override` serves in this file's tests.
 var test_source: ?[]const u8 = null;
 
 fn testLookup(path: []const u8) ?[]const u8 {

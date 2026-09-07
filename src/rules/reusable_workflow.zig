@@ -241,8 +241,6 @@ test "RW001: required with default is reported" {
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "required") != null);
 }
 
-/// The called workflow every RW002 test resolves `./.github/workflows/reusable.yml`
-/// to. Set before installing `called_workflow.source_override`.
 var called_source: []const u8 = "";
 
 fn calledLookup(path: []const u8) ?[]const u8 {
