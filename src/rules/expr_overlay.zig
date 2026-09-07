@@ -49,14 +49,10 @@ const opaque_need: Type = .{
     },
 };
 
-fn intern(alloc: std.mem.Allocator, ty: Type) ?TypeRef {
-    const p = alloc.create(Type) catch return null;
-    p.* = ty;
-    return p;
-}
-
 fn strictObject(alloc: std.mem.Allocator, props: []const Prop) ?TypeRef {
-    return intern(alloc, .{ .kind = .object, .shape = .strict, .props = props });
+    const ty = alloc.create(Type) catch return null;
+    ty.* = .{ .kind = .object, .shape = .strict, .props = props };
+    return ty;
 }
 
 /// Later duplicates lose: a repeated key keeps the first type seen, matching

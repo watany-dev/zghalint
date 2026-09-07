@@ -199,25 +199,20 @@ pub const FuncSig = struct {
     }
 };
 
-const str_arg = [_]ArgKind{.string};
-const two_strings = [_]ArgKind{ .string, .string };
-const contains_args = [_]ArgKind{ .string_or_array, .any };
-const join_args = [_]ArgKind{ .string_or_array, .string };
-
 /// Sorted by name. Lookup is ASCII case-insensitive, matching GitHub Actions
 /// and actionlint (#161).
 const functions = [_]FuncSig{
     .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "case", .min_args = 3, .max_args = 255, .ret = any },
-    .{ .name = "contains", .min_args = 2, .max_args = 2, .ret = boolean, .args = &contains_args },
-    .{ .name = "endsWith", .min_args = 2, .max_args = 2, .ret = boolean, .args = &two_strings },
+    .{ .name = "contains", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{.string_or_array} },
+    .{ .name = "endsWith", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{ .string, .string } },
     .{ .name = "failure", .min_args = 0, .max_args = 0, .ret = boolean },
-    .{ .name = "format", .min_args = 1, .max_args = 255, .ret = string, .args = &str_arg },
-    .{ .name = "fromJSON", .min_args = 1, .max_args = 1, .ret = any, .args = &str_arg },
+    .{ .name = "format", .min_args = 1, .max_args = 255, .ret = string, .args = &.{.string} },
+    .{ .name = "fromJSON", .min_args = 1, .max_args = 1, .ret = any, .args = &.{.string} },
     .{ .name = "hashFiles", .min_args = 1, .max_args = 255, .ret = string, .rest = .string },
-    .{ .name = "join", .min_args = 1, .max_args = 2, .ret = string, .args = &join_args },
-    .{ .name = "startsWith", .min_args = 2, .max_args = 2, .ret = boolean, .args = &two_strings },
+    .{ .name = "join", .min_args = 1, .max_args = 2, .ret = string, .args = &.{ .string_or_array, .string } },
+    .{ .name = "startsWith", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{ .string, .string } },
     .{ .name = "success", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "toJSON", .min_args = 1, .max_args = 1, .ret = string },
 };
