@@ -1,0 +1,12 @@
+# bench:expect undeclared-matrix-key@12
+name: matrix without strategy
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build TARGET=${{ matrix.target }}

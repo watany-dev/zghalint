@@ -1,0 +1,22 @@
+# bench:expect needs-context@22
+name: needs output undefined
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      artifact: ${{ steps.pack.outputs.path }}
+    steps:
+      - name: Pack
+        id: pack
+        run: echo "path=dist.tgz" >> "$GITHUB_OUTPUT"
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build]
+    steps:
+      - name: Deploy
+        run: echo "deploying ${{ needs.build.outputs.bundle }}"

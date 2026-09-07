@@ -1,0 +1,15 @@
+# bench:expect invalid-timezone@6
+name: unknown schedule timezone
+on:
+  schedule:
+    - cron: '0 3 * * *'
+      timezone: Asia/Tokio
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

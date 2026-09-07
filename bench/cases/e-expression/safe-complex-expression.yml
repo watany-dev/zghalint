@@ -1,0 +1,33 @@
+# bench:forbid expression-syntax
+# bench:forbid unsound-condition
+# bench:forbid incomparable-types
+# bench:forbid argument-type
+# bench:forbid needs-context
+# bench:forbid undeclared-matrix-key
+# bench:forbid undefined-step-reference
+name: a complex but well-typed expression
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Compute metadata
+        id: meta
+        run: echo "tag=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Announce
+        if: ${{ success() && inputs.environment == 'production' && startsWith(matrix.os, 'ubuntu') }}
+        run: echo "${{ format('{0} on {1}', steps.meta.outputs.tag, matrix.os) }}"

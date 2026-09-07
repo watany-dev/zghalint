@@ -1,0 +1,13 @@
+# bench:expect incomparable-types@12
+name: comparison type mismatch
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compare an object to a number
+        if: ${{ github.event == 1 }}
+        run: make build

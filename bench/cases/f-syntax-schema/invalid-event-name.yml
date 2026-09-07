@@ -1,0 +1,14 @@
+# bench:expect unknown-event@4
+name: unknown event
+on:
+  pull_request_targt:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

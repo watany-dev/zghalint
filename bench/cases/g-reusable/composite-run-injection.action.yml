@@ -1,0 +1,14 @@
+# bench:expect template-injection@14 actionlint=-
+name: composite with an injectable run block
+description: greets the author of an issue
+inputs:
+  greeting:
+    description: text to print
+    required: false
+    default: hello
+runs:
+  using: composite
+  steps:
+    - name: Greet
+      shell: bash
+      run: echo "${{ github.event.issue.title }}"

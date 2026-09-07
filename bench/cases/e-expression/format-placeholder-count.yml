@@ -1,0 +1,12 @@
+# bench:expect format-placeholders@12
+name: format with a missing argument
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Print
+        run: echo "${{ format('{0} {1}', github.ref) }}"

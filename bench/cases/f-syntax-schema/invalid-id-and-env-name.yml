@@ -1,0 +1,15 @@
+# bench:expect invalid-id-naming@8
+# bench:expect invalid-env-var-name@12
+name: invalid job id and env name
+on: push
+permissions:
+  contents: read
+jobs:
+  1build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MY VAR: 1
+    steps:
+      - name: Build
+        run: make build

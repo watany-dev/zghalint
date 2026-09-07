@@ -1,0 +1,12 @@
+# bench:expect runner-label-conflict@8
+name: conflicting runner labels
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: [ubuntu-latest, windows-latest]
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

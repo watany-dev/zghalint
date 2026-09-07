@@ -1,0 +1,13 @@
+# bench:expect unsound-condition@12
+name: if mixes text and expression
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Only on main
+        if: ${{ github.ref }} == 'refs/heads/main'
+        run: make release

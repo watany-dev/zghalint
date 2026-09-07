@@ -1,0 +1,19 @@
+# bench:expect local-action-inputs@17
+# bench:expect local-action-inputs@19
+name: local action called with the wrong inputs
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run the local tool
+        uses: ./tool
+        with:
+          verson: 1.2.3

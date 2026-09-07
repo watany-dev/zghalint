@@ -207,6 +207,228 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "zizmor": None,
         "actionlint": ["runner-label"],
     },
+    # ---- E: expressions and types -------------------------------------
+    #: actionlint folds every static expression error into `expression`, so
+    #: the narrow zghalint IDs below all map onto that one kind.
+    "undefined-step-reference": {
+        "zghalint": ["EXPR010"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "undeclared-matrix-key": {
+        "zghalint": ["EXPR011"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "needs-context": {
+        "zghalint": ["EXPR012"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "unsound-condition": {
+        "zghalint": ["EXPR007"],
+        "zizmor": None,
+        "actionlint": ["if-cond", "syntax-check"],
+    },
+    "incomparable-types": {
+        "zghalint": ["EXPR017"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "argument-type": {
+        "zghalint": ["EXPR018"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "function-availability": {
+        "zghalint": ["EXPR016"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "context-availability": {
+        "zghalint": ["EXPR015"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "fromjson-literal": {
+        "zghalint": ["EXPR009"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    "format-placeholders": {
+        "zghalint": ["EXPR008"],
+        "zizmor": None,
+        "actionlint": ["expression"],
+    },
+    #: `env.<name>` that no `env:` block defines. Neither tool audits it; the
+    #: case records the shared blind spot.
+    "undefined-env": {
+        "zghalint": None,
+        "zizmor": None,
+        "actionlint": None,
+    },
+    # ---- F: syntax and schema ------------------------------------------
+    "unknown-key": {
+        "zghalint": ["SYN001"],
+        "zizmor": None,
+        "actionlint": ["syntax-check"],
+    },
+    "duplicate-key": {
+        "zghalint": ["SYN002"],
+        "zizmor": None,
+        "actionlint": ["syntax-check"],
+    },
+    "mapping-value-type": {
+        "zghalint": ["SYN004"],
+        "zizmor": None,
+        "actionlint": ["syntax-check"],
+    },
+    "invalid-id-naming": {
+        "zghalint": ["SYN006"],
+        "zizmor": None,
+        "actionlint": ["id"],
+    },
+    "invalid-env-var-name": {
+        "zghalint": ["SYN007"],
+        "zizmor": None,
+        "actionlint": ["env-var"],
+    },
+    "unknown-event": {
+        "zghalint": ["SYN009"],
+        "zizmor": None,
+        "actionlint": ["events"],
+    },
+    "invalid-activity-type": {
+        "zghalint": ["SYN010"],
+        "zizmor": None,
+        "actionlint": ["events"],
+    },
+    "exclusive-event-filters": {
+        "zghalint": ["SYN012"],
+        "zizmor": None,
+        "actionlint": ["events"],
+    },
+    "invalid-filter-glob": {
+        "zghalint": ["SYN013"],
+        "zizmor": None,
+        "actionlint": ["glob"],
+    },
+    "invalid-cron": {
+        "zghalint": ["SYN014"],
+        "zizmor": None,
+        "actionlint": ["events"],
+    },
+    "cron-too-frequent": {
+        "zghalint": ["SYN015"],
+        "zizmor": None,
+        "actionlint": ["events"],
+    },
+    #: actionlint has no `timezone` key in its schedule schema at all, so it
+    #: rejects the mapping outright instead of validating the zone name.
+    "invalid-timezone": {
+        "zghalint": ["SYN016"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "workflow-dispatch-inputs": {
+        "zghalint": ["SYN017"],
+        "zizmor": None,
+        "actionlint": ["events"],
+    },
+    "matrix-include-exclude": {
+        "zghalint": ["SYN019"],
+        "zizmor": None,
+        "actionlint": ["matrix"],
+    },
+    #: `needs:` naming a job the workflow does not define, and a cycle in the
+    #: job graph. actionlint reports both; zghalint has no rule for either.
+    "needs-unknown-job": {
+        "zghalint": None,
+        "zizmor": None,
+        "actionlint": ["job-needs~does not exist"],
+    },
+    "needs-cycle": {
+        "zghalint": None,
+        "zizmor": None,
+        "actionlint": ["job-needs~cyclic"],
+    },
+    "runner-label-conflict": {
+        "zghalint": ["RUNNER003"],
+        "zizmor": None,
+        "actionlint": ["runner-label"],
+    },
+    "deprecated-runner": {
+        "zghalint": ["RUNNER001"],
+        "zizmor": None,
+        "actionlint": ["runner-label"],
+    },
+    "unknown-shell": {
+        "zghalint": ["BP004"],
+        "zizmor": None,
+        "actionlint": ["shell-name"],
+    },
+    # ---- G: reusable workflows and composite actions --------------------
+    "workflow-call-required-inputs": {
+        "zghalint": ["RW002"],
+        "zizmor": None,
+        "actionlint": ["workflow-call"],
+    },
+    "workflow-call-input-values": {
+        "zghalint": ["RW003"],
+        "zizmor": None,
+        "actionlint": ["workflow-call"],
+    },
+    "workflow-call-secrets": {
+        "zghalint": ["RW004"],
+        "zizmor": None,
+        "actionlint": ["workflow-call"],
+    },
+    "workflow-call-outputs": {
+        "zghalint": ["RW005"],
+        "zizmor": None,
+        "actionlint": ["workflow-call"],
+    },
+    "local-action-inputs": {
+        "zghalint": ["DEP004"],
+        "zizmor": None,
+        "actionlint": ["action"],
+    },
+    "retired-action-runtime": {
+        "zghalint": ["ACT002", "BP003"],
+        "zizmor": None,
+        "actionlint": ["action"],
+    },
+    "unknown-action-runtime": {
+        "zghalint": ["ACT002"],
+        "zizmor": None,
+        "actionlint": ["action"],
+    },
+    # ---- H: best practices and performance ------------------------------
+    "deprecated-workflow-command": {
+        "zghalint": ["BP008"],
+        "zizmor": None,
+        "actionlint": ["deprecated-commands"],
+    },
+    "deprecated-action-version": {
+        "zghalint": ["BP003"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "redundant-checkout": {
+        "zghalint": ["PERF002"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "fail-fast-disabled": {
+        "zghalint": ["PERF003"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "push-without-concurrency": {
+        "zghalint": ["BP005"],
+        "zizmor": None,
+        "actionlint": None,
+    },
 }
 
 
@@ -271,6 +493,9 @@ class Case:
     #: (tool, kind or None for the whole case) → reason.
     skips: dict[tuple[str, str | None], str] = field(default_factory=dict)
     persona: str = "regular"
+    #: Set for a multi-file case: the directory staged as a miniature repo
+    #: root, with `path` the entry file inside it. `None` for a lone file.
+    tree: Path | None = None
 
     def is_action(self) -> bool:
         name = self.path.name
@@ -390,14 +615,53 @@ def _default_mapping(kind: str) -> dict[str, list[IdSpec] | None]:
 
 
 def discover_cases(root: Path, patterns: list[str]) -> list[Case]:
+    """Collect cases under *root*.
+
+    `<category>/<name>.yml` is a case on its own. `<category>/<name>/` is a
+    multi-file case: one file in it carries the `bench:` header and is the
+    entry the tools are pointed at, the rest are the companions it references
+    (a called workflow, a local action) and are not scored on their own.
+    """
     cases = []
-    paths = sorted(set(root.rglob("*.yml")) | set(root.rglob("*.yaml")))
-    for path in paths:
-        name = path.relative_to(root).as_posix()
-        if patterns and not any(fnmatch.fnmatch(name, p) for p in patterns):
-            continue
-        cases.append(parse_case(path, root))
+    for category in sorted(p for p in root.iterdir() if p.is_dir()):
+        for path in sorted(category.iterdir()):
+            if path.is_dir():
+                cases.append(parse_tree_case(path, root))
+            elif path.suffix in (".yml", ".yaml"):
+                cases.append(parse_case(path, root))
+    if patterns:
+        cases = [c for c in cases if any(fnmatch.fnmatch(c.name, p) for p in patterns)]
     return cases
+
+
+def parse_tree_case(tree: Path, root: Path) -> Case:
+    entries = [
+        path
+        for path in sorted(set(tree.rglob("*.yml")) | set(tree.rglob("*.yaml")))
+        if _has_header(path)
+    ]
+    if len(entries) != 1:
+        found = ", ".join(p.relative_to(tree).as_posix() for p in entries) or "none"
+        raise CaseError(
+            f"{tree.relative_to(root).as_posix()}: a multi-file case needs exactly one file "
+            f"with a `bench:` header (the entry the tools are run on); found: {found}"
+        )
+    case = parse_case(entries[0], root)
+    case.tree = tree
+    case.name = tree.relative_to(root).as_posix()
+    return case
+
+
+def _has_header(path: Path) -> bool:
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith("#"):
+            return False
+        if DIRECTIVE_RE.match(stripped):
+            return True
+    return False
 
 
 # ============================================================
@@ -432,10 +696,10 @@ def _run(argv: list[str], cwd: Path) -> tuple[subprocess.CompletedProcess[str] |
     return proc, None
 
 
-def run_zghalint(binary: Path, path: Path) -> ToolRun:
+def run_zghalint(binary: Path, staged: Staged) -> ToolRun:
     proc, error = _run(
-        [str(binary), "--format", "json", "--color", "never", "--offline", path.name],
-        cwd=path.parent,
+        [str(binary), "--format", "json", "--color", "never", "--offline", staged.rel],
+        cwd=staged.root,
     )
     if proc is None:
         return ToolRun(error=error)
@@ -450,9 +714,9 @@ def run_zghalint(binary: Path, path: Path) -> ToolRun:
     return ToolRun(findings=findings, returncode=proc.returncode)
 
 
-def run_actionlint(path: Path) -> ToolRun:
+def run_actionlint(staged: Staged) -> ToolRun:
     proc, error = _run(
-        ["actionlint", "-no-color", "-format", "{{json .}}", path.name], cwd=path.parent
+        ["actionlint", "-no-color", "-format", "{{json .}}", staged.rel], cwd=staged.root
     )
     if proc is None:
         return ToolRun(error=error)
@@ -467,7 +731,7 @@ def run_actionlint(path: Path) -> ToolRun:
     return ToolRun(findings=findings, returncode=proc.returncode)
 
 
-def run_zizmor(path: Path, persona: str) -> ToolRun:
+def run_zizmor(staged: Staged, persona: str) -> ToolRun:
     proc, error = _run(
         [
             "zizmor",
@@ -477,9 +741,9 @@ def run_zizmor(path: Path, persona: str) -> ToolRun:
             "--no-progress",
             "--persona",
             persona,
-            path.name,
+            staged.rel,
         ],
-        cwd=path.parent,
+        cwd=staged.root,
     )
     if proc is None:
         return ToolRun(error=error)
@@ -513,7 +777,7 @@ def _stderr_summary(proc: subprocess.CompletedProcess[str]) -> str:
     return f"exit {proc.returncode}: {head[:160]}"
 
 
-def run_case(case: Case, staged: Path, zghalint: Path, available: dict[str, bool]) -> dict:
+def run_case(case: Case, staged: Staged, zghalint: Path, available: dict[str, bool]) -> dict:
     runs: dict[str, ToolRun] = {}
     for tool in TOOLS:
         if not available[tool] or case.skip_reason(tool) is not None:
@@ -536,20 +800,37 @@ def run_case(case: Case, staged: Path, zghalint: Path, available: dict[str, bool
     return runs
 
 
-def stage(case: Case, tmp: Path) -> Path:
-    """Copy the case under the filename its tools expect.
+@dataclass(frozen=True)
+class Staged:
+    """Where a case was materialised: the directory to run the tools from,
+    and the entry file's path relative to it."""
+
+    root: Path
+    rel: str
+
+
+def stage(case: Case, tmp: Path) -> Staged:
+    """Copy the case under the filename and layout its tools expect.
 
     Both zizmor and zghalint key off the filename: a composite action is only
     recognised as `action.yml`, and a Dependabot config only as
     `dependabot.yml`. A `<name>.action.yml` / `<name>.dependabot.yml` case is
     therefore materialised under that name in its own directory (line numbers
     are unchanged).
+
+    A multi-file case is copied whole, so `uses: ./.github/workflows/x.yml`
+    and `uses: ./tool` resolve against the staged tree the way they would in a
+    real repository. An empty `.git` marker is added because actionlint locates
+    the project root by it, and skips every local `uses:` check without one.
     """
     target_dir = tmp / case.name.replace("/", "__")
+    if case.tree is not None:
+        shutil.copytree(case.tree, target_dir)
+        (target_dir / ".git").mkdir(exist_ok=True)
+        return Staged(root=target_dir, rel=case.path.relative_to(case.tree).as_posix())
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / case.staged_name()
-    shutil.copyfile(case.path, target)
-    return target
+    shutil.copyfile(case.path, target_dir / case.staged_name())
+    return Staged(root=target_dir, rel=case.staged_name())
 
 
 # ============================================================

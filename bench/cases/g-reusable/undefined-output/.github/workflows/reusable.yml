@@ -1,0 +1,19 @@
+name: reusable
+on:
+  workflow_call:
+    outputs:
+      tag:
+        description: the built tag
+        value: ${{ jobs.build.outputs.tag }}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Meta
+        id: meta
+        run: echo "tag=v1" >> "$GITHUB_OUTPUT"

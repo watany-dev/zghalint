@@ -1,0 +1,6 @@
+# bench:expect retired-action-runtime@5 actionlint=-
+name: composite on a retired runtime
+description: runs a node entrypoint
+runs:
+  using: node16
+  main: index.js
