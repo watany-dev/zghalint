@@ -93,7 +93,7 @@ zizmor pedantic の `undocumented-permissions` (1 件)。スタイル規約寄�
 YAML コメントの有無を強制するルールは zghalint の診断カテゴリに馴染まないため
 採用しない。
 
-#### G5 (#273). 汚染源が `github.event.*` に限られている — 要ルール改善
+#### G5 (#273). 汚染源が `github.event.*` に限られている — 対応済み
 
 `bench/cases/a-script-injection/` で発覚した SEC002 の FN 4 件。zizmor は
 いずれも `template-injection` として検出する。
@@ -105,8 +105,14 @@ YAML コメントの有無を強制するルールは zghalint の診断カテ�
 | `tojson-event.yml` | `toJSON(github.event)` (フィールド指定なしの丸ごと展開) |
 | `step-output-indirect.yml` | 汚染値を書いた `steps.<id>.outputs.*` の再展開 |
 
-前 3 つは汚染源テーブルの追加で済む。4 つ目はステップ間のデータフロー追跡が
-要るため段階が 1 つ上がる。
+SEC002 をステップ単位からワークフロー単位のルールへ移し、上の 4 つを汚染源に
+加えた。`inputs.*` はトリガを、`steps.<id>.outputs.*` は同一ジョブの前段
+ステップを見ないと判定できないため、ステップだけを見るルールでは足りない。
+`github.event` の根は「まるごと参照したときだけ」の一致にしてあり、
+`github.event.number` のようなサーバ生成フィールドは汚染源にしていない。
+ステップ出力の汚染は「汚染値を持ったまま `$GITHUB_OUTPUT` へ書いた」ステップの
+出力に限り、指摘は展開する後段だけに出る。詳細は `docs/rules.md` の
+「SEC002 taint sources」。
 
 #### G6 (#274). `runs-on` が配列のとき SEC020 が発火しない — 要ルール改善
 
@@ -156,7 +162,7 @@ PERF001 (キャッシュを足せ) と SEC016 (リリース系でのキャッシ
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
 - [ ] G2: composite action (`action.yml`) の解析サポートを設計する
 - [ ] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
-- [ ] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
+- [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [ ] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [ ] G7 (#275): SC001 を `uses: docker://...` に対応させる
 - [ ] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する

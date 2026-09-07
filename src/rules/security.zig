@@ -192,6 +192,19 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.issue.labels",
 };
 
+/// `github.event` on its own expands the entire payload — `toJSON(github.event)`
+/// hands every free-text field of the event to the shell at once. It is matched
+/// as a whole reference, never as a prefix: the fields below the root are judged
+/// one by one by `run_dangerous_contexts`, and promoting the root to a prefix
+/// would flag the server-generated ones too.
+const whole_event_contexts = [_][]const u8{"github.event"};
+
+/// The `inputs.*` root of a workflow something dispatches or calls: a
+/// `workflow_dispatch` actor types those values, and a `workflow_call` caller
+/// passes them. `github.event.inputs` is the dispatch spelling of the same
+/// values.
+const dispatched_inputs_contexts = [_][]const u8{ "inputs", "github.event.inputs" };
+
 /// An `if:` condition is evaluated by the Actions expression engine and yields
 /// a boolean; the value never reaches a shell, so this is not injection. What
 /// SEC006 flags is a *gate* an attacker can satisfy on purpose by authoring the
@@ -273,21 +286,134 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
 
 const script_injection_fix_hint = "assign the context to an environment variable and use the env var instead";
 
-fn checkScriptInjection(step: *const Step, list: *DiagnosticList) void {
-    if (step.run) |run_body| {
-        checkContextsInString(run_body, spans.runAnchor(step), &run_dangerous_contexts, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+/// SEC002 is workflow-scoped because two of its taint sources are not visible
+/// from a step alone: `inputs.*` exists only under the triggers that fill it,
+/// and a `steps.<id>.outputs.*` reference is untrusted only when the step that
+/// wrote it captured an untrusted value.
+fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
+    var prefix: [run_dangerous_contexts.len + dispatched_inputs_contexts.len][]const u8 = undefined;
+    prefix[0..run_dangerous_contexts.len].* = run_dangerous_contexts;
+    var prefix_len: usize = run_dangerous_contexts.len;
+    if (wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) {
+        for (dispatched_inputs_contexts) |ctx| {
+            prefix[prefix_len] = ctx;
+            prefix_len += 1;
+        }
     }
-    checkScriptInputInjection(step, list);
+
+    for (wf.jobs) |*job| {
+        // Steps are visited in source order so a later step sees the taint the
+        // earlier ones produced. A step never taints itself.
+        var tainted: TaintedSteps = .{};
+        for (job.steps) |*step| {
+            const table: ContextTable = .{
+                .prefix = prefix[0..prefix_len],
+                .whole = &whole_event_contexts,
+                .tainted_steps = tainted.slice(),
+            };
+            checkStepScriptInjection(step, table, list);
+            if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
+        }
+    }
+}
+
+/// SEC002 for the steps of a composite action, which have no workflow around
+/// them: the fixed table only. A composite action declares no triggers, and its
+/// step list is walked by `composite_steps.zig` rather than by this rule.
+pub fn checkStandaloneStepScriptInjection(step: *const Step, list: *DiagnosticList) void {
+    checkStepScriptInjection(step, .{ .prefix = &run_dangerous_contexts, .whole = &whole_event_contexts }, list);
+}
+
+fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
+    if (step.run) |run_body| {
+        checkContextsInString(run_body, spans.runAnchor(step), table, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+    }
+    checkScriptInputInjection(step, table, list);
+}
+
+/// A job carries few enough steps that the ids fit in a fixed buffer; a job
+/// past the cap keeps the taint it accumulated up to that point.
+const max_tainted_steps = 64;
+
+/// The ids of the steps in one job whose `outputs.*` carry an untrusted value.
+const TaintedSteps = struct {
+    buf: [max_tainted_steps][]const u8 = undefined,
+    len: usize = 0,
+
+    fn append(self: *TaintedSteps, id: []const u8) void {
+        if (self.len >= self.buf.len) return;
+        self.buf[self.len] = id;
+        self.len += 1;
+    }
+
+    fn slice(self: *const TaintedSteps) []const []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+/// A step taints its outputs when the command that writes `$GITHUB_OUTPUT`
+/// carries an untrusted value: interpolated on the same line, or read back from
+/// an `env:` entry that holds one. Binding to `env:` is what makes the capturing
+/// step itself safe, so the taint has to travel to whoever expands the output
+/// instead (#273).
+///
+/// Only the writing line is read, so a value the step captured for some other
+/// purpose does not taint an unrelated output. A write spread over several lines
+/// (a heredoc) is not followed.
+fn stepTaintsItsOutputs(step: *const Step, table: ContextTable) bool {
+    if (step.id == null) return false;
+    const run_body = step.run orelse return false;
+
+    var lines = std.mem.splitScalar(u8, run_body, '\n');
+    while (lines.next()) |line| {
+        if (indexOfWriteToVar(line, &.{"GITHUB_OUTPUT"}) == null) continue;
+        if (hasUntrustedExpr(line, table)) return true;
+        const env_map = step.env orelse continue;
+        for (env_map.keys(), env_map.values()) |key, value| {
+            if (!hasUntrustedExpr(value, table)) continue;
+            if (referencesShellVar(line, key)) return true;
+        }
+    }
+    return false;
+}
+
+/// `$NAME` or `${NAME}`, as a whole name. The value may be quoted or embedded in
+/// a larger word (`"title=$TITLE"`), so only the boundary after the name is
+/// checked.
+fn referencesShellVar(line: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, line, i, '$')) |dollar| : (i = dollar + 1) {
+        var j = dollar + 1;
+        const braced = j < line.len and line[j] == '{';
+        if (braced) j += 1;
+        if (j + name.len > line.len) continue;
+        if (!std.mem.eql(u8, line[j .. j + name.len], name)) continue;
+        const after = j + name.len;
+        if (braced) {
+            if (after < line.len and line[after] == '}') return true;
+            continue;
+        }
+        if (after >= line.len or !isIdentChar(line[after])) return true;
+    }
+    return false;
+}
+
+fn hasUntrustedExpr(s: []const u8, table: ContextTable) bool {
+    var it: ExprIter = .{ .s = s };
+    while (it.next()) |e| {
+        if (containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), table)) return true;
+    }
+    return false;
 }
 
 /// SEC002 for action inputs executed as code: `actions/github-script` runs `with.script`
 /// as JavaScript, so it carries the same injection risk as `run:`.
-fn checkScriptInputInjection(step: *const Step, list: *DiagnosticList) void {
+fn checkScriptInputInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
     if (!isAction(ref, "actions/github-script")) return;
     const with_map = step.with orelse return;
     const input = getWithInput(with_map, "script") orelse return;
-    checkContextsInString(input.value, withAnchor(step, input.key), &run_dangerous_contexts, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
+    checkContextsInString(input.value, withAnchor(step, input.key), table, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
 }
 
 /// Match `owner/repo` against a marketplace action reference. A nested path is a
@@ -450,14 +576,14 @@ fn checkUntrustedInConditionJob(job: *const Job, list: *DiagnosticList) void {
 }
 
 fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
-    reportConditionContexts(cond, anchor, &condition_dangerous_contexts, "SEC006", sec006_severity, "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
+    reportConditionContexts(cond, anchor, .{ .prefix = &condition_dangerous_contexts }, "SEC006", sec006_severity, "untrusted context used in if: condition expression", "validate the input before using it in a condition", list);
 }
 
 /// In GitHub Actions, `if:` conditions are implicitly wrapped in `${{ }}`,
 /// so they may contain dangerous contexts either directly or inside `${{ }}`.
 /// Only the explicit form carries per-expression offsets, so a bare condition
 /// is anchored to the whole value.
-fn reportConditionContexts(cond: []const u8, anchor: Anchor, contexts: []const []const u8, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
+fn reportConditionContexts(cond: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
     const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
     if (has_expr) {
         checkContextsInString(cond, anchor, contexts, rule_id, severity, message, fix_hint, list);
@@ -521,6 +647,12 @@ fn githubEnvWriteOperatorLen(s: []const u8, i: usize) ?usize {
 }
 
 fn indexOfGithubEnvWrite(s: []const u8) ?usize {
+    return indexOfWriteToVar(s, &github_env_targets);
+}
+
+/// The offset of a shell redirection or `tee` that appends to one of `targets`,
+/// spelled as `$NAME`, `${NAME}` or `"$NAME"`.
+fn indexOfWriteToVar(s: []const u8, targets: []const []const u8) ?usize {
     var i: usize = 0;
     while (i + 1 < s.len) : (i += 1) {
         if (githubEnvWriteOperatorLen(s, i)) |op_len| {
@@ -536,7 +668,7 @@ fn indexOfGithubEnvWrite(s: []const u8) ?usize {
             const has_brace = s[j] == '{';
             if (has_brace) j += 1;
             if (j >= s.len) continue;
-            for (github_env_targets) |target| {
+            for (targets) |target| {
                 if (j + target.len <= s.len and std.mem.eql(u8, s[j .. j + target.len], target)) {
                     var k = j + target.len;
                     if (has_brace) {
@@ -565,7 +697,7 @@ fn hasDangerousContextExpression(s: []const u8) bool {
 }
 
 fn isRunDangerousExpr(inner: []const u8) bool {
-    return containsAnyContext(std.mem.trim(u8, inner, " \t\n\r"), &run_dangerous_contexts);
+    return containsAnyContext(std.mem.trim(u8, inner, " \t\n\r"), .{ .prefix = &run_dangerous_contexts });
 }
 
 fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
@@ -716,11 +848,7 @@ fn checkStepCheckoutRefs(
 }
 
 fn containsUntrustedCheckoutContext(value: []const u8, contexts: []const []const u8) bool {
-    var it: ExprIter = .{ .s = value };
-    while (it.next()) |e| {
-        if (containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) return true;
-    }
-    return false;
+    return hasUntrustedExpr(value, .{ .prefix = contexts });
 }
 
 fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList) void {
@@ -794,7 +922,7 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
 }
 
 fn reportWorkflowRunBranchGate(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
-    reportConditionContexts(cond, anchor, &workflow_run_untrusted_gate_contexts, "SEC022", .@"error", "workflow_run gate compares an attribute of the triggering run that a fork controls, so a fork can satisfy it and reach this privileged job", "gate on the triggering repository instead — `github.event.workflow_run.head_repository.full_name == github.repository` or `github.event.workflow_run.event == 'push'` — and identify the commit with `head_sha`", list);
+    reportConditionContexts(cond, anchor, .{ .prefix = &workflow_run_untrusted_gate_contexts }, "SEC022", .@"error", "workflow_run gate compares an attribute of the triggering run that a fork controls, so a fork can satisfy it and reach this privileged job", "gate on the triggering repository instead — `github.event.workflow_run.head_repository.full_name == github.repository` or `github.event.workflow_run.event == 'push'` — and identify the commit with `head_sha`", list);
 }
 
 /// A gate is only sound when every run that satisfies the condition also
@@ -1172,7 +1300,7 @@ fn isActorBotExpr(inner: []const u8) bool {
 }
 
 fn containsActorBotCheck(expr: []const u8) bool {
-    if (!containsAnyContext(expr, &actor_contexts)) return false;
+    if (!containsAnyContext(expr, .{ .prefix = &actor_contexts })) return false;
 
     return std.mem.indexOf(u8, expr, "[bot]") != null;
 }
@@ -1325,7 +1453,7 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
 /// Every offending expression is reported separately: a single `run:` block can
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
-fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: []const []const u8, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
+fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
     var it: ExprIter = .{ .s = s };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
@@ -1349,6 +1477,42 @@ const max_path_segments = 16;
 
 const wildcard_segment = "*";
 
+/// The untrusted contexts a scan is run against, split by how a reference has
+/// to match them.
+const ContextTable = struct {
+    /// Segment prefixes: everything below the node is untrusted too.
+    prefix: []const []const u8,
+    /// Matched only as a whole reference (see `whole_event_contexts`).
+    whole: []const []const u8 = &.{},
+    /// Ids of steps whose `outputs.*` carry a value captured from an untrusted
+    /// context earlier in the same job (#273).
+    tainted_steps: []const []const u8 = &.{},
+
+    fn matches(self: ContextTable, path: ContextPath) bool {
+        for (self.prefix) |ctx| {
+            if (pathMatchesPattern(path, ctx)) return true;
+        }
+        for (self.whole) |ctx| {
+            if (pathIsAnchor(path, ctx)) return true;
+        }
+        return self.matchesTaintedStepOutput(path);
+    }
+
+    /// `steps.<id>.outputs.<name>`, with `<id>` a step that wrote an untrusted
+    /// value out. The name below `outputs` is not looked at: the step writes
+    /// whatever it captured under a name of its own choosing.
+    fn matchesTaintedStepOutput(self: ContextTable, path: ContextPath) bool {
+        if (self.tainted_steps.len == 0) return false;
+        if (path.len < 4) return false;
+        if (!segmentMatches(path.segments[0], "steps")) return false;
+        if (!segmentMatches(path.segments[2], "outputs")) return false;
+        for (self.tainted_steps) |id| {
+            if (segmentMatches(path.segments[1], id)) return true;
+        }
+        return false;
+    }
+};
+
 const ContextPath = struct {
     segments: [max_path_segments][]const u8 = undefined,
     len: usize = 0,
@@ -1363,7 +1527,7 @@ const ContextPath = struct {
 
 /// Function calls need no special handling: `join(...)` and `toJSON(...)`
 /// arguments are themselves references and are visited the same way.
-fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
+fn containsAnyContext(expr: []const u8, contexts: ContextTable) bool {
     var i: usize = 0;
     while (i < expr.len) {
         if (expr[i] == '\'') {
@@ -1378,9 +1542,7 @@ fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
         // A whole reference is consumed at once, so segments in the middle of
         // `steps.meta.outputs.github.head_ref` are never mistaken for a root.
         const path = parseContextPath(expr, i);
-        for (contexts) |ctx| {
-            if (pathMatchesPattern(path, ctx)) return true;
-        }
+        if (contexts.matches(path)) return true;
         i = if (path.end > i) path.end else i + 1;
     }
     return false;
@@ -1777,7 +1939,7 @@ pub const security_rules = [_]Rule{
         .description = "Untrusted GitHub context used in run: block or a code-executing action input risks script injection",
         .severity = .@"error",
         .category = .security,
-        .check_step = &checkScriptInjection,
+        .check_workflow = &checkScriptInjection,
     },
     .{
         .id = "SEC003",
@@ -2023,6 +2185,7 @@ const issue_comment_trigger = test_support.makeTrigger(.issue_comment);
 const workflow_run_trigger = test_support.makeTrigger(.workflow_run);
 const push_trigger = test_support.makeTrigger(.push);
 const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch);
+const workflow_call_trigger = test_support.makeTrigger(.workflow_call);
 
 const hasDiagnostic = test_support.hasDiagnostic;
 const countDiagnostics = test_support.countDiagnostics;
@@ -2178,6 +2341,130 @@ test "SEC002: untrusted input passed through env is not reported" {
     defer env.deinit();
     try env.put("BRANCH", "${{ github.event.pull_request.head.ref }}");
     try testing.expect(!sec002Fires("echo \"Branch $BRANCH\"", env));
+}
+
+fn sec002FiresOn(on: Trigger, body: []const u8) bool {
+    const steps = [_]Step{.{ .run = body }};
+    var list = runJobOn(on, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC002");
+}
+
+test "SEC002: inputs.* is untrusted on a dispatched or called workflow" {
+    try testing.expect(sec002FiresOn(workflow_dispatch_trigger, "./deploy.sh ${{ inputs.target }}"));
+    try testing.expect(sec002FiresOn(workflow_call_trigger, "./deploy.sh ${{ inputs.target }}"));
+    // `github.event.inputs` is the dispatch spelling of the same values.
+    try testing.expect(sec002FiresOn(workflow_dispatch_trigger, "./deploy.sh ${{ github.event.inputs.target }}"));
+}
+
+test "SEC002: inputs.* without a trigger that fills it (no false positive)" {
+    try testing.expect(!sec002FiresOn(push_trigger, "./deploy.sh ${{ inputs.target }}"));
+}
+
+test "SEC002: toJSON over the whole event" {
+    try testing.expect(sec002Fires("echo \"${{ toJSON(github.event) }}\"", null));
+    try testing.expect(sec002Fires("echo \"${{ github.event }}\"", null));
+}
+
+test "SEC002: server-generated fields under github.event (no false positive)" {
+    try testing.expect(!sec002Fires("echo ${{ github.event.number }}", null));
+    try testing.expect(!sec002Fires("echo ${{ github.event.action }}", null));
+}
+
+fn sec002StepOutputList(capture: Step) DiagnosticList {
+    const steps = [_]Step{
+        capture,
+        .{ .run = "echo ${{ steps.capture.outputs.title }}" },
+    };
+    return runJobOn(issue_comment_trigger, .{ .id = "triage", .steps = &steps, .permissions = Permissions{} });
+}
+
+test "SEC002: untrusted value re-expanded from a step output" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TITLE", "${{ github.event.issue.title }}");
+
+    var list = sec002StepOutputList(.{
+        .id = "capture",
+        .env = env,
+        .run = "echo \"title=$TITLE\" >> \"$GITHUB_OUTPUT\"",
+    });
+    defer list.deinit();
+    // Only the consumer is reported: binding the context to `env:` is what makes
+    // the capturing step itself safe.
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC002"));
+}
+
+test "SEC002: output of a step that captured nothing untrusted (no false positive)" {
+    var list = sec002StepOutputList(.{
+        .id = "capture",
+        .run = "echo \"title=$(git log -1 --format=%s)\" >> \"$GITHUB_OUTPUT\"",
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: untrusted step that writes no output does not taint (no false positive)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TITLE", "${{ github.event.issue.title }}");
+
+    var list = sec002StepOutputList(.{
+        .id = "capture",
+        .env = env,
+        .run = "echo \"$TITLE\" > /tmp/title",
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: an untrusted value the writing line never reads (no false positive)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TITLE", "${{ github.event.issue.title }}");
+
+    var list = sec002StepOutputList(.{
+        .id = "capture",
+        .env = env,
+        .run =
+        \\grep -q "$TITLE" log.txt
+        \\echo "title=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        ,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: untrusted context interpolated straight into the output write" {
+    var list = sec002StepOutputList(.{
+        .id = "capture",
+        .run = "echo \"title=${{ github.event.issue.title }}\" >> \"$GITHUB_OUTPUT\"",
+    });
+    defer list.deinit();
+    // The capturing step is itself an injection point, so both steps report.
+    try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC002"));
+}
+
+test "referencesShellVar matches a whole name only" {
+    try testing.expect(referencesShellVar("echo \"title=$TITLE\"", "TITLE"));
+    try testing.expect(referencesShellVar("echo \"${TITLE}x\"", "TITLE"));
+    try testing.expect(!referencesShellVar("echo \"$TITLE_SUFFIX\"", "TITLE"));
+    try testing.expect(!referencesShellVar("echo \"${TITLE_SUFFIX}\"", "TITLE"));
+    try testing.expect(!referencesShellVar("echo TITLE", "TITLE"));
+}
+
+test "SEC002: a step only sees the taint of the steps before it (no false positive)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    try env.put("TITLE", "${{ github.event.issue.title }}");
+
+    const steps = [_]Step{
+        .{ .run = "echo ${{ steps.capture.outputs.title }}" },
+        .{ .id = "capture", .env = env, .run = "echo \"title=$TITLE\" >> \"$GITHUB_OUTPUT\"" },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "triage", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
 test "SEC002: object filter inside join()" {
@@ -3421,19 +3708,19 @@ test "SEC012: only one diagnostic per step" {
 }
 
 test "condition_dangerous_contexts recognizes issue title" {
-    try testing.expect(containsAnyContext("github.event.issue.title", &condition_dangerous_contexts));
+    try testing.expect(containsAnyContext("github.event.issue.title", .{ .prefix = &condition_dangerous_contexts }));
 }
 
 test "condition_dangerous_contexts recognizes PR body" {
-    try testing.expect(containsAnyContext("github.event.pull_request.body", &condition_dangerous_contexts));
+    try testing.expect(containsAnyContext("github.event.pull_request.body", .{ .prefix = &condition_dangerous_contexts }));
 }
 
 test "condition_dangerous_contexts rejects safe ref" {
-    try testing.expect(!containsAnyContext("github.sha", &condition_dangerous_contexts));
+    try testing.expect(!containsAnyContext("github.sha", .{ .prefix = &condition_dangerous_contexts }));
 }
 
 test "condition_dangerous_contexts rejects safe actor" {
-    try testing.expect(!containsAnyContext("github.actor", &condition_dangerous_contexts));
+    try testing.expect(!containsAnyContext("github.actor", .{ .prefix = &condition_dangerous_contexts }));
 }
 
 test "hardcoded secret prefixes are located by offset" {
@@ -5362,7 +5649,7 @@ test "SEC002: each untrusted reference in a run: block is reported at its own po
     const wf = try test_support.parseWorkflowSource(alloc, source);
 
     var list = DiagnosticList.init(alloc);
-    checkScriptInjection(&wf.jobs[0].steps[0], &list);
+    checkScriptInjection(&wf, &list);
 
     // Both interpolations are injection points, each at its own line, and the
     // column is the `$` of the expression (10 spaces + `echo "`).

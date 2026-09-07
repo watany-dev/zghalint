@@ -55,6 +55,24 @@ SEC006 does not report ref-shaped inputs (`github.head_ref`,
 names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
 — is a common routing idiom. They stay untrusted for SEC002 and SEC008.
 
+### SEC002 taint sources
+
+Besides the fixed `github.event.*` table, two taint sources cannot be decided
+from a step alone and need the whole workflow.
+
+- `inputs.*` / `github.event.inputs.*` — untrusted only when the workflow
+  declares `workflow_dispatch` or `workflow_call`. The values are typed by the
+  dispatching actor or passed by the caller, and neither can be validated on the
+  callee side.
+- `steps.<id>.outputs.*` — untrusted when step `<id>` wrote an untrusted value
+  to `$GITHUB_OUTPUT`. Binding the value to `env:` is what makes the *capturing*
+  step safe; it does nothing for whoever expands the output, so only the later
+  step that expands it is reported.
+
+Expanding the event as a whole — `toJSON(github.event)` — is a taint source too.
+The root matches only as a whole reference, so server-generated fields such as
+`github.event.number` stay out of scope.
+
 ### SEC021 vs. SEC005 / SEC009
 
 All three report the same shape — `actions/checkout` fed a ref the attacker
