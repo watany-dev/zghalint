@@ -621,11 +621,9 @@ fn initWorkspaceContext(
 }
 
 pub fn main() !u8 {
-    // DebugAllocator は空になったスラブごとに munmap を出すため、1,000 ファイルを
-    // 1 回の起動で処理すると syscall 時間の 80% が mmap/munmap になっていた。
-    // smp_allocator は空きスラブをスレッドローカルに保持して munmap を出さない。
-    // 安全検査 (リーク検出など) が効く Debug / ReleaseSafe では従来どおり
-    // DebugAllocator を使う。
+    // 多ファイル実行では DebugAllocator が空になったスラブごとに munmap を返し、
+    // syscall 時間の大半が mmap/munmap に消える (#294)。smp_allocator はスラブを
+    // スレッドローカルに保持して返さない。リーク検出が効くビルドでは従来どおり。
     const allocator, const is_debug_allocator = switch (builtin.mode) {
         .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
         .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
