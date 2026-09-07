@@ -75,9 +75,31 @@ actionlint は `Any` / `Number` / `Bool` / `String` / `Null` / `Array<T>` / loos
 | 案 | 採用しない理由 |
 |---|---|
 | 単一イベントのときだけ payload 型に切替 | schema 保守が SYN009 を超える。actionlint 自身がやっていない |
-| 頻出パスだけ curated scalar（`issue.number: number` 等）を V1 で入れる | 選択基準が主観的で、入れたパスと入れないパスで EXPR017 の当たり方が不均一になる。Follow-up に送る |
+| 頻出パスだけ curated scalar（`issue.number: number` 等）を V1 で入れる | 選択基準が主観的で、入れたパスと入れないパスで EXPR017 の当たり方が不均一になる。Follow-up に送る（#124 で採択基準を明文化のうえ導入。下記 D3-a）|
 
-EXPR017 への帰結: V1 で検出できるのは型がカタログから分かる比較だけ。`github.event.issue.number == 'foo'` は両辺が `any` / `string` になり **検出しない**（誤検出ゼロを優先）。`github.event > 3`（object vs number）と `github.event_name == 1`（string vs number）は検出する。
+EXPR017 への帰結: V1 で検出できるのは型がカタログから分かる比較だけ。`github.event.issue.number == 'foo'` は両辺が `number` / `string` になるが、scalar 同士の等価比較は D6 により **検出しない**（誤検出ゼロを優先）。`github.event > 3`（object vs number）と `github.event_name == 1`（string vs number）は検出する。
+
+#### D3-a. curated scalar overlay（#124、V1 の loose 方針は維持）
+
+`github.event` は **loose のまま**、頻出パスにだけ型を与える。採択基準を次の 3 条件に固定し、
+「選択基準が主観的」という上表の懸念を閉じる。3 条件すべてを満たすパスだけを入れる:
+
+1. その第一プロパティを配送する **すべて** のイベントの公式 webhook payload に存在する
+2. それらのイベント間で JSON 型が一致する
+3. 実際のワークフローの `if:` で比較に使われる
+
+除外: イベントごとに型が変わるもの（`github.event.inputs`、`repository_dispatch` の
+`client_payload`、`deployment.payload`）。`pull_request_review` が配る縮小版
+`pull_request` に無い `merged` のように、条件 1 を満たさないキーも入れない。
+
+**`github.event` 配下は一切診断しない**という D3 の約束は維持する。中間 object を
+すべて loose にするだけでは足りない（`github.event.issue.number.foo` のような
+curated scalar の deref が EXPR003 になる）ため、`walkPath` が `github.event` を
+通過した以降の problem を `any` に潰す。
+
+効果は EXPR017 の到達範囲拡大のみ: `github.event.issue == 'bug'`（object vs string）や
+`github.event.pull_request.draft > 1`（bool の順序比較）が新たに発火する。
+scalar 同士の比較（`github.event.issue.number == 'foo'`）は D6 のとおり沈黙する。
 
 ### D4. 既存 EXPR001〜EXPR005 は ID を維持したままエンジンに吸収する。置き換えない
 
@@ -169,7 +191,6 @@ EXPR006 / EXPR007 は型と独立した AST パターン診断なので、エン
 ### Follow-up
 
 - EXPR018: 関数引数の型不整合、および `${{ }}` 全体が object/array/null のときの診断（actionlint はこれを error にしている）
-- curated scalar overlay（`github.event.issue.number: number` 等、20 件規模）。D3 を崩さず EXPR017 の到達範囲だけ広げる
 - 型 narrowing（`&&` / `||`）
 - 関数名の case-insensitive lookup（EXPR004 の仕様変更。誤検出修正ではなく互換変更）
 - パーサが数値添字 `arr[0]` を受け付けるようにする（現状は string 添字のみ）。型エンジンは数値添字の規則だけ先に定義する

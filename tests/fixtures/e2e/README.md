@@ -45,6 +45,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `expr011-matrix-context.yml` | EXPR011: undeclared / misspelled `matrix.<key>` and jobs without a matrix |
 | `expr013-inputs-context.yml` | EXPR013: undeclared / misspelled `inputs.<name>` against the declared triggers |
 | `expr014-secrets-context.yml` | EXPR014: `secrets.<name>` against a declared `workflow_call.secrets` set |
+| `expr017-github-event-overlay.yml` | #124: the curated `github.event` overlay widens EXPR017 without new EXPR003s |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
