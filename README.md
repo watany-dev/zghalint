@@ -143,10 +143,11 @@ invalid permission levels.
 Dependabot cooldown configuration, insecure external code execution settings,
 `uses:` reference format for actions and reusable workflow calls.
 
-### Runner (2 rules)
+### Runner (3 rules)
 
 Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
-detection (typos such as `ubunut-latest`).
+detection (typos such as `ubunut-latest`), and conflicting label sets that no
+single runner can satisfy (`runs-on: [ubuntu-latest, windows-latest]`).
 
 ### Syntax (19 rules)
 

@@ -201,6 +201,7 @@ Validate GitHub-hosted runner labels in `runs-on:`.
 |----|------|----------|-------------|
 | RUNNER001 | deprecated-runner | error/warning | `runs-on` label is retired (error) or scheduled for retirement (warning) by GitHub |
 | RUNNER002 | unknown-runner | error | `runs-on` label is not a known GitHub-hosted runner (typos leave the job queued forever) |
+| RUNNER003 | runner-label-conflict | error | `runs-on` の複数ラベルが異なる OS を指しており、条件を満たすランナーが存在しない |
 
 RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知のラベル」だけを報告する。
 セルフホストのフリートは列挙しようがないため、以下は報告しない:
@@ -219,6 +220,18 @@ RUNNER002 は「GitHub ホストランナーのつもりで書かれた未知の
 判定する。診断と autofix は matrix の値側を指す。`exclude` の値は組み合わせを
 除外するだけなのでランナーを名乗らず、報告の対象外とする（`--fix-unsafe` は
 軸の値を直す際に、同じラベルを名指しする `exclude` の値も併せて書き換える）。
+
+RUNNER001 / RUNNER002 は `runs-on: [self-hosted, linux, x64]` のような配列指定と
+ランナーグループ（`runs-on: {group:, labels:}`）にも対応し、ラベルごとに検査する。
+ただし `self-hosted` を含む集合では、残りのラベルはフリート運用者が付けた名前と
+みなして RUNNER002 を報告しない。
+
+RUNNER003 は同一ランナーが同時に満たせないラベルの併記を報告する。ジョブは
+すべてのラベルを備えた 1 台のランナーで実行されるため、`ubuntu-latest` と
+`windows-latest` のように OS が異なるラベルを並べると永久に queued のままになる。
+OS の判定に使うのは既知ラベルだけで、`self-hosted` / `x64` や自前フリートの独自
+ラベル（Linux マシンに付けた `macos-m1` など）は判定に使わない。`${{ }}` を含む
+ラベルがあるジョブは matrix 展開が必要なため報告しない。
 
 ## Syntax Rules (SYN)
 

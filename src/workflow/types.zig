@@ -527,6 +527,11 @@ pub const Job = struct {
     /// Span of the `runs-on:` scalar value (for RUNNER001 autofix).
     /// Null when `runs-on` is absent or given as a sequence.
     runs_on_value_span: ?yaml_types.Span = null,
+    /// `runs-on` labels in source order, normalized from all three spellings:
+    /// a scalar, a sequence, or the `labels:` list of a runner-group mapping.
+    runs_on_labels: []const []const u8 = &.{},
+    /// Value spans of `runs_on_labels`, parallel to it. Empty when absent.
+    runs_on_label_spans: []const yaml_types.Span = &.{},
 };
 
 pub const Workflow = struct {
