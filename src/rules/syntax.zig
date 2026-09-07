@@ -411,6 +411,155 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
+/// `<prefix> a, b, c` — the shape every SYN010/SYN011 hint takes. Returns
+/// `fallback` when there is nothing to list, or when the arena is exhausted.
+fn availableHint(
+    alloc: std.mem.Allocator,
+    prefix: []const u8,
+    names: []const []const u8,
+    fallback: []const u8,
+) []const u8 {
+    if (names.len == 0) return fallback;
+    const list = std.mem.join(alloc, ", ", names) catch return fallback;
+    return std.fmt.allocPrint(alloc, "{s} {s}", .{ prefix, list }) catch fallback;
+}
+
+/// SYN010/SYN011 both trust the trigger table, so an event the table does not
+/// know is left to SYN009 rather than reported twice with a second wording.
+fn knownEventSpec(event: workflow_types.EventConfig) ?workflow_events.EventSpec {
+    if (std.mem.indexOf(u8, event.name, "${{") != null) return null;
+    return workflow_events.find(event.name);
+}
+
+fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.on.events) |event| {
+        const spec = knownEventSpec(event) orelse continue;
+
+        if (!spec.acceptsTypes()) {
+            const key_span = event.types_key_span orelse continue;
+            list.append(.{
+                .rule_id = "SYN010",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "\"types\" is not available for \"{s}\" event",
+                    .{event.name},
+                ) catch "\"types\" is not available for this event",
+                .span = key_span,
+                .fix_hint = "remove 'types'; this event has no activity types to filter on",
+            }) catch return;
+            continue;
+        }
+
+        // A null table means the names are the caller's to choose
+        // (`repository_dispatch`), so only the key itself is validated above.
+        const known = spec.activity_types orelse continue;
+
+        for (event.activity_types.values, 0..) |value, i| {
+            if (std.mem.indexOf(u8, value, "${{") != null) continue;
+
+            var found = false;
+            for (known) |name| {
+                if (std.mem.eql(u8, name, value)) found = true;
+            }
+            if (found) continue;
+
+            var suffix_buf: [64]u8 = undefined;
+            const suffix = if (util.didYouMean(value, known)) |s|
+                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+            else
+                "";
+
+            list.append(.{
+                .rule_id = "SYN010",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "invalid activity type \"{s}\" for \"{s}\" event{s}",
+                    .{ value, event.name, suffix },
+                ) catch "invalid activity type",
+                .span = if (i < event.activity_types.spans.len)
+                    event.activity_types.spans[i]
+                else
+                    event.name_span,
+                .fix_hint = availableHint(
+                    alloc,
+                    "available types are",
+                    known,
+                    "use one of the activity types this event defines",
+                ),
+            }) catch return;
+        }
+    }
+}
+
+fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
+    const alloc = list.fixAllocator();
+    for (wf.on.events) |event| {
+        const spec = knownEventSpec(event) orelse continue;
+
+        var candidate_buf: [workflow_events.max_event_keys][]const u8 = undefined;
+        const candidates = spec.keyCandidates(&candidate_buf);
+
+        for (event.config_keys) |key| {
+            // `types` is SYN010's to judge, availability included.
+            if (std.mem.eql(u8, key.name, "types")) continue;
+            if (spec.accepts(key.name)) continue;
+
+            if (workflow_events.isFilter(key.name)) {
+                list.append(.{
+                    .rule_id = "SYN011",
+                    .severity = .@"error",
+                    .message = std.fmt.allocPrint(
+                        alloc,
+                        "\"{s}\" filter is not available for \"{s}\" event",
+                        .{ key.name, event.name },
+                    ) catch "this filter is not available for this event",
+                    .span = key.span,
+                    .fix_hint = availableHint(
+                        alloc,
+                        "this event accepts only",
+                        spec.filters,
+                        "remove this filter; this event accepts no ref or path filters",
+                    ),
+                }) catch return;
+                continue;
+            }
+
+            var suffix_buf: [64]u8 = undefined;
+            const suggestion = util.didYouMean(key.name, candidates);
+            const suffix = if (suggestion) |s|
+                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+            else
+                "";
+            // "filter" reads wrong for a key that is not one: `workflows` under
+            // `workflow_run`, or `inputs` under `workflow_call`.
+            const noun = if (suggestion) |s|
+                if (workflow_events.isFilter(s)) "filter" else "key"
+            else
+                "key";
+
+            list.append(.{
+                .rule_id = "SYN011",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "unknown {s} \"{s}\" for \"{s}\" event{s}",
+                    .{ noun, key.name, event.name, suffix },
+                ) catch "unknown event configuration key",
+                .span = key.span,
+                .fix_hint = availableHint(
+                    alloc,
+                    "this event accepts only",
+                    candidates,
+                    "remove this key; the event does not read it",
+                ),
+            }) catch return;
+        }
+    }
+}
+
 /// GitHub Actions rejects a workflow that specifies both halves of a pair.
 const ExclusivePair = struct {
     include: ?Span,
@@ -731,6 +880,22 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkUnknownEvents,
+    },
+    .{
+        .id = "SYN010",
+        .name = "invalid-activity-type",
+        .description = "'types' names an activity type the event does not define, so the workflow never triggers",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkActivityTypes,
+    },
+    .{
+        .id = "SYN011",
+        .name = "unavailable-event-filter",
+        .description = "Event filter is not available for the event it is written under, or is not a filter name at all",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkEventFilters,
     },
     .{
         .id = "SYN012",
@@ -2634,6 +2799,338 @@ test "SYN009: an unknown event in a sequence is reported at its own item" {
     );
     try testing.expectEqual(@as(u32, 1), diags.get(0).span.start_line);
     try testing.expectEqual(@as(u32, 12), diags.get(0).span.start_col);
+}
+
+fn runSyn010(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    checkActivityTypes(&wf, list);
+}
+
+fn runSyn011(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    checkEventFilters(&wf, list);
+}
+
+const trailer =
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo hi
+    \\
+;
+
+test "SYN010: an invalid activity type is reported with a suggestion" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  issues:
+        \\    types: [open, closed]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn010(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN010", diag.rule_id);
+    try testing.expectEqualStrings(
+        "invalid activity type \"open\" for \"issues\" event. did you mean \"opened\"?",
+        diag.message,
+    );
+    // The span points at the offending item, not the whole `types` sequence.
+    try testing.expectEqual(@as(u32, 3), diag.span.start_line);
+    try testing.expectEqual(@as(u32, 13), diag.span.start_col);
+}
+
+test "SYN010: a type with no near match still lists the available names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  watch:
+        \\    types: [everything]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn010(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "invalid activity type \"everything\" for \"watch\" event",
+        diags.get(0).message,
+    );
+    try testing.expectEqualStrings("available types are started", diags.get(0).fix_hint.?);
+}
+
+test "SYN010: `types` on an event without activity types is reported" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  push:
+        \\    types: [opened]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn010(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "\"types\" is not available for \"push\" event",
+        diags.get(0).message,
+    );
+    try testing.expectEqual(@as(u32, 3), diags.get(0).span.start_line);
+}
+
+test "SYN010: valid types, dispatch types and unknown events stay quiet" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const sources = [_][]const u8{
+        \\on:
+        \\  issues:
+        \\    types: [opened, reopened]
+        \\  pull_request:
+        \\    types: [opened, synchronize, ready_for_review]
+        \\
+        ,
+        // The names belong to the dispatch sender, so nothing to check.
+        \\on:
+        \\  repository_dispatch:
+        \\    types: [deploy-please]
+        \\
+        ,
+        // SYN009 owns the unknown event; SYN010 must not pile on.
+        \\on:
+        \\  isues:
+        \\    types: [open]
+        \\
+        ,
+        // A type built from an expression is not a literal name.
+        \\on:
+        \\  issues:
+        \\    types: ["${{ env.KIND }}"]
+        \\
+        ,
+    };
+
+    for (sources) |head| {
+        const source = try std.mem.concat(arena.allocator(), u8, &.{ head, trailer });
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+        try runSyn010(source, arena.allocator(), &diags);
+        try testing.expectEqual(@as(usize, 0), diags.len());
+    }
+}
+
+test "SYN011: a filter the event does not offer is reported" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  issues:
+        \\    branches: [main]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("SYN011", diag.rule_id);
+    try testing.expectEqualStrings(
+        "\"branches\" filter is not available for \"issues\" event",
+        diag.message,
+    );
+    try testing.expectEqualStrings(
+        "remove this filter; this event accepts no ref or path filters",
+        diag.fix_hint.?,
+    );
+}
+
+test "SYN011: pull_request rejects tags but keeps branches" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  pull_request:
+        \\    branches: [main]
+        \\    tags: [v*]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "\"tags\" filter is not available for \"pull_request\" event",
+        diags.get(0).message,
+    );
+    try testing.expectEqualStrings(
+        "this event accepts only branches, branches-ignore, paths, paths-ignore",
+        diags.get(0).fix_hint.?,
+    );
+}
+
+test "SYN011: workflow_run offers only the branch filters" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  workflow_run:
+        \\    workflows: [CI]
+        \\    types: [completed]
+        \\    branches: [main]
+        \\    paths: ['src/**']
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "\"paths\" filter is not available for \"workflow_run\" event",
+        diags.get(0).message,
+    );
+}
+
+test "SYN011: a misspelled key is reported with a suggestion" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  push:
+        \\    brancehs: [main]
+        \\  workflow_dispatch:
+        \\    inptus: {}
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expectEqualStrings(
+        "unknown filter \"brancehs\" for \"push\" event. did you mean \"branches\"?",
+        diags.get(0).message,
+    );
+    // `workflow_dispatch` has no ref filters, so "filter" would misname its keys.
+    try testing.expectEqualStrings(
+        "unknown key \"inptus\" for \"workflow_dispatch\" event. did you mean \"inputs\"?",
+        diags.get(1).message,
+    );
+}
+
+test "SYN011: an event with no keys at all gets a hint that lists nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  fork:
+        \\    brancehs: [main]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expectEqualStrings(
+        "unknown key \"brancehs\" for \"fork\" event",
+        diags.get(0).message,
+    );
+    try testing.expectEqualStrings(
+        "remove this key; the event does not read it",
+        diags.get(0).fix_hint.?,
+    );
+}
+
+test "SYN011: a misspelled non-filter key is not called a filter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  workflow_run:
+        \\    workflowss: [CI]
+        \\
+    ++ trailer;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn011(source, arena.allocator(), &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    // `workflow_run` does take filters, so the noun has to come from the
+    // suggestion rather than from the event.
+    try testing.expectEqualStrings(
+        "unknown key \"workflowss\" for \"workflow_run\" event. did you mean \"workflows\"?",
+        diags.get(0).message,
+    );
+}
+
+test "SYN011: filters the event offers stay quiet" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const sources = [_][]const u8{
+        \\on:
+        \\  push:
+        \\    branches: [main]
+        \\    paths: ['src/**']
+        \\  pull_request:
+        \\    branches-ignore: [wip/**]
+        \\
+        ,
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      name:
+        \\        type: string
+        \\    secrets:
+        \\      token:
+        \\        required: true
+        \\
+        ,
+        // SYN009 owns the unknown event.
+        \\on:
+        \\  isues:
+        \\    branches: [main]
+        \\
+        ,
+    };
+
+    for (sources) |head| {
+        const source = try std.mem.concat(arena.allocator(), u8, &.{ head, trailer });
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+        try runSyn011(source, arena.allocator(), &diags);
+        try testing.expectEqual(@as(usize, 0), diags.len());
+    }
 }
 
 test "SYN009: an event name built from an expression is skipped" {

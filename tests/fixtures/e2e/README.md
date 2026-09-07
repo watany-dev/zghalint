@@ -40,6 +40,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
 | `expr010-step-refs.yml` | EXPR010: unknown / misspelled / forward `steps.<id>` references |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
+| `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
 | `syn016-schedule-timezone.yml` | #72: `schedule` `timezone` names outside the IANA database |
 | `syn017-workflow-dispatch-inputs.yml` | #73: `workflow_dispatch` input type, `options`, and `default` mismatches |
