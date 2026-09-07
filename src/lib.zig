@@ -37,6 +37,7 @@ pub const rules = struct {
     pub const http_client = @import("rules/http_client.zig");
     pub const prefetch = @import("rules/prefetch.zig");
     pub const runner = @import("rules/runner.zig");
+    pub const composite_steps = @import("rules/composite_steps.zig");
     pub const local_action = @import("rules/local_action.zig");
 };
 
@@ -93,6 +94,7 @@ test {
     _ = @import("rules/runner.zig");
     _ = @import("rules/syntax.zig");
     _ = @import("rules/uses.zig");
+    _ = @import("rules/composite_steps.zig");
     _ = @import("rules/local_action.zig");
     _ = @import("rules/reusable_workflow.zig");
     _ = @import("rules/http_client.zig");

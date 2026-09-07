@@ -2,13 +2,14 @@
 //!
 //! Action metadata is not a workflow, so — like `dependabot.zig` — these
 //! checks run over the raw YAML document instead of the workflow rule engine.
-//! Composite `runs.steps` are only checked for their shape here; applying the
-//! existing step rules to them is #254.
+//! Composite `runs.steps` are checked for their shape here and then handed to
+//! `composite_steps.zig`, which runs the workflow step rules over them (#254).
 
 const std = @import("std");
 const engine = @import("engine.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
+const composite_steps = @import("composite_steps.zig");
 const local_action = @import("local_action.zig");
 const util = @import("../util.zig");
 
@@ -279,7 +280,7 @@ fn checkRuns(root: Mapping, list: *DiagnosticList) ?Runtime {
             checkUnknownKeys(list, runs, &composite_runs_keys, context);
             if (runs.get("steps")) |steps| {
                 switch (steps) {
-                    .sequence => {},
+                    .sequence => composite_steps.checkCompositeSteps(root, steps, list),
                     else => reportInvalid(
                         list,
                         "\"steps\" must be a sequence of steps",
