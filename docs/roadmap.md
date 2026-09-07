@@ -1,31 +1,31 @@
 # 実施ロードマップ（2026-09-07 時点）
 
-オープンな PR / issue を main（`0761043`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`3d53be3`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数 | `docs/rules.md` の表は 92 行（ACT005 / DEP004 / BP003 追加分）で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストする。残る不一致は**見出しの「90 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
-| `src/**/*.zig` | 45,487 行 |
-| ユニットテスト | 1607 件（`zig build test` 緑） |
-| #55 actionlint parity | 54 sub-issue 中 **46 close 済み（85%）** |
+| ルール数 | `docs/rules.md` の表は 96 行（RW002〜RW005 追加分）で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストする。残る不一致は**見出しの「90 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
+| `src/**/*.zig` | 47,020 行 |
+| ユニットテスト | 1621 件（`zig build test` 緑） |
+| #55 actionlint parity | 54 sub-issue 中 **50 close 済み（93%）** |
 | 型検査エンジン | T0〜T4 完了（#129 は PR #256 で overlay 接続、close 済み）。EXPR018 引数型検査（#162）も同 PR で完了・close 済み |
 | E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（39 本）と `tests/fixtures/e2e-action/*.yml`（7 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証 |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
 | ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241） |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
-| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#249 / #252（Dependabot） |
-| オープン issue | 15 件。内訳は #55 本体 1、#55 の sub-issue 8（#64 #97〜#99 #105〜#108）、形式検証由来のバグ 4（#221〜#224）、その他 2（#135 #159）。#254 / #96 は PR #258 で close 済み |
+| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#249 / #252（Dependabot）の 4 本 |
+| オープン issue | 11 件。内訳は #55 本体 1、#55 の sub-issue 4（#64 #97〜#99）、形式検証由来のバグ 4（#221〜#224）、その他 2（#135 #159）。#105〜#108 は PR #259 で close 済み |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
 | 既知バグ | 形式検証由来の security 3 件（#218 / #219 / #220）は修正済みで close 済み。残る反例は #221 / #222（prefetch キャッシュ）、#223（`--fix` の原子性）、#224（二重報告）の 4 件 |
 
 Phase 1（トリガー `on:` 群）と Phase 2（job / step / matrix）は完了済み。
 Phase 3（contextual typing）は EXPR015 / EXPR016（#91 / #92）が PR #257 で着地し、**完了した**。
 残るのは Phase 4（action.yml / reusable workflow）の複数ファイル横断ルール群だけである。
-Phase 4 は PR #258 で composite の `runs.steps`（ACT005 = #254）とローカル action.yml ローダー（DEP004 = #96）が着地し、残りは reusable workflow 側（#105〜#108）と popular actions データセット（#97 #98）に絞られた。
-実装済みだったルール系 issue（#72 #73 #75 #86 #91 #92 #96 #100 #124 #129 #162 #210 #218 #219 #220 #254）は close 済み。
+Phase 4 は PR #258 で composite の `runs.steps`（ACT005 = #254）とローカル action.yml ローダー（DEP004 = #96）が、PR #259 で reusable workflow 側 4 本（RW002〜RW005 = #105〜#108）が着地した。残るのは popular actions データセット系（#97 #98 と #99 のリモート分）と、Phase を跨ぐ基盤の #64 だけである。
+実装済みだったルール系 issue（#72 #73 #75 #86 #91 #92 #96 #100 #105〜#108 #124 #129 #162 #210 #218 #219 #220 #254）は close 済み。
 
 リポジトリ運用・CI 基盤トラックは完了した。CI は fmt / build / test に加えて
 クロスコンパイル・3 OS スモーク・自リポジトリの dogfooding・外部静的解析（actionlint / zizmor / shellcheck / ruff）・
@@ -81,21 +81,19 @@ RUNNER003 のラベル衝突（#77、ADR-0013）が続けて着地した。
 
 基盤の #100 が着地した。`src/rules/action_metadata.zig` が ACT001〜ACT004（必須キー / `runs.using` /
 未知キー / 定義の型）を見て、`tests/fixtures/e2e-action/` が fixture を持つ。
-PR #258 で `src/rules/composite_steps.zig`（ACT005）と `src/rules/local_action.zig`（DEP004、ローカル action.yml ローダー）が入り、
-「他ファイルを読む」基盤はローカル action.yml については揃った。残るのは reusable workflow 側の同じ形のローダーと、
-リモート action のメタデータ（popular actions データセット）である。
+PR #258 で `src/rules/composite_steps.zig`（ACT005）と `src/rules/local_action.zig`（DEP004、ローカル action.yml ローダー）が、
+PR #259 で `src/rules/called_workflow.zig`（呼び先ワークフローの読み取り）と RW002〜RW005 が入り、
+「他ファイルを読む」基盤はローカルファイルについては action.yml / reusable workflow の双方で揃った。
+残るのはリモート action のメタデータ（popular actions データセット）だけである。
 
 | 順 | issue | ルール | 状態 / 依存 |
 |---|---|---|---|
 | — | #254 | ACT005 composite の `runs.steps` | 完了（close 済み、PR #258）。`src/rules/composite_steps.zig` |
 | — | #96 | DEP004 ローカルアクション inputs | 完了（close 済み、PR #258）。`src/rules/local_action.zig` |
-| 1 | #99 | BP003 拡張 node12 / node16 | ローカル action の retired runtime は PR #258 で実装済み。**残るのはリモート action 分**で、`prefetch.zig` 経由の `action.yml` 取得（= #97 のデータセット）が前提 |
-| 2 | #105 | RW002 required inputs 欠落 | ローカル reusable workflow ローダー（#100 と同モジュール）+ `reusable_workflow.zig` |
-| 3 | #106 | RW003 未定義 inputs / 型不整合 | #105 |
-| 4 | #107 | RW004 secrets | #105 |
-| 5 | #108 | RW005 outputs 実在 | #105 + #88 |
-| 6 | #97 | DEP005 popular actions inputs | 埋め込みデータセット（`scripts/` で生成）。バイナリサイズを計測してから採否を決める |
-| 7 | #98 | DEP006 非推奨 inputs | #97 のデータセット |
+| — | #105〜#108 | RW002〜RW005 reusable workflow 呼び出し検証 | 完了（close 済み、PR #259）。ルール本体は `src/rules/reusable_workflow.zig:515` 以降、呼び先の読み取りは `src/rules/called_workflow.zig` |
+| 1 | #97 | DEP005 popular actions inputs | 埋め込みデータセット（`scripts/` で生成）。バイナリサイズを計測してから採否を決める。#98 と #99 のリモート分がこれを待つ |
+| 2 | #98 | DEP006 非推奨 inputs | #97 のデータセット |
+| 3 | #99 | BP003 拡張 node12 / node16 | ローカル action の retired runtime は PR #258 で実装済み。**残るのはリモート action 分**で、`prefetch.zig` 経由の `action.yml` 取得（= #97 のデータセット）が前提 |
 
 ### 並行トラック
 
@@ -112,14 +110,14 @@ PR #258 で `src/rules/composite_steps.zig`（ACT005）と `src/rules/local_acti
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | `docs/rules.md` の見出し修正 | 表は 92 行で registry と同期済みなのに、見出しが「90 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
-| 2 | #105 | RW002。reusable workflow ローダーは #96 のローカル action ローダーと同じ形で書け、#106〜#108 が全部これに乗る |
+| 1 | `docs/rules.md` の見出し修正 | 表は 96 行で registry と同期済みなのに、見出しが「90 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
+| 2 | #97 | DEP005 の popular actions データセット。Phase 4 で唯一残った系統で、#98 と #99 のリモート分がこれを待っている |
 | 3 | #159 | エンジンの arena。Phase 4 でルール追加が再び集中する前に `Rule` シグネチャを固める |
-| 4 | #97 | DEP005 の popular actions データセット。#98 と #99 のリモート分がこれを待っている |
+| 4 | #64 | YAML anchor / alias / merge key。Phase を跨ぐ基盤で、パーサ層に触るため他のルール追加と競合しやすい |
 | 5 | #221 / #222 | prefetch キャッシュ。ウォームランが成立しないのは実利用のレイテンシに直結する |
 
-Phase 3 は閉じ、Phase 4 もローカル側（#254 / #96）が着地した。以後は #105 → #106〜#108 で
-reusable workflow 側を、#97 → #98 / #99 でリモート action 側を育てる。#135 / #64 / #221〜#224 は競合しないので並行で流す。
+Phase 3 は閉じ、Phase 4 も composite / ローカル action（#254 / #96）と reusable workflow（#105〜#108）が着地した。
+以後は #97 → #98 / #99 でリモート action メタデータの系統だけを育てる。#135 と #221〜#224 は競合しないので並行で流す。#64 はパーサ層に触るため単独で入れる。
 
 ## 4. 進め方の注意
 
