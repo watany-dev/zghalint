@@ -1,0 +1,30 @@
+# zghalint:forbid PERM001
+# zghalint:expect BP002
+# #285 FP guard: every metadata scope below is the documented minimum for the
+# job that declares it — CodeQL uploads, a Pages deploy, trusted publishing,
+# labelling — so a job-level `write` on them is not a finding. BP002 is here so
+# the fixture still asserts the pipeline reached the rule engine at all.
+name: job-scoped metadata permissions
+on: [push]
+concurrency: perm001
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: github/codeql-action/analyze@4e94bd11f71e507f7f87df81788dff88d1dacbfb
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
+      issues: write
+    steps:
+      - run: npm publish --provenance
