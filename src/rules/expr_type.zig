@@ -18,8 +18,15 @@ pub const TypeKind = enum {
 pub const ObjectShape = enum {
     /// Unknown key is a type error (EXPR003). github / runner / job.
     strict,
-    /// Unknown key is `any`. github.event, and contexts awaiting overlay (#129).
+    /// Unknown key is `any`. github.event, and object literals from fromJSON.
     loose,
+    /// Nothing at all is known about the object: a workflow-defined context
+    /// that got no overlay. Derefs behave like `loose`, but EXPR018 must stay
+    /// silent because `object` here means "unmodelled", not "an object"
+    /// (ADR D3, #162). A distinct variant rather than a distinguished
+    /// `loose` constant: identical comptime constants may share an address,
+    /// so identity comparison cannot tell the two apart.
+    unknown,
     /// Every key has the `elem` type. env / vars / secrets.
     map,
 };
@@ -73,6 +80,13 @@ pub fn findProp(ty: TypeRef, name: []const u8) ?TypeRef {
     return prop.ty;
 }
 
+/// Overlay props are built per workflow and are neither sorted nor
+/// case-normalized, while GitHub resolves context keys case-insensitively.
+pub fn findPropIgnoreCase(ty: TypeRef, name: []const u8) ?TypeRef {
+    const prop = findByNameAsciiCaseInsensitive(Prop, ty.props, name) orelse return null;
+    return prop.ty;
+}
+
 /// Conflicts collapse to `any` (ADR D5).
 pub fn merge(a: TypeRef, b: TypeRef) TypeRef {
     if (a == b) return a;
@@ -83,8 +97,9 @@ pub fn merge(a: TypeRef, b: TypeRef) TypeRef {
             a
         else
             &type_array_any,
-        // Property unions need an allocator; until overlays exist (#129) there
-        // is nothing to union, so differing objects collapse to a loose object.
+        // A property union would need an allocator that `merge` does not have,
+        // so differing objects collapse to a loose object: every key still
+        // resolves, just to `any`.
         .object => &type_loose_object,
         else => a,
     };
@@ -117,7 +132,7 @@ fn write(ty: TypeRef, w: *std.Io.Writer, depth: u8) std.Io.Writer.Error!void {
                 }
                 try w.writeAll("}");
             },
-            .loose => try w.writeAll("object"),
+            .loose, .unknown => try w.writeAll("object"),
             .strict => {
                 if (depth >= 2) return w.writeAll("object");
                 try w.writeAll("{");
