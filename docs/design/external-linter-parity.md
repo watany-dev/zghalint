@@ -93,7 +93,7 @@ zizmor pedantic の `undocumented-permissions` (1 件)。スタイル規約寄�
 YAML コメントの有無を強制するルールは zghalint の診断カテゴリに馴染まないため
 採用しない。
 
-#### G5 (#273). 汚染源が `github.event.*` に限られている — 要ルール改善
+#### G5 (#273). 汚染源が `github.event.*` に限られている — 対応済み
 
 `bench/cases/a-script-injection/` で発覚した SEC002 の FN 4 件。zizmor は
 いずれも `template-injection` として検出する。
@@ -105,28 +105,52 @@ YAML コメントの有無を強制するルールは zghalint の診断カテ�
 | `tojson-event.yml` | `toJSON(github.event)` (フィールド指定なしの丸ごと展開) |
 | `step-output-indirect.yml` | 汚染値を書いた `steps.<id>.outputs.*` の再展開 |
 
-前 3 つは汚染源テーブルの追加で済む。4 つ目はステップ間のデータフロー追跡が
-要るため段階が 1 つ上がる。
+SEC002 をステップ単位からワークフロー単位のルールへ移し、上の 4 つを汚染源に
+加えた。`inputs.*` はトリガを、`steps.<id>.outputs.*` は同一ジョブの前段
+ステップを見ないと判定できないため、ステップだけを見るルールでは足りない。
+`github.event` の根は「まるごと参照したときだけ」の一致にしてあり、
+`github.event.number` のようなサーバ生成フィールドは汚染源にしていない。
+ステップ出力の汚染は「汚染値を持ったまま `$GITHUB_OUTPUT` へ書いた」ステップの
+出力に限り、指摘は展開する後段だけに出る。詳細は `docs/rules.md` の
+「SEC002 taint sources」。
 
-#### G6 (#274). `runs-on` が配列のとき SEC020 が発火しない — 要ルール改善
+#### G6 (#274). `runs-on` が配列のとき SEC020 が発火しない — 対応済み
 
 `bench/cases/b-trigger-checkout/self-hosted-fork-trigger.yml`。
 `runs-on: self-hosted` (スカラー) では発火するが
 `runs-on: [self-hosted, linux]` では発火しない。配列要素の走査漏れ。
 
-#### G7 (#275). `docker://` 形式の `uses:` を SC001 が見ていない — 要ルール改善
+パーサは既にスカラー・配列・ランナーグループ (`{group:, labels:}`) の 3 形を
+`runs_on_labels` へ正規化していたので、SEC020 をその走査 (`runner.runsOnLabels`)
+に載せ替えた。ラベル 1 件ごとの部分一致は据え置き — 自前プールに
+`self-hosted-gpu` のような名前を付ける運用が多いため。
+
+#### G7 (#275). `docker://` 形式の `uses:` を SC001 が見ていない — 対応済み
 
 `bench/cases/c-supply-chain/docker-uses-no-digest.yml`。
 `uses: docker://alpine:3.19` はコンテナイメージのタグ参照だが、SC001 は
 `container.image` / `services.*.image` しか見ていない。zizmor は pedantic
 persona の `unpinned-images` で検出する。
 
-#### G8 (#276). SEC005 がフォーク判定のガードを見ない (FP) — 要ルール改善
+SC001 にステップの走査を足し、`ActionRef.is_docker` が立つ `uses:` を
+`container.image` と同じ基準 (`@sha256:` 固定) で見るようにした。
+`uses:` のマーケットプレース形は SEC001 の担当なので重複はしない。
+
+#### G8 (#276). SEC005 がフォーク判定のガードを見ない (FP) — 対応済み
 
 `bench/cases/b-trigger-checkout/pr-target-guarded.yml`。
 `if: github.event.pull_request.head.repo.full_name == github.repository` で
 フォーク由来の実行を除外しているジョブでも SEC005 が発火する。SEC022 は
 同種のガード解析を持っているので、その判定を SEC005 と共有させたい。
+
+SEC022 のガード解析 (`hasTrustAnchor` / `anchorHolds`) をトリガ非依存に
+一般化し、アンカーの集合を `TrustAnchors` として渡す形にした。
+`pull_request_target` 版は `github.event.pull_request.head.repo` の
+`full_name` / `id` / `owner.*` / `fork` を見る。`||` の迂回路や
+`fork == true` のような逆向きのガードを弾く判定はそのまま共有される。
+SEC009 (`workflow_run` の checkout) も同じ関数でガードを見るようにした。
+SEC021 が担当するトリガ (`workflow_dispatch` / `issue_comment` など) は
+フォーク由来かどうかという概念を持たないため、対象外。
 
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
@@ -156,7 +180,7 @@ PERF001 (キャッシュを足せ) と SEC016 (リリース系でのキャッシ
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
 - [ ] G2: composite action (`action.yml`) の解析サポートを設計する
 - [ ] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
-- [ ] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
-- [ ] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
-- [ ] G7 (#275): SC001 を `uses: docker://...` に対応させる
-- [ ] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する
+- [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
+- [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
+- [x] G7 (#275): SC001 を `uses: docker://...` に対応させる
+- [x] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する

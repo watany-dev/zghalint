@@ -55,6 +55,38 @@ SEC006 does not report ref-shaped inputs (`github.head_ref`,
 names, because branching on them — `if: startsWith(github.head_ref, 'release/')`
 — is a common routing idiom. They stay untrusted for SEC002 and SEC008.
 
+### SEC002 taint sources
+
+Besides the fixed `github.event.*` table, two taint sources cannot be decided
+from a step alone and need the whole workflow.
+
+- `inputs.*` / `github.event.inputs.*` — untrusted only when the workflow
+  declares `workflow_dispatch` or `workflow_call`. The values are typed by the
+  dispatching actor or passed by the caller, and neither can be validated on the
+  callee side.
+- `steps.<id>.outputs.*` — untrusted when step `<id>` wrote an untrusted value
+  to `$GITHUB_OUTPUT`. Binding the value to `env:` is what makes the *capturing*
+  step safe; it does nothing for whoever expands the output, so only the later
+  step that expands it is reported.
+
+Expanding the event as a whole — `toJSON(github.event)` — is a taint source too.
+The root matches only as a whole reference, so server-generated fields such as
+`github.event.number` stay out of scope.
+
+### Fork guards
+
+SEC005 and SEC009 stay quiet when the job — or the step itself — is gated on an
+`if:` that keeps the run to code the base repository controls: an equality
+check against the head repository's `full_name` / `id` / `owner.*`, or the
+`fork` flag asserted false. The gate has to hold on every path, so `||` around
+it, `fork == true`, and a comparison between two attributes of the same head
+anchor nothing and the rule still reports.
+
+SEC022 uses the same analysis on `github.event.workflow_run.head_repository`,
+plus `workflow_run.event` compared against an event a fork cannot cause. SEC021
+has no such gate: the triggers it owns (`workflow_dispatch`, `issue_comment`,
+`discussion`, ...) carry no fork identity to test.
+
 ### SEC021 vs. SEC005 / SEC009
 
 All three report the same shape — `actions/checkout` fed a ref the attacker
@@ -119,7 +151,7 @@ Detect supply chain risks in action and container image references.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| SC001 | unpinned-images | warning | Container images should be pinned to a SHA256 digest for supply chain security |
+| SC001 | unpinned-images | warning | Container images (`container.image`, `services.*.image`, `uses: docker://...`) should be pinned to a SHA256 digest for supply chain security |
 | SC002 | compromised-action-sha | error | Action references a SHA or tag of a known-compromised release |
 | SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database |
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
