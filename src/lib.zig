@@ -49,6 +49,7 @@ pub const Config = config.Config;
 pub const OutputFormat = config.OutputFormat;
 pub const ColorMode = config.ColorMode;
 
+pub const util = @import("util.zig");
 pub const workspace = @import("workspace.zig");
 
 test {
@@ -70,6 +71,9 @@ test {
     _ = @import("rules/expr_catalog.zig");
     _ = @import("rules/expr_check.zig");
     _ = @import("rules/needs_context.zig");
+    _ = @import("rules/matrix_context.zig");
+    _ = @import("rules/inputs_context.zig");
+    _ = @import("rules/secrets_context.zig");
     _ = @import("rules/steps_ref.zig");
     _ = @import("rules/security.zig");
     _ = @import("rules/performance.zig");

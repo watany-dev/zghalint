@@ -22,7 +22,7 @@ zig fmt src/ build.zig              # Auto-format
 
 ### Prerequisites
 
-- Zig 0.15.2 or later
+- Zig 0.15.2 or later（定義の真は `build.zig.zon` の `minimum_zig_version`。更新手順は `docs/maintenance.md`）
 
 ### Completion Requirements
 

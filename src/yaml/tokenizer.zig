@@ -85,7 +85,7 @@ pub const Tokenizer = struct {
             return self.scanComment();
         }
 
-        if (c == '\n') {
+        if (self.atBreak()) {
             return self.scanNewline();
         }
 
@@ -141,7 +141,7 @@ pub const Tokenizer = struct {
             if (c == ',') return self.emitSimple(.flow_entry, 1);
         }
 
-        if (c == ':' and (self.peekNext() == ' ' or self.peekNext() == '\n' or self.pos + 1 >= self.source.len)) {
+        if (c == ':' and (self.peekNext() == ' ' or self.isBreakAt(self.pos + 1) or self.pos + 1 >= self.source.len)) {
             return self.emitSimple(.mapping_value, 1);
         }
 
@@ -160,7 +160,7 @@ pub const Tokenizer = struct {
         const start = self.pos;
         const line = self.line;
         const col = self.column;
-        while (self.pos < self.source.len and self.source[self.pos] != '\n') {
+        while (self.pos < self.source.len and !self.atBreak()) {
             self.advance();
         }
         return .{
@@ -205,11 +205,11 @@ pub const Tokenizer = struct {
                 self.advance();
                 if (self.pos < self.source.len) {
                     // `\` + 改行は YAML の行継続。改行ごと食べるので行カウンタも進める。
-                    if (self.source[self.pos] == '\n') self.consumeNewline() else self.advance();
+                    if (self.atBreak()) self.consumeNewline() else self.advance();
                 }
                 continue;
             }
-            if (self.source[self.pos] == '\n') {
+            if (self.atBreak()) {
                 self.consumeNewline();
                 continue;
             }
@@ -230,7 +230,7 @@ pub const Tokenizer = struct {
         const col = self.column;
         self.advance();
 
-        while (self.pos < self.source.len and self.source[self.pos] != '\n') {
+        while (self.pos < self.source.len and !self.atBreak()) {
             self.advance();
         }
 
@@ -242,7 +242,7 @@ pub const Tokenizer = struct {
             self.consumeNewline();
 
             while (self.pos < self.source.len) {
-                if (self.source[self.pos] == '\n') {
+                if (self.atBreak()) {
                     self.consumeNewline();
                     continue;
                 }
@@ -261,7 +261,7 @@ pub const Tokenizer = struct {
             self.column = saved_col;
         }
 
-        while (self.pos < self.source.len and self.source[self.pos] == '\n') {
+        while (self.atBreak()) {
             self.consumeNewline();
 
             var indent: u32 = 0;
@@ -269,11 +269,11 @@ pub const Tokenizer = struct {
                 indent += 1;
             }
 
-            if (self.pos + indent < self.source.len and self.source[self.pos + indent] != '\n' and indent < base_indent) {
+            if (self.pos + indent < self.source.len and !self.isBreakAt(self.pos + indent) and indent < base_indent) {
                 break;
             }
 
-            while (self.pos < self.source.len and self.source[self.pos] != '\n') {
+            while (self.pos < self.source.len and !self.atBreak()) {
                 self.advance();
             }
         }
@@ -316,11 +316,11 @@ pub const Tokenizer = struct {
         while (self.pos < self.source.len) {
             const ch = self.source[self.pos];
             if (self.skipExpressionInterpolation()) continue;
-            if (ch == '\n' or ch == '#') break;
+            if (self.atBreak() or ch == '#') break;
             if (self.flow_depth > 0 and (ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']')) {
                 break;
             }
-            if (ch == ':' and (self.pos + 1 >= self.source.len or self.source[self.pos + 1] == ' ' or self.source[self.pos + 1] == '\n')) {
+            if (ch == ':' and (self.pos + 1 >= self.source.len or self.source[self.pos + 1] == ' ' or self.isBreakAt(self.pos + 1))) {
                 break;
             }
             self.advance();
@@ -344,9 +344,23 @@ pub const Tokenizer = struct {
     }
 
     fn consumeNewline(self: *Tokenizer) void {
+        if (self.pos < self.source.len and self.source[self.pos] == '\r') self.pos += 1;
         self.pos += 1;
         self.line += 1;
         self.column = 1;
+    }
+
+    /// Windows checkouts hand the linter CRLF files, so a `\r` that precedes a
+    /// `\n` belongs to the line break and never to the token before it. A lone
+    /// `\r` is ordinary scalar content, as in YAML.
+    fn isBreakAt(self: *const Tokenizer, i: usize) bool {
+        if (i >= self.source.len) return false;
+        if (self.source[i] == '\n') return true;
+        return self.source[i] == '\r' and i + 1 < self.source.len and self.source[i + 1] == '\n';
+    }
+
+    fn atBreak(self: *const Tokenizer) bool {
+        return self.isBreakAt(self.pos);
     }
 
     fn skipWhitespace(self: *Tokenizer) void {
@@ -366,7 +380,7 @@ pub const Tokenizer = struct {
         if (self.pos + str.len > self.source.len) return false;
         if (self.pos + str.len < self.source.len) {
             const after = self.source[self.pos + str.len];
-            if (after != '\n' and after != ' ' and after != '\t') return false;
+            if (after != '\n' and after != '\r' and after != ' ' and after != '\t') return false;
         }
         return std.mem.startsWith(u8, self.source[self.pos..], str);
     }
@@ -761,4 +775,36 @@ test "tokenizer counts an escaped backslash followed by a newline only once" {
     const after = tokenizer.next();
     try std.testing.expectEqualStrings("x", after.slice(tokenizer.source));
     try std.testing.expectEqual(@as(u32, 3), after.line);
+}
+
+test "tokenizer: CRLF ends a line without leaking into the token" {
+    var tokenizer = Tokenizer.init("name: ci\r\non:\r\n  push:\r\n");
+    var kinds = std.ArrayList(TokenKind){};
+    defer kinds.deinit(std.testing.allocator);
+    var scalars = std.ArrayList([]const u8){};
+    defer scalars.deinit(std.testing.allocator);
+    while (true) {
+        const tok = tokenizer.next();
+        if (tok.kind == .eof) break;
+        try kinds.append(std.testing.allocator, tok.kind);
+        if (tok.kind == .scalar) try scalars.append(std.testing.allocator, tok.slice(tokenizer.source));
+    }
+
+    try std.testing.expectEqualStrings("name", scalars.items[0]);
+    try std.testing.expectEqualStrings("ci", scalars.items[1]);
+    // `on:` only becomes a key if the `\r` after the colon reads as a break.
+    try std.testing.expectEqualStrings("on", scalars.items[2]);
+    try std.testing.expectEqual(TokenKind.mapping_value, kinds.items[6]);
+}
+
+test "tokenizer: a lone CR stays inside a scalar" {
+    var tokenizer = Tokenizer.init("a\rb");
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings("a\rb", tokenizer.next().slice(tokenizer.source));
+}
+
+test "tokenizer: a CRLF comment does not carry the CR" {
+    var tokenizer = Tokenizer.init("# hi\r\nname: ci\r\n");
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings("# hi", tokenizer.next().slice(tokenizer.source));
 }

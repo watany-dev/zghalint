@@ -207,7 +207,9 @@ fn matches(dir: *std.fs.Dir, entry: std.fs.Dir.Entry, candidate: []const u8) boo
     if (!std.mem.eql(u8, entry.name, candidate)) return false;
     if (entry.kind == .file) return true;
     if (entry.kind != .sym_link) return false;
-    dir.access(entry.name, .{}) catch return false;
+    // `statFile` opens through the link; `access` only probes attributes, which
+    // on Windows a dangling reparse point still satisfies.
+    _ = dir.statFile(entry.name) catch return false;
     return true;
 }
 

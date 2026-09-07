@@ -34,11 +34,17 @@ non-comment line. A fixture with neither directive fails the test.
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
 | `security-misc.yml` | SEC003 / SEC005 / SEC006 / SEC007 / SEC008 / SC002 |
 | `sec006-condition-scope.yml` | #138 repro: ref/label routing in `if:` must not fire SEC006 |
+| `sec005-pr-target-head-repository.yml` | #218 repro: `pull_request_target` checkout of the PR head repository |
 | `sec021-untrusted-checkout-ref.yml` | #134 repro: checkout ref from an `issue_comment` body |
+| `sec021-workflow-call-dispatch-inputs.yml` | #219 repro: `workflow_call` must not silence `inputs.*` on the dispatch path |
 | `sec022-workflow-run-branch-gate.yml` | #143 repro: `head_branch` gate on a `workflow_run` job |
+| `sec022-workflow-run-anchor-paths.yml` | #220 repro: an anchor joined with `\|\|` or under `!` |
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
 | `expr010-step-refs.yml` | EXPR010: unknown / misspelled / forward `steps.<id>` references |
+| `expr011-matrix-context.yml` | EXPR011: undeclared / misspelled `matrix.<key>` and jobs without a matrix |
+| `expr013-inputs-context.yml` | EXPR013: undeclared / misspelled `inputs.<name>` against the declared triggers |
+| `expr014-secrets-context.yml` | EXPR014: `secrets.<name>` against a declared `workflow_call.secrets` set |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |

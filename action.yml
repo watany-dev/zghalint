@@ -16,6 +16,13 @@ inputs:
   fix:
     description: 'Fix mode: none, safe, unsafe'
     default: ''
+  binary:
+    description: >-
+      Path to a prebuilt zghalint binary. When set, the release download and
+      checksum verification are skipped and this binary is run as-is. Intended
+      for this repository's own CI, which must exercise the action against the
+      commit under test rather than a published release.
+    default: ''
 branding:
   icon: 'check-circle'
   color: 'green'
@@ -24,7 +31,14 @@ runs:
   steps:
     - name: Download zghalint
       shell: bash
+      env:
+        INPUT_BINARY: ${{ inputs.binary }}
       run: |
+        if [ -n "$INPUT_BINARY" ]; then
+          echo "Using prebuilt binary: $INPUT_BINARY"
+          exit 0
+        fi
+
         VERSION=${GITHUB_ACTION_REF:-v0.0.1-rc.1}
 
         case "$RUNNER_OS" in
@@ -81,6 +95,7 @@ runs:
         INPUT_FORMAT: ${{ inputs.format }}
         INPUT_OFFLINE: ${{ inputs.offline }}
         INPUT_FIX: ${{ inputs.fix }}
+        INPUT_BINARY: ${{ inputs.binary }}
       run: |
         FIX_FLAG=""
         OFFLINE_FLAG=""
@@ -98,6 +113,8 @@ runs:
           EXE=".exe"
         fi
 
+        BIN="${INPUT_BINARY:-./zghalint$EXE}"
+
         # The default config path is optional; only a config that exists is
         # passed, since a missing explicit --config is an error.
         CONFIG_ARGS=()
@@ -112,4 +129,4 @@ runs:
         # as an option.
         shopt -s nullglob
         # shellcheck disable=SC2086
-        "./zghalint$EXE" "${CONFIG_ARGS[@]}" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS
+        "$BIN" "${CONFIG_ARGS[@]}" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS

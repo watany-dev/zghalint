@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const engine = @import("engine.zig");
+const expressions = @import("expressions.zig");
 const spans = @import("spans.zig");
 const fix_builder = @import("../fix/builder.zig");
 const advisory = @import("advisory.zig");
@@ -368,47 +369,69 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
-            const ref = checkoutRefInput(step) orelse continue;
-            if (!isPRHeadRef(ref.value)) continue;
+            const input = checkoutCodeInput(step, isPRHeadValue) orelse continue;
             list.append(.{
                 .rule_id = "SEC005",
                 .severity = .@"error",
                 .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
-                .span = withAnchor(step, ref.key).whole(),
+                .span = withAnchor(step, input.key).whole(),
                 .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
             }) catch return;
         }
     }
 }
 
-fn checkoutRefInput(step: *const Step) ?WithInput {
+/// The `with:` inputs that decide which code `actions/checkout` fetches.
+/// `repository` is one of them: pointing it at the PR head repository checks
+/// out the fork's code without `ref` being touched at all (#218).
+const checkout_code_inputs = [_][]const u8{ "ref", "repository" };
+
+/// One finding per step: `ref` and `repository` pointed at the same fork are
+/// one mistake, not two.
+fn checkoutCodeInput(step: *const Step, untrusted: *const fn ([]const u8) bool) ?WithInput {
     const action_ref = step.uses orelse return null;
     if (!isAction(action_ref, "actions/checkout")) return null;
     const with_map = step.with orelse return null;
-    // The runner matches `with:` keys case-insensitively.
-    return getWithInput(with_map, "ref");
+    for (checkout_code_inputs) |name| {
+        // The runner matches `with:` keys case-insensitively.
+        const input = getWithInput(with_map, name) orelse continue;
+        if (untrusted(input.value)) return input;
+    }
+    return null;
 }
 
-/// `github.event.pull_request.head.{sha,ref}`, `github.head_ref` and the
-/// `refs/pull/<n>/{head,merge}` spellings all name fork-controlled code
-/// (SEC005).
-fn isPRHeadRef(value: []const u8) bool {
-    const markers = [_][]const u8{
+/// `github.event.pull_request.head.{sha,ref}` (and `.head.repo.full_name`),
+/// `github.head_ref` and the `refs/pull/<n>/{head,merge}` spellings all name
+/// fork-controlled code (SEC005).
+fn isPRHeadValue(value: []const u8) bool {
+    return containsAnyMarker(value, &.{
         "github.event.pull_request.head",
         "github.head_ref",
         "refs/pull/",
         "github.event.pull_request.number",
         "github.event.number",
-    };
+    });
+}
+
+/// A ref or repository the triggering run's author decides (SEC009).
+/// `workflow_run.repository` is deliberately absent: it names the base
+/// repository the run belongs to, which is the sound spelling SEC022
+/// recommends, not the fork's.
+fn isWorkflowRunValue(value: []const u8) bool {
+    return containsAnyMarker(value, &.{
+        "github.event.workflow_run.head_",
+        "github.event.workflow_run.display_title",
+    });
+}
+
+/// A plain substring scan, not `containsAnyContext`: these markers are prefixes
+/// of a path segment (`head_`) or of a ref literal (`refs/pull/`), so they do
+/// not line up with segment boundaries.
+fn containsAnyMarker(value: []const u8, markers: []const []const u8) bool {
     for (markers) |marker| {
         if (std.mem.indexOf(u8, value, marker) != null) return true;
     }
     return false;
-}
-
-/// A ref carried over from the triggering run (SEC009).
-fn isWorkflowRunRef(value: []const u8) bool {
-    return std.mem.indexOf(u8, value, "github.event.workflow_run.") != null;
 }
 
 /// SEC006 reports a weak gate, not code execution: the expression engine only
@@ -574,10 +597,20 @@ const checkout_ref_untrusted_contexts = [_][]const u8{
     "github.event.discussion_comment.body",
 };
 
-/// The `inputs.*` shorthand names the `workflow_dispatch` inputs only when the
-/// workflow is not also callable; in a `workflow_call` workflow the same root
-/// names what a caller passes, and analysing callers is out of scope.
+/// The `inputs.*` shorthand names whatever started the run: the values a
+/// `workflow_dispatch` actor typed, or the values a caller passed. Analysing
+/// callers is out of scope, so the root is untrusted unless every way in fills
+/// it from a caller — declaring `workflow_call` alongside a `workflow_dispatch`
+/// that has inputs of its own must not silence the dispatch path (#219).
 const checkout_ref_dispatch_contexts = checkout_ref_untrusted_contexts ++ [_][]const u8{"inputs"};
+
+fn bareInputsAreUntrusted(wf: *const Workflow) bool {
+    if (!wf.hasEvent(.workflow_call)) return true;
+    for (wf.on.events) |event| {
+        if (event.event == .workflow_dispatch and event.workflow_dispatch_inputs.len > 0) return true;
+    }
+    return false;
+}
 
 /// The triggers SEC021 owns: the run is started by data an attacker authors
 /// while the job still runs against the base repository. `pull_request_target`
@@ -603,17 +636,17 @@ fn hasUntrustedRefTrigger(wf: *const Workflow) bool {
 /// dropping the whole workflow because `pull_request_target` appears somewhere
 /// in `on:` would silence SEC021 on refs SEC005 never looks at.
 fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
-    return (wf.hasEvent(.pull_request_target) and isPRHeadRef(value)) or
-        (wf.hasEvent(.workflow_run) and isWorkflowRunRef(value));
+    return (wf.hasEvent(.pull_request_target) and isPRHeadValue(value)) or
+        (wf.hasEvent(.workflow_run) and isWorkflowRunValue(value));
 }
 
 fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
     if (!hasUntrustedRefTrigger(wf)) return;
 
-    const contexts: []const []const u8 = if (wf.hasEvent(.workflow_call))
-        &checkout_ref_untrusted_contexts
+    const contexts: []const []const u8 = if (bareInputsAreUntrusted(wf))
+        &checkout_ref_dispatch_contexts
     else
-        &checkout_ref_dispatch_contexts;
+        &checkout_ref_untrusted_contexts;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
@@ -632,13 +665,11 @@ fn checkStepCheckoutRefs(
     if (!isAction(action_ref, "actions/checkout")) return;
     const with_map = step.with orelse return;
 
-    for ([_][]const u8{ "ref", "repository" }) |name| {
+    for (checkout_code_inputs) |name| {
         // `getWithInput` because the runner resolves input names
         // case-insensitively, so `Ref:` reaches the same checkout.
         const input = getWithInput(with_map, name) orelse continue;
-        // Only `ref` defers: SEC005 / SEC009 never look at `repository`, so
-        // deferring it would leave that input unreported by every rule.
-        if (std.mem.eql(u8, name, "ref") and ownedByNeighbourRule(wf, input.value)) continue;
+        if (ownedByNeighbourRule(wf, input.value)) continue;
         if (!containsUntrustedCheckoutContext(input.value, contexts)) continue;
         list.append(.{
             .rule_id = "SEC021",
@@ -666,13 +697,12 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
-            const ref = checkoutRefInput(step) orelse continue;
-            if (!isWorkflowRunRef(ref.value)) continue;
+            const input = checkoutCodeInput(step, isWorkflowRunValue) orelse continue;
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
                 .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                .span = withAnchor(step, ref.key).whole(),
+                .span = withAnchor(step, input.key).whole(),
                 .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
             }) catch return;
         }
@@ -694,14 +724,18 @@ const workflow_run_untrusted_gate_contexts = [_][]const u8{
 };
 
 /// Identity checks that make the gate sound: they name the repository the run
-/// came from, which a fork cannot forge. `head_repository.fork` is absent on
-/// purpose — `fork == true` gates *for* forks, the opposite of a trust check.
+/// came from, which a fork cannot forge. `head_repository.name` is absent
+/// because a fork inherits the name of the repository it was forked from, so
+/// it separates nothing (#220).
 const workflow_run_trust_anchors = [_][]const u8{
     "github.event.workflow_run.head_repository.full_name",
-    "github.event.workflow_run.head_repository.name",
     "github.event.workflow_run.head_repository.id",
-    "github.event.workflow_run.head_repository.owner",
+    "github.event.workflow_run.head_repository.owner.login",
+    "github.event.workflow_run.head_repository.owner.id",
 };
+
+const workflow_run_fork_flag = "github.event.workflow_run.head_repository.fork";
+const workflow_run_event_context = "github.event.workflow_run.event";
 
 fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
     if (!wf.hasEvent(.workflow_run)) return;
@@ -709,7 +743,7 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         var job_verified = false;
         if (job.if_condition) |cond| {
-            job_verified = hasWorkflowRunTrustAnchor(cond);
+            job_verified = hasWorkflowRunTrustAnchor(list.allocator, cond);
             if (!job_verified) reportWorkflowRunBranchGate(cond, ifAnchorJob(job), list);
         }
 
@@ -717,7 +751,7 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
             const step_cond = step.if_condition orelse continue;
             // A step only runs when its job's condition already passed, so a
             // trust check on the job covers every step inside it.
-            if (job_verified or hasWorkflowRunTrustAnchor(step_cond)) continue;
+            if (job_verified or hasWorkflowRunTrustAnchor(list.allocator, step_cond)) continue;
             reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), list);
         }
     }
@@ -727,18 +761,107 @@ fn reportWorkflowRunBranchGate(cond: []const u8, anchor: Anchor, list: *Diagnost
     reportConditionContexts(cond, anchor, &workflow_run_untrusted_gate_contexts, "SEC022", .@"error", "workflow_run gate compares an attribute of the triggering run that a fork controls, so a fork can satisfy it and reach this privileged job", "gate on the triggering repository instead — `github.event.workflow_run.head_repository.full_name == github.repository` or `github.event.workflow_run.event == 'push'` — and identify the commit with `head_sha`", list);
 }
 
-/// An anchor has to be an *equality* check: `head_repository.full_name !=
-/// github.repository` selects the fork runs instead of excluding them, which is
-/// the very hole this rule reports.
+/// A gate is only sound when every run that satisfies the condition also
+/// satisfied the anchor. The anchor merely occurring in the text does not say
+/// that: `||` leaves a path around it, and `!` inverts what it asserts (#220).
 ///
-/// `workflow_run.event == 'push'` is an anchor of its own: a fork cannot cause
-/// a push run in the base repository, so the branch name there is the base
-/// repository's. The compared literal is what makes it one, so a condition that
-/// mentions a pull_request event is not treated as verified.
-fn hasWorkflowRunTrustAnchor(cond: []const u8) bool {
-    if (matchesAnyContext(cond, &workflow_run_trust_anchors, .equality_operand)) return true;
-    if (!matchesAnyContext(cond, &[_][]const u8{"github.event.workflow_run.event"}, .equality_operand)) return false;
-    return std.mem.indexOf(u8, cond, "pull_request") == null;
+/// A condition that does not parse anchors nothing: SEC022 would rather report
+/// a sound gate it cannot read than miss a fork-reachable one.
+fn hasWorkflowRunTrustAnchor(allocator: std.mem.Allocator, cond: []const u8) bool {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var parser = expressions.ExprParser.init(arena.allocator(), conditionExpressionSource(cond));
+    const root = parser.parse() catch return false;
+    return anchorHolds(root, false);
+}
+
+/// An `if:` is an expression already, but may also be written wrapped in a
+/// single `${{ }}`. Interpolation spliced into text keeps its delimiters here
+/// and so reaches the parser as the syntax error it is.
+fn conditionExpressionSource(cond: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, cond, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "${{") or !std.mem.endsWith(u8, trimmed, "}}")) return trimmed;
+    return trimmed[3 .. trimmed.len - 2];
+}
+
+/// Under an odd number of negations De Morgan swaps the operators, so there
+/// `||` is the conjunction and every leaf below reads inverted.
+fn anchorHolds(node: expressions.ExprNode, negated: bool) bool {
+    switch (node.kind) {
+        // `!fork` asserts what `fork == false` does.
+        .context_access => return negated and pathIsAnchor(parseContextPath(node.value, 0), workflow_run_fork_flag),
+        .unary_op => {
+            if (node.children.len != 1) return false;
+            return anchorHolds(node.children[0], !negated);
+        },
+        .binary_op => {
+            if (node.children.len != 2) return false;
+            const conjunctive = if (std.mem.eql(u8, node.value, "&&"))
+                !negated
+            else if (std.mem.eql(u8, node.value, "||"))
+                negated
+            else
+                return isTrustAnchorComparison(node, negated);
+            if (!conjunctive) return false;
+            return anchorHolds(node.children[0], negated) or anchorHolds(node.children[1], negated);
+        },
+        else => return false,
+    }
+}
+
+fn isTrustAnchorComparison(node: expressions.ExprNode, negated: bool) bool {
+    const is_eq = std.mem.eql(u8, node.value, "==");
+    if (!is_eq and !std.mem.eql(u8, node.value, "!=")) return false;
+    // `!(a != b)` asserts exactly what `a == b` does.
+    const asserts_equal = is_eq != negated;
+    return isTrustAnchorOperand(node.children[0], node.children[1], asserts_equal) or
+        isTrustAnchorOperand(node.children[1], node.children[0], asserts_equal);
+}
+
+fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, asserts_equal: bool) bool {
+    if (ref.kind != .context_access) return false;
+    const path = parseContextPath(ref.value, 0);
+    // Comparing the triggering run against itself asserts nothing about it.
+    if (other.kind == .context_access and
+        pathMatchesPattern(parseContextPath(other.value, 0), "github.event.workflow_run")) return false;
+
+    for (workflow_run_trust_anchors) |anchor| {
+        // `head_repository.full_name != github.repository` selects the fork
+        // runs instead of excluding them, so only the equality anchors.
+        if (pathIsAnchor(path, anchor)) return asserts_equal;
+    }
+
+    if (pathIsAnchor(path, workflow_run_fork_flag)) {
+        if (other.kind != .boolean_literal) return false;
+        // `fork == false` and `fork != true` both say the run is the base
+        // repository's; the two inversions of those gate *for* forks.
+        return asserts_equal != std.mem.eql(u8, other.value, "true");
+    }
+
+    if (pathIsAnchor(path, workflow_run_event_context)) {
+        // A fork cannot cause a `push` run in the base repository, so the
+        // branch name in one is the base repository's. The compared literal is
+        // what makes it an anchor, and a fork-reachable event makes it none.
+        if (!asserts_equal or other.kind != .string_literal) return false;
+        return std.mem.indexOf(u8, other.value, "pull_request") == null;
+    }
+
+    return false;
+}
+
+/// Anchors are matched segment for segment, unlike the untrusted-context table
+/// where a prefix and a wildcard are the safe direction. Here they are not:
+/// `head_repository.owner.type` is `User` for every fork, and a bracket access
+/// parses to a wildcard whose name the linter does not know.
+fn pathIsAnchor(path: ContextPath, pattern: []const u8) bool {
+    var idx: usize = 0;
+    var it = std.mem.splitScalar(u8, pattern, '.');
+    while (it.next()) |pat_seg| : (idx += 1) {
+        if (idx >= path.len) return false;
+        if (std.mem.eql(u8, path.segments[idx], wildcard_segment)) return false;
+        if (!std.ascii.eqlIgnoreCase(path.segments[idx], pat_seg)) return false;
+    }
+    return idx == path.len;
 }
 
 fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
@@ -1205,14 +1328,6 @@ const ContextPath = struct {
 /// Function calls need no special handling: `join(...)` and `toJSON(...)`
 /// arguments are themselves references and are visited the same way.
 fn containsAnyContext(expr: []const u8, contexts: []const []const u8) bool {
-    return matchesAnyContext(expr, contexts, .any);
-}
-
-/// `.equality_operand` is what separates a check that excludes untrusted runs
-/// from one that selects them.
-const ContextMatch = enum { any, equality_operand };
-
-fn matchesAnyContext(expr: []const u8, contexts: []const []const u8, mode: ContextMatch) bool {
     var i: usize = 0;
     while (i < expr.len) {
         if (expr[i] == '\'') {
@@ -1228,26 +1343,11 @@ fn matchesAnyContext(expr: []const u8, contexts: []const []const u8, mode: Conte
         // `steps.meta.outputs.github.head_ref` are never mistaken for a root.
         const path = parseContextPath(expr, i);
         for (contexts) |ctx| {
-            if (!pathMatchesPattern(path, ctx)) continue;
-            switch (mode) {
-                .any => return true,
-                .equality_operand => if (isEqualityOperand(expr, i, path.end)) return true,
-            }
+            if (pathMatchesPattern(path, ctx)) return true;
         }
         i = if (path.end > i) path.end else i + 1;
     }
     return false;
-}
-
-/// `==` may sit on either side of the reference.
-fn isEqualityOperand(expr: []const u8, start: usize, end: usize) bool {
-    var after = end;
-    while (after < expr.len and (expr[after] == ' ' or expr[after] == '\t')) after += 1;
-    if (after + 1 < expr.len and expr[after] == '=' and expr[after + 1] == '=') return true;
-
-    var before = start;
-    while (before > 0 and (expr[before - 1] == ' ' or expr[before - 1] == '\t')) before -= 1;
-    return before >= 2 and expr[before - 1] == '=' and expr[before - 2] == '=';
 }
 
 fn skipStringLiteral(expr: []const u8, start: usize) usize {
@@ -1520,6 +1620,24 @@ fn containsBase64PipeExec(s: []const u8) bool {
     return false;
 }
 
+/// Blanks plus any `\`-newline joins among them: a shell reads
+/// `eval \` + newline + `  $CMD` as the single command `eval $CMD`.
+fn skipBlanksAndJoins(s: []const u8, start: usize) usize {
+    var j = start;
+    while (j < s.len) {
+        if (s[j] == ' ' or s[j] == '\t') {
+            j += 1;
+            continue;
+        }
+        if (s[j] != '\\') break;
+        var k = j + 1;
+        if (k < s.len and s[k] == '\r') k += 1;
+        if (k >= s.len or s[k] != '\n') break;
+        j = k + 1;
+    }
+    return j;
+}
+
 fn containsEvalVarExpansion(s: []const u8) bool {
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
@@ -1527,7 +1645,8 @@ fn containsEvalVarExpansion(s: []const u8) bool {
 
         var j = i + "eval".len;
         if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
-        j = std.mem.indexOfNonePos(u8, s, j, " \t") orelse continue;
+        j = skipBlanksAndJoins(s, j);
+        if (j >= s.len) continue;
         // A quoted argument still expands, so look past the opening quote.
         if (s[j] == '"' or s[j] == '\'') j += 1;
         if (j >= s.len or s[j] != '$') continue;
@@ -1569,9 +1688,25 @@ fn isAllUppercase(s: []const u8) bool {
     return true;
 }
 
+/// A trailing backslash joins the next physical line onto this one, so what
+/// follows is an argument rather than a command. An even run of backslashes is
+/// an escaped backslash and does not continue the line.
+fn endsWithLineContinuation(line: []const u8) bool {
+    const backslashes = line.len - std.mem.trimRight(u8, line, "\\").len;
+    return backslashes % 2 == 1;
+}
+
 fn containsVarAsCommand(s: []const u8) bool {
     var lines = std.mem.splitScalar(u8, s, '\n');
-    while (lines.next()) |line| {
+    var continued = false;
+    while (lines.next()) |raw| {
+        // Only `\r` is trimmed: a blank after the backslash cancels the
+        // continuation in a real shell, so it must not be trimmed away.
+        const line = std.mem.trimRight(u8, raw, "\r");
+        const is_continuation = continued;
+        continued = endsWithLineContinuation(line);
+        if (is_continuation) continue;
+
         const start = std.mem.indexOfNone(u8, line, " \t") orelse continue;
         const rest = line[start..];
         if (rest.len < 2 or rest[0] != '$') continue;
@@ -2409,7 +2544,14 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
 
 const repository_dispatch_trigger = test_support.makeTrigger(.repository_dispatch);
 const discussion_comment_trigger = test_support.makeTrigger(.discussion_comment);
+const dispatch_target_inputs = [_]workflow_types.DispatchInputDef{
+    .{ .name = "target", .name_span = test_support.dummySpan(0, 0) },
+};
 const workflow_call_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .workflow_call },
+    .{ .event = .workflow_dispatch, .workflow_dispatch_inputs = &dispatch_target_inputs },
+} };
+const workflow_call_and_bare_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
     .{ .event = .workflow_call },
     .{ .event = .workflow_dispatch },
 } };
@@ -2497,8 +2639,14 @@ test "SEC021: push trigger is out of scope (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC021"));
 }
 
-test "SEC021: reusable workflow inputs shorthand is out of scope (no false positive)" {
+test "SEC021: workflow_call alongside workflow_dispatch still reports inputs (#219)" {
     var list = runCheckoutWith(workflow_call_dispatch_trigger, "ref", "${{ inputs.target }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: reusable workflow inputs shorthand is out of scope (no false positive)" {
+    var list = runCheckoutWith(workflow_call_and_bare_dispatch_trigger, "ref", "${{ inputs.target }}");
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC021"));
 }
@@ -2547,11 +2695,61 @@ test "SEC021: workflow_run only defers on the ref SEC009 owns" {
     try testing.expect(hasDiagnostic(&list, "SEC021"));
 }
 
-test "SEC021: pull_request_target does not defer on checkout repository" {
+test "SEC021: checkout repository defers on the value SEC005 owns" {
+    var list = runCheckoutWith(pr_target_and_issue_comment_trigger, "repository", "${{ github.event.pull_request.head.repo.full_name }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: checkout repository from a comment body is still SEC021's" {
     var list = runCheckoutWith(pr_target_and_issue_comment_trigger, "repository", "${{ github.event.comment.body }}");
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
     try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC005: PR target checkout of the head repository (#218)" {
+    var list = runCheckoutWith(pr_target_trigger, "repository", "${{ github.event.pull_request.head.repo.full_name }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: PR target checkout of a fixed repository (no false positive)" {
+    var list = runCheckoutWith(pr_target_trigger, "repository", "${{ github.repository }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: head repository and head ref in one step report once (#218)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    with.put("repository", "${{ github.event.pull_request.head.repo.full_name }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC005"));
+}
+
+test "SEC009: workflow_run checkout of the head repository (#218)" {
+    var list = runCheckoutWith(workflow_run_trigger, "repository", "${{ github.event.workflow_run.head_repository.full_name }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: workflow_run checkout of the base repository (no false positive)" {
+    var list = runCheckoutWith(workflow_run_trigger, "repository", "${{ github.event.workflow_run.repository.full_name }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: workflow_run checkout of a fixed repository (no false positive)" {
+    var list = runCheckoutWith(workflow_run_trigger, "repository", "${{ github.repository }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC021: pull_request_target defers to SEC005" {
@@ -2606,6 +2804,56 @@ test "SEC022: an anchor must exclude untrusted runs, not select them" {
     // `fork == true` is a fork-only gate, so it is not in the anchor table.
     try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.fork == true && github.event.workflow_run.head_branch == 'main'"));
     try testing.expect(sec022JobCondition("github.repository == github.event.workflow_run.head_repository.full_name && github.event.workflow_run.head_branch == 'main'") == null);
+}
+
+test "SEC022: an anchor on a bypassable path anchors nothing" {
+    // #220: `||` leaves the branch gate reachable on its own.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.full_name == github.repository || github.event.workflow_run.head_branch == 'main'"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.event == 'push' || github.event.workflow_run.head_branch == 'main'"));
+    // A negated anchor asserts the opposite of the check it is written as.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("!(github.event.workflow_run.head_branch != 'main') && !(github.event.workflow_run.event == 'push')"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("!(github.event.workflow_run.head_repository.full_name == github.repository) && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: the forked repository keeps the name it was forked from" {
+    // #220: `head_repository.name` is `repo` for `attacker/repo` too.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.name == 'zghalint' && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: a negated exclusion is a sound gate" {
+    // #220: `!(fork == true || head_branch == 'main')` is `fork == false &&
+    // head_branch != 'main'`, so the fork runs never reach the job.
+    try testing.expect(sec022JobCondition("!(github.event.workflow_run.head_repository.fork == true || github.event.workflow_run.head_branch == 'main')") == null);
+    try testing.expect(sec022JobCondition("!(github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_repository.full_name != github.repository)") == null);
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_repository.fork == false && github.event.workflow_run.head_branch == 'main'") == null);
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_repository.fork != true && github.event.workflow_run.head_branch == 'main'") == null);
+}
+
+test "SEC022: an anchor is matched segment for segment" {
+    // A bracket access hides the segment name, so it names no known field.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run['head_branch'] == 'main'"));
+    // `owner.type` is `User` for every fork, so it separates nothing.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.owner.type == 'User'"));
+    try testing.expect(sec022JobCondition("github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.owner.login == github.repository_owner") == null);
+}
+
+test "SEC022: the triggering run cannot vouch for itself" {
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.full_name == github.event.workflow_run.head_repository.full_name && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: the fork flag also anchors as a bare truth test" {
+    try testing.expect(sec022JobCondition("!github.event.workflow_run.head_repository.fork && github.event.workflow_run.head_branch == 'main'") == null);
+    // Without the negation it gates *for* forks.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_repository.fork && github.event.workflow_run.head_branch == 'main'"));
+}
+
+test "SEC022: a condition that does not parse is reported" {
+    // Fail-closed: an unreadable gate is not evidence of a trust check.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_branch == 'main' && ((github.event.workflow_run.event == 'push')"));
+    // Only a single `${{ }}` wrapping the whole condition is an expression;
+    // interpolation spliced into text is not one, and reaches the parser as
+    // the text it is.
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("${{ github.event.workflow_run.head_branch == 'main' }} && ${{ github.event.workflow_run.event == 'push' }}"));
 }
 
 test "SEC022: immutable and unrelated contexts are not reported" {
@@ -4707,6 +4955,42 @@ test "BP007: wget piped to sh" {
 
 test "BP007: variable as command at line start" {
     var list = runStep(.{ .run = "export CMD=\"malicious\"\n$CMD" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: no false positive on a variable in a continuation line" {
+    var list = runStep(.{ .run = "gh release create \"$TAG\" \\\n  --title \"$TAG\" \\\n  $PRERELEASE_FLAG \\\n  artifacts/*" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a variable after a finished continuation is still a command" {
+    var list = runStep(.{ .run = "echo one \\\n  two\n$CMD --flag" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: an escaped backslash does not continue the line" {
+    var list = runStep(.{ .run = "echo a\\\\\n$CMD --flag" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: eval reaches its variable across a line continuation" {
+    var list = runStep(.{ .run = "eval \\\n  $USER_INPUT" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a CRLF continuation still suppresses the false positive" {
+    var list = runStep(.{ .run = "gh release create \\\r\n  $PRERELEASE_FLAG\r\n" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a blank after the backslash cancels the continuation" {
+    var list = runStep(.{ .run = "echo a \\ \n$CMD --flag" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }

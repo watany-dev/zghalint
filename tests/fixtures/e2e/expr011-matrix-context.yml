@@ -1,0 +1,39 @@
+# zghalint:expect EXPR011@16 EXPR011@19 EXPR011@29
+name: matrix context
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20]
+    runs-on: ${{ matrix.so }}
+    steps:
+      - name: Undeclared axis
+        run: echo "${{ matrix.python }}"
+      - name: Declared axes
+        run: echo "${{ matrix.os }} ${{ matrix.node }}"
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: No strategy on this job
+        run: echo "${{ matrix.os }}"
+  dynamic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      matrix: ${{ fromJSON('{"os":["ubuntu-latest"]}') }}
+    steps:
+      - name: Keys are unknowable
+        run: echo "${{ matrix.anything }}"

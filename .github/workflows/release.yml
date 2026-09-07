@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# リリースは途中でキャンセルすると中途半端な成果物が残るため、
+# グループ化だけ行い cancel-in-progress は付けない。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify:
     name: Verify Release Inputs
@@ -16,19 +22,48 @@ jobs:
       contents: read
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      # version を省略すると build.zig.zon の minimum_zig_version が使われる。
+      # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.15.2
-          # The artifacts this workflow publishes must not come out of a cache
-          # a pull request could have poisoned (zizmor: cache-poisoning).
+          # このワークフローが公開する成果物は、プルリクエストが汚染しうる
+          # キャッシュから出てきてはならない (zizmor: cache-poisoning)。
           use-cache: false
 
       - name: Build
         run: zig build
+
+      # タグ・build.zig.zon・バイナリの --version が食い違ったまま
+      # リリースされるのを防ぐ。build.zig 経由のバージョン伝播もここで検証する。
+      - name: Verify version consistency
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${TAG#v}
+
+          ZON_VERSION=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' build.zig.zon | head -1)
+          if [ -z "$ZON_VERSION" ]; then
+            echo "::error::could not read .version from build.zig.zon"
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$ZON_VERSION" ]; then
+            echo "::error::tag $TAG implies version $TAG_VERSION but build.zig.zon has $ZON_VERSION"
+            exit 1
+          fi
+
+          # 出力は `zghalint vX.Y.Z` 形式なので、先頭の `v` を落として比較する。
+          BIN_VERSION=$(./zig-out/bin/zghalint --version | tr -d '\r' | awk '{print $NF}')
+          BIN_VERSION=${BIN_VERSION#v}
+          if [ "$BIN_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::binary reports --version $BIN_VERSION but tag implies $TAG_VERSION"
+            exit 1
+          fi
+          echo "version OK: $TAG_VERSION"
 
       - name: Format Check
         run: zig fmt --check src/ build.zig
@@ -45,6 +80,8 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
+        # ci.yml の cross ジョブが同じ zig_target を PR 時に検証している。
+        # ターゲットを増減するときは両方を併せて更新すること。
         include:
           - target: linux-x86_64
             os: ubuntu-latest
@@ -54,14 +91,19 @@ jobs:
             os: ubuntu-24.04-arm
             zig_target: aarch64-linux
             native: true
-          # macos-latest は arm64 ランナーであり、x86_64 バイナリの実行には
-          # Rosetta が要る。存在は保証されないため起動テストの対象外とする。
+          # macOS は macos-15 に固定する。macos-latest が載せる新しい SDK では
+          # Zig 0.15.2 のリンカが libSystem のシンボルを解決できずビルドが落ちる
+          # （詳細は ci.yml の build ジョブのコメント）。Zig 側が対応したら
+          # ci.yml と併せて macos-latest に戻す。
+          #
+          # macOS ランナーは arm64 であり、x86_64 バイナリの実行には Rosetta が
+          # 要る。存在は保証されないため起動テストの対象外とする。
           - target: macos-x86_64
-            os: macos-latest
+            os: macos-15
             zig_target: x86_64-macos
             native: false
           - target: macos-aarch64
-            os: macos-latest
+            os: macos-15
             zig_target: aarch64-macos
             native: true
           - target: windows-x86_64
@@ -69,15 +111,18 @@ jobs:
             zig_target: x86_64-windows
             native: true
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      # version を省略すると build.zig.zon の minimum_zig_version が使われる。
+      # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.15.2
-          # The artifacts this workflow publishes must not come out of a cache
-          # a pull request could have poisoned (zizmor: cache-poisoning).
+          # このワークフローが公開する成果物は、プルリクエストが汚染しうる
+          # キャッシュから出てきてはならない (zizmor: cache-poisoning)。
           use-cache: false
 
       - name: Build

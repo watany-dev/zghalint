@@ -2,6 +2,7 @@
 //! same fixture-building and assertion code isn't re-typed in every rules file.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const yaml = @import("yaml/types.zig");
 const yaml_parser = @import("yaml/parser.zig");
@@ -130,8 +131,33 @@ pub fn lintAndFix(
 const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
 const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
 
+/// Zig ships no portable `setenv`, and there is no POSIX one for the Windows
+/// linker to resolve, so the two platforms need different calls. Failures are
+/// swallowed: a test that depends on the variable fails on its own assertion.
+fn putEnv(allocator: std.mem.Allocator, name: [:0]const u8, value: ?[:0]const u8) void {
+    if (builtin.os.tag == .windows) {
+        const name_w = std.unicode.wtf8ToWtf16LeAllocZ(allocator, name) catch return;
+        defer allocator.free(name_w);
+        const value_w: ?[:0]u16 = if (value) |v|
+            std.unicode.wtf8ToWtf16LeAllocZ(allocator, v) catch return
+        else
+            null;
+        defer if (value_w) |w| allocator.free(w);
+        _ = std.os.windows.kernel32.SetEnvironmentVariableW(
+            name_w.ptr,
+            if (value_w) |w| w.ptr else null,
+        );
+        return;
+    }
+    if (value) |v| {
+        _ = libc_setenv(name.ptr, v.ptr, 1);
+    } else {
+        _ = libc_unsetenv(name.ptr);
+    }
+}
+
 /// Restores whatever the process had before, so tests leave process state
-/// untouched. Requires libc, which the test binaries link.
+/// untouched.
 pub const EnvGuard = struct {
     allocator: std.mem.Allocator,
     name: [:0]const u8,
@@ -142,15 +168,11 @@ pub const EnvGuard = struct {
         defer if (previous) |p| allocator.free(p);
         const saved: ?[:0]u8 = if (previous) |p| try allocator.dupeZ(u8, p) else null;
 
-        if (value) |v| {
-            _ = libc_setenv(name.ptr, v.ptr, 1);
-        } else {
-            _ = libc_unsetenv(name.ptr);
-        }
+        putEnv(allocator, name, value);
         return .{ .allocator = allocator, .name = name, .saved = saved };
     }
 
-    /// `setenv` copies the value, so the temporary path buffers can go away here.
+    /// The platform call copies the value, so the temporary path buffers can go away here.
     pub fn setDir(allocator: std.mem.Allocator, name: [:0]const u8, dir: std.fs.Dir) !EnvGuard {
         const path = try dir.realpathAlloc(allocator, ".");
         defer allocator.free(path);
@@ -160,11 +182,7 @@ pub const EnvGuard = struct {
     }
 
     pub fn deinit(self: *EnvGuard) void {
-        if (self.saved) |s| {
-            _ = libc_setenv(self.name.ptr, s.ptr, 1);
-            self.allocator.free(s);
-        } else {
-            _ = libc_unsetenv(self.name.ptr);
-        }
+        putEnv(self.allocator, self.name, self.saved);
+        if (self.saved) |s| self.allocator.free(s);
     }
 };

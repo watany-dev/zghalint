@@ -62,13 +62,14 @@ pub fn build(b: *std.Build) void {
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     // LLVM backend for kcov compatibility.
-    const cov_unit_tests = b.addTest(.{
+    const cov_lib_tests = b.addTest(.{
         .root_module = lib_test_mod,
         .use_llvm = true,
+        .name = "cov-lib-test",
     });
-    const install_cov_tests = b.addInstallArtifact(cov_unit_tests, .{});
-    const test_bin_step = b.step("test-bin", "Install test binary for coverage measurement");
-    test_bin_step.dependOn(&install_cov_tests.step);
+    const install_cov_lib_tests = b.addInstallArtifact(cov_lib_tests, .{});
+    const test_bin_step = b.step("test-bin", "Install test binaries for coverage measurement");
+    test_bin_step.dependOn(&install_cov_lib_tests.step);
 
     // link_libc is required because the imported lib_mod includes tests that
     // call setenv/unsetenv via @extern; those symbols must resolve when the
@@ -107,6 +108,22 @@ pub fn build(b: *std.Build) void {
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
     const fuzz_step = b.step("fuzz", "Run fuzz targets (add --fuzz for continuous fuzzing)");
     fuzz_step.dependOn(&run_fuzz_tests.step);
+
+    // The CLI test binary is measured too, so coverage covers argument
+    // parsing, exit codes and `--fix` write-back, not just the library.
+    const cov_exe_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = cli_imports,
+        }),
+        .use_llvm = true,
+        .name = "cov-exe-test",
+    });
+    const install_cov_exe_tests = b.addInstallArtifact(cov_exe_tests, .{});
+    test_bin_step.dependOn(&install_cov_exe_tests.step);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);

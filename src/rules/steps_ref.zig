@@ -12,11 +12,10 @@
 
 const std = @import("std");
 const engine = @import("engine.zig");
-const expressions = @import("expressions.zig");
 const expr_check = @import("expr_check.zig");
+const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
-const workflow_types = @import("../workflow/types.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
@@ -24,8 +23,6 @@ const Job = engine.Job;
 const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Span = spans.Span;
-const Anchor = spans.Anchor;
-const ExprNode = expressions.ExprNode;
 
 /// The only properties GitHub exposes directly under `steps.<id>`. Anything
 /// below `outputs` is defined by the action itself, so it is not checked here
@@ -76,6 +73,11 @@ const Resolver = struct {
             if (idEql(candidate.id, id)) return candidate;
         }
         return null;
+    }
+
+    /// The hook `expr_scan` calls for every context access it finds.
+    pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
+        checkStepPath(self, path, span);
     }
 };
 
@@ -159,7 +161,7 @@ fn segmentName(seg: expr_check.Segment) ?[]const u8 {
     };
 }
 
-fn checkPath(res: Resolver, path: []const u8, span: Span) void {
+fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     var iter = expr_check.SegmentIter{ .path = path };
     const root = iter.next() orelse return;
     const root_name = segmentName(root) orelse return;
@@ -189,92 +191,6 @@ fn checkPath(res: Resolver, path: []const u8, span: Span) void {
     appendUnknownProperty(res, id, prop, span);
 }
 
-const Scan = struct {
-    res: Resolver,
-    text: []const u8,
-    anchor: Anchor,
-    /// Offset of the expression source inside `text`, so a node's
-    /// expression-relative byte range maps back to a file position.
-    expr_offset: usize,
-
-    fn spanOf(self: Scan, node: *const ExprNode) Span {
-        const start = self.expr_offset + node.start_byte;
-        const len = if (node.end_byte > node.start_byte) node.end_byte - node.start_byte else 0;
-        return self.anchor.at(self.text, start, len);
-    }
-
-    fn walk(self: Scan, node: *const ExprNode) void {
-        if (node.kind == .context_access) {
-            checkPath(self.res, node.value, self.spanOf(node));
-            return;
-        }
-        for (node.children) |*child| self.walk(child);
-    }
-};
-
-/// A parse failure is EXPR001's finding; this rule stays silent on it.
-fn scanExpression(res: Resolver, text: []const u8, anchor: Anchor, expr_offset: usize, expr: []const u8) void {
-    var parser = expressions.ExprParser.init(res.alloc, expr);
-    const node = parser.parse() catch return;
-    const scan = Scan{ .res = res, .text = text, .anchor = anchor, .expr_offset = expr_offset };
-    scan.walk(&node);
-}
-
-fn scanInterpolatedText(res: Resolver, text: []const u8, anchor: Anchor) void {
-    var pos: usize = 0;
-    while (pos + 2 < text.len) {
-        if (!(text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{')) {
-            pos += 1;
-            continue;
-        }
-        const expr_start = pos + 3;
-        const end_offset = std.mem.indexOf(u8, text[expr_start..], "}}") orelse return;
-        const content = text[expr_start .. expr_start + end_offset];
-        pos = expr_start + end_offset + 2;
-
-        const leading = std.mem.indexOfNone(u8, content, " \t\n\r") orelse continue;
-        const trimmed = std.mem.trim(u8, content, " \t\n\r");
-        scanExpression(res, text, anchor, expr_start + leading, trimmed);
-    }
-}
-
-/// `if:` may omit the `${{ }}` wrapper, in which case the whole scalar is one
-/// expression.
-fn scanCondition(res: Resolver, condition: ?[]const u8, meta: ?workflow_types.ScalarValueMeta, fallback: Span) void {
-    const value = condition orelse return;
-    const anchor = Anchor.fromMeta(meta, fallback);
-    if (std.mem.indexOf(u8, value, "${{") != null) {
-        scanInterpolatedText(res, value, anchor);
-        return;
-    }
-    const trimmed = std.mem.trim(u8, value, " \t\n\r");
-    if (trimmed.len == 0) return;
-    const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(value.ptr);
-    scanExpression(res, value, anchor, leading, trimmed);
-}
-
-fn scanScalarMap(
-    res: Resolver,
-    map: ?workflow_types.StringMap,
-    meta_map: ?workflow_types.ScalarValueMetaMap,
-    fallback: Span,
-) void {
-    const values = map orelse return;
-    for (values.keys(), values.values()) |key, value| {
-        const entry_meta = if (meta_map) |m| m.get(key) else null;
-        scanInterpolatedText(res, value, Anchor.fromMeta(entry_meta, fallback));
-    }
-}
-
-fn scanStep(res: Resolver, step: *const Step) void {
-    if (step.run) |run_val| {
-        scanInterpolatedText(res, run_val, spans.runAnchor(step));
-    }
-    scanCondition(res, step.if_condition, step.if_condition_meta, step.span);
-    scanScalarMap(res, step.with, step.with_meta, step.span);
-    scanScalarMap(res, step.env, step.env_meta, step.span);
-}
-
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     if (job.steps.len == 0) return;
 
@@ -293,7 +209,7 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     // A job where no step carries an `id:` is not skipped: there every
     // `steps.<id>` reference is certainly undefined.
     for (job.steps, 0..) |*step, index| {
-        scanStep(.{
+        expr_scan.scanStep(Resolver{
             .defined = defined.items,
             .ids = ids.items,
             .current = index,

@@ -1,0 +1,4 @@
+# Fixture tests compare autofix output byte for byte, and the fix engine emits
+# `\n`. A Windows checkout that rewrote the fixtures to CRLF would fail those
+# comparisons for reasons unrelated to the rule under test.
+* text=auto eol=lf

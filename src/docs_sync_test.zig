@@ -14,7 +14,10 @@ const rules_md = @embedFile("docs_rules_md");
 /// so a new sub-ID cannot be introduced in one of them and stay undocumented.
 const expression_sources: []const []const u8 = &.{
     @embedFile("rules/expressions.zig"),
+    @embedFile("rules/inputs_context.zig"),
+    @embedFile("rules/matrix_context.zig"),
     @embedFile("rules/needs_context.zig"),
+    @embedFile("rules/secrets_context.zig"),
     @embedFile("rules/steps_ref.zig"),
 };
 
