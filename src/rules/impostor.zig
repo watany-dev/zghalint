@@ -53,10 +53,10 @@ pub fn isActive() bool {
     return impostor_cache != null;
 }
 
-/// The cache arena, or null in offline mode. prefetch stages cache keys and
-/// fix_hint candidate strings here so they live as long as the cache itself;
-/// `deinitImpostor` frees them. Diagnostic message memory does not belong
-/// here — that comes from the diagnostic list's own arena (#159).
+/// prefetch stages cache keys and fix_hint candidate strings here so they live
+/// as long as the cache itself; `deinitImpostor` frees them. Diagnostic message
+/// memory does not belong here — that comes from the diagnostic list's own
+/// arena (#159).
 pub fn cacheAllocator() ?Allocator {
     return if (impostor_arena) |*arena| arena.allocator() else null;
 }
