@@ -15,6 +15,7 @@ const refconfusion = @import("refconfusion.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
 const permissions = @import("permissions.zig");
+const runner = @import("runner.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -1728,6 +1729,18 @@ fn hasForkAccessibleTrigger(wf: *const Workflow) bool {
     return false;
 }
 
+/// `runs-on` is read label by label, so the sequence and runner-group forms
+/// (`[self-hosted, linux]`, `{group:, labels: [...]}`) are covered along with
+/// the scalar one (#274). A label is matched by substring because a runner
+/// pool is commonly named after the magic label (`self-hosted-gpu`).
+fn usesSelfHostedRunner(job: *const Job) bool {
+    var labels = runner.runsOnLabels(job);
+    while (labels.next()) |label| {
+        if (std.mem.indexOf(u8, label.value, "self-hosted") != null) return true;
+    }
+    return false;
+}
+
 fn checkSelfHostedRunnerForkTriggeredWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     // Private repositories opt out; public and unknown fall through (fail-safe).
     if (sec020_repo_visibility == .private) return;
@@ -1735,8 +1748,7 @@ fn checkSelfHostedRunnerForkTriggeredWorkflow(wf: *const Workflow, list: *Diagno
     if (!hasForkAccessibleTrigger(wf)) return;
 
     for (wf.jobs) |*job| {
-        const runs_on = job.runs_on orelse continue;
-        if (std.mem.indexOf(u8, runs_on, "self-hosted") == null) continue;
+        if (!usesSelfHostedRunner(job)) continue;
 
         list.append(.{
             .rule_id = "SEC020",
@@ -5490,6 +5502,38 @@ test "SEC020: multiple jobs, only self-hosted ones fire" {
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC020"));
+}
+
+test "SEC020: sequence runs-on with self-hosted -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const labels = [_][]const u8{ "self-hosted", "linux" };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .runs_on_labels = &labels, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: runner-group mapping whose labels include self-hosted -> fires" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    // The parser flattens `runs-on: {group:, labels:}` into the same list, so
+    // the rule sees the mapping form as a label list too.
+    const labels = [_][]const u8{ "self-hosted", "gpu" };
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on_labels = &labels, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: sequence runs-on of GitHub-hosted labels (no false positive)" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    const labels = [_][]const u8{ "ubuntu-latest", "x64" };
+    var list = runJobOn(pr_trigger, .{ .id = "build", .runs_on_labels = &labels, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC020"));
 }
 
 test "SEC020: ubuntu-latest + pull_request -> no fire" {

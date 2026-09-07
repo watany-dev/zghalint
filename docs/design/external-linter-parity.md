@@ -114,11 +114,16 @@ SEC002 をステップ単位からワークフロー単位のルールへ移し�
 出力に限り、指摘は展開する後段だけに出る。詳細は `docs/rules.md` の
 「SEC002 taint sources」。
 
-#### G6 (#274). `runs-on` が配列のとき SEC020 が発火しない — 要ルール改善
+#### G6 (#274). `runs-on` が配列のとき SEC020 が発火しない — 対応済み
 
 `bench/cases/b-trigger-checkout/self-hosted-fork-trigger.yml`。
 `runs-on: self-hosted` (スカラー) では発火するが
 `runs-on: [self-hosted, linux]` では発火しない。配列要素の走査漏れ。
+
+パーサは既にスカラー・配列・ランナーグループ (`{group:, labels:}`) の 3 形を
+`runs_on_labels` へ正規化していたので、SEC020 をその走査 (`runner.runsOnLabels`)
+に載せ替えた。ラベル 1 件ごとの部分一致は据え置き — 自前プールに
+`self-hosted-gpu` のような名前を付ける運用が多いため。
 
 #### G7 (#275). `docker://` 形式の `uses:` を SC001 が見ていない — 要ルール改善
 
@@ -163,6 +168,6 @@ PERF001 (キャッシュを足せ) と SEC016 (リリース系でのキャッシ
 - [ ] G2: composite action (`action.yml`) の解析サポートを設計する
 - [ ] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
-- [ ] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
+- [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [ ] G7 (#275): SC001 を `uses: docker://...` に対応させる
 - [ ] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する
