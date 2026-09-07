@@ -8,6 +8,8 @@ pub const TokenKind = enum {
     mapping_value,
     sequence_entry,
     scalar,
+    anchor,
+    alias,
     flow_mapping_start,
     flow_mapping_end,
     flow_sequence_start,
@@ -151,6 +153,10 @@ pub const Tokenizer = struct {
             return self.emitSimple(.mapping_value, 1);
         }
 
+        if (c == '&' or c == '*') {
+            if (self.scanAnchorOrAlias(if (c == '&') .anchor else .alias)) |token| return token;
+        }
+
         if (c == '\'' or c == '"') {
             return self.scanQuotedScalar(c);
         }
@@ -190,6 +196,36 @@ pub const Tokenizer = struct {
             .line = line,
             .column = col,
         };
+    }
+
+    /// `&` and `*` are YAML indicators only at the head of a node, and only
+    /// when a name follows. Shell text puts both characters in the same
+    /// position (`run: *.log`, `run: && make`), so the name is deliberately
+    /// restricted to the identifier shape anchors actually take in workflows —
+    /// letters, digits, `_`, `-` — and must be followed by a token boundary.
+    /// Anything else stays ordinary plain-scalar text.
+    fn scanAnchorOrAlias(self: *Tokenizer, kind: TokenKind) ?Token {
+        var len: usize = 1;
+        while (self.pos + len < self.source.len and isAnchorNameChar(self.source[self.pos + len])) {
+            len += 1;
+        }
+        if (len == 1) return null;
+
+        const after = self.pos + len;
+        if (after < self.source.len) {
+            const next_char = self.source[after];
+            const boundary = next_char == ' ' or next_char == '\t' or
+                next_char == ',' or next_char == ']' or next_char == '}' or
+                self.isBreakAt(after);
+            if (!boundary) return null;
+        }
+
+        return self.emitSimple(kind, len);
+    }
+
+    fn isAnchorNameChar(c: u8) bool {
+        return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '-';
     }
 
     fn scanQuotedScalar(self: *Tokenizer, quote: u8) Token {
@@ -823,6 +859,44 @@ test "tokenizer: CRLF ends a line without leaking into the token" {
     // `on:` only becomes a key if the `\r` after the colon reads as a break.
     try std.testing.expectEqualStrings("on", scalars.items[2]);
     try std.testing.expectEqual(TokenKind.mapping_value, kinds.items[6]);
+}
+
+test "tokenizer emits anchor and alias tokens" {
+    var tokenizer = Tokenizer.init("x: &common\ny: *common\n");
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings("x", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const anchor = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.anchor, anchor.kind);
+    try std.testing.expectEqualStrings("&common", anchor.slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("y", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const alias = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.alias, alias.kind);
+    try std.testing.expectEqualStrings("*common", alias.slice(tokenizer.source));
+}
+
+test "tokenizer treats an alias inside a flow collection as an alias" {
+    var tokenizer = Tokenizer.init("[*a, *b]");
+    _ = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.flow_sequence_start, tokenizer.next().kind);
+    try std.testing.expectEqual(TokenKind.alias, tokenizer.next().kind);
+    try std.testing.expectEqual(TokenKind.flow_entry, tokenizer.next().kind);
+    const b = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.alias, b.kind);
+    try std.testing.expectEqualStrings("*b", b.slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.flow_sequence_end, tokenizer.next().kind);
+}
+
+// Shell one-liners put `*` and `&` exactly where a YAML indicator would sit,
+// so the anchor scan must hand these back as ordinary scalar text.
+test "tokenizer keeps shell globs and operators out of anchor tokens" {
+    try expectFirstScalar("*.log", "*.log");
+    try expectFirstScalar("**/*.ts", "**/*.ts");
+    try expectFirstScalar("&& make", "&& make");
+    try expectFirstScalar("*", "*");
+    try expectFirstScalar("*cache*", "*cache*");
 }
 
 test "tokenizer: a lone CR stays inside a scalar" {
