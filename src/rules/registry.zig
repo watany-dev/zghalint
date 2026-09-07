@@ -19,6 +19,7 @@ const syntax = @import("syntax.zig");
 const uses = @import("uses.zig");
 const reusable_workflow = @import("reusable_workflow.zig");
 const steps_ref = @import("steps_ref.zig");
+const expr_availability = @import("expr_availability.zig");
 
 pub const all_rules = security.security_rules ++
     best_practices.rules ++
@@ -30,6 +31,7 @@ pub const all_rules = security.security_rules ++
     inputs_context.rules ++
     secrets_context.rules ++
     steps_ref.rules ++
+    expr_availability.rules ++
     dependabot.rules ++
     action_metadata.rules ++
     runner.rules ++

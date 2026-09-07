@@ -927,6 +927,12 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         }
     }
     step.name = m.getScalar("name");
+    if (m.get("name")) |n| {
+        switch (n) {
+            .scalar => |s| step.name_meta = scalarMeta(s),
+            else => {},
+        }
+    }
     step.run = m.getScalar("run");
     if (m.get("shell")) |n| {
         switch (n) {
@@ -1125,14 +1131,23 @@ fn parsePermissionLevel(node: Node) ?types.PermissionLevel {
     }
 }
 
+fn scalarMeta(s: yaml.Scalar) types.ScalarValueMeta {
+    return .{ .value_span = s.span, .style = s.style };
+}
+
 fn parseConcurrency(ctx: *ParseContext, node: Node) ParseError!types.Concurrency {
     switch (node) {
         .scalar => |s| {
-            return .{ .group = s.value };
+            return .{ .group = s.value, .group_meta = scalarMeta(s) };
         },
         .mapping => |m| {
+            const group = switch (m.get("group") orelse return error.MissingField) {
+                .scalar => |s| s,
+                else => return error.MissingField,
+            };
             const concurrency = types.Concurrency{
-                .group = m.getScalar("group") orelse return error.MissingField,
+                .group = group.value,
+                .group_meta = scalarMeta(group),
             };
             if (m.get("cancel-in-progress")) |n| {
                 _ = type_validation.checkBool(
@@ -1298,10 +1313,7 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
         switch (entry.value) {
             .scalar => |s| {
                 try values.put(entry.key.value, s.value);
-                try meta.put(entry.key.value, .{
-                    .value_span = s.span,
-                    .style = s.style,
-                });
+                try meta.put(entry.key.value, scalarMeta(s));
             },
             else => {},
         }
