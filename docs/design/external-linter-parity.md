@@ -270,9 +270,11 @@ SEC019 (secret を `env:` 経由にせず直接使う) が同じステップで�
   盲点としてケースだけ残し、当面は検出しない。
 - `bench/cases/e-expression/env-undefined.yml` (どの `env:` でも定義していない
   `env.NAME` の参照) も 3 ツールとも無反応。同じく共通の盲点。
-- YAML のアンカー / エイリアス / マージキーは zghalint (#64) も actionlint も
-  解決しない。`bench/cases/i-robustness/yaml-anchors-and-merge-keys.yml` は
-  両ツールを skip し、状況の記録だけに使う。
+- YAML のアンカー / エイリアス / マージキーは zghalint が #64 で解決するように
+  なった (`src/yaml/parser.zig`)。actionlint は alias node を解決せず
+  `defaults` を型エラーとして弾くため、
+  `bench/cases/i-robustness/yaml-anchors-and-merge-keys.yml` では actionlint
+  だけを skip する。
 - 外部ツール側の観察: zizmor 1.30.0 は中身のないワークフロー
   (`i-robustness/comments-only.yml`) と `timeout-minutes: "10m"`
   (`f-syntax-schema/shell-and-timeout-types.yml`) でクラッシュする (exit 3)。

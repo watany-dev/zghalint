@@ -1,0 +1,24 @@
+# Anchors, aliases and merge keys must be resolved before the rules run:
+# both jobs inherit `runs-on` and `timeout-minutes` from `&common`, so neither
+# BP001 (missing timeout) nor a runner diagnostic may fire on them.
+# zghalint:expect BP002
+# zghalint:forbid BP001
+# zghalint:forbid SYN004
+name: anchors and merge keys
+on: push
+concurrency:
+  group: anchors-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  build:
+    <<: &common
+      runs-on: ubuntu-latest
+      timeout-minutes: 10
+    steps:
+      - run: echo build
+  test:
+    <<: *common
+    steps:
+      - name: Run tests
+        run: echo test

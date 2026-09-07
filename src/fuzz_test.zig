@@ -36,6 +36,12 @@ const yaml_corpus: []const []const u8 = &.{
     "\t: tab indent\n",
     "# comment only\n",
     ":\n",
+    "x: &c\n  runs-on: ubuntu-latest\njob:\n  <<: *c\n",
+    "a: &a\n  b: *a\n",
+    "a: &a\n  x: *b\nb: &b\n  y: *a\n",
+    "a: &a [1, 2]\nb: &b [*a, *a]\nc: [*b, *b]\n",
+    "job:\n  <<: *missing\n",
+    "run: rm *.log && echo *\n",
 };
 
 test "fuzz: yaml tokenizer never leaves the source buffer" {
