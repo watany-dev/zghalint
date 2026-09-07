@@ -596,10 +596,20 @@ const checkout_ref_untrusted_contexts = [_][]const u8{
     "github.event.discussion_comment.body",
 };
 
-/// The `inputs.*` shorthand names the `workflow_dispatch` inputs only when the
-/// workflow is not also callable; in a `workflow_call` workflow the same root
-/// names what a caller passes, and analysing callers is out of scope.
+/// The `inputs.*` shorthand names whatever started the run: the values a
+/// `workflow_dispatch` actor typed, or the values a caller passed. Analysing
+/// callers is out of scope, so the root is untrusted unless every way in fills
+/// it from a caller — declaring `workflow_call` alongside a `workflow_dispatch`
+/// that has inputs of its own must not silence the dispatch path (#219).
 const checkout_ref_dispatch_contexts = checkout_ref_untrusted_contexts ++ [_][]const u8{"inputs"};
+
+fn bareInputsAreUntrusted(wf: *const Workflow) bool {
+    if (!wf.hasEvent(.workflow_call)) return true;
+    for (wf.on.events) |event| {
+        if (event.event == .workflow_dispatch and event.workflow_dispatch_inputs.len > 0) return true;
+    }
+    return false;
+}
 
 /// The triggers SEC021 owns: the run is started by data an attacker authors
 /// while the job still runs against the base repository. `pull_request_target`
@@ -632,10 +642,10 @@ fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
 fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
     if (!hasUntrustedRefTrigger(wf)) return;
 
-    const contexts: []const []const u8 = if (wf.hasEvent(.workflow_call))
-        &checkout_ref_untrusted_contexts
+    const contexts: []const []const u8 = if (bareInputsAreUntrusted(wf))
+        &checkout_ref_dispatch_contexts
     else
-        &checkout_ref_dispatch_contexts;
+        &checkout_ref_untrusted_contexts;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
@@ -2428,7 +2438,14 @@ test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)
 
 const repository_dispatch_trigger = test_support.makeTrigger(.repository_dispatch);
 const discussion_comment_trigger = test_support.makeTrigger(.discussion_comment);
+const dispatch_target_inputs = [_]workflow_types.DispatchInputDef{
+    .{ .name = "target", .name_span = test_support.dummySpan(0, 0) },
+};
 const workflow_call_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .workflow_call },
+    .{ .event = .workflow_dispatch, .workflow_dispatch_inputs = &dispatch_target_inputs },
+} };
+const workflow_call_and_bare_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
     .{ .event = .workflow_call },
     .{ .event = .workflow_dispatch },
 } };
@@ -2516,8 +2533,14 @@ test "SEC021: push trigger is out of scope (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC021"));
 }
 
-test "SEC021: reusable workflow inputs shorthand is out of scope (no false positive)" {
+test "SEC021: workflow_call alongside workflow_dispatch still reports inputs (#219)" {
     var list = runCheckoutWith(workflow_call_dispatch_trigger, "ref", "${{ inputs.target }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: reusable workflow inputs shorthand is out of scope (no false positive)" {
+    var list = runCheckoutWith(workflow_call_and_bare_dispatch_trigger, "ref", "${{ inputs.target }}");
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC021"));
 }

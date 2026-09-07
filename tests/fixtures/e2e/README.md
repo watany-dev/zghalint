@@ -36,6 +36,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `sec006-condition-scope.yml` | #138 repro: ref/label routing in `if:` must not fire SEC006 |
 | `sec005-pr-target-head-repository.yml` | #218 repro: `pull_request_target` checkout of the PR head repository |
 | `sec021-untrusted-checkout-ref.yml` | #134 repro: checkout ref from an `issue_comment` body |
+| `sec021-workflow-call-dispatch-inputs.yml` | #219 repro: `workflow_call` must not silence `inputs.*` on the dispatch path |
 | `sec022-workflow-run-branch-gate.yml` | #143 repro: `head_branch` gate on a `workflow_run` job |
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |

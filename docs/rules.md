@@ -76,9 +76,13 @@ workflow would hide a `ref` fed from a comment body just because
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
 `github.event.client_payload.*`) and the free text of an issue, comment or
-discussion. The bare `inputs.*` shorthand counts too, except in a workflow that
-also declares `workflow_call`: there it names what a caller passes, and
-analysing callers is out of scope.
+discussion. The bare `inputs.*` shorthand counts too, unless every way into the
+workflow fills it from a caller — a `workflow_call` workflow with no
+`workflow_dispatch`, or one whose `workflow_dispatch` declares no inputs of its
+own. Analysing callers is out of scope. A `workflow_call` declared beside a
+`workflow_dispatch` that has inputs keeps the shorthand untrusted: the same
+`inputs.ref` is still what a dispatching user types, so three lines of
+`workflow_call:` must not silence the rule (#219).
 
 ### SEC022 vs. SEC006
 
