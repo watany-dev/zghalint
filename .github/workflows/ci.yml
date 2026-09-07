@@ -140,9 +140,10 @@ jobs:
       # ログに現れる。CI を不安定にしないため探索側は 5 分に制限する。
       - name: Continuous fuzzing (time-limited)
         run: |
-          set -uo pipefail
-          timeout --signal=INT 300 zig build fuzz --fuzz --webui=127.0.0.1 > fuzz.log 2>&1
-          status=$?
+          # GitHub の既定シェルは `bash -e` なので、timeout が返す 124 を
+          # そのまま受けるとこの行でジョブが落ちる。`|| status=$?` で受け止める。
+          status=0
+          timeout --signal=INT 300 zig build fuzz --fuzz --webui=127.0.0.1 > fuzz.log 2>&1 || status=$?
           cat fuzz.log
           if [ "$status" -ne 124 ]; then
             echo "::error::fuzzing stopped before the time limit (exit ${status})"

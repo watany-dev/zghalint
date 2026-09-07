@@ -84,11 +84,10 @@ pub fn build(b: *std.Build) void {
     });
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
-    // Fuzzing gets its own artifact: `zig build fuzz --fuzz` instruments only
-    // these targets, and a plain `zig build fuzz` runs each one over its seed
-    // corpus, which is also how they run inside `zig build test`.
-    // Rooted at the fuzz file rather than src/lib.zig: only the parsers under
-    // test get coverage instrumentation, instead of the whole 1400-test suite.
+    // Fuzzing gets its own artifact, rooted at the fuzz file rather than
+    // src/lib.zig so that coverage instrumentation covers only the parsers
+    // under test instead of the whole suite. A plain `zig build fuzz` replays
+    // the seed corpus, which is also how these run inside `zig build test`.
     const fuzz_mod = b.createModule(.{
         .root_source_file = b.path("src/fuzz_test.zig"),
         .target = target,

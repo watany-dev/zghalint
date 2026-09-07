@@ -62,9 +62,11 @@ PY
 
 shopt -s nullglob
 scripts=("$WORKDIR"/*.bash "$WORKDIR"/*.sh)
+# Extracting nothing means the extraction broke (a structure change, a PyYAML
+# upgrade), not that the action is clean. Fail rather than pass silently.
 if [ ${#scripts[@]} -eq 0 ]; then
-  echo "shellcheck-action: no shell run: blocks found in $ACTION_FILE"
-  exit 0
+  echo "shellcheck-action: no shell run: blocks found in $ACTION_FILE" >&2
+  exit 1
 fi
 
 status=0
