@@ -127,11 +127,7 @@ pub const Parser = struct {
                 .full_span = self.blockEntryFullSpan(key_scalar, value),
             });
 
-            self.skipNewlines();
-            if (self.current.kind == .comment) {
-                self.advance();
-                self.skipNewlines();
-            }
+            self.skipNewlinesAndComments();
 
             if (self.current.kind == .eof) break;
             if (self.current.column < key_indent) break;
@@ -181,11 +177,7 @@ pub const Parser = struct {
                 try items.append(self.allocator, try self.parseNode(seq_indent + 1));
             }
 
-            self.skipNewlines();
-            if (self.current.kind == .comment) {
-                self.advance();
-                self.skipNewlines();
-            }
+            self.skipNewlinesAndComments();
         }
 
         const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
@@ -712,4 +704,44 @@ test "full_span end_line follows a multi-line quoted scalar" {
     try std.testing.expectEqual(@as(u32, 2), fs.start_line);
     try std.testing.expectEqual(@as(u32, 4), fs.end_line);
     try std.testing.expectEqualStrings("  name: \"a\n    b\"\n", source[fs.start_byte..fs.end_byte]);
+}
+
+test "a run of comments between sequence items does not end the sequence" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\include:
+        \\  - target: a
+        \\  # one
+        \\  # two
+        \\  # three
+        \\  - target: b
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const items = root.mapping.entries[0].value.sequence.items;
+
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+}
+
+test "a run of comments between mapping entries does not end the mapping" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\job:
+        \\  a: 1
+        \\  # one
+        \\  # two
+        \\  # three
+        \\  b: 2
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const job = root.mapping.entries[0].value.mapping;
+
+    try std.testing.expectEqual(@as(usize, 2), job.entries.len);
 }
