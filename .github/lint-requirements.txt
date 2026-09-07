@@ -1,0 +1,5 @@
+# Linters for the `lint` job in ci.yml. Pinned so a new release cannot turn
+# CI red on an unrelated pull request; bump deliberately.
+ruff==0.15.8
+zizmor==1.30.0
+pyyaml==6.0.2

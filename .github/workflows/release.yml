@@ -31,6 +31,10 @@ jobs:
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          # このワークフローが公開する成果物は、プルリクエストが汚染しうる
+          # キャッシュから出てきてはならない (zizmor: cache-poisoning)。
+          use-cache: false
 
       - name: Build
         run: zig build
@@ -82,22 +86,30 @@ jobs:
           - target: linux-x86_64
             os: ubuntu-latest
             zig_target: x86_64-linux
+            native: true
           - target: linux-aarch64
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             zig_target: aarch64-linux
+            native: true
           # macOS は macos-15 に固定する。macos-latest が載せる新しい SDK では
           # Zig 0.15.2 のリンカが libSystem のシンボルを解決できずビルドが落ちる
           # （詳細は ci.yml の build ジョブのコメント）。Zig 側が対応したら
           # ci.yml と併せて macos-latest に戻す。
+          #
+          # macOS ランナーは arm64 であり、x86_64 バイナリの実行には Rosetta が
+          # 要る。存在は保証されないため起動テストの対象外とする。
           - target: macos-x86_64
             os: macos-15
             zig_target: x86_64-macos
+            native: false
           - target: macos-aarch64
             os: macos-15
             zig_target: aarch64-macos
+            native: true
           - target: windows-x86_64
             os: windows-latest
             zig_target: x86_64-windows
+            native: true
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -108,9 +120,40 @@ jobs:
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          # このワークフローが公開する成果物は、プルリクエストが汚染しうる
+          # キャッシュから出てきてはならない (zizmor: cache-poisoning)。
+          use-cache: false
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+
+      # 起動すらしないバイナリを公開しないための最低限の確認。`--version` は
+      # タグと一致していなければならない (build.zig.zon の version 更新漏れ検知)。
+      - name: Smoke test binary (Unix)
+        if: matrix.native && matrix.os != 'windows-latest'
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          ACTUAL=$(./zig-out/bin/zghalint --version)
+          echo "$ACTUAL"
+          if [ "$ACTUAL" != "zghalint $TAG" ]; then
+            echo "::error::--version returned '$ACTUAL', expected 'zghalint $TAG'"
+            exit 1
+          fi
+          ./zig-out/bin/zghalint --help > /dev/null
+
+      - name: Smoke test binary (Windows)
+        if: matrix.native && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          $actual = & ./zig-out/bin/zghalint.exe --version
+          Write-Host $actual
+          if ($actual -ne "zghalint $tag") {
+            Write-Output "::error::--version returned '$actual', expected 'zghalint $tag'"
+            exit 1
+          }
+          & ./zig-out/bin/zghalint.exe --help | Out-Null
 
       - name: Package archive (Unix)
         if: matrix.os != 'windows-latest'
@@ -140,7 +183,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      # リリース作成のためのアセットアップロード
       contents: write
+      # SLSA provenance の署名 (Sigstore への OIDC トークン)
+      id-token: write
+      # 署名済み provenance をリポジトリの attestation として登録
+      attestations: write
     timeout-minutes: 30
     steps:
       - name: Download all artifacts
@@ -153,6 +201,14 @@ jobs:
         run: |
           cd artifacts
           sha256sum zghalint-* > SHA256SUMS
+
+      # 配布アーカイブがこのリポジトリのこのワークフローで作られたことを
+      # 検証可能にする。利用者は `gh attestation verify` で確認できる
+      # (README「リリース成果物の検証」参照)。
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'artifacts/zghalint-*'
 
       - name: Create release
         env:
@@ -170,3 +226,118 @@ jobs:
             --generate-notes \
             $PRERELEASE_FLAG \
             artifacts/*
+
+  # 公開後の E2E スモーク。action.yml のダウンロード手順 (アーカイブ取得 →
+  # SHA256SUMS 照合 → 展開 → 実行) をそのままなぞり、公開されたアセットが
+  # 利用者の手元で実際に動くことを確認する。`uses: watany-dev/zghalint@<tag>`
+  # は ref にリテラルしか書けないため、同一ワークフロー内からは呼べない。
+  smoke:
+    name: Smoke published assets (${{ matrix.target }})
+    needs: release
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-latest
+          - target: linux-aarch64
+            os: ubuntu-24.04-arm
+          - target: macos-aarch64
+            os: macos-latest
+          - target: windows-x86_64
+            os: windows-latest
+    steps:
+      - name: Download and run published asset (Unix)
+        if: matrix.os != 'windows-latest'
+        env:
+          REPO: ${{ github.repository }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          TAG=${GITHUB_REF#refs/tags/}
+          BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+          ARCHIVE="zghalint-$TARGET.tar.gz"
+
+          # リリース作成直後はアセットの配信が数秒遅れることがある。
+          # SHA256SUMS も同じアセットなので同様にリトライする。
+          fetch() {
+            attempt=1
+            while [ "$attempt" -le 5 ]; do
+              if curl -fSL "$BASE_URL/$1" -o "$1"; then
+                return 0
+              fi
+              attempt=$((attempt + 1))
+              if [ "$attempt" -le 5 ]; then sleep 10; fi
+            done
+            echo "::error::failed to download $1"
+            return 1
+          }
+          fetch "$ARCHIVE"
+          fetch SHA256SUMS
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --ignore-missing -c SHA256SUMS
+          else
+            shasum -a 256 --ignore-missing -c SHA256SUMS
+          fi
+
+          tar -xzf "$ARCHIVE"
+          BIN="zghalint-$TARGET/zghalint"
+          chmod +x "$BIN"
+          ACTUAL=$("$BIN" --version)
+          echo "$ACTUAL"
+          if [ "$ACTUAL" != "zghalint $TAG" ]; then
+            echo "::error::published binary reports '$ACTUAL', expected 'zghalint $TAG'"
+            exit 1
+          fi
+          "$BIN" --help > /dev/null
+
+      - name: Download and run published asset (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          REPO: ${{ github.repository }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          $baseUrl = "https://github.com/$env:REPO/releases/download/$tag"
+          $archive = "zghalint-$env:TARGET.zip"
+
+          # リリース作成直後はアセットの配信が数秒遅れることがある。
+          # SHA256SUMS も同じアセットなので同様にリトライする。
+          function Get-Asset($name) {
+            foreach ($attempt in 1..5) {
+              try {
+                Invoke-WebRequest -Uri "$baseUrl/$name" -OutFile $name
+                return
+              } catch {
+                if ($attempt -eq 5) { throw }
+                Start-Sleep -Seconds 10
+              }
+            }
+          }
+          Get-Asset $archive
+          Get-Asset 'SHA256SUMS'
+
+          $expected = (Select-String -Path SHA256SUMS -Pattern ([regex]::Escape($archive)) |
+            Select-Object -First 1).Line.Split(' ')[0]
+          $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          if ($actualHash -ne $expected) {
+            Write-Output "::error::checksum mismatch for $archive"
+            exit 1
+          }
+
+          Expand-Archive -Path $archive -DestinationPath .
+          $bin = "zghalint-$env:TARGET/zghalint.exe"
+          $actual = & $bin --version
+          Write-Host $actual
+          if ($actual -ne "zghalint $tag") {
+            Write-Output "::error::published binary reports '$actual', expected 'zghalint $tag'"
+            exit 1
+          }
+          & $bin --help | Out-Null

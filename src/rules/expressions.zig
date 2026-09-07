@@ -1475,6 +1475,24 @@ fn expectRuleReported(expr: []const u8, rule_id: []const u8) !void {
     return error.RuleNotReported;
 }
 
+/// `expression_rule` is an umbrella: it registers once as `EXPR` but emits
+/// diagnostics under finer-grained IDs. The docs-sync test needs the real IDs,
+/// so they are listed here; `expressions: sub_rule_ids covers every emitted ID`
+/// keeps the list from drifting away from the code below.
+pub const sub_rule_ids = [_][]const u8{
+    "EXPR001",
+    "EXPR002",
+    "EXPR003",
+    "EXPR004",
+    "EXPR005",
+    "EXPR006",
+    "EXPR007",
+    "EXPR008",
+    "EXPR009",
+    "EXPR017",
+    "EXPR018",
+};
+
 fn expectNoDiagnostics(expr: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -3284,7 +3302,6 @@ test "EXPR017: message follows the actionlint wording" {
 }
 
 test "EXPR017: unknown types short-circuit to no diagnostic" {
-    try expectNoDiagnostics("github.event.issue.number == 'foo'");
     try expectNoDiagnostics("steps.build.outputs.count > 3");
     try expectNoDiagnostics("matrix.os == 'ubuntu-latest'");
     try expectNoDiagnostics("github.event_name == 'push'");
@@ -3294,6 +3311,31 @@ test "EXPR017: unknown types short-circuit to no diagnostic" {
 test "EXPR017: scalar mixing in equality is not reported" {
     try expectNoDiagnostics("github.event_name == 1");
     try expectNoDiagnostics("github.ref_protected == 'true'");
+}
+
+// #124: the curated `github.event` overlay widens EXPR017 without touching
+// the `any` fallback for uncurated paths (ADR D3).
+test "EXPR017: curated github.event object compared to a scalar" {
+    try expectSingleRule("github.event.issue == 'bug'", "EXPR017");
+    try expectSingleRule("github.event.pull_request.draft > 1", "EXPR017");
+    try expectSingleRule("github.event.repository.private < 1", "EXPR017");
+}
+
+test "EXPR017: curated github.event scalars stay silent" {
+    // Scalar mixing is a documented implicit conversion (ADR D6).
+    try expectNoDiagnostics("github.event.issue.number == 'foo'");
+    try expectNoDiagnostics("github.event.pull_request.head.sha == github.sha");
+    try expectNoDiagnostics("github.event.workflow_run.conclusion == 'success'");
+    try expectNoDiagnostics("github.event.pull_request.draft == true");
+}
+
+test "EXPR003: nothing below github.event is reported" {
+    try expectNoDiagnostics("github.event.issue.numer");
+    try expectNoDiagnostics("github.event.pull_request.hea.sha");
+    try expectNoDiagnostics("github.event.deployment.payload.env");
+    // A deref of a curated scalar is a real mistake, but the payload keeps
+    // its no-diagnostic contract (ADR D3).
+    try expectNoDiagnostics("github.event.issue.number.foo");
 }
 
 test "EXPR017: comparison inside a logical expression" {

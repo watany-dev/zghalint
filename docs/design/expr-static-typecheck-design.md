@@ -210,7 +210,7 @@ pub fn display(ty: TypeRef, buf: []u8) []const u8 { ... }
 | context | shape | 既知プロパティ | EXPR003 |
 |---|---|---|---|
 | `github` | strict | issue #81 の全第一プロパティ。型は下記 | 未知キー・非 object deref |
-| `github.event` | **loose** | なし（ADR D3） | 出さない |
+| `github.event` | **loose** | curated scalar overlay（ADR D3-a / #124）。中間 object も loose | 出さない |
 | `runner` | strict | `name/os/arch/temp/tool_cache/debug/environment`: string | 未知キー |
 | `job` | strict | `check_run_id: number`, `status: string`, `container: {id,network: string}`, `services: map of {id,network: string, ports: map of string}` | 未知キー（新規 true positive。リリースノート必須） |
 | `strategy` | loose | `fail-fast: bool`, `job-index/job-total/max-parallel: number` | 既知以外は `any` |
@@ -537,6 +537,7 @@ stat -c%s zig-out/bin/zghalint
 | T1 | path ウォークを EXPR003 に接続 | 既存 EXPR003 テストがグリーンのまま。追加: `github.repository.permissions` が EXPR003。`github.event.foo` は沈黙。`steps.x` は沈黙 |
 | T2 | シグネチャ表へ EXPR004/005 を移行。戻り値型 | `startsWith(github.sha, 'a')` の型が bool。`startsWith(github.event, 'a')` は T2 時点では **診断しない**（T5 で EXPR018 が拾う）が typeOf は bool |
 | T3 | EXPR017 | §6 の行列を表駆動テスト。`any` 短絡。`github.event > 3` は発火、`github.event.issue.number == 'foo'` は沈黙 |
+| #124 | curated scalar overlay | `github.event.issue == 'bug'` / `github.event.pull_request.draft > 1` が発火。curated 配下の typo は無診断 |
 | T4 | overlay 接続 | EXPR010〜EXPR014 の既存テストが二重診断にならないこと |
 | T5 | EXPR018（引数型・補間値） | `startsWith(github.event, 'a')` が発火。overlay 未接続の loose context と `if:` 条件は沈黙 |
 
@@ -548,8 +549,8 @@ test "catalog: github.ref_protected is bool" {
     try std.testing.expectEqual(TypeKind.bool, ty.kind);
 }
 
-test "catalog: github.event.pull_request is any" {
-    const ty = walkPath("github.event.pull_request", &TypeEnv{});
+test "catalog: an uncurated github.event path is any" {
+    const ty = walkPath("github.event.deployment.payload", &TypeEnv{});
     try std.testing.expectEqual(TypeKind.any, ty.kind);
 }
 
@@ -578,7 +579,8 @@ T1 でも沈黙する例（意図的）:
 - run: echo ${{ github.event.pull_request.head.sha }}
 - run: echo ${{ steps.setup.outputs.v }}
 - run: echo ${{ matrix.os }}
-- if: github.event.issue.number == 'foo'
+- if: github.event.issue.number == 'foo'   # curated 後も scalar 同士なので沈黙
+- run: echo ${{ github.event.issue.numer }} # curated 配下の typo も沈黙
 ```
 
 T3 で EXPR017 が出る例:
@@ -611,14 +613,18 @@ ADR 「Follow-up」と同じ。実装順の目安だけここへ落とす。
 1. EXPR010〜EXPR014 先行 → T4 overlay
 2. `github.event.inputs` overlay（SYN017）
 3. パーサの数値添字
-4. curated scalar（任意。D3 を崩さない範囲）
-5. 型 narrowing
+4. EXPR018（引数型と補間値。#162 で完了）
+5. curated scalar（#124 で完了。ADR D3-a）
+6. 型 narrowing
+7. 関数名 case-insensitive
 
 ## 実装状況（T0〜T5）
 
 T0〜T3 を `src/rules/expr_type.zig` / `expr_catalog.zig` / `expr_check.zig`、
 T4（steps / matrix / needs / inputs / secrets の overlay）を
 `src/rules/expr_overlay.zig` + `expressions.checkWorkflow` として実装済み。
+`github.event` の curated scalar overlay（ADR D3-a / #124）も `expr_catalog.zig` に
+入っている（`github_event` とその配下の `event_*` 定数）。
 
 T5（EXPR018）は `FuncSig.args` / `.rest` に `ArgKind`（`any` / `string` /
 `string_or_array`）を持たせ、`expr_check.acceptsArg` と
@@ -664,7 +670,9 @@ T5（#162）投入時:
 | T5 投入後 | 959,722 |
 | 増分 | +2,115（約 2.1 KiB） |
 
-累計 +27 KiB 程度で、32 KiB の予算内。
+curated scalar overlay（#124）の増分は同じ計測方法で `text` +1,290 バイト（約 1.3 KiB）。
+
+累計 +28 KiB 程度で、32 KiB の予算内。
 
 ## 参考
 

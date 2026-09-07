@@ -30,6 +30,7 @@ pub const rules = struct {
     pub const advisory = @import("rules/advisory.zig");
     pub const refconfusion = @import("rules/refconfusion.zig");
     pub const dependabot = @import("rules/dependabot.zig");
+    pub const action_metadata = @import("rules/action_metadata.zig");
     pub const archived = @import("rules/archived.zig");
     pub const stale_refs = @import("rules/stale_refs.zig");
     pub const impostor = @import("rules/impostor.zig");
@@ -83,6 +84,7 @@ test {
     _ = @import("rules/advisory.zig");
     _ = @import("rules/refconfusion.zig");
     _ = @import("rules/dependabot.zig");
+    _ = @import("rules/action_metadata.zig");
     _ = @import("rules/archived.zig");
     _ = @import("rules/stale_refs.zig");
     _ = @import("rules/impostor.zig");
@@ -108,4 +110,6 @@ test {
     _ = @import("util.zig");
     _ = @import("workspace.zig");
     _ = @import("e2e_test.zig");
+    _ = @import("docs_sync_test.zig");
+    _ = @import("fuzz_test.zig");
 }

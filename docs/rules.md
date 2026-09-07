@@ -187,7 +187,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR013 | inputs-context | error | `inputs.<name>` must name an input declared by `workflow_dispatch.inputs` or `workflow_call.inputs`, and a workflow with neither trigger has no `inputs` context |
 | EXPR014 | secrets-context | error | `secrets.<name>` must name a secret declared under `on.workflow_call.secrets` (only checked when that section exists; `GITHUB_TOKEN` is always valid) |
-| EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`) |
+| EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
 
 ## Dependency Rules (DEP)
@@ -663,6 +663,96 @@ axis built from an expression (`os: ${{ fromJSON(...) }}`) carries no values to
 compare against, so the value check is skipped for it. Plain `1.10` and `1.1`,
 or `True` and `true`, are the same YAML value and do not count as a mismatch;
 quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
+
+## Action Metadata Rules (ACT)
+
+Validate action metadata files (`action.yml` / `action.yaml`) — the manifest of
+a composite, JavaScript, or Docker action. これらはワークフローではないため、
+ワークフロー用のルールは一切適用されず、ACT ルールだけが走る。
+
+| ID | Name | Severity | Description |
+|----|------|----------|-------------|
+| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い |
+| ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
+| ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
+| ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
+
+### 検査対象になるファイル
+
+引数を省略した場合、既定で以下を読む:
+
+- リポジトリ直下の `action.yml` / `action.yaml`
+- `.github/actions/<name>/action.yml` / `action.yaml`
+
+GitHub 自身が案内しているのはこの 2 つの配置なので既定はここまでとし、それ以外の
+場所に置いたメタデータはパスを直接渡す。判定はファイル名そのもので行うため、
+`my-action.yml` はワークフロー扱いのままになる。逆に `.github/workflows/` 配下の
+ファイルは名前が `action.yml` でもワークフローなので、ACT ルールは適用しない。
+
+### ACT002 が受理する `using`
+
+`node20` / `node24` / `docker` / `composite` の 4 つ。`node12` / `node16` は
+GitHub が実行を停止するランタイムなので warning として報告し、それ以外の未知の値は
+error として報告する（編集距離 2 以内で候補が一意に定まるときは
+`did you mean ...?` を添える）。
+
+### 個々の定義に対する検査
+
+- `inputs.<name>` に置けるのは `description` / `required` / `default` /
+  `deprecationMessage`、`outputs.<name>` に置けるのは `description` /
+  `value`。未知のキーは ACT003、値の型が違うものは ACT004。
+- `main:` のように値を書かずにキーだけ置いた場合、ランナーには値が届かないので
+  ACT001（キーが無い）として扱う。
+- `required:` は YAML 1.2 core schema の真偽値（`true` / `True` / `TRUE` と
+  その否定形）だけを受理する。`yes` / `on` は文字列なので ACT004 として報告する。
+- `value:` は composite action だけが持つ。JavaScript / Docker action は実行時に
+  出力を書き出すため、`value:` があれば ACT004 として報告する。`using` の値が
+  解決できない場合は出力側の判定を行わない。
+- composite の `runs.steps` はシーケンスであることだけを確認する。既存の step
+  ルールや式検証を steps に適用するのは #254。
+
+---
+
+---
+
+## Reusable Workflow Rules (RW)
+
+Validate the `on.workflow_call` interface a reusable workflow exposes to its
+callers.
+
+| ID | Name | Severity | Description |
+|----|------|----------|-------------|
+| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted |
+
+### RW001 workflow-call-inputs
+
+`workflow_call` inputs use a different type system from `workflow_dispatch`
+inputs (which are checked by [SYN017](#syn017-workflow-dispatch-inputs)):
+`type` is **required**, and `choice` / `environment` are not available.
+
+```yaml
+on:
+  workflow_call:
+    inputs:
+      environment:        # missing `type`
+        required: true
+      mode:
+        type: choice      # not a workflow_call type
+        options: [a, b]
+      retries:
+        type: number
+        default: three    # default is not a number
+      target:
+        type: string
+        required: true
+        default: main     # required and defaulted at the same time
+```
+
+A caller that omits a `required` input fails at dispatch time, and a `default`
+on a required input is never applied — so declaring both is always a mistake in
+one direction or the other. Fix by giving every input an explicit `type` of
+`string`, `number` or `boolean`, matching the `default` to it, and dropping
+either `required: true` or `default`.
 
 ---
 

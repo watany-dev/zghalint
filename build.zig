@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .strip = strip_release,
     });
+    addDocsRules(b, lib_mod);
 
     // Both the CLI module and its test module need the same dependencies.
     const cli_imports: []const std.Build.Module.Import = &.{
@@ -56,6 +57,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    addDocsRules(b, lib_test_mod);
     const lib_unit_tests = b.addTest(.{ .root_module = lib_test_mod });
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
@@ -83,6 +85,30 @@ pub fn build(b: *std.Build) void {
     });
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
+    // Fuzzing gets its own artifact, rooted at the fuzz file rather than
+    // src/lib.zig so that coverage instrumentation covers only the parsers
+    // under test instead of the whole suite. A plain `zig build fuzz` replays
+    // the seed corpus, which is also how these run inside `zig build test`.
+    const fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("src/fuzz_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const fuzz_tests = b.addTest(.{
+        .root_module = fuzz_mod,
+        // The imported modules bring their own inline tests along; only the
+        // fuzz targets belong to this step.
+        .filters = &.{"fuzz:"},
+        // The self-hosted x86_64 backend emits no `-fsanitize-coverage` PCs,
+        // so `--fuzz` panics in std.Build.Fuzz.addEntryPoint with an empty PC
+        // list. The LLVM backend produces the coverage the fuzzer needs.
+        .use_llvm = true,
+    });
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_step = b.step("fuzz", "Run fuzz targets (add --fuzz for continuous fuzzing)");
+    fuzz_step.dependOn(&run_fuzz_tests.step);
+
     // The CLI test binary is measured too, so coverage covers argument
     // parsing, exit codes and `--fix` write-back, not just the library.
     const cov_exe_tests = b.addTest(.{
@@ -102,4 +128,13 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
+}
+
+/// `docs/rules.md` lives outside the module root (`src/`), so it cannot be
+/// reached with a relative `@embedFile`. Expose it under a stable name for
+/// src/docs_sync_test.zig instead.
+fn addDocsRules(b: *std.Build, module: *std.Build.Module) void {
+    module.addAnonymousImport("docs_rules_md", .{
+        .root_source_file = b.path("docs/rules.md"),
+    });
 }
