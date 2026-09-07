@@ -6,6 +6,7 @@ const yaml = @import("../yaml/types.zig");
 const expr_type = @import("expr_type.zig");
 const catalog = @import("expr_catalog.zig");
 const expr_check = @import("expr_check.zig");
+const expr_overlay = @import("expr_overlay.zig");
 const spans = @import("spans.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
@@ -17,6 +18,7 @@ pub const Span = yaml.Span;
 pub const Anchor = spans.Anchor;
 pub const Step = workflow_types.Step;
 pub const Job = workflow_types.Job;
+pub const Workflow = workflow_types.Workflow;
 pub const StringMap = workflow_types.StringMap;
 
 pub const TokenKind = enum {
@@ -509,6 +511,20 @@ pub fn validateExpression(
     list: *DiagnosticList,
     expr_base_byte: ?usize,
 ) void {
+    validateExpressionEnv(allocator, expr, base_span, list, expr_base_byte, &expr_check.TypeEnv.empty);
+}
+
+/// As `validateExpression`, but resolving context roots against `env` first,
+/// so the workflow's own `steps` / `matrix` / `needs` / `inputs` / `secrets`
+/// are typed instead of loose (#129).
+pub fn validateExpressionEnv(
+    allocator: std.mem.Allocator,
+    expr: []const u8,
+    base_span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: ?usize,
+    env: *const expr_check.TypeEnv,
+) void {
     var parser = ExprParser.init(allocator, expr);
     const node = parser.parse() catch |err| {
         const msg = switch (err) {
@@ -526,7 +542,7 @@ pub fn validateExpression(
         }) catch return;
         return;
     };
-    validateNode(allocator, &node, base_span, list, expr_base_byte, null);
+    validateNode(allocator, &node, base_span, list, expr_base_byte, null, env);
 }
 
 fn validateNode(
@@ -536,25 +552,32 @@ fn validateNode(
     list: *DiagnosticList,
     expr_base_byte: ?usize,
     parent: ?*const ExprNode,
+    env: *const expr_check.TypeEnv,
 ) void {
     switch (node.kind) {
-        .context_access => validateContextAccess(allocator, node.value, span, list),
-        .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent),
+        .context_access => validateContextAccess(allocator, node.value, span, list, env),
+        .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent, env),
         .binary_op, .unary_op => {
             if (node.kind == .binary_op) {
                 checkUnsoundCondition(allocator, node, span, list, expr_base_byte);
-                checkComparison(allocator, node, span, list);
+                checkComparison(allocator, node, span, list, env);
             }
             for (node.children) |*child| {
-                validateNode(allocator, child, span, list, expr_base_byte, node);
+                validateNode(allocator, child, span, list, expr_base_byte, node, env);
             }
         },
         .string_literal, .number_literal, .boolean_literal, .null_literal => {},
     }
 }
 
-fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: Span, list: *DiagnosticList) void {
-    const result = expr_check.walkPath(path);
+fn validateContextAccess(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    span: Span,
+    list: *DiagnosticList,
+    env: *const expr_check.TypeEnv,
+) void {
+    const result = expr_check.walkPath(path, env);
     const problem = result.problem orelse return;
 
     var buf: [96]u8 = undefined;
@@ -593,13 +616,19 @@ fn validateContextAccess(allocator: std.mem.Allocator, path: []const u8, span: S
     }) catch return;
 }
 
-fn checkComparison(allocator: std.mem.Allocator, node: *const ExprNode, span: Span, list: *DiagnosticList) void {
+fn checkComparison(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    span: Span,
+    list: *DiagnosticList,
+    env: *const expr_check.TypeEnv,
+) void {
     if (node.children.len != 2) return;
     const op = node.value;
     if (!expr_check.isCompareOp(op)) return;
 
-    const lhs = expr_check.typeOf(&node.children[0]);
-    const rhs = expr_check.typeOf(&node.children[1]);
+    const lhs = expr_check.typeOf(&node.children[0], env);
+    const rhs = expr_check.typeOf(&node.children[1], env);
     if (expr_check.checkCompare(op, lhs, rhs)) return;
 
     var lhs_buf: [96]u8 = undefined;
@@ -629,6 +658,7 @@ fn validateFunctionCall(
     list: *DiagnosticList,
     expr_base_byte: ?usize,
     parent: ?*const ExprNode,
+    env: *const expr_check.TypeEnv,
 ) void {
     const name = node.value;
     const arg_count = node.children.len;
@@ -689,7 +719,7 @@ fn validateFunctionCall(
     }
 
     for (node.children) |*child| {
-        validateNode(allocator, child, span, list, expr_base_byte, node);
+        validateNode(allocator, child, span, list, expr_base_byte, node, env);
     }
 }
 
@@ -979,6 +1009,18 @@ pub fn findAndValidateExpressions(
     list: *DiagnosticList,
     text_base_byte: ?usize,
 ) void {
+    findAndValidateExpressionsEnv(allocator, text, anchor, list, text_base_byte, &expr_check.TypeEnv.empty);
+}
+
+/// As `findAndValidateExpressions`, with the overlays of `env` in scope (#129).
+pub fn findAndValidateExpressionsEnv(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    anchor: Anchor,
+    list: *DiagnosticList,
+    text_base_byte: ?usize,
+    env: *const expr_check.TypeEnv,
+) void {
     var pos: usize = 0;
     while (pos + 2 < text.len) {
         if (text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{') {
@@ -989,7 +1031,7 @@ pub fn findAndValidateExpressions(
                 const leading_trim = std.mem.indexOfNone(u8, expr_content, " \t\n\r") orelse 0;
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
                 const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
-                validateExpression(allocator, trimmed, expr_span, list, expr_base_byte);
+                validateExpressionEnv(allocator, trimmed, expr_span, list, expr_base_byte, env);
                 pos = expr_start + end_offset + 2;
             } else {
                 list.append(.{
@@ -1209,6 +1251,7 @@ fn checkIfCondition(
     meta: ?workflow_types.ScalarValueMeta,
     fallback: Span,
     list: *DiagnosticList,
+    env: *const expr_check.TypeEnv,
 ) void {
     const if_val = if_condition orelse return;
     const anchor = Anchor.fromMeta(meta, fallback);
@@ -1218,10 +1261,10 @@ fn checkIfCondition(
     switch (classifyIfConditionShape(if_val)) {
         .mixed_expression_string => {
             checkMixedIfCondition(if_val, span, list, base);
-            findAndValidateExpressions(allocator, if_val, anchor, list, base);
+            findAndValidateExpressionsEnv(allocator, if_val, anchor, list, base, env);
         },
         .single_wrapped_expression => {
-            findAndValidateExpressions(allocator, if_val, anchor, list, base);
+            findAndValidateExpressionsEnv(allocator, if_val, anchor, list, base, env);
             const inner = singleWrappedExpressionInner(if_val) orelse return;
             checkIfConstantBoolean(inner, span, list);
         },
@@ -1230,7 +1273,7 @@ fn checkIfCondition(
             if (trimmed.len == 0) return;
             const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(if_val.ptr);
             const abs: ?usize = if (base) |b| b + leading else null;
-            validateExpression(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs);
+            validateExpressionEnv(allocator, trimmed, anchor.at(if_val, leading, trimmed.len), list, abs, env);
             checkIfConstantBoolean(trimmed, span, list);
         },
     }
@@ -1245,6 +1288,7 @@ fn checkScalarMap(
     fallback: Span,
     list: *DiagnosticList,
     tracking: ByteTracking,
+    env: *const expr_check.TypeEnv,
 ) void {
     const values = map orelse return;
     for (values.keys(), values.values()) |key, value| {
@@ -1253,11 +1297,17 @@ fn checkScalarMap(
             .track_bytes => if (entry_meta) |m| scalarValueStartByte(m) else null,
             .no_bytes => null,
         };
-        findAndValidateExpressions(allocator, value, Anchor.fromMeta(entry_meta, fallback), list, base);
+        findAndValidateExpressionsEnv(allocator, value, Anchor.fromMeta(entry_meta, fallback), list, base, env);
     }
 }
 
+/// The overlay-free path, kept for unit tests and for callers that have only
+/// a step: `checkWorkflow` is what the engine runs.
 pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
+    checkStepEnv(step, list, &expr_check.TypeEnv.empty);
+}
+
+fn checkStepEnv(step: *const Step, list: *DiagnosticList, env: *const expr_check.TypeEnv) void {
     const allocator = getArenaAllocator();
 
     // `run:` scalar style is not tracked and it is usually a block scalar,
@@ -1265,24 +1315,61 @@ pub fn checkStep(step: *const Step, list: *DiagnosticList) void {
     // from it.
     if (step.run) |run_val| {
         const run_anchor = spans.runAnchor(step);
-        findAndValidateExpressions(allocator, run_val, run_anchor, list, null);
+        findAndValidateExpressionsEnv(allocator, run_val, run_anchor, list, null, env);
     }
 
-    checkIfCondition(allocator, step.if_condition, step.if_condition_meta, step.span, list);
+    checkIfCondition(allocator, step.if_condition, step.if_condition_meta, step.span, list, env);
 
     // Per-entry scalar spans for `with:` are not captured, so the byte base
     // is unknown.
-    checkScalarMap(allocator, step.with, step.with_meta, step.span, list, .no_bytes);
+    checkScalarMap(allocator, step.with, step.with_meta, step.span, list, .no_bytes, env);
 
-    checkScalarMap(allocator, step.env, step.env_meta, step.span, list, .track_bytes);
+    checkScalarMap(allocator, step.env, step.env_meta, step.span, list, .track_bytes, env);
 }
 
+/// The overlay-free path; see `checkStep`.
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
+    checkJobEnv(job, list, &expr_check.TypeEnv.empty);
+}
+
+fn checkJobEnv(job: *const Job, list: *DiagnosticList, env: *const expr_check.TypeEnv) void {
     const allocator = getArenaAllocator();
 
-    checkIfCondition(allocator, job.if_condition, job.if_condition_meta, job.span, list);
+    checkIfCondition(allocator, job.if_condition, job.if_condition_meta, job.span, list, env);
 
-    checkScalarMap(allocator, job.env, job.env_meta, job.span, list, .track_bytes);
+    checkScalarMap(allocator, job.env, job.env_meta, job.span, list, .track_bytes, env);
+}
+
+/// Overlay-aware validation is consolidated here rather than split across
+/// `check_job` and `check_step`, because a step overlay needs the job it
+/// belongs to and the engine hands `check_step` only the step (#129). The
+/// traversal order matches what the engine would do — each job, then that
+/// job's steps — so diagnostic order is unchanged.
+pub fn checkWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
+    // The engine hands rules no arena (#159), so this one owns the overlay
+    // memory and frees it as soon as the workflow is checked. Diagnostic
+    // messages come from `getArenaAllocator()` instead and outlive it.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = expr_check.TypeEnv{
+        .inputs = expr_overlay.buildInputs(alloc, wf),
+        .secrets = expr_overlay.buildSecrets(alloc, wf),
+    };
+
+    for (wf.jobs) |*job| {
+        env.matrix = expr_overlay.buildMatrix(alloc, job);
+        env.needs = expr_overlay.buildNeeds(alloc, wf, job);
+        // `steps` is not in scope for a job's own `if:` and `env:`.
+        env.steps = null;
+        checkJobEnv(job, list, &env);
+
+        for (job.steps, 0..) |*step, index| {
+            env.steps = expr_overlay.buildSteps(alloc, job.steps, index);
+            checkStepEnv(step, list, &env);
+        }
+    }
 }
 
 pub const expression_rule = @import("engine.zig").Rule{
@@ -1291,8 +1378,7 @@ pub const expression_rule = @import("engine.zig").Rule{
     .description = "Validates GitHub Actions ${{ }} expressions",
     .severity = .@"error",
     .category = .expression,
-    .check_step = &checkStep,
-    .check_job = &checkJob,
+    .check_workflow = &checkWorkflow,
 };
 
 fn expectNoDiagnostics(expr: []const u8) !void {
@@ -3136,7 +3222,7 @@ test "typeOf: function return types" {
         defer arena.deinit();
         var parser = ExprParser.init(arena.allocator(), c.expr);
         const node = try parser.parse();
-        try std.testing.expectEqual(c.kind, expr_check.typeOf(&node).kind);
+        try std.testing.expectEqual(c.kind, expr_check.typeOf(&node, &expr_check.TypeEnv.empty).kind);
     }
 }
 
@@ -3145,5 +3231,5 @@ test "typeOf: logical operators merge operand types" {
     defer arena.deinit();
     var parser = ExprParser.init(arena.allocator(), "github.sha || github.ref");
     const node = try parser.parse();
-    try std.testing.expectEqual(expr_type.TypeKind.string, expr_check.typeOf(&node).kind);
+    try std.testing.expectEqual(expr_type.TypeKind.string, expr_check.typeOf(&node, &expr_check.TypeEnv.empty).kind);
 }

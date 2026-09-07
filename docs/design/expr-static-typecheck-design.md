@@ -12,7 +12,7 @@ GitHub Actions の `${{ }}` 式に対し、actionlint と同型の静的型体�
 - 組込み context カタログと関数シグネチャ（戻り値型を含む）
 - `typeOf` による式 AST の型推論
 - EXPR003 / EXPR017 が後から接続する検査規則
-- EXPR010〜EXPR014 が後から載せる `TypeEnv` overlay の口
+- EXPR010〜EXPR014 と同じ材料から組む `TypeEnv` overlay（T4, #129）
 - 誤検出時の `any` 倒しと既存 `.zghalint.yml` による抑制
 
 ## 非スコープ
@@ -39,7 +39,7 @@ GitHub Actions の `${{ }}` 式に対し、actionlint と同型の静的型体�
 | 設定の抑制 | `src/config.zig` `RuleOverride` | `enabled` / `severity`。型検査専用キーは無い |
 | ワークフロー上の式出現 | `Job.if_condition` / `Step.if_condition` / `run` / `env` / `with` | キーパス情報は持たない（EXPR015 の前提不足） |
 | `EventType` / `Trigger` | `src/workflow/types.zig` | イベント名は分かるが payload 型は無い |
-| `InputDef` / `SecretDef` | 同 | overlay 構築の材料。照合は未実装 |
+| `InputDef` / `SecretDef` | 同 | `inputs` / `secrets` overlay の構築材料 |
 
 現行 `context_access` の限界:
 
@@ -99,7 +99,7 @@ pub const TypeKind = enum {
 pub const ObjectShape = enum {
     /// Unknown key → type error (EXPR003). github / runner / job.
     strict,
-    /// Unknown key → any. github.event, and contexts waiting for overlay.
+    /// Unknown key → any. github.event, and workflow-defined contexts with no overlay.
     loose,
     /// Every key has `elem` type. env / vars / secrets.
     map,
@@ -180,7 +180,7 @@ pub const TypeArena = struct {
 };
 ```
 
-ライフタイム: 1 ワークフローの lint 中だけ生きる。T0〜T3 は arena を使わず intern 定数だけで完結できる（object merge が必要なら `any` に倒す）。T4 で overlay を組むときに `Engine.run` または `check_job` のスコープで作り、ルール終了で破棄する。組込み `Type` は arena に載せない。intern 定数は不変なのでスレッド間で共有してよい。`TypeArena` は共有しない。
+ライフタイム: 1 ワークフローの lint 中だけ生きる。T0〜T3 は arena を使わず intern 定数だけで完結できる（object merge が必要なら `any` に倒す）。T4 の overlay は `expressions.checkWorkflow` のスコープで `ArenaAllocator` を作り、そこで破棄する。組込み `Type` は arena に載せない。intern 定数は不変なのでスレッド間で共有してよい。arena は共有しない。
 
 #### assignable / merge / display
 
@@ -217,8 +217,8 @@ pub fn display(ty: TypeRef, buf: []u8) []const u8 { ... }
 | `strategy` | loose | `fail-fast: bool`, `job-index/job-total/max-parallel: number` | 既知以外は `any` |
 | `env` | map | — | 値は string。キーは自由 |
 | `vars` | map | — | 同上 |
-| `secrets` | map | — | EXPR014 overlay まで map のまま。`GITHUB_TOKEN` も string |
-| `steps` | loose | — | overlay まで EXPR003 なし |
+| `secrets` | map | — | `workflow_call.secrets` overlay がなければ map のまま。`GITHUB_TOKEN` も string |
+| `steps` | loose | — | overlay がなければ EXPR003 なし |
 | `matrix` | loose | — | 同上 |
 | `needs` | loose | — | 同上 |
 | `inputs` | loose | — | 同上 |
@@ -271,24 +271,30 @@ V1 の引数型不一致は診断しない（ADR D4）。overload 解決: 引数
 
 ### 4. `TypeEnv` と overlay
 
+実装（T4, #129）は `std.StringHashMapUnmanaged` ではなく固定フィールドの構造体に
+した。overlay 対象は下表の 5 つで増えず、5 回の `std.mem.eql` は
+ハッシュ 1 回より速く、アロケーションも `deinit` も要らない。
+
 ```zig
 pub const TypeEnv = struct {
-    /// context 名 → 型。未登録なら catalog.lookupContext。
-    overlays: std.StringHashMapUnmanaged(TypeRef) = .{},
-    /// github.event.inputs だけ差し替えるとき使う。null なら github.event はカタログどおり loose。
-    github_event_inputs: ?TypeRef = null,
+    steps: ?TypeRef = null,
+    matrix: ?TypeRef = null,
+    needs: ?TypeRef = null,
+    inputs: ?TypeRef = null,
+    secrets: ?TypeRef = null,
 
-    pub fn lookup(self: *const TypeEnv, name: []const u8) ?TypeRef {
-        if (self.overlays.get(name)) |ty| return ty;
-        return catalog.lookupContext(name);
-    }
+    /// overlay なしの環境。`check_step` と単体テストが使う。
+    pub const empty: TypeEnv = .{};
+
+    pub fn lookup(self: *const TypeEnv, name: []const u8) ?TypeRef { ... }
 };
 ```
 
-T0〜T3 では overlay が空なので `TypeEnv` 自体を置かず、`walkPath` が
-`catalog.lookupContext` を直接引く（実装済みの形）。`TypeEnv` は overlay を
-入れる T4 で導入し、`walkPath` / `typeOf` に引数として渡す。T4 で
-EXPR010〜EXPR014 が次を入れる。
+`lookup` が null を返したときだけ `walkPath` が `catalog.lookupContext` に落ちる。
+root 名の照合は `lookupContext` と同じく完全一致（GitHub の context 名は小文字固定）。
+`github.event.inputs` の差し替え（SYN017）は未着手なので、そのフィールドは持たない。
+
+overlay の内訳:
 
 | overlay | 構築材料 | shape |
 |---|---|---|
@@ -298,17 +304,39 @@ EXPR010〜EXPR014 が次を入れる。
 | `inputs` | `workflow_dispatch` ∪ `workflow_call` の input 名 | strict。`type: boolean/number/string` を反映。`github.event.inputs` はすべて string |
 | `secrets` | `workflow_call.secrets` があるときだけ strict。通常 WF では map のまま | EXPR014 と同じ限定 |
 
-overlay 未接続の間に strict へ上げると、正当な `steps.setup.outputs.v` が EXPR003 になる。**接続完了まで loose を維持する**のが誤検出ゼロの担保。
+構築は `src/rules/expr_overlay.zig`。overlay を作れないとき（宣言がない、
+`matrix: ${{ fromJSON(...) }}` のような動的形、アロケーション失敗）は null を返し、
+その context はカタログの loose エントリのままになる。overlay の `Type` /
+`Prop` は `checkWorkflow` スコープの `ArenaAllocator` から取り、そこで破棄する。
 
-EXPR010〜EXPR014 の先行実装は文字列集合で存在検証し、独自の診断を出す。T4 で overlay を載せるとき、存在検証の診断 ID は各ルール（EXPR010 等）に残し、エンジンは型（`steps.foo.conclusion` が string である等）だけを見る。同一 span に EXPR003 と EXPR010 を重ねない: overlay 済み context の未知キーは EXPR010〜EXPR014 側の ID を使い、EXPR003 は組込み strict context 専用とする。
+overlay が載る前に strict へ上げると、正当な `steps.setup.outputs.v` が EXPR003 になる。
+**overlay を作れないときは loose を維持する**のが誤検出ゼロの担保。
 
-#### ルールエンジンとの接続口（T4 の前提）
+EXPR010〜EXPR014 の先行実装は文字列集合で存在検証し、独自の診断を出す。overlay を
+載せても存在検証の診断 ID は各ルール（EXPR010 等）に残し、エンジンは型
+（`steps.foo.conclusion` が string である等）だけを見る。同一 span に EXPR003 と
+EXPR010 を重ねない: overlay 由来の root を辿って出た `Problem` は
+`walkPath` が握りつぶして `any` を返し、EXPR003 は組込み strict context 専用とする。
 
-現行 `Rule.check_step` は `*const Step` しか受け取らず、同一 job の先行 step 一覧を見られない（`src/rules/engine.zig` の `Rule`）。T0〜T3 の `TypeEnv` は空なのでこのままでよい。
+overlay の props は job/workflow から作るのでソートも case 正規化もされていない。
+GitHub は context キーを case-insensitive に解決するため、overlay 由来の
+プロパティ照合だけ `findPropIgnoreCase`（線形）を使い、組込みカタログは
+ソート済み二分探索の `findProp` のままにしてある。
 
-T4 で `steps` overlay を載せるときは **エンジンのシグネチャを広げない**。`check_job(*const Job)` の中で step を順に走査し、その時点までの id 集合から overlay を積み、各 step の式を `typeOf` する。`check_step` 側の式検証と二重に走らないよう、overlay 付き検証は `check_job` に集約し、`check_step` は overlay 不要な現行パス（T3 まで）か、job を持たない単体テスト用に残す。
+#### ルールエンジンとの接続口
 
-`inputs` / `secrets` overlay は `check_workflow(*const Workflow)` で構築し、job/step にスレッドローカル相当で渡す必要がある。V1 ではグローバル可変を増やさない。T4 の実装 PR で `threadlocal` や `Engine.run` への context 引数を検討する。本設計は「T0〜T3 は引数 `TypeEnv{}` を明示渡し」「T4 でジョブ単位に組み立てる」だけを固定する。
+現行 `Rule.check_step` は `*const Step` しか受け取らず、同一 job の先行 step 一覧を見られない（`src/rules/engine.zig` の `Rule`）。
+
+**エンジンのシグネチャは広げなかった**。overlay 付きの式検証は
+`expressions.checkWorkflow(*const Workflow)` に集約し、その中で
+`wf.jobs` → `job.steps` をエンジンと同じ順に自前で走査する
+（診断の並び順が変わらない）。`expression_rule` は `check_workflow` だけを持つ。
+`checkJob` / `checkStep` は overlay なしの入口として public のまま残し、単体テストが使う。
+
+`threadlocal` は採らなかった。`inputs` / `secrets` は workflow 単位、
+`matrix` / `needs` は job 単位、`steps` は step index 単位で
+`checkWorkflow` のローカル `TypeEnv` を差し替えるだけで足り、
+グローバル可変状態を増やさずに済む。
 
 ### 5. `typeOf` データフロー
 
@@ -588,11 +616,11 @@ ADR 「Follow-up」と同じ。実装順の目安だけここへ落とす。
 6. 型 narrowing
 7. 関数名 case-insensitive
 
-## 実装状況（T0〜T3）
+## 実装状況（T0〜T4）
 
-T0〜T3 を `src/rules/expr_type.zig` / `expr_catalog.zig` / `expr_check.zig` として実装済み。
-T4（steps / matrix / needs / inputs / secrets の overlay）は `expr_check.TypeEnv` を
-接続口として空のまま残してある。overlay 用の `TypeArena`、object の property 合成、
+T0〜T3 を `src/rules/expr_type.zig` / `expr_catalog.zig` / `expr_check.zig`、
+T4（steps / matrix / needs / inputs / secrets の overlay）を
+`src/rules/expr_overlay.zig` + `expressions.checkWorkflow` として実装済み。
 関数の引数型テーブル（EXPR018 用）は利用者が現れるまで持たない。
 
 ### バイナリサイズ実測（ADR D7）
@@ -606,6 +634,17 @@ T4（steps / matrix / needs / inputs / secrets の overlay）は `expr_check.Typ
 | 増分 | +20,824（約 20.3 KiB） |
 
 32 KiB の予算内。
+
+T4（#129）投入時。上表とは測定時点のベースラインが異なるため、直前の HEAD で
+測り直した値と比較する:
+
+| | text (bytes) |
+|---|---|
+| T4 直前 | 953,405 |
+| T4 投入後 | 957,607 |
+| 増分 | +4,202（約 4.1 KiB） |
+
+累計 +25 KiB 程度で、32 KiB の予算内。
 
 ## 参考
 

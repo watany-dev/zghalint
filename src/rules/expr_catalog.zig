@@ -130,9 +130,11 @@ pub const strategy: Type = .{
     },
 };
 
-/// `steps` / `matrix` / `needs` / `inputs` / `jobs` stay loose until the
-/// contextual overlay is wired in (#129); strictness before then would be a
-/// false positive.
+/// The fallback for a context whose keys the workflow file decides. `steps` /
+/// `matrix` / `needs` / `inputs` get a strict overlay from `expr_overlay` when
+/// the workflow declares one, and land here when it does not; `jobs` (reusable
+/// workflow outputs) has no overlay at all. Strictness here would be a false
+/// positive.
 pub const loose_context: Type = .{ .kind = .object, .shape = .loose };
 
 const ContextEntry = struct { name: []const u8, ty: TypeRef };
@@ -255,7 +257,7 @@ test "catalog: arity of overloaded join" {
     try std.testing.expectEqual(@as(u8, 2), sig.max_args);
 }
 
-test "catalog: contexts awaiting overlay stay loose" {
+test "catalog: workflow-defined contexts stay loose without an overlay" {
     for ([_][]const u8{ "steps", "matrix", "needs", "inputs", "jobs" }) |name| {
         const ty = lookupContext(name).?;
         try std.testing.expectEqual(t.ObjectShape.loose, ty.shape);
