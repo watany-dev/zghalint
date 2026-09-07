@@ -53,6 +53,8 @@ non-comment line. A fixture with neither directive fails the test.
 | `syn016-schedule-timezone.yml` | #72: `schedule` `timezone` names outside the IANA database |
 | `syn017-workflow-dispatch-inputs.yml` | #73: `workflow_dispatch` input type, `options`, and `default` mismatches |
 | `syn018-duplicate-matrix-value.yml` | #74: repeated values and `include` entries in `strategy.matrix` |
+| `perm001-scope-placement.yml` | #285 FP guard: a metadata scope at `write` on the job that needs it |
+| `perm001-workflow-level-grant.yml` | #285: the same scopes at workflow level, plus `contents: write` |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |

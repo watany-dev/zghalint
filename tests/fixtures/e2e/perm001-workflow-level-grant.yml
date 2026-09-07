@@ -1,0 +1,26 @@
+# zghalint:expect PERM001@10 PERM001@11 PERM001@23
+# #285: the same metadata scopes are a finding at workflow level, where they
+# reach every job in the file, and an escalating scope is reported wherever it
+# appears.
+name: workflow-level permission grant
+on: [push]
+concurrency: perm001-workflow
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Release
+        run: make release

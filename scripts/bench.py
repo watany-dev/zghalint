@@ -443,8 +443,10 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "zizmor": None,
         "actionlint": ["syntax-check~empty"],
     },
-    #: PERM001 is broader than zizmor's `excessive-permissions`: it warns on
-    #: any write scope, including the one the job demonstrably needs.
+    #: PERM001 is broader than zizmor's `excessive-permissions`: it reports a
+    #: write grant on any privilege-escalating scope (contents, actions,
+    #: packages, deployments) wherever it is declared, plus any write scope
+    #: declared at workflow level.
     "broad-write-permission": {
         "zghalint": ["PERM001"],
         "zizmor": ["excessive-permissions"],
