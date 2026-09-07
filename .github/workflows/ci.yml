@@ -119,6 +119,127 @@ jobs:
       - name: Run unit tests
         run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
+  action-smoke:
+    name: Action Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        # macos-15 の固定理由は build ジョブのコメントを参照。
+        include:
+          - os: ubuntu-latest
+            exe: ''
+          - os: macos-15
+            exe: ''
+          - os: windows-latest
+            exe: '.exe'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - name: Build
+        run: zig build
+      # action は `binary` 入力で自前ビルドを指す。リリース資産のダウンロード
+      # 経路は PR 時点では検証できないので、ここで見るのは引数の組み立て・
+      # グロブ展開・入力の対応付けだけ。
+      - name: Stage the smoke workspace
+        shell: bash
+        run: |
+          mkdir -p smoke/workflows
+          cp tests/fixtures/e2e/clean.yml smoke/workflows/clean.yml
+          cat > smoke/workflows/fixable.yml <<'EOF'
+          name: fixable
+          on:
+            push:
+              branches: [main]
+          permissions:
+            contents: read
+          jobs:
+            build:
+              runs-on: ubuntu-latest
+              steps:
+                - name: Checkout
+                  uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+                  with:
+                    persist-credentials: false
+          EOF
+          cat > smoke/no-bp001.yml <<'EOF'
+          rules:
+            BP001:
+              enabled: false
+          EOF
+      # 終了コード 0 は「引数が受理され、error 深刻度の指摘が無い」こと。
+      # 未知のフラグや値は CLI が終了コード 2 で拒否するので、各 format /
+      # offline の対応付けはこの 3 ステップで確認できる。
+      - name: Run action (terminal, glob over two files)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/*.yml'
+          offline: 'true'
+      - name: Run action (json)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/*.yml'
+          format: json
+          offline: 'true'
+      - name: Run action (sarif)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/*.yml'
+          format: sarif
+          offline: 'true'
+      # config が渡っていれば BP001 は無効なので timeout-minutes は入らない。
+      - name: Run action (fix with a config that disables BP001)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/fixable.yml'
+          config: smoke/no-bp001.yml
+          offline: 'true'
+          fix: safe
+      - name: Assert the disabled rule was not fixed
+        shell: bash
+        run: |
+          if grep -q 'timeout-minutes' smoke/workflows/fixable.yml; then
+            echo "::error::--config was not honored: BP001 was fixed while disabled"
+            exit 1
+          fi
+      - name: Run action (fix safe)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/fixable.yml'
+          offline: 'true'
+          fix: safe
+      - name: Assert the safe fix was applied
+        shell: bash
+        run: |
+          if ! grep -q 'timeout-minutes' smoke/workflows/fixable.yml; then
+            echo "::error::--fix did not rewrite the workflow"
+            cat smoke/workflows/fixable.yml
+            exit 1
+          fi
+      # nullglob が効いていれば、マッチしないパターンは引数から消えて CLI 既定の
+      # .github/workflows 探索に落ちる（このリポジトリ自身なので終了コード 0）。
+      # 効いていなければパターンが literal で渡り、存在しないファイルとして
+      # 終了コード 2 になる。
+      - name: Run action (glob matching nothing)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/*.yaml'
+          offline: 'true'
+
   self-lint:
     name: Self Lint
     runs-on: ubuntu-latest
