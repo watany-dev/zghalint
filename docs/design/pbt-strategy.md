@@ -91,7 +91,7 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 | 3 | **PERM / BP / PERF ルールの detection PBT 追加** | **P1** | 11 ルール中 8 種が未カバー。`test_security_detection.py` パターンで横展開可 | 小 | カバー率 27% → 90%+ |
 | 4 | **YAML パーサ ラウンドトリップ不変条件** (`parse(s) == parse(serialize(parse(s)))`) | **P1** | 1,134 行の自前 YAML パーサ。テスト 36 個のみで網羅性低い | 中 | パーサバグ早期発見 |
 | 5 | **生成戦略の拡充**（matrix / reusable workflow / `if` 条件式 / multiline run / 巨大 jobs） | **P1** | 現ジェネレータは固定パターン中心。実運用ワークフローを反映できていない | 中 | 既存テスト全体の実効カバー底上げ |
-| 6 | **Zig in-process PBT**（`std.Random` + 既存 `test "..."` 内で seed 駆動） | **P2** | subprocess は遅く 50 例上限。in-process なら 1000+ 例で深掘り可能 | 大 | 高速化・shrinking で root cause 特定容易 |
+| 6 | ~~**Zig in-process PBT**~~ | **完了** | `std.Random` 自前実装ではなく `std.testing.fuzz` を採用し、YAML tokenizer / YAML parser / 式パーサの 3 ターゲットを実装 (2026-09-07、§6-4) | 大 | カバレッジ誘導で深掘り・CI で時間制限付き探索 |
 | 7 | **新しい不変条件の追加** (a) ファイル順序非依存 (b) `--quick` と通常モードの整合性 (c) severity override の単調性 (d) JSON ↔ SARIF の diagnostic 数一致 | **P2** | PBT は不変条件の数が価値を決める。低コストで追加可 | 小 | 検出領域の多角化 |
 | 8 | **advisory / archived / dependabot / refconfusion / stale_refs の検出 PBT** | **P2** | 外部依存があり生成困難な可能性。要調査 | 中 | 残ルールの網羅 |
 | 9 | ~~**Hypothesis DB 永続化と CI 統合**~~ | **完了** | `actions/cache` で `.hypothesis/` を run 間に引き継ぎ、依存を `==` で固定、`-x` を `--maxfail=3` に変更 (2026-09-07, #235) | 小 | 回帰防止・shrink 結果の蓄積 |
@@ -104,7 +104,7 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 3. **#5** (P1, 投資中): ジェネレータ拡充で既存テスト全体の質を底上げ
 4. **#4** (P1, 投資中): YAML ラウンドトリップで自前パーサの信頼性確保
 5. **#7** (P2, 投資小): 不変条件追加
-6. **#6** (P2, 投資大): in-process PBT 基盤の整備（中長期）
+6. ~~**#6** (P2, 投資大): in-process PBT 基盤の整備~~ — 完了 (2026-09-07)
 7. **#8, #9, #10**: 余裕に応じて
 
 ---
@@ -116,9 +116,9 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 | 種類 | 速度 | 上限例数 | 用途 |
 |---|---|---|---|
 | **subprocess (Python/Hypothesis)** | 遅い | 50 例/テスト | E2E・出力フォーマット・CLI 統合 |
-| **in-process (Zig std.Random)** ※未実装 | 速い | 1000+ 例/テスト | YAML パーサ・式パーサ・内部関数の fuzz |
+| **in-process (`std.testing.fuzz`)** | 速い | カバレッジ誘導で無制限 | YAML パーサ・式パーサの fuzz (§6-4) |
 
-P2 タスク #6 で in-process 基盤を整備した後は、レイヤ別に使い分ける:
+in-process 基盤 (タスク #6) が入った現在は、レイヤ別に使い分ける:
 
 - **YAML/expression パーサ** → in-process で深掘り
 - **ルール検出 / `--fix` / 出力フォーマット** → subprocess で E2E 検証
@@ -159,6 +159,44 @@ workflow_pair_monotonic()           ← 制約付きペア（単調性検証）
 **「そのルールを必ず誘発するジェネレータ」** を `strategies.py` に追加する。
 
 ---
+
+### 6-4. Zig fuzz テスト (`std.testing.fuzz`)
+
+in-process 側は `std.Random` を自前で回すのではなく、Zig 標準のカバレッジ誘導
+ファザを使う。実装は `src/fuzz_test.zig`、実行は `zig build fuzz`。
+
+| ターゲット | 対象 | 検証する性質 |
+|---|---|---|
+| `fuzz: yaml tokenizer never leaves the source buffer` | `src/yaml/tokenizer.zig` | 全トークンの `start`/`end` が入力範囲内、行・列が 1 以上、必ず `eof` に到達する (停止性) |
+| `fuzz: yaml parser survives arbitrary input` | `src/yaml/parser.zig` | 失敗は宣言済み `ParseError` のみ。panic / `unreachable` / 領域外アクセスがない |
+| `fuzz: expression parser survives arbitrary input` | `src/rules/expressions.zig` | `validateExpression` が出す診断がすべて well-formed (JSON/SARIF に流れるため) |
+
+**コーパスと回帰の方針**
+
+- シードコーパスは `src/fuzz_test.zig` にインラインで置く。ワークフローの構造と、
+  tokenizer の flow/block 状態機械を叩く indicator を最小構成で並べたもの。
+- `--fuzz` なしの実行 (`zig build fuzz`、および `zig build test`) はシードを
+  1 件ずつ流すだけなので、シードはそのまま回帰テストとして機能する。
+- ファジングで見つかったクラッシュは、**バグを持つモジュール側に名前付きの
+  単体テスト**として最小化済み入力を追加して直す。ここへシードとして追加するのは
+  探索領域を広げる入力に限る。
+- バイナリコーパスをリポジトリに置かない。`.zig-cache/v/` は破棄可能であり、
+  修正済みバグの再現がキャッシュに依存する状態を作らない。
+
+**運用上の注意**
+
+- fuzz 用のテスト成果物は `use_llvm = true` でビルドする。self-hosted x86_64
+  バックエンドは `-fsanitize-coverage` の PC を出さないため、`--fuzz` が
+  `std.Build.Fuzz.addEntryPoint` で空の PC リストに当たって panic する。
+- **Zig 0.15.2 では `--fuzz` の探索実行が使えない。** ファザ本体が起動直後に
+  落ち、ビルドは `run test failure` で終わる。ターゲットを 1 つしか持たない
+  最小プロジェクトでも、`.zig-cache` を削除した初回実行でも再現するため、
+  zghalint 側の問題ではない。したがって CI に入れているのはシードコーパスの
+  決定的実行 (`zig build fuzz`) だけで、探索実行は入れていない。
+- Zig 側が直り次第、`--fuzz` を時間制限付きで CI に戻す。`--fuzz` は Web UI を
+  立てて常駐し自発的には終了しないので、`timeout --signal=INT 300` で打ち切り、
+  終了コード 124 を「所定時間内に反例なし」として扱う形になる。手元で試す場合は
+  `zig build fuzz --fuzz --webui=127.0.0.1` (既定のバインドが失敗する環境がある)。
 
 ## 7. 検証手順
 

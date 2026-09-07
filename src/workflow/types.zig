@@ -199,6 +199,14 @@ pub const InputDef = struct {
     default_span: ?yaml_types.Span = null,
 };
 
+/// One entry of `on.workflow_call.secrets`. The declaration is what makes a
+/// reusable workflow's secret set closed, which is what EXPR014 checks against.
+pub const SecretDef = struct {
+    name: []const u8,
+    name_span: yaml_types.Span,
+    required: ?bool = null,
+};
+
 pub const WorkflowCallInputProblemKind = enum {
     missing_type,
     invalid_type,
@@ -327,6 +335,7 @@ pub const EventConfig = struct {
     schedules: []const ScheduleEntry = &.{},
     workflow_call_inputs: []const InputDef = &.{},
     workflow_call_input_problems: []const WorkflowCallInputProblem = &.{},
+    workflow_call_secrets: []const SecretDef = &.{},
     workflow_dispatch_inputs: []const DispatchInputDef = &.{},
     workflow_dispatch_input_problems: []const WorkflowDispatchInputProblem = &.{},
 };
@@ -409,6 +418,11 @@ pub const Strategy = struct {
     fail_fast_value_span: ?yaml_types.Span = null,
     fail_fast_entry_span: ?yaml_types.Span = null,
     matrix: ?Matrix = null,
+    /// True when a `matrix:` key is present, even if its value carries no
+    /// inspectable axes (`matrix: ${{ fromJSON(...) }}` leaves `matrix` null).
+    /// EXPR011 needs the distinction: a job with no `matrix:` at all has no
+    /// `matrix` context, while a dynamic one has keys zghalint cannot know.
+    matrix_key_present: bool = false,
 };
 
 pub const Step = struct {
@@ -527,6 +541,9 @@ pub const Job = struct {
     /// Span of the `runs-on:` scalar value (for RUNNER001 autofix).
     /// Null when `runs-on` is absent or given as a sequence.
     runs_on_value_span: ?yaml_types.Span = null,
+    /// Scalar style of the `runs-on:` value, so a `${{ }}` inside it can be
+    /// located within the token (EXPR011).
+    runs_on_value_style: yaml_types.ScalarStyle = .plain,
     /// `runs-on` labels in source order, normalized from all three spellings:
     /// a scalar, a sequence, or the `labels:` list of a runner-group mapping.
     runs_on_labels: []const []const u8 = &.{},

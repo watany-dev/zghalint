@@ -14,9 +14,127 @@ const string = &t.type_string;
 const number = &t.type_number;
 const boolean = &t.type_bool;
 
-/// `github.event` is a loose object on purpose: no per-event payload schema
-/// is shipped (ADR D3). Unknown keys resolve to `any` and never warn.
-pub const github_event: Type = .{ .kind = .object, .shape = .loose };
+/// A curated scalar overlay for `github.event` (#124).
+///
+/// `github.event` stays a **loose** object (ADR D3): no per-event payload
+/// schema is shipped, and every key outside this table — at any depth —
+/// resolves to `any`. The overlay only widens what EXPR017 can see; nothing
+/// below `github.event` ever produces an EXPR003, which `expr_check.walkPath`
+/// enforces for the whole subtree rather than leaving it to this table.
+///
+/// A path is admitted only when all three hold, so the selection is
+/// reproducible instead of a matter of taste (ADR D3, rejected alternative):
+///
+/// 1. it appears in the documented webhook payload of every event that
+///    delivers its top-level key,
+/// 2. its JSON type is the same across all of those events, and
+/// 3. workflows in the wild compare it in `if:` conditions.
+///
+/// Anything whose type varies per event (`github.event.inputs`, the
+/// `client_payload` of `repository_dispatch`, `deployment.payload`) is left
+/// out and stays `any`.
+const event_ref: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "ref", .ty = string },
+        .{ .name = "sha", .ty = string },
+    },
+};
+
+const event_issue: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "body", .ty = string },
+        .{ .name = "number", .ty = number },
+        .{ .name = "state", .ty = string },
+        .{ .name = "title", .ty = string },
+    },
+};
+
+const event_pull_request: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "base", .ty = &event_ref },
+        .{ .name = "body", .ty = string },
+        .{ .name = "draft", .ty = boolean },
+        .{ .name = "head", .ty = &event_ref },
+        .{ .name = "number", .ty = number },
+        .{ .name = "state", .ty = string },
+        .{ .name = "title", .ty = string },
+    },
+};
+
+const event_comment: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "body", .ty = string },
+        .{ .name = "id", .ty = number },
+    },
+};
+
+const event_review: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "body", .ty = string },
+        .{ .name = "state", .ty = string },
+    },
+};
+
+const event_repository: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "default_branch", .ty = string },
+        .{ .name = "full_name", .ty = string },
+        .{ .name = "name", .ty = string },
+        .{ .name = "private", .ty = boolean },
+    },
+};
+
+const event_sender: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "login", .ty = string },
+        .{ .name = "type", .ty = string },
+    },
+};
+
+const event_workflow_run: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "conclusion", .ty = string },
+        .{ .name = "event", .ty = string },
+        .{ .name = "head_branch", .ty = string },
+        .{ .name = "head_sha", .ty = string },
+        .{ .name = "id", .ty = number },
+    },
+};
+
+pub const github_event: Type = .{
+    .kind = .object,
+    .shape = .loose,
+    .props = &.{
+        .{ .name = "action", .ty = string },
+        .{ .name = "after", .ty = string },
+        .{ .name = "before", .ty = string },
+        .{ .name = "comment", .ty = &event_comment },
+        .{ .name = "issue", .ty = &event_issue },
+        .{ .name = "number", .ty = number },
+        .{ .name = "pull_request", .ty = &event_pull_request },
+        .{ .name = "ref", .ty = string },
+        .{ .name = "repository", .ty = &event_repository },
+        .{ .name = "review", .ty = &event_review },
+        .{ .name = "sender", .ty = &event_sender },
+        .{ .name = "workflow_run", .ty = &event_workflow_run },
+    },
+};
 
 /// Properties sorted by byte order; lookup is a binary search.
 pub const github: Type = .{
@@ -237,9 +355,16 @@ test "catalog: github property types" {
     try std.testing.expectEqual(@as(?TypeRef, null), t.findProp(&github, "reposiory"));
 }
 
-test "catalog: github.event is loose" {
+test "catalog: github.event and every curated node stay loose" {
     try std.testing.expectEqual(t.ObjectShape.loose, github_event.shape);
-    try std.testing.expectEqual(@as(usize, 0), github_event.props.len);
+    try expectLooseRecursive(&github_event);
+}
+
+fn expectLooseRecursive(ty: TypeRef) !void {
+    try std.testing.expectEqual(t.ObjectShape.loose, ty.shape);
+    for (ty.props) |p| {
+        if (p.ty.kind == .object) try expectLooseRecursive(p.ty);
+    }
 }
 
 test "catalog: lookupFunction is case-insensitive" {

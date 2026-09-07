@@ -1,0 +1,14 @@
+# zghalint:expect ACT004@10 ACT004@14
+name: Invalid definitions
+description: Wrong shapes and value types throughout
+runs:
+  using: node20
+  main: dist/index.js
+inputs:
+  version:
+    description: Toolchain version
+    required: "yes"
+outputs:
+  result:
+    description: The computed result
+    value: ${{ steps.build.outputs.result }}

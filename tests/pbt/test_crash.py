@@ -1,18 +1,19 @@
 """Crash resistance: zghalint must never signal-terminate on any input."""
+
 from __future__ import annotations
 
 import os
 import tempfile
 
-from hypothesis import given, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings
 
 from tests.pbt.conftest import run_zghalint
 from tests.pbt.strategies import (
+    deeply_nested_expression,
+    expression_text,
     random_bytes,
     random_text,
     yaml_like_text,
-    expression_text,
-    deeply_nested_expression,
 )
 
 # Subprocess-based tests: disable deadline, moderate example count.
@@ -29,9 +30,7 @@ VALID_EXIT_CODES = {0, 1, 2}
 
 def _assert_no_crash(result, context: str = "") -> None:
     assert result.returncode in VALID_EXIT_CODES, (
-        f"Crash detected ({context}): "
-        f"returncode={result.returncode}, "
-        f"stderr={result.stderr[:500]}"
+        f"Crash detected ({context}): returncode={result.returncode}, stderr={result.stderr[:500]}"
     )
 
 

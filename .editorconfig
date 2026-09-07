@@ -1,0 +1,37 @@
+# Editor defaults for the file types `zig fmt` does not cover.
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.zig]
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.md]
+indent_size = 2
+# Two trailing spaces are a hard line break in Markdown.
+trim_trailing_whitespace = false
+
+[*.py]
+indent_size = 4
+
+[*.sh]
+indent_size = 2
+
+[*.zon]
+indent_size = 4
+
+# Workflow fixtures are inputs to the linter: their whitespace is part of the
+# test case, so editors must not normalize it.
+[tests/fixtures/**]
+trim_trailing_whitespace = false
+insert_final_newline = false

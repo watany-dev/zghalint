@@ -7,6 +7,10 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        // The rule reference is @embedFile'd by src/docs_sync_test.zig, so it
+        // has to travel with the package for `zig build test` to work from a
+        // fetched copy.
+        "docs/rules.md",
         "LICENSE",
     },
     .dependencies = .{},

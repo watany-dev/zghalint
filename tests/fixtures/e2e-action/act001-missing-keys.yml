@@ -1,0 +1,11 @@
+# zghalint:expect ACT001@4 ACT001@5
+# zghalint:forbid ACT002
+# `name` is absent from the document, and the node runtime needs `main`.
+description: Set up the toolchain
+runs:
+  using: node20
+inputs:
+  version:
+    description: Toolchain version to install
+    required: false
+    default: "1.0.0"

@@ -91,12 +91,21 @@ pub fn walkPath(path: []const u8) WalkResult {
     var current = catalog.lookupContext(root_name) orelse
         return .{ .ty = any, .problem = .{ .unknown_context = root_name } };
     var receiver_end = iter.prev_end;
+    // Nothing below `github.event` is diagnosed: the payload is not modelled
+    // (ADR D3) and the curated overlay (D3-a) only exists to type comparisons,
+    // so even a deref of a curated scalar collapses to `any` instead of
+    // EXPR003.
+    var in_payload = false;
 
     while (iter.next()) |seg| {
         const receiver_path = path[0..receiver_end];
         const step = applySegment(current, seg, receiver_path);
-        if (step.problem) |p| return .{ .ty = any, .problem = p };
+        if (step.problem) |p| {
+            if (in_payload) return .{ .ty = any };
+            return .{ .ty = any, .problem = p };
+        }
         current = step.ty;
+        if (current == &catalog.github_event) in_payload = true;
         receiver_end = iter.prev_end;
     }
     return .{ .ty = current };
@@ -142,8 +151,10 @@ fn objectFilter(recv: TypeRef, receiver_path: []const u8) WalkResult {
         .array => return .{ .ty = &t.type_array_any },
         .object => {
             // A heterogeneous object collapses to array<any>, which is safe.
+            // A loose object has keys outside `props`, so only a map or a
+            // strict object can narrow the element type.
             var elem: ?TypeRef = if (recv.shape == .map) recv.elem else null;
-            if (elem == null) {
+            if (elem == null and recv.shape == .strict) {
                 for (recv.props) |p| {
                     elem = if (elem) |e| t.merge(e, p.ty) else p.ty;
                 }
@@ -269,10 +280,43 @@ test "walk: github.ref_protected is bool" {
     try testing.expectEqual(t.TypeKind.bool, walkTy("github.ref_protected").kind);
 }
 
-test "walk: github.event.pull_request is any" {
-    const r = walkPath("github.event.pull_request.head.sha");
+test "walk: uncurated github.event payload stays any" {
+    const r = walkPath("github.event.deployment.payload.env");
     try testing.expectEqual(t.TypeKind.any, r.ty.kind);
     try testing.expectEqual(@as(?Problem, null), r.problem);
+}
+
+test "walk: curated github.event paths carry a type" {
+    try testing.expectEqual(t.TypeKind.number, walkTy("github.event.issue.number").kind);
+    try testing.expectEqual(t.TypeKind.string, walkTy("github.event.pull_request.head.sha").kind);
+    try testing.expectEqual(t.TypeKind.bool, walkTy("github.event.pull_request.draft").kind);
+    try testing.expectEqual(t.TypeKind.bool, walkTy("github.event.repository.private").kind);
+    try testing.expectEqual(t.TypeKind.object, walkTy("github.event.issue").kind);
+}
+
+test "walk: nothing below github.event is ever diagnosed" {
+    for ([_][]const u8{
+        "github.event.issue.numer",
+        "github.event.pull_request.hea.sha",
+        "github.event.unknown_key.deep",
+        "github.event.inputs.name",
+        // Dereferencing a curated scalar: a real mistake, but the payload
+        // stays silent (ADR D3).
+        "github.event.issue.number.foo",
+        "github.event.ref.name",
+        "github.event.pull_request.head.sha[0]",
+    }) |path| {
+        const r = walkPath(path);
+        try testing.expectEqual(@as(?Problem, null), r.problem);
+        try testing.expectEqual(t.TypeKind.any, r.ty.kind);
+    }
+}
+
+test "checkCompare: curated overlay widens EXPR017 reach" {
+    try testing.expect(!checkCompare("==", walkTy("github.event.issue"), &t.type_string));
+    try testing.expect(!checkCompare(">", walkTy("github.event.pull_request.draft"), &t.type_number));
+    // Scalar mixing stays silent: GitHub coerces number and string operands.
+    try testing.expect(checkCompare("==", walkTy("github.event.issue.number"), &t.type_string));
 }
 
 test "walk: unknown context is reported" {
@@ -336,6 +380,14 @@ test "walk: object filter produces an array" {
     const ty = walkTy("job.container.*");
     try testing.expectEqual(t.TypeKind.array, ty.kind);
     try testing.expectEqual(t.TypeKind.any, walkTy("steps.*.outputs.v").kind);
+}
+
+test "walk: an object filter over a loose object stays array<any>" {
+    // `sender` delivers keys outside the curated set, so narrowing to
+    // array<string> from its two string props would be wrong.
+    const ty = walkTy("github.event.sender.*");
+    try testing.expectEqual(t.TypeKind.array, ty.kind);
+    try testing.expectEqual(t.TypeKind.any, ty.elem.?.kind);
 }
 
 test "walk: strategy is loose but typed for known keys" {

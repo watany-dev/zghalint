@@ -1,0 +1,8 @@
+# zizmor の設定。CI の `lint` ジョブが `zizmor --offline` で読み込む。
+rules:
+  self-repository:
+    ignore:
+      # action smoke ジョブは、チェックアウトしたそのコミットの composite
+      # action を実行することが目的なので `uses: ./` が正しい。zizmor が
+      # 勧める自己参照構文はタグ/ブランチ解決を伴い、この検証の意味を変える。
+      - ci.yml
