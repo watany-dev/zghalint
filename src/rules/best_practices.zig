@@ -117,7 +117,6 @@ const deprecated_actions = [_]DeprecatedAction{
     .{ .action = "actions/cache", .deprecated_below = 3, .replacement = "v4" },
 };
 
-/// Single digit only, as every deprecated tag is.
 fn buildDeprecatedActionFix(
     list: *DiagnosticList,
     step: *const Step,

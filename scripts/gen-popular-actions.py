@@ -67,9 +67,15 @@ def parse_manifest(text: str) -> list[tuple[str, str, str, str]]:
 
 
 def major_of(ref: str) -> int:
-    m = re.match(r"^v?(\d+)", ref)
+    """The major `src/rules/popular_actions.zig` will key this entry by.
+
+    The ref has to be a version the linter itself reads as one; anything looser
+    here (`v4-beta`, `4.x-maintenance`) would file the entry under a major that
+    users reference with a different tag entirely.
+    """
+    m = re.fullmatch(r"v(\d+)(?:\.\d+)*", ref)
     if m is None:
-        raise SystemExit(f"cannot derive a major version from ref {ref!r}")
+        raise SystemExit(f"ref {ref!r} is not a version tag of the form v4 or v4.2.2")
     return int(m.group(1))
 
 
@@ -81,9 +87,13 @@ def clone(owner: str, repo: str, ref: str, into: pathlib.Path) -> pathlib.Path:
     regenerate the table from whatever the tag pointed at last time.
     """
     dest = into / f"{owner}__{repo}__{ref}"
+    # A directory left behind by an interrupted clone has no `.git`, and
+    # fetching inside it would fail rather than repair it.
+    if dest.exists() and not (dest / ".git").is_dir():
+        shutil.rmtree(dest)
     if dest.exists():
         subprocess.run(
-            ["git", "-C", str(dest), "fetch", "--quiet", "--depth", "1", "origin", f"tags/{ref}"],
+            ["git", "-C", str(dest), "fetch", "--quiet", "--depth", "1", "origin", ref],
             check=True,
         )
         subprocess.run(
@@ -127,8 +137,16 @@ def is_true(value: object) -> bool:
 
 def collect(owner: str, repo: str, path: str, ref: str, checkout: pathlib.Path) -> ActionMeta:
     doc = read_manifest_yaml(checkout, path)
-    runs = doc.get("runs") or {}
-    using = str(runs.get("using", "")) if isinstance(runs, dict) else ""
+    if not isinstance(doc, dict):
+        raise SystemExit(f"{owner}/{repo}@{ref}: the action manifest is not a mapping")
+
+    # BP003 reads `using` and DEP005 reads every declared input, so a manifest
+    # shaped differently than expected has to stop the run rather than reach
+    # the table as an entry that claims the action declares nothing.
+    runs = doc.get("runs")
+    if not isinstance(runs, dict) or not runs.get("using"):
+        raise SystemExit(f"{owner}/{repo}@{ref}: `runs.using` is missing")
+    using = str(runs["using"])
 
     inputs = []
     declared = doc.get("inputs") or {}

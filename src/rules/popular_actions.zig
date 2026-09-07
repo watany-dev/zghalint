@@ -52,24 +52,26 @@ pub fn lookup(action: ActionRef) ?ActionMeta {
     return null;
 }
 
-/// The major version a ref names (`v4`, `v4.2.2`, `4`), or null when the ref
-/// is a branch, a SHA, or a tag that is not a plain version (`v4-beta`).
+/// The major version a ref names (`v4`, `v4.2.2`), or null when the ref is a
+/// branch, a SHA, or a tag that is not a plain version (`v4-beta`).
+///
+/// The accepted shape is `v` followed by dot-separated numbers, and nothing
+/// else. Every action in the table publishes its versions that way, so a ref
+/// that deviates — `V4`, `4`, `4.x-maintenance` — names something the table
+/// cannot speak about, and reporting on it would be a guess.
 pub fn majorFromRef(ref: []const u8) ?u16 {
-    if (ref.len == 0) return null;
+    if (ref.len < 2 or ref[0] != 'v') return null;
 
-    var i: usize = if (ref[0] == 'v' or ref[0] == 'V') 1 else 0;
-    const start = i;
-    while (i < ref.len and std.ascii.isDigit(ref[i])) i += 1;
-    if (i == start) return null;
-
-    // What follows the major must itself be a version, so that a tag or branch
-    // encoding something else (`v4-beta`, `1.x-lts`, `4.x-maintenance`) is not
-    // read as the major it starts with.
-    for (ref[i..]) |c| {
-        if (!std.ascii.isDigit(c) and c != '.') return null;
+    var major: ?u16 = null;
+    var parts = std.mem.splitScalar(u8, ref[1..], '.');
+    while (parts.next()) |part| {
+        if (part.len == 0) return null;
+        for (part) |c| {
+            if (!std.ascii.isDigit(c)) return null;
+        }
+        if (major == null) major = std.fmt.parseInt(u16, part, 10) catch return null;
     }
-
-    return std.fmt.parseInt(u16, ref[start..i], 10) catch null;
+    return major;
 }
 
 pub fn checkPopularActionInputs(step: *const Step, list: *DiagnosticList) void {
@@ -134,7 +136,12 @@ const test_support = @import("../test_support.zig");
 test "majorFromRef reads a major version only from a version tag" {
     try testing.expectEqual(@as(?u16, 4), majorFromRef("v4"));
     try testing.expectEqual(@as(?u16, 4), majorFromRef("v4.2.2"));
-    try testing.expectEqual(@as(?u16, 4), majorFromRef("4"));
+    // Only the `vN` spelling the actions actually publish is read as a version.
+    try testing.expectEqual(@as(?u16, null), majorFromRef("4"));
+    try testing.expectEqual(@as(?u16, null), majorFromRef("V4"));
+    try testing.expectEqual(@as(?u16, null), majorFromRef("v4."));
+    try testing.expectEqual(@as(?u16, null), majorFromRef("v4..2"));
+    try testing.expectEqual(@as(?u16, null), majorFromRef("v"));
     try testing.expectEqual(@as(?u16, 12), majorFromRef("v12.0"));
     try testing.expectEqual(@as(?u16, null), majorFromRef("main"));
     try testing.expectEqual(@as(?u16, null), majorFromRef("v4-beta"));
@@ -316,6 +323,50 @@ test "DEP006: a supported input is not reported" {
     );
 
     try testing.expectEqual(@as(usize, 0), result.len());
+}
+
+test "DEP005: a step with no `with:` at all reports every required input" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var result = try lint(arena.allocator(),
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/cache@v4
+        \\
+    );
+
+    try testing.expectEqual(@as(usize, 2), result.len());
+    try testing.expectEqualStrings("DEP005", result.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, result.get(0).message, "\"path\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.get(1).message, "\"key\"") != null);
+}
+
+test "every manifest entry is present in the generated table" {
+    // The table is generated from this manifest, so a hand-edit or an
+    // interrupted run that drops an entry has to fail here rather than
+    // silently stop validating that action.
+    const manifest = @embedFile("popular_actions_manifest");
+
+    var lines = std.mem.splitScalar(u8, manifest, '\n');
+    var seen: usize = 0;
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        const meta = lookup(ActionRef.parse(line));
+        if (meta == null) {
+            std.debug.print("manifest entry {s} is missing from the generated table\n", .{line});
+            return error.MissingActionMetadata;
+        }
+        seen += 1;
+    }
+
+    try testing.expectEqual(data.popular_actions.len, seen);
 }
 
 test "the generated table stays well-formed" {
