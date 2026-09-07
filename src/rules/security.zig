@@ -764,7 +764,6 @@ fn reportWorkflowRunBranchGate(cond: []const u8, anchor: Anchor, list: *Diagnost
 /// A gate is only sound when every run that satisfies the condition also
 /// satisfied the anchor. The anchor merely occurring in the text does not say
 /// that: `||` leaves a path around it, and `!` inverts what it asserts (#220).
-/// So the condition is parsed and walked carrying its negation polarity.
 ///
 /// A condition that does not parse anchors nothing: SEC022 would rather report
 /// a sound gate it cannot read than miss a fork-reachable one.
@@ -777,7 +776,8 @@ fn hasWorkflowRunTrustAnchor(allocator: std.mem.Allocator, cond: []const u8) boo
 }
 
 /// An `if:` is an expression already, but may also be written wrapped in a
-/// single `${{ }}`. Any other shape is handed to the parser, which rejects it.
+/// single `${{ }}`. Interpolation spliced into text keeps its delimiters here
+/// and so reaches the parser as the syntax error it is.
 fn conditionExpressionSource(cond: []const u8) []const u8 {
     const trimmed = std.mem.trim(u8, cond, " \t\r\n");
     if (!std.mem.startsWith(u8, trimmed, "${{") or !std.mem.endsWith(u8, trimmed, "}}")) return trimmed;
@@ -788,8 +788,7 @@ fn conditionExpressionSource(cond: []const u8) []const u8 {
 /// `||` is the conjunction and every leaf below reads inverted.
 fn anchorHolds(node: expressions.ExprNode, negated: bool) bool {
     switch (node.kind) {
-        // `!fork` asserts what `fork == false` does, and is the shorter way to
-        // write it.
+        // `!fork` asserts what `fork == false` does.
         .context_access => return negated and pathIsAnchor(parseContextPath(node.value, 0), workflow_run_fork_flag),
         .unary_op => {
             if (node.children.len != 1) return false;
