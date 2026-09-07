@@ -149,7 +149,7 @@ SEC009 (`workflow_run` の checkout) も同じ関数でガードを見るよう�
 SEC021 が担当するトリガ (`workflow_dispatch` / `issue_comment` など) は
 フォーク由来かどうかという概念を持たないため、対象外。
 
-#### G9. 関数呼び出しの結果へのプロパティ / インデックスアクセスを解釈できない (FP) — 要パーサ修正
+#### G9 (#280). 関数呼び出しの結果へのプロパティ / インデックスアクセスを解釈できない (FP) — 要パーサ修正
 
 `bench/cases/e-expression/function-call-property-access.yml`。
 
@@ -168,14 +168,14 @@ run: echo "${{ fromJSON('[1,2,3]')[0] }}"
 (`fromJSON('{bad').name`) では本来出るべき EXPR009 (不正な JSON リテラル) が
 落ちる。ベンチ全体で唯一の zghalint FN がこれ。
 
-#### G10. `needs:` の未定義ジョブ / 循環依存を検出しない — 要ルール追加
+#### G10 (#281). `needs:` の未定義ジョブ / 循環依存を検出しない — 要ルール追加
 
 `bench/cases/f-syntax-schema/needs-unknown-job.yml` と `needs-cycle.yml`。
 存在しないジョブ名を `needs:` に書いても、ジョブ依存が閉路を作っても zghalint は
 無反応。どちらも実行時に必ず失敗する構成で、actionlint は `job-needs` として
 両方を報告する。
 
-#### G11. UTF-8 BOM 付きのファイルを解析できない — 要パーサ修正
+#### G11 (#282). UTF-8 BOM 付きのファイルを解析できない — 要パーサ修正
 
 `bench/cases/i-robustness/bom-prefixed.yml`。
 
@@ -188,20 +188,20 @@ bom-prefixed.yml: workflow parse error: InvalidValue
 落ちる。Windows のエディタが書き出す実在の形で、actionlint は問題なく読む。
 終了コードは 2 なので黙って通るわけではないが、指摘は 1 件も出ない。
 
-#### G12. 明示的な YAML ドキュメントマーカーを解析できない — 要パーサ修正
+#### G12 (#283). 明示的な YAML ドキュメントマーカーを解析できない — 要パーサ修正
 
 `bench/cases/i-robustness/multi-document.yml`。`---` で始まり `...` で終わる
 書き方 (YAML として完全に正当) を `InvalidValue` で拒否する。G11 と同じく
 ファイル全体が素通りになる。
 
-#### G13. 中身のないワークフローを指摘しない — 要ルール追加
+#### G13 (#284). 中身のないワークフローを指摘しない — 要ルール追加
 
 `bench/cases/i-robustness/comments-only.yml`。コメントだけのワークフロー
 ファイルを `InvalidValue` で拒否する。actionlint は `workflow is empty` と
 診断として報告しており、消し忘れのファイルを見つけられる形になっている。
 パースエラーではなく診断として出すのが望ましい。
 
-#### G14. PERM001 がジョブに必要な write 権限まで警告する (FP) — 要ルール改善
+#### G14 (#285). PERM001 がジョブに必要な write 権限まで警告する (FP) — 要ルール改善
 
 `bench/cases/j-clean/` の 3 ケース。
 
@@ -257,13 +257,13 @@ PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む�
       (PERF001 が持っている知識を共有する)
 - [x] G2: composite action (`action.yml`) の解析サポート
 - [x] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
-- [ ] G9: 関数呼び出しの結果へのプロパティ / インデックスアクセスを式パーサに
+- [ ] G9 (#280): 関数呼び出しの結果へのプロパティ / インデックスアクセスを式パーサに
       解釈させる (EXPR009 の取りこぼしもこれで直る)
-- [ ] G10: `needs:` の未定義ジョブと循環依存を検出する
-- [ ] G11: UTF-8 BOM を読み飛ばす
-- [ ] G12: `---` / `...` のドキュメントマーカーを受理する
-- [ ] G13: 中身のないワークフローを診断として報告する
-- [ ] G14: PERM001 がジョブに必要な write 権限を除外する
+- [ ] G10 (#281): `needs:` の未定義ジョブと循環依存を検出する
+- [ ] G11 (#282): UTF-8 BOM を読み飛ばす
+- [ ] G12 (#283): `---` / `...` のドキュメントマーカーを受理する
+- [ ] G13 (#284): 中身のないワークフローを診断として報告する
+- [ ] G14 (#285): PERM001 がジョブに必要な write 権限を除外する
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [x] G7 (#275): SC001 を `uses: docker://...` に対応させる
