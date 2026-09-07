@@ -1,0 +1,13 @@
+# bench:persona pedantic
+# bench:expect unpinned-image@13 zghalint=SC001 zizmor=unpinned-images actionlint=-
+name: docker uses
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run a container action by tag
+        uses: docker://alpine:3.19

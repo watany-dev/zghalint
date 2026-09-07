@@ -1,0 +1,17 @@
+# 健全なゲート: 起点の run が同一リポジトリのものかを確認している。
+# bench:forbid branch-gate zghalint=SEC022 zizmor=- actionlint=-
+name: workflow_run repository gate
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Publish
+        run: make publish

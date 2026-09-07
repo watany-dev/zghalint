@@ -1,0 +1,15 @@
+# bench:persona auditor
+# bench:expect self-hosted-runner@11
+name: self hosted fork
+on:
+  pull_request_target:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

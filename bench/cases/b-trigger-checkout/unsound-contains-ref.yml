@@ -1,0 +1,14 @@
+# `contains` の部分一致は `refs/heads/not-main` にも当たる。
+# bench:expect unsound-contains@9 zizmor=-
+name: unsound contains
+on: push
+permissions:
+  contents: read
+jobs:
+  deploy:
+    if: contains(github.ref, 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Deploy
+        run: make deploy

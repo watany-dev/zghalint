@@ -1,0 +1,14 @@
+# bench:expect template-injection@14
+name: pwsh shell
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo the title from PowerShell
+        shell: pwsh
+        run: Write-Output "${{ github.event.issue.title }}"

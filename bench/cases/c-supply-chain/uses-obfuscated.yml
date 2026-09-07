@@ -1,0 +1,13 @@
+# 大文字混在・`/` 重複・`.git` 付きの難読化された `uses:`。
+# bench:expect obfuscated-uses@13 zghalint=DEP003 zizmor=- actionlint=action
+name: obfuscated uses
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out through a doubled path separator
+        uses: actions//checkout@v4

@@ -1,0 +1,15 @@
+# 短縮 SHA は衝突を作れるため完全 SHA と同等には扱えない。
+# bench:expect unpinned-action@13
+name: short sha
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out at a short SHA
+        uses: actions/checkout@11bd719
+      - name: Build
+        run: make build

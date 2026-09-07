@@ -1,0 +1,16 @@
+# 安全形: OIDC に必要な最小の権限だけを持つジョブ。
+# bench:forbid excessive-permissions
+name: oidc
+on: push
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Deploy with OIDC
+        run: make deploy

@@ -58,6 +58,33 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "zizmor": ["template-injection"],
         "actionlint": ["expression~potentially untrusted"],
     },
+    #: zizmor reports the trigger itself; zghalint only reports the unsafe
+    #: checkout under it (`untrusted-checkout`), so the two are separate kinds.
+    "dangerous-trigger": {
+        "zghalint": None,
+        "zizmor": ["dangerous-triggers"],
+        "actionlint": None,
+    },
+    "untrusted-checkout": {
+        "zghalint": ["SEC005", "SEC009", "SEC021"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "bot-condition": {
+        "zghalint": ["SEC014"],
+        "zizmor": ["bot-conditions"],
+        "actionlint": None,
+    },
+    "self-hosted-runner": {
+        "zghalint": ["SEC020"],
+        "zizmor": ["self-hosted-runner"],
+        "actionlint": None,
+    },
+    "unsound-contains": {
+        "zghalint": ["EXPR006"],
+        "zizmor": ["unsound-contains"],
+        "actionlint": None,
+    },
     "unpinned-action": {
         "zghalint": ["SEC001"],
         "zizmor": ["unpinned-uses"],
@@ -85,6 +112,88 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
     },
     "missing-cache": {
         "zghalint": ["PERF001"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "unpinned-image": {
+        "zghalint": ["SC001"],
+        "zizmor": ["unpinned-images"],
+        "actionlint": None,
+    },
+    "compromised-action": {
+        "zghalint": ["SC002"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    #: A SHA pin whose trailing `# vX.Y.Z` comment names a different release.
+    #: No tool audits this today; the case documents the shared blind spot.
+    "sha-comment-mismatch": {
+        "zghalint": None,
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "known-vulnerable": {
+        "zghalint": ["SC003"],
+        "zizmor": ["known-vulnerable-actions"],
+        "actionlint": None,
+    },
+    "impostor-commit": {
+        "zghalint": ["SC008"],
+        "zizmor": ["impostor-commit"],
+        "actionlint": None,
+    },
+    "obfuscated-uses": {
+        "zghalint": ["DEP003"],
+        "zizmor": ["obfuscation"],
+        "actionlint": None,
+    },
+    "dependabot-cooldown": {
+        "zghalint": ["DEP001"],
+        "zizmor": ["dependabot-cooldown"],
+        "actionlint": None,
+    },
+    "dependabot-execution": {
+        "zghalint": ["DEP002"],
+        "zizmor": ["dependabot-execution"],
+        "actionlint": None,
+    },
+    "secrets-inherit": {
+        "zghalint": ["SEC010"],
+        "zizmor": ["secrets-inherit"],
+        "actionlint": None,
+    },
+    "overprovisioned-secrets": {
+        "zghalint": ["SEC011", "SEC012"],
+        "zizmor": ["overprovisioned-secrets"],
+        "actionlint": None,
+    },
+    "hardcoded-container-credentials": {
+        "zghalint": ["SEC013"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "insecure-commands": {
+        "zghalint": ["SEC017"],
+        "zizmor": ["insecure-commands"],
+        "actionlint": None,
+    },
+    "github-env-injection": {
+        "zghalint": ["SEC008"],
+        "zizmor": ["github-env"],
+        "actionlint": None,
+    },
+    "secrets-outside-env": {
+        "zghalint": ["SEC019"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "untrusted-input-condition": {
+        "zghalint": ["SEC006"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "branch-gate": {
+        "zghalint": ["SEC022"],
         "zizmor": None,
         "actionlint": None,
     },
@@ -166,6 +275,20 @@ class Case:
     def is_action(self) -> bool:
         name = self.path.name
         return name.endswith((".action.yml", ".action.yaml")) or self.path.stem == "action"
+
+    def is_dependabot(self) -> bool:
+        name = self.path.name
+        if name.endswith((".dependabot.yml", ".dependabot.yaml")):
+            return True
+        return self.path.stem == "dependabot"
+
+    def staged_name(self) -> str:
+        """The filename the case must carry for the tools to recognise it."""
+        if self.is_action():
+            return "action.yml"
+        if self.is_dependabot():
+            return "dependabot.yml"
+        return self.path.name
 
     def skip_reason(self, tool: str, kind: str | None = None) -> str | None:
         reason = self.skips.get((tool, None))
@@ -400,6 +523,10 @@ def run_case(case: Case, staged: Path, zghalint: Path, available: dict[str, bool
         if tool == "actionlint" and case.is_action():
             case.skips[(tool, None)] = "actionlint は composite action を読まない"
             continue
+        # actionlint はワークフローしか読まない。zizmor は dependabot 設定も監査する。
+        if tool == "actionlint" and case.is_dependabot():
+            case.skips[(tool, None)] = "actionlint は dependabot.yml を読まない"
+            continue
         if tool == "zghalint":
             runs[tool] = run_zghalint(zghalint, staged)
         elif tool == "actionlint":
@@ -412,13 +539,15 @@ def run_case(case: Case, staged: Path, zghalint: Path, available: dict[str, bool
 def stage(case: Case, tmp: Path) -> Path:
     """Copy the case under the filename its tools expect.
 
-    zizmor recognises a composite action only as `action.yml`, so a
-    `<name>.action.yml` case is materialised under that name in its own
-    directory (line numbers are unchanged).
+    Both zizmor and zghalint key off the filename: a composite action is only
+    recognised as `action.yml`, and a Dependabot config only as
+    `dependabot.yml`. A `<name>.action.yml` / `<name>.dependabot.yml` case is
+    therefore materialised under that name in its own directory (line numbers
+    are unchanged).
     """
     target_dir = tmp / case.name.replace("/", "__")
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / ("action.yml" if case.is_action() else case.path.name)
+    target = target_dir / case.staged_name()
     shutil.copyfile(case.path, target)
     return target
 

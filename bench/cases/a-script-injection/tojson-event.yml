@@ -1,0 +1,14 @@
+# `toJSON(github.event)` は event 全体を run: へ流し込む。zizmor だけが報告する。
+# bench:expect template-injection@14 actionlint=-
+name: toJSON event
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dump the whole event
+        run: echo "${{ toJSON(github.event) }}"

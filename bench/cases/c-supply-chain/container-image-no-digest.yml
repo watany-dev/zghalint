@@ -1,0 +1,15 @@
+# bench:persona pedantic
+# bench:expect unpinned-image@12 zghalint=SC001 zizmor=unpinned-images actionlint=-
+name: container image
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: node:20
+    steps:
+      - name: Build
+        run: make build

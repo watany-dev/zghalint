@@ -1,0 +1,14 @@
+# bench:expect template-injection@14
+name: python shell
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo the title from Python
+        shell: python
+        run: print("${{ github.event.issue.title }}")

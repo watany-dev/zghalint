@@ -1,0 +1,16 @@
+# SC003 / zizmor known-vulnerable-actions はどちらも GitHub Advisory を引くため
+# オフラインでは判定できない。ネットワーク付きの実行で初めて採点される。
+# bench:expect known-vulnerable@16 zghalint=SC003 zizmor=known-vulnerable-actions actionlint=-
+# bench:skip zghalint:known-vulnerable --offline では Advisory API を引けない
+# bench:skip zizmor:known-vulnerable --offline では Advisory API を引けない
+name: known vulnerable
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: List changed files with a vulnerable release
+        uses: tj-actions/changed-files@v35

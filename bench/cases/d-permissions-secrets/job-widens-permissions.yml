@@ -1,0 +1,17 @@
+# トップレベルは read だがジョブが contents: write へ広げている。
+# bench:expect excessive-permissions@12 zghalint=PERM001 zizmor=- actionlint=-
+name: job widens
+on: push
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - name: Release
+        run: make release

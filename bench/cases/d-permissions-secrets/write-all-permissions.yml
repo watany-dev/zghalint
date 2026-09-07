@@ -1,0 +1,13 @@
+# zizmor は regular ペルソナだと write-all を報告しない。auditor で並べる。
+# bench:persona auditor
+# bench:expect excessive-permissions@6
+name: write all
+on: push
+permissions: write-all
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

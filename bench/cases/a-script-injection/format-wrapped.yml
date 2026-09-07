@@ -1,0 +1,13 @@
+# bench:expect template-injection@13
+name: format wrapped
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo a formatted title
+        run: echo "${{ format('title={0}', github.event.issue.title) }}"

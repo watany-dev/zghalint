@@ -1,0 +1,16 @@
+# 安全形: digest 固定のイメージ。
+# bench:persona pedantic
+# bench:forbid unpinned-image zghalint=SC001 zizmor=unpinned-images actionlint=-
+name: container digest
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: node@sha256:6b3f4d4e5ae03e0e8f8e2f0b1c5e2a2e0b4c8f5d5a3f2e1d0c9b8a7f6e5d4c3b
+    steps:
+      - name: Build
+        run: make build

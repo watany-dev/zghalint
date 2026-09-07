@@ -1,0 +1,14 @@
+# bench:expect insecure-commands@7
+name: insecure commands
+on: push
+permissions:
+  contents: read
+env:
+  ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build
