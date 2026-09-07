@@ -77,6 +77,7 @@ test {
     _ = @import("rules/inputs_context.zig");
     _ = @import("rules/secrets_context.zig");
     _ = @import("rules/steps_ref.zig");
+    _ = @import("rules/expr_availability.zig");
     _ = @import("rules/security.zig");
     _ = @import("rules/performance.zig");
     _ = @import("rules/best_practices.zig");
