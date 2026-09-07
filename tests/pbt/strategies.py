@@ -281,7 +281,8 @@ def workflow_with_perm001_individual_write(draw: st.DrawFn) -> str:
     """Generate a workflow guaranteed to trigger PERM001 with an individual write permission.
 
     The workflow sets one of the privilege-escalating scopes to write — the
-    only ones PERM001 reports (#285). Other rules may fire as well.
+    ones PERM001 reports wherever they are declared, and the only ones that
+    carry an autofix (#285). Other rules may fire as well.
     """
     scope = draw(
         st.sampled_from(
@@ -290,7 +291,6 @@ def workflow_with_perm001_individual_write(draw: st.DrawFn) -> str:
                 "contents",
                 "deployments",
                 "packages",
-                "pages",
             ]
         )
     )
