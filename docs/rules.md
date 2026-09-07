@@ -63,12 +63,16 @@ picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
 `discussion_comment`.
 
+All three read both `with.ref` and `with.repository`: pointing `repository` at
+the PR head repository checks out the fork's code without `ref` being touched
+at all (#218). A step whose `ref` and `repository` are fed from the same
+payload is one mistake, so it is reported once.
+
 A workflow can declare several of those triggers at once, so ownership is
 decided per value rather than per workflow: SEC021 stays quiet on exactly the
-`with.ref` values SEC005 or SEC009 already reports, and no other. Skipping the
-whole workflow would hide a `ref` fed from a comment body just because
-`pull_request_target` also appears in `on:`, and would hide `with.repository`
-entirely, since neither of the other two rules looks at it.
+values SEC005 or SEC009 already reports, and no other. Skipping the whole
+workflow would hide a `ref` fed from a comment body just because
+`pull_request_target` also appears in `on:`.
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
 `github.event.client_payload.*`) and the free text of an issue, comment or

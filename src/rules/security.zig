@@ -368,47 +368,69 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
-            const ref = checkoutRefInput(step) orelse continue;
-            if (!isPRHeadRef(ref.value)) continue;
+            const input = checkoutCodeInput(step, isPRHeadValue) orelse continue;
             list.append(.{
                 .rule_id = "SEC005",
                 .severity = .@"error",
                 .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
-                .span = withAnchor(step, ref.key).whole(),
+                .span = withAnchor(step, input.key).whole(),
                 .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
             }) catch return;
         }
     }
 }
 
-fn checkoutRefInput(step: *const Step) ?WithInput {
+/// The `with:` inputs that decide which code `actions/checkout` fetches.
+/// `repository` is one of them: pointing it at the PR head repository checks
+/// out the fork's code without `ref` being touched at all (#218).
+const checkout_code_inputs = [_][]const u8{ "ref", "repository" };
+
+/// One finding per step: `ref` and `repository` pointed at the same fork are
+/// one mistake, not two.
+fn checkoutCodeInput(step: *const Step, untrusted: *const fn ([]const u8) bool) ?WithInput {
     const action_ref = step.uses orelse return null;
     if (!isAction(action_ref, "actions/checkout")) return null;
     const with_map = step.with orelse return null;
-    // The runner matches `with:` keys case-insensitively.
-    return getWithInput(with_map, "ref");
+    for (checkout_code_inputs) |name| {
+        // The runner matches `with:` keys case-insensitively.
+        const input = getWithInput(with_map, name) orelse continue;
+        if (untrusted(input.value)) return input;
+    }
+    return null;
 }
 
-/// `github.event.pull_request.head.{sha,ref}`, `github.head_ref` and the
-/// `refs/pull/<n>/{head,merge}` spellings all name fork-controlled code
-/// (SEC005).
-fn isPRHeadRef(value: []const u8) bool {
-    const markers = [_][]const u8{
+/// `github.event.pull_request.head.{sha,ref}` (and `.head.repo.full_name`),
+/// `github.head_ref` and the `refs/pull/<n>/{head,merge}` spellings all name
+/// fork-controlled code (SEC005).
+fn isPRHeadValue(value: []const u8) bool {
+    return containsAnyMarker(value, &.{
         "github.event.pull_request.head",
         "github.head_ref",
         "refs/pull/",
         "github.event.pull_request.number",
         "github.event.number",
-    };
+    });
+}
+
+/// A ref or repository the triggering run's author decides (SEC009).
+/// `workflow_run.repository` is deliberately absent: it names the base
+/// repository the run belongs to, which is the sound spelling SEC022
+/// recommends, not the fork's.
+fn isWorkflowRunValue(value: []const u8) bool {
+    return containsAnyMarker(value, &.{
+        "github.event.workflow_run.head_",
+        "github.event.workflow_run.display_title",
+    });
+}
+
+/// A plain substring scan, not `containsAnyContext`: these markers are prefixes
+/// of a path segment (`head_`) or of a ref literal (`refs/pull/`), so they do
+/// not line up with segment boundaries.
+fn containsAnyMarker(value: []const u8, markers: []const []const u8) bool {
     for (markers) |marker| {
         if (std.mem.indexOf(u8, value, marker) != null) return true;
     }
     return false;
-}
-
-/// A ref carried over from the triggering run (SEC009).
-fn isWorkflowRunRef(value: []const u8) bool {
-    return std.mem.indexOf(u8, value, "github.event.workflow_run.") != null;
 }
 
 /// SEC006 reports a weak gate, not code execution: the expression engine only
@@ -603,8 +625,8 @@ fn hasUntrustedRefTrigger(wf: *const Workflow) bool {
 /// dropping the whole workflow because `pull_request_target` appears somewhere
 /// in `on:` would silence SEC021 on refs SEC005 never looks at.
 fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
-    return (wf.hasEvent(.pull_request_target) and isPRHeadRef(value)) or
-        (wf.hasEvent(.workflow_run) and isWorkflowRunRef(value));
+    return (wf.hasEvent(.pull_request_target) and isPRHeadValue(value)) or
+        (wf.hasEvent(.workflow_run) and isWorkflowRunValue(value));
 }
 
 fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
@@ -632,13 +654,11 @@ fn checkStepCheckoutRefs(
     if (!isAction(action_ref, "actions/checkout")) return;
     const with_map = step.with orelse return;
 
-    for ([_][]const u8{ "ref", "repository" }) |name| {
+    for (checkout_code_inputs) |name| {
         // `getWithInput` because the runner resolves input names
         // case-insensitively, so `Ref:` reaches the same checkout.
         const input = getWithInput(with_map, name) orelse continue;
-        // Only `ref` defers: SEC005 / SEC009 never look at `repository`, so
-        // deferring it would leave that input unreported by every rule.
-        if (std.mem.eql(u8, name, "ref") and ownedByNeighbourRule(wf, input.value)) continue;
+        if (ownedByNeighbourRule(wf, input.value)) continue;
         if (!containsUntrustedCheckoutContext(input.value, contexts)) continue;
         list.append(.{
             .rule_id = "SEC021",
@@ -666,13 +686,12 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
-            const ref = checkoutRefInput(step) orelse continue;
-            if (!isWorkflowRunRef(ref.value)) continue;
+            const input = checkoutCodeInput(step, isWorkflowRunValue) orelse continue;
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
                 .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                .span = withAnchor(step, ref.key).whole(),
+                .span = withAnchor(step, input.key).whole(),
                 .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
             }) catch return;
         }
@@ -2547,11 +2566,61 @@ test "SEC021: workflow_run only defers on the ref SEC009 owns" {
     try testing.expect(hasDiagnostic(&list, "SEC021"));
 }
 
-test "SEC021: pull_request_target does not defer on checkout repository" {
+test "SEC021: checkout repository defers on the value SEC005 owns" {
+    var list = runCheckoutWith(pr_target_and_issue_comment_trigger, "repository", "${{ github.event.pull_request.head.repo.full_name }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: checkout repository from a comment body is still SEC021's" {
     var list = runCheckoutWith(pr_target_and_issue_comment_trigger, "repository", "${{ github.event.comment.body }}");
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
     try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC005: PR target checkout of the head repository (#218)" {
+    var list = runCheckoutWith(pr_target_trigger, "repository", "${{ github.event.pull_request.head.repo.full_name }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: PR target checkout of a fixed repository (no false positive)" {
+    var list = runCheckoutWith(pr_target_trigger, "repository", "${{ github.repository }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: head repository and head ref in one step report once (#218)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    with.put("repository", "${{ github.event.pull_request.head.repo.full_name }}") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC005"));
+}
+
+test "SEC009: workflow_run checkout of the head repository (#218)" {
+    var list = runCheckoutWith(workflow_run_trigger, "repository", "${{ github.event.workflow_run.head_repository.full_name }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: workflow_run checkout of the base repository (no false positive)" {
+    var list = runCheckoutWith(workflow_run_trigger, "repository", "${{ github.event.workflow_run.repository.full_name }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: workflow_run checkout of a fixed repository (no false positive)" {
+    var list = runCheckoutWith(workflow_run_trigger, "repository", "${{ github.repository }}");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC021: pull_request_target defers to SEC005" {
