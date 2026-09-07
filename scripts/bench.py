@@ -1118,6 +1118,19 @@ def as_json(results: list[CaseResult]) -> dict:
     }
 
 
+def render_kind_table() -> str:
+    """The `DEFAULT_KIND_MAP` as Markdown, so the docs never restate it."""
+    out = ["| kind | zghalint | actionlint | zizmor |", "|---|---|---|---|"]
+
+    def cell(ids: list[str] | None) -> str:
+        return "–" if ids is None else ", ".join(f"`{i}`" for i in ids)
+
+    for kind, mapping in DEFAULT_KIND_MAP.items():
+        row = (cell(mapping[tool]) for tool in ("zghalint", "actionlint", "zizmor"))
+        out.append(f"| `{kind}` | " + " | ".join(row) + " |")
+    return "\n".join(out)
+
+
 # ============================================================
 # Entry point
 # ============================================================
@@ -1143,7 +1156,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="exit non-zero when zghalint violates a `bench:forbid`",
     )
+    parser.add_argument(
+        "--kinds",
+        action="store_true",
+        help="print the neutral kind -> per-tool ID table and exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.kinds:
+        print(render_kind_table())
+        return 0
 
     if not args.cases_dir.is_dir():
         print(f"no such case directory: {args.cases_dir}", file=sys.stderr)
