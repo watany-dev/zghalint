@@ -103,10 +103,8 @@ const Key = enum {
     }
 };
 
-const status_functions = [_][]const u8{ "success", "failure", "always", "cancelled" };
-
 fn isStatusFunction(name: []const u8) bool {
-    for (status_functions) |candidate| {
+    for ([_][]const u8{ "success", "failure", "always", "cancelled" }) |candidate| {
         if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
     }
     return false;
@@ -212,24 +210,23 @@ fn scanWorkflow(comptime Visitor: type, wf: *const Workflow, list: *DiagnosticLi
     }
 
     for (wf.jobs) |*job| {
-        const job_span = job.span;
         expr_scan.scanCondition(
             visitor(Visitor, .job_if, alloc, list),
             job.if_condition,
             job.if_condition_meta,
-            job_span,
+            job.span,
         );
-        expr_scan.scanScalarMap(visitor(Visitor, .job_env, alloc, list), job.env, job.env_meta, job_span);
+        expr_scan.scanScalarMap(visitor(Visitor, .job_env, alloc, list), job.env, job.env_meta, job.span);
         // A job-level `with:` feeds a reusable workflow call; the parser keeps
         // no per-entry spans for it, so the job span anchors those findings.
-        expr_scan.scanScalarMap(visitor(Visitor, .job_with, alloc, list), job.with, null, job_span);
+        expr_scan.scanScalarMap(visitor(Visitor, .job_with, alloc, list), job.with, null, job.span);
         if (job.runs_on) |runs_on| {
             const v = visitor(Visitor, .job_runs_on, alloc, list);
             expr_scan.scanText(v, runs_on, expr_scan.runsOnAnchor(job));
         }
         if (job.concurrency) |c| {
             const v = visitor(Visitor, .job_concurrency, alloc, list);
-            expr_scan.scanText(v, c.group, Anchor.fromMeta(c.group_meta, job_span));
+            expr_scan.scanText(v, c.group, Anchor.fromMeta(c.group_meta, job.span));
         }
 
         for (job.steps) |*step| {
