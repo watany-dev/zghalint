@@ -156,13 +156,21 @@ Enforce workflow best practices for maintainability and reliability.
 - **バージョン表**: `actions/checkout` など置き換え先が判明しているアクションを
   固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
   `--fix` で `@vN` を書き換えられる。
-- **ランタイム判定**: `uses: ./{path}` が指すローカルアクションの `action.yml` を
-  読み、`runs.using` が GitHub の廃止済みランタイム（`node12` / `node16`）なら
-  `error` で報告する。呼び出し側では直せない（アクション自身の `action.yml` を
-  `using: node24` へ移行する必要がある）ため autofix は付かない。
+- **ランタイム判定**: アクションの `runs.using` が GitHub の廃止済みランタイム
+  （`node12` / `node16`）なら `error` で報告する。ローカルアクション
+  （`uses: ./{path}`）は `action.yml` を読み、リモートアクションは DEP005 の
+  埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
 
-リモートアクションの `runs.using` はアクションメタデータのデータセット
-（DEP005 / #97）が必要なため、ランタイム判定はローカルアクションに限る。
+両方が該当する場合はランタイム判定を優先する（廃止済みランタイムは警告で済む
+「古いだけのバージョン」と違って実行そのものが失敗するため）。autofix は失われ
+ない: バージョン表が置き換え先を知っていれば、ランタイム判定の報告に同じ `@vN`
+書き換えが付く。ローカルアクションの場合は呼び出し側では直せない（アクション
+自身の `action.yml` を `using: node24` へ移行する必要がある）ため autofix は
+付かない。
+
+固定リストに無いアクションでも、データセットに載っていれば廃止済みランタイムを
+検出できる（例: `actions/checkout@v2` は `node12`）。データセットに無いアクション
+は判定しない。
 
 ## Permissions Rules (PERM)
 
@@ -216,6 +224,8 @@ action / reusable workflow references.
 | DEP002 | dependabot-execution | warning | `insecure-external-code-execution: allow` is a supply chain attack risk |
 | DEP003 | uses-format | error | `uses:` is not a supported action reference (step) or reusable workflow call (job) |
 | DEP004 | local-action-inputs | error | `with:` does not match the `inputs:` declared by the referenced local action, or the action has no `action.yml` |
+| DEP005 | action-inputs | error | `with:` does not match the `inputs:` declared by a widely used action (unknown input, or a missing required input) |
+| DEP006 | deprecated-action-input | warning | The action declares the used input as deprecated (`deprecationMessage:`) |
 
 ### DEP003 で受理される形式
 
@@ -248,6 +258,32 @@ Dockerfile の上書きなので報告しない。DEP003 が既に弾く形式�
 `@ref` 付きなど）は二重報告を避けるため対象外。
 
 ディスクだけを読むので `--quick` / `--offline` でも動作する。
+
+### DEP005 / DEP006 のスコープ
+
+広く使われているアクションのメタデータ（`inputs:` と `runs.using`）を
+`src/rules/data/popular_actions.zig` に埋め込み、呼び出し側の `with:` と
+突き合わせる。DEP004 のローカルアクション版と同じ判定を、リモートアクションに
+対して埋め込みデータで行うもの。
+
+- **DEP005**: `with:` のキーがアクションの `inputs:` に無い（候補が一意なら
+  `did you mean ...?` を添える）、または `required: true` かつ `default:` を
+  持たない入力が渡されていない。
+- **DEP006**: アクションが `deprecationMessage:` を設定している入力を使って
+  いる。メッセージはアクション側の文言をそのまま表示する。
+
+判定するのはデータセットに載っているアクションだけで、載っていないアクションは
+一切検証しない。誤検出を避けるための線引きであり、次の参照も対象外になる:
+
+- SHA ピン止め（`@11bd7190...`）— タグへの逆引きにはネットワークが要る（SC005 の
+  領域）。推測すると使っていないバージョンの入力を報告しかねない。
+- ブランチ参照やバージョンでないタグ（`@main`、`@v4-beta`）— データはメジャー
+  バージョン単位で持っているため対応付けられない。
+
+データは各アクションの `action.yml` から生成する。対象一覧は
+`scripts/popular-actions.txt`、生成は `scripts/gen-popular-actions.py`
+（更新手順は `docs/maintenance.md`）。埋め込みデータなので `--quick` /
+`--offline` でも動作する。
 
 ## Runner Rules (RUNNER)
 
@@ -749,7 +785,8 @@ composite action の step は、ワークフローの step と同じ実体なの
 無い状態で正しく判定できる step 単位のルールに限る:
 
 - `uses:` 系: SEC001（SHA ピン止め）、DEP003（`uses:` の形式）、DEP004（ローカル
-  action の入力）、SC002（改竄されたリリース）、BP003（廃止されたバージョン）
+  action の入力）、DEP005 / DEP006（widely used action の入力）、SC002（改竄された
+  リリース）、BP003（廃止されたバージョン）
 - `run:` 系: SEC002（スクリプトインジェクション）、SEC008（`GITHUB_ENV` 汚染）、
   SEC017、BP007、BP008
 - その他: SEC003、SEC006、SEC014、SEC018

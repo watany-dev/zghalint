@@ -21,6 +21,7 @@ const best_practices = @import("best_practices.zig");
 const security = @import("security.zig");
 const uses_rules = @import("uses.zig");
 const local_action = @import("local_action.zig");
+const popular_actions = @import("popular_actions.zig");
 const expressions = @import("expressions.zig");
 const expr_check = @import("expr_check.zig");
 const expr_overlay = @import("expr_overlay.zig");
@@ -76,6 +77,8 @@ const composite_step_checks = [_]StepCheck{
     stepCheck(&best_practices.rules, "BP008"),
     stepCheck(&uses_rules.rules, "DEP003"),
     stepCheck(&local_action.rules, "DEP004"),
+    stepCheck(&popular_actions.rules, "DEP005"),
+    stepCheck(&popular_actions.rules, "DEP006"),
 };
 
 /// Contexts a composite action step cannot resolve. They are all valid
