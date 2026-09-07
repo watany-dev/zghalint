@@ -247,6 +247,18 @@ def main() -> int:
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
+    # `lookup` is keyed by (owner, repo, path, major) and returns the first
+    # match, so a second entry under the same key would be dead data that no
+    # test can distinguish from the first.
+    seen: dict[tuple[str, str, str, int], str] = {}
+    for meta, (_, _, _, ref) in zip(metas, entries, strict=True):
+        key = (meta.owner.lower(), meta.repo.lower(), meta.path, meta.major)
+        if key in seen:
+            raise SystemExit(
+                f"{meta.owner}/{meta.repo}@{ref} and @{seen[key]} both describe major v{meta.major}"
+            )
+        seen[key] = ref
+
     OUTPUT.write_text(render(metas), encoding="utf-8")
     subprocess.run(["zig", "fmt", str(OUTPUT)], check=True)
     print(f"wrote {OUTPUT} ({len(metas)} actions)", file=sys.stderr)

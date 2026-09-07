@@ -373,6 +373,20 @@ test "DEP006: a deprecated input inside a composite step is reported" {
     try testing.expect(lint.has("DEP006"));
 }
 
+test "BP003: a composite step on an action with a retired runtime is reported" {
+    // The runtime half of BP003 reads the embedded table rather than an
+    // `action.yml` on disk, so it has to reach composite steps too.
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/create-release@v1
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("BP003"));
+}
+
 test "BP008: a deprecated workflow command inside a composite step is reported" {
     var lint = try Lint.run(
         \\runs:

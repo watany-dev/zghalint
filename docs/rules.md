@@ -145,7 +145,7 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
 | BP002 | missing-step-name | info | Step is missing a `name` field |
-| BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or a local action declaring a retired `runs.using` runtime (error) |
+| BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or an action declaring a retired `runs.using` runtime (error) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
@@ -278,8 +278,8 @@ Dockerfile の上書きなので報告しない。DEP003 が既に弾く形式�
 - SHA ピン止め（`@11bd7190...`）— タグへの逆引きにはネットワークが要る（SC005 の
   領域）。推測すると使っていないバージョンの入力を報告しかねない。
 - ブランチ参照やバージョンでないタグ（`@main`、`@v4-beta`、`@4.x-maintenance`）
-  — データはメジャーバージョン単位で持っているため対応付けられない。数字で始まる
-  参照でも、続きが数字と `.` だけでなければバージョンとは見なさない。
+  — データはメジャーバージョン単位で持っているため対応付けられない。バージョンと
+  見なすのは先頭が `v` で、続きが数字を `.` で連ねた形（`v4`、`v4.2.2`）だけ。
 
 データは各アクションの `action.yml` から生成する。対象一覧は
 `scripts/popular-actions.txt`、生成は `scripts/gen-popular-actions.py`

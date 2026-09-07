@@ -30,6 +30,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Required input written as a sequence
+        uses: actions/cache@v4
+        with:
+          path:
+            - ~/.cache
+          key: k
       - name: Action outside the dataset
         uses: some-org/unknown-action@v1
         with:

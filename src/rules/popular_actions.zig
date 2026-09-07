@@ -345,6 +345,77 @@ test "DEP005: a step with no `with:` at all reports every required input" {
     try testing.expect(std.mem.indexOf(u8, result.get(1).message, "\"key\"") != null);
 }
 
+test "DEP005: a required input written as a sequence counts as provided" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var result = try lint(arena.allocator(),
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/cache@v4
+        \\        with:
+        \\          path:
+        \\            - ~/.cache
+        \\          key: k
+        \\
+    );
+
+    try testing.expectEqual(@as(usize, 0), result.len());
+}
+
+test "DEP005 and DEP006 say nothing about a SHA-pinned reference" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // SEC001 wants every action pinned, so this is the reference shape the
+    // rules meet most often; the table is keyed by major version and cannot
+    // say which one a SHA is.
+    var result = try lint(arena.allocator(),
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f
+        \\        with:
+        \\          nonsense: 1
+        \\      - uses: actions/cache@0c907a75c2c80ebcb7f088228285e798b750cf8f
+        \\        with:
+        \\          save-always: true
+        \\
+    );
+
+    try testing.expectEqual(@as(usize, 0), result.len());
+}
+
+test "DEP005 names the action when no input is close enough to suggest" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var result = try lint(arena.allocator(),
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\          zzzzzzzz: 1
+        \\
+    );
+
+    try testing.expectEqual(@as(usize, 1), result.len());
+    try testing.expectEqualStrings("DEP005", result.get(0).rule_id);
+    try testing.expect(std.mem.indexOf(u8, result.get(0).fix_hint.?, "did you mean") == null);
+    try testing.expect(std.mem.indexOf(u8, result.get(0).fix_hint.?, "remove the input") != null);
+}
+
 test "every manifest entry is present in the generated table" {
     // The table is generated from this manifest, so a hand-edit or an
     // interrupted run that drops an entry has to fail here rather than
@@ -354,8 +425,11 @@ test "every manifest entry is present in the generated table" {
     var lines = std.mem.splitScalar(u8, manifest, '\n');
     var seen: usize = 0;
     while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
+        // The generator strips a trailing comment too, so a manifest line the
+        // generator accepts must not fail here for a reason of its own.
+        const body = raw[0 .. std.mem.indexOfScalar(u8, raw, '#') orelse raw.len];
+        const line = std.mem.trim(u8, body, " \t\r");
+        if (line.len == 0) continue;
 
         const meta = lookup(ActionRef.parse(line));
         if (meta == null) {
