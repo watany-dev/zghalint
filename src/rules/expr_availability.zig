@@ -136,18 +136,20 @@ const ContextVisitor = struct {
             .star, .index_string => return,
         };
         // A context nobody knows is EXPR002's finding, not this rule's.
-        if (catalog.lookupContext(root) == null) return;
+        // Context names are case-insensitive on GitHub, and `lookupContext` is
+        // not, so the name is normalized before either comparison.
+        const known = catalog.contextName(root) orelse return;
 
         const allowed = self.key.contexts();
         for (allowed) |name| {
-            if (std.mem.eql(u8, name, root)) return;
+            if (std.mem.eql(u8, name, known)) return;
         }
 
         const alloc = self.list.fixAllocator();
         const message = std.fmt.allocPrint(
             alloc,
             "context \"{s}\" is not available in \"{s}\". available contexts are {s}",
-            .{ root, self.key.label(), quotedList(alloc, allowed) },
+            .{ known, self.key.label(), quotedList(alloc, allowed) },
         ) catch return;
         self.list.append(.{
             .rule_id = "EXPR015",
@@ -223,6 +225,13 @@ fn scanWorkflow(comptime Visitor: type, wf: *const Workflow, list: *DiagnosticLi
         if (job.runs_on) |runs_on| {
             const v = visitor(Visitor, .job_runs_on, alloc, list);
             expr_scan.scanText(v, runs_on, expr_scan.runsOnAnchor(job));
+        } else {
+            // A sequence `runs-on:` or a runner-group mapping leaves the
+            // scalar unset, and each label carries its own span.
+            const v = visitor(Visitor, .job_runs_on, alloc, list);
+            for (job.runs_on_labels, job.runs_on_label_spans) |label, span| {
+                expr_scan.scanText(v, label, Anchor{ .fallback = span });
+            }
         }
         if (job.concurrency) |c| {
             const v = visitor(Visitor, .job_concurrency, alloc, list);
@@ -475,5 +484,90 @@ test "EXPR016: an ordinary function is available everywhere" {
         \\    runs-on: ${{ format('{0}-latest', 'ubuntu') }}
         \\    steps:
         \\      - run: echo hi
+    );
+}
+
+test "EXPR015: an uppercase context name resolves to the same rule" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ${{ SECRETS.RUNNER_LABEL }}
+        \\    steps:
+        \\      - run: echo hi
+    ,
+        "EXPR015",
+        "context \"secrets\" is not available in \"jobs.<job_id>.runs-on\"",
+    );
+}
+
+test "EXPR015: a sequence runs-on is scanned label by label" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: [self-hosted, "${{ secrets.RUNNER_LABEL }}"]
+        \\    steps:
+        \\      - run: echo hi
+    ,
+        "EXPR015",
+        "context \"secrets\" is not available in \"jobs.<job_id>.runs-on\"",
+    );
+}
+
+test "EXPR015: a job env may read secrets but not steps" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        \\      LOCK: ${{ hashFiles('**/build.zig.zon') }}
+        \\    steps:
+        \\      - run: echo hi
+    );
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    env:
+        \\      READY: ${{ steps.setup.outputs.ready }}
+        \\    steps:
+        \\      - run: echo hi
+    ,
+        "EXPR015",
+        "context \"steps\" is not available in \"jobs.<job_id>.env\"",
+    );
+}
+
+test "EXPR016: a status function in a step env is reported" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\        env:
+        \\          OK: ${{ success() }}
+    ,
+        "EXPR016",
+        "function \"success()\" is not available in \"jobs.<job_id>.steps.*.env\"",
+    );
+}
+
+test "EXPR015: a reusable workflow call's with: is a job-level key" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      token: ${{ secrets.NPM_TOKEN }}
+    ,
+        "EXPR015",
+        "context \"secrets\" is not available in \"jobs.<job_id>.with\"",
     );
 }

@@ -32,6 +32,14 @@ fn Walk(comptime Visitor: type) type {
 
         const Self = @This();
 
+        comptime {
+            // A visitor whose hook is misspelled or not `pub` would walk every
+            // expression and report nothing, silently disabling its rule.
+            if (!@hasDecl(Visitor, "checkPath") and !@hasDecl(Visitor, "checkCall")) {
+                @compileError(@typeName(Visitor) ++ " declares neither a pub checkPath nor a pub checkCall");
+            }
+        }
+
         fn spanOf(self: Self, node: *const ExprNode) Span {
             const start = self.expr_offset + node.start_byte;
             const len = if (node.end_byte > node.start_byte) node.end_byte - node.start_byte else 0;
@@ -148,7 +156,8 @@ pub fn scanJobFields(visitor: anytype, job: *const Job) void {
 }
 
 /// `runs-on` keeps its span and style in two separate fields rather than a
-/// `ScalarValueMeta`, and it is unset for a sequence `runs-on:`.
+/// `ScalarValueMeta`. The span is set whenever `job.runs_on` is, so the
+/// fallback only satisfies `Anchor`'s shape.
 pub fn runsOnAnchor(job: *const Job) Anchor {
     const span = job.runs_on_value_span orelse return Anchor{ .fallback = job.span };
     return Anchor.fromMeta(.{ .value_span = span, .style = job.runs_on_value_style }, job.span);
