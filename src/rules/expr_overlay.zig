@@ -97,6 +97,15 @@ pub fn buildSteps(alloc: std.mem.Allocator, steps: []const Step, index: usize) ?
     return strictObject(alloc, props.finish() orelse return null);
 }
 
+/// A composite action's `inputs:` carry no `type:`, so every declared name is
+/// a string. Only the names matter here; whether a name exists at all is
+/// EXPR013's business elsewhere.
+pub fn buildStringInputs(alloc: std.mem.Allocator, names: []const []const u8) ?TypeRef {
+    var props = PropList{ .alloc = alloc };
+    for (names) |name| props.put(name, string);
+    return strictObject(alloc, props.finish() orelse return null);
+}
+
 /// `include` and `exclude` are matrix keys in the YAML but not axes: the names
 /// they carry live one level down, inside each entry.
 fn isMetaAxis(name: []const u8) bool {

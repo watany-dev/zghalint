@@ -538,19 +538,40 @@ fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
     return false;
 }
 
+/// The repository root, i.e. the nearest ancestor of the linted files that
+/// holds a `.git`. Both the PERF001 lockfile probe and DEP004's local action
+/// lookups resolve paths against it, so it is computed once.
+///
+/// Null when the arguments span several repositories: pinning every `uses: ./…`
+/// to one of them would make DEP004 report missing manifests for the others.
+fn resolveWorkspaceRoot(arena: std.mem.Allocator, files: []const []const u8) ?[]const u8 {
+    const hint = if (files.len > 0) files[0] else ".";
+    const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch return null;
+
+    // Files in a directory already checked cannot resolve to another root, so
+    // the common case (one directory of workflows) costs a single walk.
+    var last_dir = std.fs.path.dirname(hint) orelse ".";
+    for (files) |file| {
+        const dir = std.fs.path.dirname(file) orelse ".";
+        if (std.mem.eql(u8, dir, last_dir)) continue;
+        last_dir = dir;
+        const other = zghalint.workspace.findWorkspaceRoot(arena, file) catch return null;
+        if (!std.mem.eql(u8, other, root)) return null;
+    }
+    return root;
+}
+
 /// Errors are swallowed: PERF001 simply emits diagnostics without a fix when
 /// probing fails. Config overrides take precedence over probe results.
 fn initWorkspaceContext(
     arena: std.mem.Allocator,
-    files: []const []const u8,
+    root: []const u8,
     config: *const Config,
 ) void {
     // PERF001 is the sole consumer of the probe, so a disabled rule makes the
-    // repo-root walk and the directory scan pure startup cost.
+    // directory scan pure startup cost.
     if (!config.isRuleEnabled("PERF001")) return;
 
-    const hint = if (files.len > 0) files[0] else ".";
-    const root = zghalint.workspace.findWorkspaceRoot(arena, hint) catch return;
     var ctx = zghalint.workspace.detectFromRoot(arena, root) catch zghalint.workspace.Context{};
 
     if (config.perf001.node_cache_manager) |mgr| {
@@ -634,8 +655,16 @@ pub fn main() !u8 {
     // `cache: <manager>` fixes for setup-node / setup-python / setup-go.
     var workspace_arena = std.heap.ArenaAllocator.init(allocator);
     defer workspace_arena.deinit();
-    initWorkspaceContext(workspace_arena.allocator(), files, &config);
+    const workspace_root = resolveWorkspaceRoot(workspace_arena.allocator(), files);
+    if (workspace_root) |root| {
+        initWorkspaceContext(workspace_arena.allocator(), root, &config);
+        // DEP004 and BP003 read `action.yml` of local actions; both resolve
+        // `uses: ./path` against the repository root. Disk only, so this stays
+        // active under --quick / --offline.
+        zghalint.rules.local_action.init(allocator, root);
+    }
     defer zghalint.workspace.clear();
+    defer zghalint.rules.local_action.deinit();
 
     // RUNNER002 cannot enumerate a self-hosted fleet, so the user's own labels
     // come from `runner.labels` in .zghalint.yml.

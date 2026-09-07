@@ -7,6 +7,7 @@ const diagnostics_mod = @import("../diagnostics.zig");
 const fix_builder = @import("../fix/builder.zig");
 const util = @import("../util.zig");
 const spans = @import("spans.zig");
+const local_action = @import("local_action.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -164,9 +165,22 @@ fn buildDeprecatedActionFix(
     };
 }
 
+/// BP003 has two halves. `deprecated_actions` above names the few actions
+/// whose replacement is known, which is what makes a concrete `@vN` autofix
+/// possible; it says nothing about the rest. The runtime check below is the
+/// exhaustive complement: any action whose `runs.using` GitHub has retired is
+/// reported, without a version to upgrade to, because there is none to name.
+///
+/// Only local actions can be checked this way: reading a remote action's
+/// `runs.using` needs the action metadata dataset of #97 (DEP005).
 fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
-    if (action_ref.is_local or action_ref.is_docker) return;
+    if (action_ref.is_docker) return;
+
+    if (action_ref.is_local) {
+        checkDeprecatedRuntime(step, action_ref.raw, diag_list);
+        return;
+    }
 
     const action_name = util.actionBaseName(action_ref.raw);
     const version = action_ref.ref orelse return;
@@ -188,6 +202,37 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
             return;
         }
     }
+}
+
+/// A retired runtime cannot be fixed from the caller's side — the action's own
+/// `action.yml` has to change — so this half reports without a fix. Severity is
+/// `error` rather than BP003's default `warning`: the runtime is gone, not
+/// merely old.
+fn checkDeprecatedRuntime(step: *const Step, raw: []const u8, diag_list: *DiagnosticList) void {
+    const resolution = local_action.resolve(raw);
+    if (resolution != .found) return;
+    const using = resolution.found.using orelse return;
+    if (!local_action.isDeprecatedRuntime(using)) return;
+
+    const alloc = diag_list.fixAllocator();
+    const message = std.fmt.allocPrint(
+        alloc,
+        "local action \"{s}\" declares the retired runtime \"{s}\"",
+        .{ raw, using },
+    ) catch return;
+    const hint = std.fmt.allocPrint(
+        alloc,
+        "port the action to `using: {s}` in \"{s}/action.yml\"",
+        .{ local_action.recommended_runtime, raw },
+    ) catch return;
+
+    diag_list.append(.{
+        .rule_id = "BP003",
+        .severity = .@"error",
+        .message = message,
+        .span = spans.usesSpan(step),
+        .fix_hint = hint,
+    }) catch return;
 }
 
 fn buildCrossPlatformShellFix(list: *DiagnosticList, step: *const Step) ?Fix {
@@ -267,7 +312,9 @@ fn lookupShell(shell: []const u8) ?KnownShell {
     return null;
 }
 
-fn checkShellName(shell: []const u8, span: Span, diag_list: *DiagnosticList) void {
+/// Public because composite action steps carry their own `shell:` and are
+/// checked outside BP004's workflow walk (#254).
+pub fn checkShellName(shell: []const u8, span: Span, diag_list: *DiagnosticList) void {
     if (isOpaqueShell(shell)) return;
     if (lookupShell(shell) != null) return;
 
@@ -744,11 +791,97 @@ test "BP003: no warning for current version" {
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "BP003: no warning for local actions" {
+test "BP003: a local action is never matched against the version table" {
+    // Without a workspace root the store answers `unavailable`, so nothing is
+    // reported; the version table never applies to a local reference anyway.
     const step = Step{ .uses = ActionRef.parse("./local-action") };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+/// Writes an `action.yml` into a temporary repository root and points the
+/// local action store at it, so BP003 can read a real `runs.using`.
+fn runtimeFixture(manifest: []const u8) !std.testing.TmpDir {
+    var tmp = std.testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+
+    try tmp.dir.makePath("legacy");
+    try tmp.dir.writeFile(.{ .sub_path = "legacy/action.yml", .data = manifest });
+
+    const abs = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(abs);
+    local_action.init(std.testing.allocator, abs);
+
+    return tmp;
+}
+
+test "BP003: a local action on a retired runtime is an error" {
+    var tmp = try runtimeFixture(
+        \\name: Legacy
+        \\description: d
+        \\runs:
+        \\  using: node16
+        \\  main: index.js
+        \\
+    );
+    defer tmp.cleanup();
+    defer local_action.deinit();
+
+    const step = Step{ .uses = ActionRef.parse("./legacy") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("BP003", diags.get(0).rule_id);
+    try std.testing.expect(diags.get(0).severity == .@"error");
+    try std.testing.expect(std.mem.indexOf(u8, diags.get(0).message, "node16") != null);
+    try std.testing.expect(std.mem.indexOf(u8, diags.get(0).fix_hint.?, "node24") != null);
+    // The action's own file has to change, so there is nothing to rewrite here.
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP003: a local action on a supported runtime is not reported" {
+    var tmp = try runtimeFixture(
+        \\name: Modern
+        \\description: d
+        \\runs:
+        \\  using: node24
+        \\  main: index.js
+        \\
+    );
+    defer tmp.cleanup();
+    defer local_action.deinit();
+
+    const step = Step{ .uses = ActionRef.parse("./legacy") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP003: a composite local action has no runtime to retire" {
+    var tmp = try runtimeFixture(
+        \\name: Composite
+        \\description: d
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - run: echo hi
+        \\      shell: bash
+        \\
+    );
+    defer tmp.cleanup();
+    defer local_action.deinit();
+
+    const step = Step{ .uses = ActionRef.parse("./legacy") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 

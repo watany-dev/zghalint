@@ -2,13 +2,15 @@
 //!
 //! Action metadata is not a workflow, so — like `dependabot.zig` — these
 //! checks run over the raw YAML document instead of the workflow rule engine.
-//! Composite `runs.steps` are only checked for their shape here; applying the
-//! existing step rules to them is #254.
+//! Composite `runs.steps` are checked for their shape here and then handed to
+//! `composite_steps.zig`, which runs the workflow step rules over them (#254).
 
 const std = @import("std");
 const engine = @import("engine.zig");
 const yaml_types = @import("../yaml/types.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
+const composite_steps = @import("composite_steps.zig");
+const local_action = @import("local_action.zig");
 const util = @import("../util.zig");
 
 const Rule = engine.Rule;
@@ -71,7 +73,10 @@ const output_keys = [_][]const u8{
 /// `node_using`) and reported as deprecated rather than invalid.
 const supported_using = [_][]const u8{ "composite", "docker", "node20", "node24" };
 const node_using = [_][]const u8{ "node12", "node16", "node20", "node24" };
-const deprecated_node_using = [_][]const u8{ "node12", "node16" };
+/// Shared with BP003, which reports the same retired runtimes from the
+/// caller's side (`uses: ./path`). The table lives in `local_action.zig`
+/// because this module sits above the step rules in the import graph.
+const deprecated_node_using = &local_action.deprecated_runtimes;
 
 const using_expected = "\"node20\", \"node24\", \"docker\", \"composite\"";
 
@@ -251,7 +256,7 @@ fn checkRuns(root: Mapping, list: *DiagnosticList) ?Runtime {
         reportUnknownUsing(list, using, using_entry.value.getSpan());
         return null;
     };
-    if (contains(&deprecated_node_using, using)) {
+    if (contains(deprecated_node_using, using)) {
         reportDeprecatedUsing(list, using, using_entry.value.getSpan());
     }
 
@@ -275,7 +280,7 @@ fn checkRuns(root: Mapping, list: *DiagnosticList) ?Runtime {
             checkUnknownKeys(list, runs, &composite_runs_keys, context);
             if (runs.get("steps")) |steps| {
                 switch (steps) {
-                    .sequence => {},
+                    .sequence => composite_steps.checkCompositeSteps(root, steps, list),
                     else => reportInvalid(
                         list,
                         "\"steps\" must be a sequence of steps",
