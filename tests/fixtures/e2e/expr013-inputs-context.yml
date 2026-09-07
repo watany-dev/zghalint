@@ -1,0 +1,22 @@
+# zghalint:expect EXPR013@18 EXPR013@20
+name: inputs context
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: string
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Misspelled input
+        run: echo "${{ inputs.enviroment }}"
+      - name: Undeclared input
+        run: echo "${{ inputs.version }}"
+      - name: Declared input
+        run: echo "${{ inputs.environment }}"
