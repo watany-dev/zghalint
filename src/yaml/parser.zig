@@ -430,6 +430,24 @@ test "parse simple mapping" {
     }
 }
 
+test "parse mapping with a UTF-8 BOM prefix" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(arena.allocator(), "\xEF\xBB\xBFname: CI\non: push\n");
+    const node = try parser.parse();
+    switch (node) {
+        .mapping => |m| {
+            try std.testing.expectEqual(@as(usize, 2), m.entries.len);
+            try std.testing.expectEqualStrings("name", m.entries[0].key.value);
+            try std.testing.expectEqual(@as(u32, 1), m.entries[0].key.span.start_line);
+            try std.testing.expectEqual(@as(u32, 1), m.entries[0].key.span.start_col);
+            try std.testing.expectEqualStrings("on", m.entries[1].key.value);
+            try std.testing.expectEqual(@as(u32, 2), m.entries[1].key.span.start_line);
+        },
+        else => return error.UnexpectedToken,
+    }
+}
+
 test "parse multi-key mapping" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

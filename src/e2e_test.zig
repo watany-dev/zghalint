@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const yaml_parser = @import("yaml/parser.zig");
+const tokenizer = @import("yaml/tokenizer.zig");
 const workflow_parser = @import("workflow/parser.zig");
 const registry = @import("rules/registry.zig");
 const action_metadata = @import("rules/action_metadata.zig");
@@ -49,7 +50,12 @@ const Directives = struct {
 
     fn parse(alloc: std.mem.Allocator, source: []const u8) !Directives {
         var self = Directives{};
-        var lines = std.mem.splitScalar(u8, source, '\n');
+        // A fixture may carry a UTF-8 BOM (see `bom-prefixed.yml`); the
+        // linter skips it, so the directive scan has to as well or the
+        // first `#` line would not be recognised as a comment.
+        const bom = tokenizer.Tokenizer.utf8_bom;
+        const body_source = if (std.mem.startsWith(u8, source, bom)) source[bom.len..] else source;
+        var lines = std.mem.splitScalar(u8, body_source, '\n');
         while (lines.next()) |raw| {
             const line = std.mem.trim(u8, raw, " \t\r");
             if (line.len == 0) continue;
