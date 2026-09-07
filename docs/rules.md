@@ -726,6 +726,7 @@ callers, and the calls made against it.
 | RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
 | RW003 | workflow-call-input-values | error | A job calling a local reusable workflow passes an input it does not declare, or a value that does not match the declared type |
 | RW004 | workflow-call-secrets | error | A job calling a local reusable workflow omits one of its `required` secrets, or passes a secret it does not declare |
+| RW005 | workflow-call-outputs | error | A `workflow_call` output reads a job or job output that does not exist, or a caller reads an output the called local workflow does not declare |
 
 ### RW001 workflow-call-inputs
 
@@ -860,6 +861,52 @@ call is checked.
 
 This is the caller-side counterpart of EXPR014, which checks `secrets.<name>`
 uses inside the called workflow against the same declaration.
+
+### RW005 workflow-call-outputs
+
+The outputs of a reusable workflow are checked from both sides.
+
+In the reusable workflow, `on.workflow_call.outputs.<name>.value` may only read
+`jobs.<id>.outputs.<x>`, and both names must exist:
+
+```yaml
+# .github/workflows/reusable.yml
+on:
+  workflow_call:
+    outputs:
+      version:
+        value: ${{ jobs.build.outputs.version }}
+      bad:
+        value: ${{ jobs.nonexistent.outputs.x }}   # no such job
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=1" >> "$GITHUB_OUTPUT"
+```
+
+In the caller, `needs.<job>.outputs.<name>` on a job that calls a local
+reusable workflow must name an output that workflow declares:
+
+```yaml
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+  use:
+    needs: [call]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ needs.call.outputs.ver }}"   # not declared by the called workflow
+```
+
+EXPR012 checks the same references against a plain
+job's `outputs:`; it hands a job with a `uses:` over to this rule because the
+declaration lives in another file. A job whose outputs come from a further
+reusable workflow is not resolved on the definition side, and, like
+[RW002](#rw002-workflow-call-required-inputs), only a **local** call is checked.
 
 ---
 

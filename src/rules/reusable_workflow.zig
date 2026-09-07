@@ -1,6 +1,9 @@
 const std = @import("std");
 const engine = @import("engine.zig");
 const called_workflow = @import("called_workflow.zig");
+const expr_check = @import("expr_check.zig");
+const expr_scan = @import("expr_scan.zig");
+const spans = @import("spans.zig");
 const workflow_types = @import("../workflow/types.zig");
 const util = @import("../util.zig");
 const test_support = @import("../test_support.zig");
@@ -9,6 +12,8 @@ const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
+const Anchor = spans.Anchor;
+const Span = spans.Span;
 const WorkflowCallInputProblem = workflow_types.WorkflowCallInputProblem;
 const CallArg = workflow_types.CallArg;
 
@@ -301,6 +306,202 @@ fn checkCallSecrets(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
+/// Job IDs and context properties resolve case-insensitively on the runner, so
+/// a case difference is never a finding.
+fn eqlId(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
+}
+
+/// Only a plain identifier names something to resolve; a globbed or computed
+/// segment (`jobs.*`, `needs[matrix.job]`) has no literal name.
+fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
+    const seg = segment orelse return null;
+    return switch (seg) {
+        .ident => |name| name,
+        .index_string => |name| name,
+        .star => null,
+    };
+}
+
+fn findJob(wf: *const Workflow, job_id: []const u8) ?*const Job {
+    for (wf.jobs) |*job| {
+        if (eqlId(job.id, job_id)) return job;
+    }
+    return null;
+}
+
+fn suggestionSuffix(alloc: std.mem.Allocator, name: []const u8, candidates: []const []const u8) []const u8 {
+    const suggestion = util.didYouMean(name, candidates) orelse return "";
+    return std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{suggestion}) catch "";
+}
+
+/// RW005, definition side: `on.workflow_call.outputs.<name>.value` may only
+/// read `jobs.<id>.outputs.<x>` of this workflow, and both names must exist.
+const OutputValueResolver = struct {
+    /// Backs the expression parse trees; messages go to the list's own arena.
+    alloc: std.mem.Allocator,
+    wf: *const Workflow,
+    list: *DiagnosticList,
+
+    pub fn checkPath(self: OutputValueResolver, path: []const u8, span: Span) void {
+        var iter = expr_check.SegmentIter{ .path = path };
+        const root = identSegment(iter.next()) orelse return;
+        // `jobs` is the only context a `value:` can read; EXPR015 reports the
+        // others.
+        if (!eqlId(root, "jobs")) return;
+
+        const job_id = identSegment(iter.next()) orelse return;
+        const job = findJob(self.wf, job_id) orelse {
+            self.reportUnknownJob(job_id, span);
+            return;
+        };
+        if (!eqlId(identSegment(iter.next()) orelse return, "outputs")) return;
+        const output = identSegment(iter.next()) orelse return;
+
+        // A job that itself calls a workflow declares its outputs in that
+        // file, which this workflow's parse tree does not carry.
+        if (job.uses != null) return;
+        if (hasName(job.outputs, output)) return;
+        self.reportUnknownOutput(job, output, span);
+    }
+
+    fn reportUnknownJob(self: OutputValueResolver, job_id: []const u8, span: Span) void {
+        const alloc = self.list.fixAllocator();
+        const names = alloc.alloc([]const u8, self.wf.jobs.len) catch return;
+        for (self.wf.jobs, names) |*job, *name| name.* = job.id;
+        const message = std.fmt.allocPrint(
+            alloc,
+            "\"{s}\" is not a job in this workflow{s}",
+            .{ job_id, suggestionSuffix(alloc, job_id, names) },
+        ) catch return;
+
+        self.list.append(.{
+            .rule_id = "RW005",
+            .severity = .@"error",
+            .message = message,
+            .span = span,
+            .fix_hint = "reference a job defined in this workflow",
+        }) catch return;
+    }
+
+    fn reportUnknownOutput(self: OutputValueResolver, job: *const Job, output: []const u8, span: Span) void {
+        const alloc = self.list.fixAllocator();
+        const message = std.fmt.allocPrint(
+            alloc,
+            "output \"{s}\" is not defined in job \"{s}\"{s}",
+            .{ output, job.id, suggestionSuffix(alloc, output, declaredNames(alloc, job.outputs)) },
+        ) catch return;
+
+        self.list.append(.{
+            .rule_id = "RW005",
+            .severity = .@"error",
+            .message = message,
+            .span = span,
+            .fix_hint = "declare the output under the referenced job's `outputs:`",
+        }) catch return;
+    }
+};
+
+/// RW005, call side: `needs.<job>.outputs.<name>` where `<job>` calls a local
+/// reusable workflow. EXPR012 hands these over because the declaration lives
+/// in the called file.
+const NeedsOutputResolver = struct {
+    alloc: std.mem.Allocator,
+    wf: *const Workflow,
+    job: *const Job,
+    list: *DiagnosticList,
+
+    pub fn checkPath(self: NeedsOutputResolver, path: []const u8, span: Span) void {
+        var iter = expr_check.SegmentIter{ .path = path };
+        const root = identSegment(iter.next()) orelse return;
+        if (!eqlId(root, "needs")) return;
+
+        const job_id = identSegment(iter.next()) orelse return;
+        // A job the current one does not need is EXPR012's finding; reporting
+        // its outputs too would double up on one mistake.
+        if (!self.isNeeded(job_id)) return;
+        const dep = findJob(self.wf, job_id) orelse return;
+        const uses = dep.uses orelse return;
+
+        if (!eqlId(identSegment(iter.next()) orelse return, "outputs")) return;
+        const output = identSegment(iter.next()) orelse return;
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const called = called_workflow.load(arena.allocator(), uses) orelse return;
+        if (hasName(called.outputs, output)) return;
+
+        self.reportUnknownOutput(dep, called.outputs, output, span);
+    }
+
+    fn isNeeded(self: NeedsOutputResolver, job_id: []const u8) bool {
+        for (self.job.needs) |dep| {
+            if (eqlId(dep, job_id)) return true;
+        }
+        return false;
+    }
+
+    fn reportUnknownOutput(
+        self: NeedsOutputResolver,
+        dep: *const Job,
+        declared: []const workflow_types.CallOutputDef,
+        output: []const u8,
+        span: Span,
+    ) void {
+        const alloc = self.list.fixAllocator();
+        const message = std.fmt.allocPrint(
+            alloc,
+            "output \"{s}\" is not defined in \"{s}\" called by job \"{s}\"{s}",
+            .{ output, dep.uses.?, dep.id, suggestionSuffix(alloc, output, declaredNames(alloc, declared)) },
+        ) catch return;
+
+        self.list.append(.{
+            .rule_id = "RW005",
+            .severity = .@"error",
+            .message = message,
+            .span = span,
+            .fix_hint = "declare the output under the called workflow's `workflow_call.outputs:`",
+        }) catch return;
+    }
+};
+
+fn callsLocalWorkflow(wf: *const Workflow) bool {
+    for (wf.jobs) |*job| {
+        const uses = job.uses orelse continue;
+        if (called_workflow.localPath(uses) != null) return true;
+    }
+    return false;
+}
+
+fn checkCallOutputs(wf: *const Workflow, list: *DiagnosticList) void {
+    // The engine hands rules no arena (#159), so this one owns the memory the
+    // expression parser needs and frees it once the workflow is scanned.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const resolver = OutputValueResolver{ .alloc = alloc, .wf = wf, .list = list };
+    for (wf.on.events) |event| {
+        if (event.event != .workflow_call) continue;
+        for (event.workflow_call_outputs) |output| {
+            const value = output.value orelse continue;
+            expr_scan.scanText(resolver, value, Anchor.fromMeta(output.value_meta, output.name_span));
+        }
+    }
+
+    // Without a local call there is no `needs.<job>.outputs` this rule owns,
+    // and scanning every expression of the workflow would be pure overhead.
+    if (!callsLocalWorkflow(wf)) return;
+    for (wf.jobs) |*job| {
+        expr_scan.scanJob(NeedsOutputResolver{
+            .alloc = alloc,
+            .wf = wf,
+            .job = job,
+            .list = list,
+        }, job);
+    }
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "RW001",
@@ -333,6 +534,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .reusable_workflow,
         .check_workflow = checkCallSecrets,
+    },
+    .{
+        .id = "RW005",
+        .name = "workflow-call-outputs",
+        .description = "Outputs of a reusable workflow must name jobs that exist, and callers must reference declared outputs",
+        .severity = .@"error",
+        .category = .reusable_workflow,
+        .check_workflow = checkCallOutputs,
     },
 };
 
@@ -1009,4 +1218,191 @@ test "RW004: a near-miss secret name carries a suggestion" {
 
     try testing.expectEqual(@as(usize, 2), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(1).fix_hint.?, "npm_token") != null);
+}
+
+fn runCallOutputCheck(arena: std.mem.Allocator, source: []const u8, list: *DiagnosticList) !void {
+    const wf = try test_support.parseWorkflowSource(arena, source);
+    checkCallOutputs(&wf, list);
+}
+
+fn expectOutputDiagnostics(source: []const u8, expected: []const []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallOutputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(expected.len, diags.len());
+    for (expected, 0..) |needle, i| {
+        const diag = diags.get(i);
+        try testing.expectEqualStrings("RW005", diag.rule_id);
+        try testing.expectEqual(engine.Severity.@"error", diag.severity);
+        if (std.mem.indexOf(u8, diag.message, needle) == null) {
+            std.debug.print("message '{s}' does not contain '{s}'\n", .{ diag.message, needle });
+            return error.UnexpectedMessage;
+        }
+    }
+}
+
+test "RW005: an output value naming a missing job is reported" {
+    try expectOutputDiagnostics(
+        \\on:
+        \\  workflow_call:
+        \\    outputs:
+        \\      version:
+        \\        value: ${{ jobs.build.outputs.version }}
+        \\      bad:
+        \\        value: ${{ jobs.nonexistent.outputs.x }}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    outputs:
+        \\      version: ${{ steps.v.outputs.version }}
+        \\    steps:
+        \\      - id: v
+        \\        run: echo "version=1" >> "$GITHUB_OUTPUT"
+        \\
+    , &.{"\"nonexistent\" is not a job in this workflow"});
+}
+
+test "RW005: an output value naming an output the job never declares is reported" {
+    try expectOutputDiagnostics(
+        \\on:
+        \\  workflow_call:
+        \\    outputs:
+        \\      version:
+        \\        value: ${{ jobs.build.outputs.versio }}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    outputs:
+        \\      version: ${{ steps.v.outputs.version }}
+        \\    steps:
+        \\      - id: v
+        \\        run: echo "version=1" >> "$GITHUB_OUTPUT"
+        \\
+    , &.{"output \"versio\" is not defined in job \"build\". did you mean \"version\"?"});
+}
+
+test "RW005: an output value of a job that itself calls a workflow is not checked" {
+    try expectOutputDiagnostics(
+        \\on:
+        \\  workflow_call:
+        \\    outputs:
+        \\      version:
+        \\        value: ${{ jobs.call.outputs.version }}
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/other.yml
+        \\
+    , &.{});
+}
+
+const output_workflow =
+    \\on:
+    \\  workflow_call:
+    \\    outputs:
+    \\      version:
+    \\        value: ${{ jobs.build.outputs.version }}
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    outputs:
+    \\      version: ${{ steps.v.outputs.version }}
+    \\    steps:
+    \\      - id: v
+    \\        run: echo "version=1" >> "$GITHUB_OUTPUT"
+    \\
+;
+
+test "RW005: a caller referencing an undeclared output of a called workflow is reported" {
+    called_source = output_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    try expectOutputDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\  use:
+        \\    needs: [call]
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ needs.call.outputs.versio }}"
+        \\
+    , &.{"output \"versio\" is not defined in \"./.github/workflows/reusable.yml\" called by job \"call\". did you mean \"version\"?"});
+}
+
+test "RW005: a caller referencing a declared output is accepted" {
+    called_source = output_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    try expectOutputDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\  use:
+        \\    needs: [call]
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ needs.call.outputs.version }}"
+        \\
+    , &.{});
+}
+
+test "RW005: a caller of an unreadable or remote workflow is not checked" {
+    called_source = output_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    try expectOutputDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: octo-org/repo/.github/workflows/ci.yml@main
+        \\  use:
+        \\    needs: [call]
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ needs.call.outputs.ver }}"
+        \\
+    , &.{});
+}
+
+test "RW005: outputs of a plain job are left to EXPR012" {
+    try expectOutputDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\  use:
+        \\    needs: [build]
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ needs.build.outputs.ver }}"
+        \\
+    , &.{});
+}
+
+test "RW005: a job the caller does not need is left to EXPR012" {
+    called_source = output_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    try expectOutputDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\  use:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ needs.call.outputs.ver }}"
+        \\
+    , &.{});
 }
