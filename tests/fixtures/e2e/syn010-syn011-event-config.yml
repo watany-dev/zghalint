@@ -1,0 +1,31 @@
+# zghalint:expect SYN010@6 SYN010@11 SYN011@7 SYN011@12 SYN011@17 SYN011@20
+# zghalint:forbid SYN009
+name: event types and filters
+on:
+  issues:
+    types: [open, closed]
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths: ['src/**']
+    types: [synchronised]
+    tags: [v*]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches-ignore: [wip/**]
+    paths: ['src/**']
+  push:
+    branches: [main]
+    brancehs: [release]
+  repository_dispatch:
+    types: [deploy-please]
+  schedule:
+    - cron: '0 0 * * *'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Say hello
+        run: echo ok
