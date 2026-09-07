@@ -248,10 +248,12 @@ pub const strategy: Type = .{
     },
 };
 
-/// `steps` / `matrix` / `needs` / `inputs` / `jobs` stay loose until the
-/// contextual overlay is wired in (#129); strictness before then would be a
-/// false positive.
-pub const loose_context: Type = .{ .kind = .object, .shape = .loose };
+/// The fallback for a context whose keys the workflow file decides. `steps` /
+/// `matrix` / `needs` / `inputs` get a strict overlay from `expr_overlay` when
+/// the workflow declares one, and land here when it does not; `jobs` (reusable
+/// workflow outputs) has no overlay at all. Strictness here would be a false
+/// positive.
+pub const unknown_context: Type = .{ .kind = .object, .shape = .unknown };
 
 const ContextEntry = struct { name: []const u8, ty: TypeRef };
 
@@ -259,14 +261,14 @@ const ContextEntry = struct { name: []const u8, ty: TypeRef };
 const contexts = [_]ContextEntry{
     .{ .name = "env", .ty = &t.type_map_string },
     .{ .name = "github", .ty = &github },
-    .{ .name = "inputs", .ty = &loose_context },
+    .{ .name = "inputs", .ty = &unknown_context },
     .{ .name = "job", .ty = &job },
-    .{ .name = "jobs", .ty = &loose_context },
-    .{ .name = "matrix", .ty = &loose_context },
-    .{ .name = "needs", .ty = &loose_context },
+    .{ .name = "jobs", .ty = &unknown_context },
+    .{ .name = "matrix", .ty = &unknown_context },
+    .{ .name = "needs", .ty = &unknown_context },
     .{ .name = "runner", .ty = &runner },
     .{ .name = "secrets", .ty = &t.type_map_string },
-    .{ .name = "steps", .ty = &loose_context },
+    .{ .name = "steps", .ty = &unknown_context },
     .{ .name = "strategy", .ty = &strategy },
     .{ .name = "vars", .ty = &t.type_map_string },
 };
@@ -276,14 +278,41 @@ pub fn lookupContext(name: []const u8) ?TypeRef {
     return ctx.ty;
 }
 
+/// What a parameter accepts. Deliberately coarse: GitHub coerces scalars for
+/// every builtin, so only the containers a parameter can never take are
+/// modelled and EXPR018 stays free of false positives (ADR D3, #162).
+pub const ArgKind = enum {
+    any,
+    /// Rejects object and array.
+    string,
+    /// `contains` / `join` first parameter: rejects object.
+    string_or_array,
+
+    pub fn display(self: ArgKind) []const u8 {
+        return switch (self) {
+            .any => "any value",
+            .string => "a string",
+            .string_or_array => "a string or an array",
+        };
+    }
+};
+
 /// One entry per function: every overload of a GitHub Actions function shares
-/// a return type, so only the accepted argument count varies. Argument types
-/// are EXPR018's job (#162) and are not modelled here.
+/// a return type, so only the accepted argument count varies.
 pub const FuncSig = struct {
     name: []const u8,
     min_args: u8,
     max_args: u8,
     ret: TypeRef,
+    /// Types of the leading parameters, positionally.
+    args: []const ArgKind = &.{},
+    /// Type of every argument past `args`, for the variadic tail.
+    rest: ArgKind = .any,
+
+    pub fn argKind(self: *const FuncSig, index: usize) ArgKind {
+        if (index < self.args.len) return self.args[index];
+        return self.rest;
+    }
 };
 
 /// Sorted by name. Lookup is ASCII case-insensitive, matching GitHub Actions
@@ -292,20 +321,27 @@ const functions = [_]FuncSig{
     .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "case", .min_args = 3, .max_args = 255, .ret = any },
-    .{ .name = "contains", .min_args = 2, .max_args = 2, .ret = boolean },
-    .{ .name = "endsWith", .min_args = 2, .max_args = 2, .ret = boolean },
+    .{ .name = "contains", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{.string_or_array} },
+    .{ .name = "endsWith", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{ .string, .string } },
     .{ .name = "failure", .min_args = 0, .max_args = 0, .ret = boolean },
-    .{ .name = "format", .min_args = 1, .max_args = 255, .ret = string },
-    .{ .name = "fromJSON", .min_args = 1, .max_args = 1, .ret = any },
-    .{ .name = "hashFiles", .min_args = 1, .max_args = 255, .ret = string },
-    .{ .name = "join", .min_args = 1, .max_args = 2, .ret = string },
-    .{ .name = "startsWith", .min_args = 2, .max_args = 2, .ret = boolean },
+    .{ .name = "format", .min_args = 1, .max_args = 255, .ret = string, .args = &.{.string} },
+    .{ .name = "fromJSON", .min_args = 1, .max_args = 1, .ret = any, .args = &.{.string} },
+    .{ .name = "hashFiles", .min_args = 1, .max_args = 255, .ret = string, .rest = .string },
+    .{ .name = "join", .min_args = 1, .max_args = 2, .ret = string, .args = &.{ .string_or_array, .string } },
+    .{ .name = "startsWith", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{ .string, .string } },
     .{ .name = "success", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "toJSON", .min_args = 1, .max_args = 1, .ret = string },
 };
 
 pub fn lookupFunction(name: []const u8) ?*const FuncSig {
     return t.findByNameAsciiCaseInsensitive(FuncSig, &functions, name);
+}
+
+/// True for a context that fell back to `unknown_context` because the workflow
+/// declared nothing to overlay. Its `object` kind says "unknown", not "this is
+/// an object", so EXPR018 must stay silent on it (ADR D3, #162).
+pub fn isUnmodelledObject(ty: TypeRef) bool {
+    return ty.kind == .object and ty.shape == .unknown;
 }
 
 fn isSorted(comptime T: type, items: []const T) bool {
@@ -380,10 +416,34 @@ test "catalog: arity of overloaded join" {
     try std.testing.expectEqual(@as(u8, 2), sig.max_args);
 }
 
-test "catalog: contexts awaiting overlay stay loose" {
+test "catalog: argKind covers fixed and variadic parameters" {
+    const fmt = lookupFunction("format").?;
+    try std.testing.expectEqual(ArgKind.string, fmt.argKind(0));
+    try std.testing.expectEqual(ArgKind.any, fmt.argKind(1));
+    try std.testing.expectEqual(ArgKind.any, fmt.argKind(9));
+
+    const hash = lookupFunction("hashFiles").?;
+    try std.testing.expectEqual(ArgKind.string, hash.argKind(0));
+    try std.testing.expectEqual(ArgKind.string, hash.argKind(3));
+
+    const cont = lookupFunction("contains").?;
+    try std.testing.expectEqual(ArgKind.string_or_array, cont.argKind(0));
+    try std.testing.expectEqual(ArgKind.any, cont.argKind(1));
+
+    // A function with no declared parameters takes anything.
+    try std.testing.expectEqual(ArgKind.any, lookupFunction("toJSON").?.argKind(0));
+}
+
+test "catalog: isUnmodelledObject singles out the overlay fallback" {
+    try std.testing.expect(isUnmodelledObject(lookupContext("jobs").?));
+    try std.testing.expect(!isUnmodelledObject(&github_event));
+    try std.testing.expect(!isUnmodelledObject(&t.type_loose_object));
+}
+
+test "catalog: workflow-defined contexts stay unknown without an overlay" {
     for ([_][]const u8{ "steps", "matrix", "needs", "inputs", "jobs" }) |name| {
         const ty = lookupContext(name).?;
-        try std.testing.expectEqual(t.ObjectShape.loose, ty.shape);
+        try std.testing.expectEqual(t.ObjectShape.unknown, ty.shape);
     }
 }
 

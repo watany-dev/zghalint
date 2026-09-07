@@ -113,7 +113,7 @@ scalar 同士の比較（`github.event.issue.number == 'foo'`）は D6 のとお
 | 未知関数 | EXPR004 | シグネチャ表 lookup。**大小文字区別は現行維持**（actionlint は insensitive。変更は別 issue） |
 | 引数個数 | EXPR005 | シグネチャの min/max に移行 |
 | 比較型不整合 | EXPR017 | エンジンの compare 規則。**warning**（issue #93） |
-| 関数引数の型不整合 / `${{ }}` 全体が object・array・null | （未採番） | V1 では **出さない**。`any` に倒す。Follow-up で EXPR018 を予約 |
+| 関数引数の型不整合 / `${{ }}` 全体が object・array・null | EXPR018 | V1 では **出さない**。`any` に倒す。Follow-up で EXPR018 を予約（#162 で採番・実装。actionlint は error だが本実装は **warning**、かつ overlay 未接続の loose context は沈黙させて D3 を守る） |
 
 段階導入（実装 issue 側。本 ADR は順序だけ固定する）:
 
@@ -190,11 +190,11 @@ EXPR006 / EXPR007 は型と独立した AST パターン診断なので、エン
 
 ### Follow-up
 
-- EXPR018: 関数引数の型不整合、および `${{ }}` 全体が object/array/null のときの診断（actionlint はこれを error にしている）
+- ~~EXPR018: 関数引数の型不整合、および `${{ }}` 全体が object/array/null のときの診断（actionlint はこれを error にしている）~~ → #162 で実装済み（severity は warning）
 - 型 narrowing（`&&` / `||`）
 - 関数名の case-insensitive lookup（EXPR004 の仕様変更。誤検出修正ではなく互換変更）
 - パーサが数値添字 `arr[0]` を受け付けるようにする（現状は string 添字のみ）。型エンジンは数値添字の規則だけ先に定義する
-- EXPR010〜EXPR014 overlay 接続（T4）
+- ~~EXPR010〜EXPR014 overlay 接続（T4）~~ → #129 で実装済み
 - `github.event.inputs` overlay（SYN017 / EXPR013 と同時）
 
 ## 参考
