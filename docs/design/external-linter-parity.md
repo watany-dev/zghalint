@@ -136,12 +136,21 @@ SC001 にステップの走査を足し、`ActionRef.is_docker` が立つ `uses:
 `container.image` と同じ基準 (`@sha256:` 固定) で見るようにした。
 `uses:` のマーケットプレース形は SEC001 の担当なので重複はしない。
 
-#### G8 (#276). SEC005 がフォーク判定のガードを見ない (FP) — 要ルール改善
+#### G8 (#276). SEC005 がフォーク判定のガードを見ない (FP) — 対応済み
 
 `bench/cases/b-trigger-checkout/pr-target-guarded.yml`。
 `if: github.event.pull_request.head.repo.full_name == github.repository` で
 フォーク由来の実行を除外しているジョブでも SEC005 が発火する。SEC022 は
 同種のガード解析を持っているので、その判定を SEC005 と共有させたい。
+
+SEC022 のガード解析 (`hasTrustAnchor` / `anchorHolds`) をトリガ非依存に
+一般化し、アンカーの集合を `TrustAnchors` として渡す形にした。
+`pull_request_target` 版は `github.event.pull_request.head.repo` の
+`full_name` / `id` / `owner.*` / `fork` を見る。`||` の迂回路や
+`fork == true` のような逆向きのガードを弾く判定はそのまま共有される。
+SEC009 (`workflow_run` の checkout) も同じ関数でガードを見るようにした。
+SEC021 が担当するトリガ (`workflow_dispatch` / `issue_comment` など) は
+フォーク由来かどうかという概念を持たないため、対象外。
 
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
@@ -174,4 +183,4 @@ PERF001 (キャッシュを足せ) と SEC016 (リリース系でのキャッシ
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [x] G7 (#275): SC001 を `uses: docker://...` に対応させる
-- [ ] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する
+- [x] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する

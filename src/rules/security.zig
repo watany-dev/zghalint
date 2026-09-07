@@ -497,6 +497,7 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             const input = checkoutCodeInput(step, isPRHeadValue) orelse continue;
+            if (forkGuarded(list.allocator, job, step, pull_request_head_anchors)) continue;
             list.append(.{
                 .rule_id = "SEC005",
                 .severity = .@"error",
@@ -858,6 +859,7 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
             const input = checkoutCodeInput(step, isWorkflowRunValue) orelse continue;
+            if (forkGuarded(list.allocator, job, step, workflow_run_anchors)) continue;
             // A workflow may declare both triggers, and a checkout may name
             // both a PR head and a workflow_run ref. SEC005 is the more
             // specific finding, so it owns the step: reporting both puts two
@@ -902,13 +904,70 @@ const workflow_run_trust_anchors = [_][]const u8{
 const workflow_run_fork_flag = "github.event.workflow_run.head_repository.fork";
 const workflow_run_event_context = "github.event.workflow_run.event";
 
+/// The same identity checks one event down: a `pull_request_target` job gated
+/// on the head repository runs only against the base repository's own code, so
+/// checking out the head is no longer a fork's code (#276).
+const pull_request_head_trust_anchors = [_][]const u8{
+    "github.event.pull_request.head.repo.full_name",
+    "github.event.pull_request.head.repo.id",
+    "github.event.pull_request.head.repo.owner.login",
+    "github.event.pull_request.head.repo.owner.id",
+};
+
+const pull_request_head_fork_flag = "github.event.pull_request.head.repo.fork";
+
+/// What makes a gate sound for one trigger. The shape is the same for every
+/// trigger that carries a fork's identity; only the context paths move.
+const TrustAnchors = struct {
+    /// Attributes naming the repository the code came from, which a fork
+    /// cannot forge. Sound only when the gate asserts equality.
+    identity: []const []const u8,
+    /// A boolean `fork` flag, sound when the gate asserts it false.
+    fork_flag: []const u8,
+    /// A trigger-event name, sound when compared against an event a fork
+    /// cannot cause. Absent for triggers that carry no such field.
+    event_context: ?[]const u8 = null,
+    /// The subtree the gate is about: comparing two attributes of it against
+    /// each other asserts nothing about where the code came from.
+    self_root: []const u8,
+};
+
+const workflow_run_anchors: TrustAnchors = .{
+    .identity = &workflow_run_trust_anchors,
+    .fork_flag = workflow_run_fork_flag,
+    .event_context = workflow_run_event_context,
+    .self_root = "github.event.workflow_run",
+};
+
+/// `self_root` stops at `head` rather than at `pull_request`, because
+/// `head.repo.full_name == base.repo.full_name` is a sound fork check: the base
+/// repository is not the fork's to choose.
+const pull_request_head_anchors: TrustAnchors = .{
+    .identity = &pull_request_head_trust_anchors,
+    .fork_flag = pull_request_head_fork_flag,
+    .self_root = "github.event.pull_request.head",
+};
+
+/// True when the job's `if:` — or the step's own — keeps the run to code the
+/// base repository controls. A step only runs when its job's condition already
+/// passed, so either gate covers the step.
+fn forkGuarded(allocator: std.mem.Allocator, job: *const Job, step: *const Step, anchors: TrustAnchors) bool {
+    if (job.if_condition) |cond| {
+        if (hasTrustAnchor(allocator, cond, anchors)) return true;
+    }
+    if (step.if_condition) |cond| {
+        if (hasTrustAnchor(allocator, cond, anchors)) return true;
+    }
+    return false;
+}
+
 fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
     if (!wf.hasEvent(.workflow_run)) return;
 
     for (wf.jobs) |*job| {
         var job_verified = false;
         if (job.if_condition) |cond| {
-            job_verified = hasWorkflowRunTrustAnchor(list.allocator, cond);
+            job_verified = hasTrustAnchor(list.allocator, cond, workflow_run_anchors);
             if (!job_verified) reportWorkflowRunBranchGate(cond, ifAnchorJob(job), list);
         }
 
@@ -916,7 +975,7 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
             const step_cond = step.if_condition orelse continue;
             // A step only runs when its job's condition already passed, so a
             // trust check on the job covers every step inside it.
-            if (job_verified or hasWorkflowRunTrustAnchor(list.allocator, step_cond)) continue;
+            if (job_verified or hasTrustAnchor(list.allocator, step_cond, workflow_run_anchors)) continue;
             reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), list);
         }
     }
@@ -932,12 +991,12 @@ fn reportWorkflowRunBranchGate(cond: []const u8, anchor: Anchor, list: *Diagnost
 ///
 /// A condition that does not parse anchors nothing: SEC022 would rather report
 /// a sound gate it cannot read than miss a fork-reachable one.
-fn hasWorkflowRunTrustAnchor(allocator: std.mem.Allocator, cond: []const u8) bool {
+fn hasTrustAnchor(allocator: std.mem.Allocator, cond: []const u8, anchors: TrustAnchors) bool {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var parser = expressions.ExprParser.init(arena.allocator(), conditionExpressionSource(cond));
     const root = parser.parse() catch return false;
-    return anchorHolds(root, false);
+    return anchorHolds(root, false, anchors);
 }
 
 /// An `if:` is an expression already, but may also be written wrapped in a
@@ -951,13 +1010,13 @@ fn conditionExpressionSource(cond: []const u8) []const u8 {
 
 /// Under an odd number of negations De Morgan swaps the operators, so there
 /// `||` is the conjunction and every leaf below reads inverted.
-fn anchorHolds(node: expressions.ExprNode, negated: bool) bool {
+fn anchorHolds(node: expressions.ExprNode, negated: bool, anchors: TrustAnchors) bool {
     switch (node.kind) {
         // `!fork` asserts what `fork == false` does.
-        .context_access => return negated and pathIsAnchor(parseContextPath(node.value, 0), workflow_run_fork_flag),
+        .context_access => return negated and pathIsAnchor(parseContextPath(node.value, 0), anchors.fork_flag),
         .unary_op => {
             if (node.children.len != 1) return false;
-            return anchorHolds(node.children[0], !negated);
+            return anchorHolds(node.children[0], !negated, anchors);
         },
         .binary_op => {
             if (node.children.len != 2) return false;
@@ -966,52 +1025,50 @@ fn anchorHolds(node: expressions.ExprNode, negated: bool) bool {
             else if (std.mem.eql(u8, node.value, "||"))
                 negated
             else
-                return isTrustAnchorComparison(node, negated);
+                return isTrustAnchorComparison(node, negated, anchors);
             if (!conjunctive) return false;
-            return anchorHolds(node.children[0], negated) or anchorHolds(node.children[1], negated);
+            return anchorHolds(node.children[0], negated, anchors) or anchorHolds(node.children[1], negated, anchors);
         },
         else => return false,
     }
 }
 
-fn isTrustAnchorComparison(node: expressions.ExprNode, negated: bool) bool {
+fn isTrustAnchorComparison(node: expressions.ExprNode, negated: bool, anchors: TrustAnchors) bool {
     const is_eq = std.mem.eql(u8, node.value, "==");
     if (!is_eq and !std.mem.eql(u8, node.value, "!=")) return false;
     // `!(a != b)` asserts exactly what `a == b` does.
     const asserts_equal = is_eq != negated;
-    return isTrustAnchorOperand(node.children[0], node.children[1], asserts_equal) or
-        isTrustAnchorOperand(node.children[1], node.children[0], asserts_equal);
+    return isTrustAnchorOperand(node.children[0], node.children[1], asserts_equal, anchors) or
+        isTrustAnchorOperand(node.children[1], node.children[0], asserts_equal, anchors);
 }
 
-fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, asserts_equal: bool) bool {
+fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, asserts_equal: bool, anchors: TrustAnchors) bool {
     if (ref.kind != .context_access) return false;
     const path = parseContextPath(ref.value, 0);
-    // Comparing the triggering run against itself asserts nothing about it.
+    // Comparing the gated subtree against itself asserts nothing about it.
     if (other.kind == .context_access and
-        pathMatchesPattern(parseContextPath(other.value, 0), "github.event.workflow_run")) return false;
+        pathMatchesPattern(parseContextPath(other.value, 0), anchors.self_root)) return false;
 
-    for (workflow_run_trust_anchors) |anchor| {
+    for (anchors.identity) |anchor| {
         // `head_repository.full_name != github.repository` selects the fork
         // runs instead of excluding them, so only the equality anchors.
         if (pathIsAnchor(path, anchor)) return asserts_equal;
     }
 
-    if (pathIsAnchor(path, workflow_run_fork_flag)) {
+    if (pathIsAnchor(path, anchors.fork_flag)) {
         if (other.kind != .boolean_literal) return false;
         // `fork == false` and `fork != true` both say the run is the base
         // repository's; the two inversions of those gate *for* forks.
         return asserts_equal != std.mem.eql(u8, other.value, "true");
     }
 
-    if (pathIsAnchor(path, workflow_run_event_context)) {
-        // A fork cannot cause a `push` run in the base repository, so the
-        // branch name in one is the base repository's. The compared literal is
-        // what makes it an anchor, and a fork-reachable event makes it none.
-        if (!asserts_equal or other.kind != .string_literal) return false;
-        return std.mem.indexOf(u8, other.value, "pull_request") == null;
-    }
-
-    return false;
+    const event_context = anchors.event_context orelse return false;
+    if (!pathIsAnchor(path, event_context)) return false;
+    // A fork cannot cause a `push` run in the base repository, so the branch
+    // name in one is the base repository's. The compared literal is what makes
+    // it an anchor, and a fork-reachable event makes it none.
+    if (!asserts_equal or other.kind != .string_literal) return false;
+    return std.mem.indexOf(u8, other.value, "pull_request") == null;
 }
 
 /// Anchors are matched segment for segment, unlike the untrusted-context table
@@ -2779,6 +2836,112 @@ test "SEC005: refs/pull/N/head built from the PR number" {
     var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+fn sec005GuardedList(job_if: ?[]const u8, step_if: ?[]const u8, with: workflow_types.StringMap) DiagnosticList {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with, .if_condition = step_if },
+    };
+    return runJobOn(pr_target_trigger, .{
+        .id = "build",
+        .steps = &steps,
+        .if_condition = job_if,
+        .permissions = Permissions{},
+    });
+}
+
+fn sec005HeadShaWith() workflow_types.StringMap {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    return with;
+}
+
+test "SEC005: job gated on the head repository (no false positive)" {
+    var with = sec005HeadShaWith();
+    defer with.deinit();
+
+    var list = sec005GuardedList("github.event.pull_request.head.repo.full_name == github.repository", null, with);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: job gated on the fork flag (no false positive)" {
+    var with = sec005HeadShaWith();
+    defer with.deinit();
+
+    var list = sec005GuardedList("github.event.pull_request.head.repo.fork == false", null, with);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: job gated on a negated fork flag (no false positive)" {
+    var with = sec005HeadShaWith();
+    defer with.deinit();
+
+    var list = sec005GuardedList("!github.event.pull_request.head.repo.fork", null, with);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: step gated on the head repository (no false positive)" {
+    var with = sec005HeadShaWith();
+    defer with.deinit();
+
+    var list = sec005GuardedList(null, "github.event.pull_request.head.repo.full_name == github.repository", with);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: gate that selects fork PRs instead of excluding them" {
+    var with = sec005HeadShaWith();
+    defer with.deinit();
+
+    var list = sec005GuardedList("github.event.pull_request.head.repo.fork == true", null, with);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: gate a fork can walk around with ||" {
+    var with = sec005HeadShaWith();
+    defer with.deinit();
+
+    var list = sec005GuardedList(
+        "github.event.pull_request.head.repo.fork == false || github.event.pull_request.user.login == 'dependabot[bot]'",
+        null,
+        with,
+    );
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: gate that compares two attributes of the same head (no anchor)" {
+    var with = sec005HeadShaWith();
+    defer with.deinit();
+
+    var list = sec005GuardedList(
+        "github.event.pull_request.head.repo.full_name == github.event.pull_request.head.label",
+        null,
+        with,
+    );
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC009: workflow_run job gated on the head repository (no false positive)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{
+        .id = "build",
+        .steps = &steps,
+        .if_condition = "github.event.workflow_run.head_repository.full_name == github.repository",
+        .permissions = Permissions{},
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC005: PR target checkout of the base ref (no false positive)" {

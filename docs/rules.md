@@ -73,6 +73,20 @@ Expanding the event as a whole — `toJSON(github.event)` — is a taint source 
 The root matches only as a whole reference, so server-generated fields such as
 `github.event.number` stay out of scope.
 
+### Fork guards
+
+SEC005 and SEC009 stay quiet when the job — or the step itself — is gated on an
+`if:` that keeps the run to code the base repository controls: an equality
+check against the head repository's `full_name` / `id` / `owner.*`, or the
+`fork` flag asserted false. The gate has to hold on every path, so `||` around
+it, `fork == true`, and a comparison between two attributes of the same head
+anchor nothing and the rule still reports.
+
+SEC022 uses the same analysis on `github.event.workflow_run.head_repository`,
+plus `workflow_run.event` compared against an event a fork cannot cause. SEC021
+has no such gate: the triggers it owns (`workflow_dispatch`, `issue_comment`,
+`discussion`, ...) carry no fork identity to test.
+
 ### SEC021 vs. SEC005 / SEC009
 
 All three report the same shape — `actions/checkout` fed a ref the attacker
