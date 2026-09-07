@@ -313,9 +313,7 @@ test "walk: nothing below github.event is ever diagnosed" {
 }
 
 test "checkCompare: curated overlay widens EXPR017 reach" {
-    // An object compared to a string is never meaningful.
     try testing.expect(!checkCompare("==", walkTy("github.event.issue"), &t.type_string));
-    // A bool is not orderable.
     try testing.expect(!checkCompare(">", walkTy("github.event.pull_request.draft"), &t.type_number));
     // Scalar mixing stays silent: GitHub coerces number and string operands.
     try testing.expect(checkCompare("==", walkTy("github.event.issue.number"), &t.type_string));
