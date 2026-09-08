@@ -528,13 +528,14 @@ fn lintFile(
     var diag_list = engine.run(allocator, &workflow);
     defer diag_list.deinit();
 
-    // Strip SC005 entries that overlap with SC008 verdicts so the user
-    // doesn't see two diagnostics for the same impostor SHA. Guard on
-    // SC008 being enabled in the config; otherwise SC008 itself would
-    // get filtered out below, leaving neither diagnostic visible.
-    if (config.isRuleEnabled("SC008")) {
-        zghalint.rules.engine.postProcess(allocator, &workflow, &diag_list);
-    }
+    // Strip the broader finding when a stricter one covers the same step
+    // (SC008 ⊃ SC005, SEC015 ⊃ SEC018). Guard on the covering rule being
+    // enabled; otherwise it would be filtered out below and neither
+    // diagnostic would remain.
+    zghalint.rules.engine.postProcess(allocator, &workflow, &diag_list, .{
+        .drop_sc005 = config.isRuleEnabled("SC008"),
+        .drop_sec018 = config.isRuleEnabled("SEC015"),
+    });
 
     appendFiltered(all_diags, &diag_list, config, file_path);
 }

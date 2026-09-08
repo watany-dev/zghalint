@@ -54,53 +54,20 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
     }) catch return;
 }
 
-fn generateStepName(allocator: std.mem.Allocator, step: *const Step) ?[]const u8 {
-    if (step.uses) |ref| {
-        if (ref.is_local or ref.is_docker) return null;
-        const repo = ref.repo orelse return null;
-        return util.stepNameFromRepo(allocator, repo);
-    }
-    if (step.run) |run| {
-        return util.stepNameFromRun(allocator, run);
-    }
-    return null;
-}
-
-fn buildStepNameFix(list: *DiagnosticList, step: *const Step) ?Fix {
-    const insert_byte = step.uses_key_start_byte orelse return null;
-    const key_col = step.uses_key_col orelse return null;
-    if (key_col < 1) return null;
-
-    const fix_alloc = list.fixAllocator();
-    const generated = generateStepName(fix_alloc, step) orelse return null;
-    const indent: u32 = key_col - 1;
-
-    const edits = fix_builder.insertMappingEntryBefore(
-        fix_alloc,
-        .{ .byte = insert_byte, .indent = indent },
-        "name",
-        generated,
-    ) orelse return null;
-
-    return .{
-        .description = "Add step name",
-        .safety = .safe,
-        .edits = edits,
-    };
-}
-
 fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
     if (step.name != null) return;
+    // `uses:` already labels the step in the Actions UI with the action name,
+    // and leaving it unnamed is the usual style. `run:` dumps the command as
+    // the label, so a name is still worth asking for (#337).
+    if (step.uses != null) return;
 
-    var diag = Diagnostic{
+    diag_list.append(.{
         .rule_id = "BP002",
         .severity = .info,
         .message = "Step is missing a 'name' field. Named steps improve workflow readability.",
         .span = step.span,
         .fix_hint = "Add a descriptive 'name' to this step.",
-    };
-    diag.fix = buildStepNameFix(diag_list, step);
-    diag_list.append(diag) catch return;
+    }) catch return;
 }
 
 const DeprecatedAction = struct {
@@ -710,7 +677,7 @@ pub const rules = [_]Rule{
     .{
         .id = "BP002",
         .name = "missing-step-name",
-        .description = "Step is missing a name field",
+        .description = "run: step is missing a name field (uses:-only steps are skipped)",
         .severity = .info,
         .category = .best_practice,
         .check_step = checkMissingStepName,
@@ -859,103 +826,12 @@ test "BP002: no warning when name is present" {
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "BP002: no fix when position info is missing" {
-    const step = Step{ .run = "echo hello" };
+test "BP002: uses-only step is not reported (#337)" {
+    const step = Step{ .uses = ActionRef.parse("actions/checkout@v4") };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     checkMissingStepName(&step, &diags);
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    try std.testing.expect(diags.get(0).fix == null);
-}
-
-test "BP002: autofix generated from uses" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const step = Step{
-        .uses = ActionRef.parse("actions/checkout@v4"),
-        .uses_key_col = 9,
-        .uses_key_start_byte = 50,
-    };
-    var diags = DiagnosticList.init(alloc);
-    checkMissingStepName(&step, &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
-    try std.testing.expect(fix.safety == .safe);
-    const edit = fix.edits[0];
-    try std.testing.expectEqual(@as(usize, 50), edit.start_byte);
-    try std.testing.expectEqual(@as(usize, 50), edit.end_byte);
-    try std.testing.expectEqualStrings("name: Checkout\n        ", edit.replacement);
-}
-
-test "BP002: no fix for local actions" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const step = Step{
-        .uses = ActionRef.parse("./local-action"),
-        .uses_key_col = 9,
-        .uses_key_start_byte = 50,
-    };
-    var diags = DiagnosticList.init(alloc);
-    checkMissingStepName(&step, &diags);
-    try std.testing.expect(diags.get(0).fix == null);
-}
-
-test "BP002: no fix when `if:` precedes `uses:` in step" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    // `if:` comes before `uses:`, so the parser must NOT set uses_key_start_byte
-    // (BP002 autofix would otherwise insert `name:` between `if:` and `uses:`).
-    const source =
-        \\name: CI
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    steps:
-        \\      - if: always()
-        \\        uses: actions/checkout@v4
-        \\
-    ;
-
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkMissingStepName(&wf.jobs[0].steps[0], &diags);
-
-    try std.testing.expectEqual(@as(usize, 1), diags.len());
-    try std.testing.expect(diags.get(0).fix == null);
-}
-
-test "BP002: autofix applied to YAML source" {
-    const source =
-        \\name: CI
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    steps:
-        \\      - uses: actions/checkout@v4
-        \\
-    ;
-
-    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .step = &checkMissingStepName }, true);
-    defer result.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
-
-    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "name: Checkout") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4") != null);
-    const name_pos = std.mem.indexOf(u8, result.content, "name: Checkout").?;
-    const uses_pos = std.mem.indexOf(u8, result.content, "uses: actions/checkout@v4").?;
-    try std.testing.expect(name_pos < uses_pos);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
 test "BP003: detect deprecated checkout v1" {
