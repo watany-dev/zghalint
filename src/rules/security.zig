@@ -770,9 +770,12 @@ const TriggerContexts = struct {
 const trigger_context_table = [_]TriggerContexts{
     .{ .event = .workflow_dispatch, .contexts = &.{"github.event.inputs"} },
     .{ .event = .repository_dispatch, .contexts = &.{"github.event.client_payload"} },
-    .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body" } },
+    .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number" } },
     // `issue_comment` carries the issue it was left on alongside the comment.
-    .{ .event = .issue_comment, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.comment.body" } },
+    // `issue.number` is the ChatOps vector: anyone may comment `/test` on any
+    // pull request, and `refs/pull/<number>/merge` then names that fork's code
+    // while the job holds the base repository's secrets (#308).
+    .{ .event = .issue_comment, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number", "github.event.comment.body" } },
     .{ .event = .discussion, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body" } },
     .{ .event = .discussion_comment, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body", "github.event.comment.body" } },
 };
@@ -3163,6 +3166,12 @@ test "SEC021: workflow_dispatch checkout ref from the inputs shorthand" {
 
 test "SEC021: issue_comment checkout ref from issue body" {
     var list = runCheckoutWith(issue_comment_trigger, "ref", "${{ github.event.issue.body }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: issue_comment ChatOps checkout of refs/pull/<issue.number>/merge (#308)" {
+    var list = runCheckoutWith(issue_comment_trigger, "ref", "refs/pull/${{ github.event.issue.number }}/merge");
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC021"));
 }

@@ -138,8 +138,11 @@ workflow would hide a `ref` fed from a comment body just because
 `pull_request_target` also appears in `on:`.
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
-`github.event.client_payload.*`) and the free text of an issue, comment or
-discussion. The bare `inputs.*` shorthand counts too, unless every way into the
+`github.event.client_payload.*`), the free text of an issue, comment or
+discussion, and `github.event.issue.number`. The last one is the ChatOps shape:
+anyone may comment `/test` on any pull request, so
+`ref: refs/pull/${{ github.event.issue.number }}/merge` lets the commenter pick
+which fork's code the job runs with the base repository's secrets (#308). The bare `inputs.*` shorthand counts too, unless every way into the
 workflow fills it from a caller — a `workflow_call` workflow with no
 `workflow_dispatch`, or one whose `workflow_dispatch` declares no inputs of its
 own. Analysing callers is out of scope. A `workflow_call` declared beside a
