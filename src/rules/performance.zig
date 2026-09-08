@@ -293,20 +293,42 @@ fn checkCacheableSetup(
     }) catch return;
 }
 
+/// Unsafe: the second checkout may be there on purpose — re-checking out
+/// after the tree was rewritten, or fetching a different ref through `with:`
+/// keys this rule does not read — so the step goes only when the author asks
+/// for `--fix-unsafe`.
+fn buildRedundantCheckoutFix(diag_list: *DiagnosticList, job: *const Job, step_index: usize) ?Fix {
+    const edits = fix_builder.deleteSequenceItems(
+        diag_list.fixAllocator(),
+        job.step_deletes,
+        &.{step_index},
+    ) orelse return null;
+
+    return .{
+        .description = "remove the redundant actions/checkout step",
+        .safety = .unsafe,
+        .edits = edits,
+    };
+}
+
 fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
     var checkout_without_path_count: u32 = 0;
     // Report on the first redundant checkout — the second one, since a single
     // path-less checkout is fine.
     var redundant_span: ?Span = null;
+    var redundant_index: usize = 0;
 
-    for (job.steps) |*step| {
+    for (job.steps, 0..) |*step, index| {
         if (step.uses) |action_ref| {
             const action_name = util.actionBaseName(action_ref.raw);
             if (std.mem.eql(u8, action_name, "actions/checkout")) {
                 const has_path = if (step.with) |with| with.get("path") != null else false;
                 if (!has_path) {
                     checkout_without_path_count += 1;
-                    if (checkout_without_path_count == 2) redundant_span = spans.usesSpan(step);
+                    if (checkout_without_path_count == 2) {
+                        redundant_span = spans.usesSpan(step);
+                        redundant_index = index;
+                    }
                 }
             }
         }
@@ -319,6 +341,7 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
             .message = "Multiple actions/checkout steps without 'path' in the same job. This checks out to the same directory repeatedly.",
             .span = span,
             .fix_hint = "Remove redundant checkout steps or specify different 'path' values.",
+            .fix = buildRedundantCheckoutFix(diag_list, job, redundant_index),
         }) catch return;
     }
 }
@@ -1038,6 +1061,85 @@ test "PERF002: no warning with single checkout" {
     defer diags.deinit();
     checkRedundantCheckout(&job, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF002: autofix removes the second checkout step" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - run: make
+        \\      - uses: actions/checkout@v4
+        \\      - run: make test
+        \\
+    ;
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkRedundantCheckout }, true);
+    defer std.testing.allocator.free(result.content);
+
+    try std.testing.expectEqual(@as(usize, 1), result.fix_count);
+    try std.testing.expect(result.first_safety.? == .unsafe);
+    try std.testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - run: make
+        \\      - run: make test
+        \\
+    , result.content);
+}
+
+test "PERF002: the step fix is unsafe, so --fix alone leaves it in place" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - uses: actions/checkout@v4
+        \\
+    ;
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkRedundantCheckout }, false);
+    defer std.testing.allocator.free(result.content);
+
+    try std.testing.expectEqual(@as(usize, 0), result.fix_count);
+    try std.testing.expectEqualStrings(source, result.content);
+}
+
+test "PERF002: a multi-line step is removed whole" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - name: check out again
+        \\        uses: actions/checkout@v4
+        \\        with:
+        \\          fetch-depth: 0
+        \\      - run: make
+        \\
+    ;
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkRedundantCheckout }, true);
+    defer std.testing.allocator.free(result.content);
+
+    try std.testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - run: make
+        \\
+    , result.content);
 }
 
 test "PERF003: detect fail-fast false" {

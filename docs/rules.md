@@ -166,7 +166,7 @@ Detect CI performance issues and resource waste.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled |
-| PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job |
+| PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job (`--fix-unsafe` で 2 つ目のステップを削除) |
 | PERF003 | fail-fast-disabled | warning | Strategy has `fail-fast` disabled, wasting CI resources on failures |
 
 ## Best Practices Rules (BP)
@@ -385,7 +385,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN005 | duplicate-id | error | Job IDs and step IDs must be unique within a workflow or job (case-insensitive) |
 | SYN006 | invalid-id-naming | error | Job ID and step ID must start with a letter or `_` and contain only alphanumeric characters, `-`, or `_` |
 | SYN007 | invalid-env-var-name | error | `env:` key is empty or contains `&`, `=`, or a space, which the runner cannot accept as an environment variable name |
-| SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` |
+| SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` (`--fix` で重複を削除) |
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
 | SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
 | SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all |
@@ -558,6 +558,9 @@ The same check covers the non-filter keys an event accepts, so a misspelled
 `inputs` under `workflow_dispatch` is reported too. An event name SYN009 already
 flagged is left alone rather than reported twice.
 
+`--fix-unsafe` はそのキーの行ごと削除する。綴り間違いなら書き直したかった内容が
+消えるため、unsafe 扱いとする。
+
 ```yaml
 on:
   push:
@@ -635,6 +638,9 @@ strategy:
     os: [ubuntu-latest, ubuntu-latest, macos-latest]   # warning: duplicate value "ubuntu-latest"
     node: [18, 20, 18]                                 # warning: duplicate value "18"
 ```
+
+`--fix` は繰り返された値を軸から取り除く。同じ値が 3 回以上書かれている場合も
+1 回の実行でまとめて 1 つに減らす。
 
 `include` and `exclude` are checked the same way. Their entries are mappings, so
 they are compared structurally: quoting style and key order do not hide a

@@ -189,6 +189,9 @@ pub const EventFilter = struct {
 pub const EventConfigKey = struct {
     name: []const u8,
     span: yaml_types.Span,
+    /// Byte range that removes the whole entry, key line and value included
+    /// (SYN011 autofix). Null when the parser cannot offer a stable range.
+    full_span: ?yaml_types.Span = null,
 };
 
 pub const ScheduleEntry = struct {
@@ -456,6 +459,9 @@ pub const MatrixAxis = struct {
     /// Values of the axis, in source order. Empty when the axis value is not a
     /// sequence (e.g. `os: ${{ fromJSON(...) }}`).
     values: []const yaml_types.Node = &.{},
+    /// How to remove each value, parallel to `values` (SYN018 autofix).
+    /// Empty when the parser could offer no stable range.
+    value_deletes: []const yaml_types.ItemDelete = &.{},
 };
 
 pub const Matrix = struct {
@@ -556,6 +562,10 @@ pub const Job = struct {
     needs: []const []const u8 = &.{},
     /// Value spans of `needs` entries, parallel to `needs`. Empty when absent.
     needs_spans: []const yaml_types.Span = &.{},
+    /// How to remove each `needs` entry, parallel to `needs` (SYN008
+    /// autofix). Empty when `needs` is a bare scalar, which has no entry to
+    /// remove on its own.
+    needs_deletes: []const yaml_types.ItemDelete = &.{},
     /// Keys of the job-level `outputs:` mapping in source order (for EXPR012).
     outputs: []const OutputKey = &.{},
     permissions: ?Permissions = null,
@@ -563,6 +573,10 @@ pub const Job = struct {
     /// `permissions:` entries rejected during parsing (PERM003).
     permission_problems: []const PermissionProblem = &.{},
     steps: []const Step = &.{},
+    /// How to remove each step from the `steps:` sequence, the `- ` bullet
+    /// included, parallel to `steps` (PERF002 autofix). Empty when the steps
+    /// come from an alias expansion, whose text lives at the anchor.
+    step_deletes: []const yaml_types.ItemDelete = &.{},
     env: ?StringMap = null,
     env_meta: ?ScalarValueMetaMap = null,
     /// Keys of the `env:` mapping in source order (for SYN007).

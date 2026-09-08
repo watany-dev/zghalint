@@ -92,9 +92,30 @@ pub const Scalar = struct {
     span: Span,
 };
 
+/// What one sequence item costs the source text, so an autofix can take it
+/// out. `fix.builder.deleteSequenceItems` is the only intended consumer.
+pub const ItemDelete = struct {
+    /// The item plus the separator that follows it: its own lines including
+    /// the trailing newline in a block sequence, and the comma up to the next
+    /// item in a flow one. The last item of a flow sequence has no separator
+    /// after it, so its range stops at its own text.
+    span: Span,
+    /// Where the previous item's text ends — the start of the separator this
+    /// item is preceded by. Deleting a run that reaches the end of a flow
+    /// sequence starts here instead of at `span.start_byte`, so `[a, b, c]`
+    /// losing `b` and `c` leaves `[a]` rather than `[a, ]`. Equal to
+    /// `span.start_byte` for the first item and throughout a block sequence,
+    /// where every item carries its own line.
+    prev_end: usize,
+};
+
 pub const Sequence = struct {
     items: []Node,
     span: Span,
+    /// How to remove each item, parallel to `items`. Empty when the parser
+    /// can offer no stable range — an alias expansion, whose text lives at
+    /// the anchor rather than here.
+    item_deletes: []const ItemDelete = &.{},
 };
 
 pub const MappingEntry = struct {

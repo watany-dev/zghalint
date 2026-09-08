@@ -561,7 +561,7 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
 fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping) ParseError![]const types.EventConfigKey {
     const keys = try allocator.alloc(types.EventConfigKey, m.entries.len);
     for (m.entries, 0..) |entry, i| {
-        keys[i] = .{ .name = entry.key.value, .span = entry.key.span };
+        keys[i] = .{ .name = entry.key.value, .span = entry.key.span, .full_span = entry.full_span };
     }
     return keys;
 }
@@ -891,12 +891,20 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         const parsed = try parseStringArrayWithSpans(ctx.allocator, needs_node);
         job.needs = parsed.values;
         job.needs_spans = parsed.spans;
+        job.needs_deletes = switch (needs_node) {
+            .sequence => |seq| seq.item_deletes,
+            else => &.{},
+        };
     }
 
     if (m.get("steps")) |n| {
         try recordEmpty(&empty, ctx.allocator, "steps", n);
         if (!isEmptyContainer(n)) {
             job.steps = try parseSteps(ctx, n);
+            job.step_deletes = switch (n) {
+                .sequence => |seq| seq.item_deletes,
+                else => &.{},
+            };
         }
     }
 
@@ -1336,11 +1344,15 @@ fn parseMatrix(allocator: std.mem.Allocator, node: Node) ParseError!?types.Matri
 
     var axes = try std.ArrayList(types.MatrixAxis).initCapacity(allocator, m.entries.len);
     for (m.entries) |entry| {
-        const values: []const Node = switch (entry.value) {
-            .sequence => |seq| seq.items,
-            else => &.{},
+        const seq: ?yaml.Sequence = switch (entry.value) {
+            .sequence => |s| s,
+            else => null,
         };
-        axes.appendAssumeCapacity(.{ .name = entry.key.value, .values = values });
+        axes.appendAssumeCapacity(.{
+            .name = entry.key.value,
+            .values = if (seq) |s| s.items else &.{},
+            .value_deletes = if (seq) |s| s.item_deletes else &.{},
+        });
     }
 
     return .{ .axes = try axes.toOwnedSlice(allocator) };

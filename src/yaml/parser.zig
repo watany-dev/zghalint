@@ -52,6 +52,12 @@ pub const Parser = struct {
     /// showing. Zig errors carry no payload, so the CLI reads it from here to
     /// print `file:line:col` instead of a bare error name.
     failure: ?Failure,
+    /// End byte of the last *content* token consumed; newlines and comments
+    /// leave it alone. A collection parser returns with `current` already
+    /// past the trivia that follows its node (and, for a nested mapping,
+    /// past the next sibling's first token), so this is the only anchor that
+    /// still marks where the node's own text stopped.
+    last_end: usize,
 
     pub const Failure = struct {
         span: Span,
@@ -73,6 +79,7 @@ pub const Parser = struct {
             .anchors = .{},
             .alias_budget = max_alias_expansion_nodes,
             .failure = null,
+            .last_end = 0,
         };
     }
 
@@ -344,9 +351,11 @@ pub const Parser = struct {
 
     fn parseBlockSequence(self: *Parser) ParseError!Node {
         var items = std.ArrayList(Node){};
+        var deletes = std.ArrayList(types.ItemDelete){};
         const seq_indent = self.current.column;
 
         while (self.current.kind == .sequence_entry and self.current.column == seq_indent) {
+            const dash = self.current;
             self.advance();
 
             if (self.current.kind == .newline or self.current.kind == .eof or self.current.kind == .comment) {
@@ -360,17 +369,50 @@ pub const Parser = struct {
                 try items.append(self.allocator, try self.parseNode(seq_indent + 1));
             }
 
+            // The `- ` bullet through the end of the item's last line. A
+            // comment line *between* two items stays: it introduces the one
+            // that follows, so the item above must not carry it away.
+            const line_start = self.lineStartByte(dash.start);
+            try deletes.append(self.allocator, .{
+                .span = self.lineRangeSpan(line_start, self.contentLineEnd(), dash.line),
+                .prev_end = line_start,
+            });
+
             self.skipNewlinesAndComments();
         }
 
         const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const owned_deletes = deletes.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const span = Span.point(
             if (owned_items.len > 0) owned_items[0].getSpan().start_line else self.current.line,
             seq_indent,
             if (owned_items.len > 0) owned_items[0].getSpan().start_byte else self.current.start,
         );
 
-        return Node{ .sequence = .{ .items = owned_items, .span = span } };
+        return Node{ .sequence = .{ .items = owned_items, .span = span, .item_deletes = owned_deletes } };
+    }
+
+    /// End of the line the last content token sits on, newline included. A
+    /// block scalar's token already ends past its final newline, so scanning
+    /// on from there would swallow the line that follows it.
+    fn contentLineEnd(self: *Parser) usize {
+        if (self.last_end > 0 and self.last_end <= self.source.len and self.source[self.last_end - 1] == '\n') {
+            return self.last_end;
+        }
+        return self.scanLineEndInclusive(self.last_end);
+    }
+
+    fn lineRangeSpan(self: *Parser, start_byte: usize, end_byte_in: usize, start_line: u32) Span {
+        const end_byte = @max(start_byte, @min(end_byte_in, self.source.len));
+        const newlines: u32 = @intCast(std.mem.count(u8, self.source[start_byte..end_byte], "\n"));
+        return .{
+            .start_line = start_line,
+            .start_col = 1,
+            .end_line = start_line + newlines,
+            .end_col = 1,
+            .start_byte = start_byte,
+            .end_byte = end_byte,
+        };
     }
 
     fn parseFlowMapping(self: *Parser) ParseError!Node {
@@ -414,7 +456,9 @@ pub const Parser = struct {
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
         var items = std.ArrayList(Node){};
+        var extents = std.ArrayList(ItemExtent){};
         const start_span = self.spanFromToken(self.current);
+        const open_line = self.current.line;
         self.advance();
 
         while (self.current.kind != .flow_sequence_end and self.current.kind != .eof) {
@@ -423,6 +467,7 @@ pub const Parser = struct {
 
             const before = self.current.start;
             try items.append(self.allocator, try self.parseFlowValue());
+            try extents.append(self.allocator, .{ .start = before, .end = self.last_end });
 
             if (self.current.kind == .flow_entry) {
                 self.advance();
@@ -440,7 +485,34 @@ pub const Parser = struct {
         }
 
         const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
-        return Node{ .sequence = .{ .items = owned_items, .span = start_span } };
+        const owned_deletes = try self.flowItemDeletes(extents.items, open_line);
+        return Node{ .sequence = .{ .items = owned_items, .span = start_span, .item_deletes = owned_deletes } };
+    }
+
+    /// Where one flow item's text starts and stops, comma excluded.
+    const ItemExtent = struct {
+        start: usize,
+        end: usize,
+    };
+
+    /// An item takes the comma that follows it, which keeps the sequence
+    /// well-formed for every item but the last — it has none. `prev_end`
+    /// carries the comma *before* an item, which is what a deletion running
+    /// to the end of the sequence uses instead.
+    fn flowItemDeletes(self: *Parser, extents: []const ItemExtent, line: u32) ParseError![]const types.ItemDelete {
+        const deletes = self.allocator.alloc(types.ItemDelete, extents.len) catch return ParseError.OutOfMemory;
+        for (extents, 0..) |extent, i| {
+            const is_last = i + 1 == extents.len;
+            deletes[i] = .{
+                .span = self.lineRangeSpan(
+                    extent.start,
+                    if (is_last) extent.end else extents[i + 1].start,
+                    line,
+                ),
+                .prev_end = if (i > 0) extents[i - 1].end else extent.start,
+            };
+        }
+        return deletes;
     }
 
     /// Flow collections recurse through this without passing `parseNode`, so
@@ -478,6 +550,10 @@ pub const Parser = struct {
     }
 
     fn advance(self: *Parser) void {
+        switch (self.current.kind) {
+            .newline, .comment => {},
+            else => self.last_end = self.current.end,
+        }
         self.current = self.tokenizer.next();
     }
 
@@ -1424,4 +1500,128 @@ test "a plain scalar starting with `-` is not a sequence entry" {
     try std.testing.expectEqualStrings("-1", root.mapping.getScalar("a").?);
     try std.testing.expectEqualStrings("--verbose", root.mapping.getScalar("b").?);
     try std.testing.expectEqual(@as(usize, 2), root.mapping.get("c").?.sequence.items.len);
+}
+
+test "block sequence item_deletes cover each item's own lines" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\needs:
+        \\  - build
+        \\  - test
+        \\  - build
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 3), seq.item_deletes.len);
+    try std.testing.expectEqualStrings("  - build\n", source[seq.item_deletes[0].span.start_byte..seq.item_deletes[0].span.end_byte]);
+    try std.testing.expectEqualStrings("  - test\n", source[seq.item_deletes[1].span.start_byte..seq.item_deletes[1].span.end_byte]);
+    try std.testing.expectEqualStrings("  - build\n", source[seq.item_deletes[2].span.start_byte..seq.item_deletes[2].span.end_byte]);
+}
+
+test "block sequence delete_span of a multi-line mapping item stops at its last line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\steps:
+        \\  - uses: actions/checkout@v4
+        \\    with:
+        \\      fetch-depth: 0
+        \\  - run: make
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqualStrings(
+        "  - uses: actions/checkout@v4\n    with:\n      fetch-depth: 0\n",
+        source[seq.item_deletes[0].span.start_byte..seq.item_deletes[0].span.end_byte],
+    );
+    try std.testing.expectEqualStrings("  - run: make\n", source[seq.item_deletes[1].span.start_byte..seq.item_deletes[1].span.end_byte]);
+}
+
+test "block sequence delete_span keeps a comment line that introduces the next item" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\needs:
+        \\  - build
+        \\  # why this one matters
+        \\  - test
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqualStrings("  - build\n", source[seq.item_deletes[0].span.start_byte..seq.item_deletes[0].span.end_byte]);
+}
+
+test "block sequence delete_span of an item ending in a block scalar" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\steps:
+        \\  - run: |
+        \\      echo hi
+        \\  - run: make
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqualStrings(
+        "  - run: |\n      echo hi\n",
+        source[seq.item_deletes[0].span.start_byte..seq.item_deletes[0].span.end_byte],
+    );
+}
+
+test "flow sequence items carry the comma after them, and the one before as prev_end" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "needs: [build, test, build]\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 3), seq.item_deletes.len);
+    try std.testing.expectEqualStrings("build, ", source[seq.item_deletes[0].span.start_byte..seq.item_deletes[0].span.end_byte]);
+    try std.testing.expectEqualStrings("test, ", source[seq.item_deletes[1].span.start_byte..seq.item_deletes[1].span.end_byte]);
+    // The last item has no comma after it to take; `prev_end` is where the
+    // comma in front of it starts, which a deletion running to the end uses.
+    try std.testing.expectEqualStrings("build", source[seq.item_deletes[2].span.start_byte..seq.item_deletes[2].span.end_byte]);
+    try std.testing.expectEqualStrings(", build", source[seq.item_deletes[2].prev_end..seq.item_deletes[2].span.end_byte]);
+}
+
+test "flow sequence with a single item deletes just the item" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "needs: [build]\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 1), seq.item_deletes.len);
+    try std.testing.expectEqualStrings("build", source[seq.item_deletes[0].span.start_byte..seq.item_deletes[0].span.end_byte]);
+}
+
+test "alias-expanded sequence carries no item_deletes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\a: &base
+        \\  - one
+        \\b: *base
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const aliased = node.mapping.entries[1].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 0), aliased.item_deletes.len);
 }

@@ -211,6 +211,56 @@ pub fn deleteMappingEntry(alloc: std.mem.Allocator, entry_span: Span) ?[]const E
     return oneEdit(alloc, entry_span.start_byte, entry_span.end_byte, "");
 }
 
+/// Removes items from the *same* sequence, given the sequence's per-item
+/// `yaml.ItemDelete` array and the indices of the items to drop.
+///
+/// Returns null when the removal would empty the sequence: `needs: []` and
+/// `matrix: { os: [] }` are not what the diagnostic asked for, and an empty
+/// block sequence cannot even be written by dropping lines. It also returns
+/// null when the parser recorded no ranges (`items.len` shorter than the
+/// sequence, e.g. an alias expansion) — the caller passes the array it got.
+///
+/// Adjacent indices become one edit. `fix.engine` drops a fix whose own edits
+/// overlap, and a deletion running to the end of a flow sequence has to start
+/// at the comma *before* its first item so `[a, b, c]` losing `b` and `c`
+/// leaves `[a]` and not `[a, ]`; both need the run, not the item, as the unit.
+pub fn deleteSequenceItems(
+    alloc: std.mem.Allocator,
+    items: []const yaml_types.ItemDelete,
+    indices: []const usize,
+) ?[]const Edit {
+    if (items.len == 0 or indices.len == 0 or indices.len >= items.len) return null;
+
+    const sorted = alloc.alloc(usize, indices.len) catch return null;
+    @memcpy(sorted, indices);
+    std.mem.sort(usize, sorted, {}, std.sort.asc(usize));
+    for (sorted, 0..) |idx, i| {
+        if (idx >= items.len) return null;
+        if (i > 0 and idx == sorted[i - 1]) return null;
+    }
+
+    const edits = alloc.alloc(Edit, sorted.len) catch return null;
+    var count: usize = 0;
+    var run_start: usize = 0;
+    while (run_start < sorted.len) {
+        var run_end = run_start;
+        while (run_end + 1 < sorted.len and sorted[run_end + 1] == sorted[run_end] + 1) run_end += 1;
+
+        const first = items[sorted[run_start]];
+        const last = items[sorted[run_end]];
+        // A run reaching the sequence's last item leaves no following separator
+        // to absorb, so it swallows the one in front of it instead.
+        const takes_preceding = sorted[run_end] + 1 == items.len and sorted[run_start] > 0;
+        const start_byte = if (takes_preceding) first.prev_end else first.span.start_byte;
+        if (last.span.end_byte < start_byte) return null;
+        edits[count] = .{ .start_byte = start_byte, .end_byte = last.span.end_byte, .replacement = "" };
+        count += 1;
+        run_start = run_end + 1;
+    }
+
+    return edits[0..count];
+}
+
 const testing = std.testing;
 
 fn mkSpan(start_byte: usize, end_byte: usize) Span {
@@ -411,4 +461,125 @@ test "insertMappingEntryBlock: empty sub_entries returns null" {
         &subs,
         2,
     ) == null);
+}
+
+fn mkDelete(start_byte: usize, end_byte: usize, prev_end: usize) yaml_types.ItemDelete {
+    return .{ .span = mkSpan(start_byte, end_byte), .prev_end = prev_end };
+}
+
+test "deleteSequenceItems removes one item of several" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const items = [_]yaml_types.ItemDelete{
+        mkDelete(0, 10, 0),
+        mkDelete(10, 20, 10),
+        mkDelete(20, 30, 20),
+    };
+    const edits = deleteSequenceItems(arena.allocator(), &items, &.{1}) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 10), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 20), edits[0].end_byte);
+    try testing.expectEqualStrings("", edits[0].replacement);
+}
+
+test "deleteSequenceItems keeps non-adjacent items as separate edits, sorted" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const items = [_]yaml_types.ItemDelete{
+        mkDelete(0, 10, 0),
+        mkDelete(10, 20, 10),
+        mkDelete(20, 30, 20),
+        mkDelete(30, 40, 30),
+    };
+    const edits = deleteSequenceItems(arena.allocator(), &items, &.{ 2, 0 }) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqual(@as(usize, 2), edits.len);
+    try testing.expectEqual(@as(usize, 0), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 20), edits[1].start_byte);
+    try testing.expectEqual(@as(usize, 30), edits[1].end_byte);
+}
+
+test "deleteSequenceItems merges adjacent items into one edit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const items = [_]yaml_types.ItemDelete{
+        mkDelete(0, 10, 0),
+        mkDelete(10, 20, 10),
+        mkDelete(20, 30, 20),
+    };
+    const edits = deleteSequenceItems(arena.allocator(), &items, &.{ 0, 1 }) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 0), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 20), edits[0].end_byte);
+}
+
+test "deleteSequenceItems takes the preceding comma when a run ends the sequence" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // `[a, b, c]`: item text at 1..2, 4..5, 7..8; non-last items reach the
+    // next item's start.
+    const items = [_]yaml_types.ItemDelete{
+        mkDelete(1, 4, 1),
+        mkDelete(4, 7, 2),
+        mkDelete(7, 8, 5),
+    };
+    const edits = deleteSequenceItems(arena.allocator(), &items, &.{ 1, 2 }) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 2), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 8), edits[0].end_byte);
+}
+
+test "deleteSequenceItems keeps its own start when the run begins at index 0" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // `[a, b, c]` losing `a` and `b`: there is no comma in front of `a` to
+    // take, and the one after `b` goes with it.
+    const items = [_]yaml_types.ItemDelete{
+        mkDelete(1, 4, 1),
+        mkDelete(4, 7, 2),
+        mkDelete(7, 8, 5),
+    };
+    const edits = deleteSequenceItems(arena.allocator(), &items, &.{ 0, 1 }) orelse return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 1), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 7), edits[0].end_byte);
+}
+
+test "deleteSequenceItems refuses to empty the sequence" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const items = [_]yaml_types.ItemDelete{ mkDelete(0, 10, 0), mkDelete(10, 20, 10) };
+    try testing.expect(deleteSequenceItems(arena.allocator(), &items, &.{ 0, 1 }) == null);
+}
+
+test "deleteSequenceItems with no indices returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const items = [_]yaml_types.ItemDelete{ mkDelete(0, 10, 0), mkDelete(10, 20, 10) };
+    try testing.expect(deleteSequenceItems(arena.allocator(), &items, &.{}) == null);
+}
+
+test "deleteSequenceItems rejects an out-of-range or repeated index" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const items = [_]yaml_types.ItemDelete{ mkDelete(0, 10, 0), mkDelete(10, 20, 10), mkDelete(20, 30, 20) };
+    try testing.expect(deleteSequenceItems(arena.allocator(), &items, &.{5}) == null);
+    try testing.expect(deleteSequenceItems(arena.allocator(), &items, &.{ 1, 1 }) == null);
+}
+
+test "deleteSequenceItems returns null when the parser recorded no ranges" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expect(deleteSequenceItems(arena.allocator(), &.{}, &.{0}) == null);
 }
