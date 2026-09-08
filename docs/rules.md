@@ -83,6 +83,20 @@ Expanding the event as a whole — `toJSON(github.event)` — is a taint source 
 The root matches only as a whole reference, so server-generated fields such as
 `github.event.number` stay out of scope.
 
+### Refs SEC005 and SEC009 recognize
+
+SEC005 reports a checkout whose `ref` / `repository` names the PR head:
+`github.event.pull_request.head.*`, `github.head_ref`, a literal `refs/pull/`,
+`github.event.pull_request.number` / `github.event.number` used to build one,
+and `github.event.pull_request.merge_commit_sha` — the test merge of the head
+into the base carries the fork's changes just as `refs/pull/<n>/merge` does.
+
+SEC009 reports `github.event.workflow_run.head_*`, `.display_title` and
+`.pull_requests[*].*`. The last one keeps SEC009 in step with SEC002, which
+already treats `pull_requests.*.head.ref` as untrusted; GitHub empties the
+array for fork-triggered runs, so the reachable case is a branch name a
+same-repository PR author picks.
+
 ### Fork guards
 
 SEC005 and SEC009 stay quiet when the job — or the step itself — is gated on an

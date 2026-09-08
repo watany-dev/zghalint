@@ -542,10 +542,13 @@ fn checkoutCodeInput(step: *const Step, untrusted: *const fn ([]const u8) bool) 
 
 /// `github.event.pull_request.head.{sha,ref}` (and `.head.repo.full_name`),
 /// `github.head_ref` and the `refs/pull/<n>/{head,merge}` spellings all name
-/// fork-controlled code (SEC005).
+/// fork-controlled code (SEC005). `merge_commit_sha` names the test merge of
+/// the head into the base, so it carries the fork's changes just as
+/// `refs/pull/<n>/merge` does.
 fn isPRHeadValue(value: []const u8) bool {
     return containsAnyMarker(value, &.{
         "github.event.pull_request.head",
+        "github.event.pull_request.merge_commit_sha",
         "github.head_ref",
         "refs/pull/",
         "github.event.pull_request.number",
@@ -557,10 +560,16 @@ fn isPRHeadValue(value: []const u8) bool {
 /// `workflow_run.repository` is deliberately absent: it names the base
 /// repository the run belongs to, which is the sound spelling SEC022
 /// recommends, not the fork's.
+///
+/// `pull_requests` is included so SEC009 agrees with SEC002, which already
+/// treats `pull_requests.*.head.ref` as untrusted: a fork author names the
+/// branch. GitHub empties the array for runs triggered from a fork, so the
+/// reachable case is a same-repository PR branch.
 fn isWorkflowRunValue(value: []const u8) bool {
     return containsAnyMarker(value, &.{
         "github.event.workflow_run.head_",
         "github.event.workflow_run.display_title",
+        "github.event.workflow_run.pull_requests",
     });
 }
 
@@ -2838,6 +2847,18 @@ test "SEC005: refs/pull/N/head built from the PR number" {
     try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
 
+test "SEC005: PR target checkout of merge_commit_sha (#310)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.pull_request.merge_commit_sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
 fn sec005GuardedList(job_if: ?[]const u8, step_if: ?[]const u8, with: workflow_types.StringMap) DiagnosticList {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with, .if_condition = step_if },
@@ -3005,6 +3026,18 @@ test "SEC009: workflow_run with checkout of workflow_run head_sha" {
 test "SEC009: workflow_run with checkout of workflow_run head_branch" {
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.workflow_run.head_branch }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: workflow_run checkout of a triggering PR head ref (#311)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.workflow_run.pull_requests[0].head.ref }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
