@@ -45,6 +45,9 @@ fn applyCustomCa(allocator: Allocator) void {
     const path = std.process.getEnvVarOwned(allocator, "SSL_CERT_FILE") catch return;
     defer allocator.free(path);
     if (path.len == 0) return;
+    // Zig's addCertsFromFilePathAbsolute asserts an absolute path; a relative
+    // SSL_CERT_FILE would panic in Debug rather than skip the extra CA.
+    if (!std.fs.path.isAbsolute(path)) return;
     client_storage.ca_bundle.rescan(allocator) catch {};
     client_storage.ca_bundle.addCertsFromFilePathAbsolute(allocator, path) catch return;
     client_storage.next_https_rescan_certs = false;
@@ -267,6 +270,15 @@ test "init honors HTTPS_PROXY (#336)" {
 test "init ignores a missing SSL_CERT_FILE without failing (#336)" {
     if (client_initialized) return error.SkipZigTest;
     var env = try test_support.EnvGuard.set(testing.allocator, "SSL_CERT_FILE", "/no/such/ca.pem");
+    defer env.deinit();
+    init(testing.allocator);
+    defer deinit();
+    try testing.expect(client_initialized);
+}
+
+test "init ignores a relative SSL_CERT_FILE without panicking (#336)" {
+    if (client_initialized) return error.SkipZigTest;
+    var env = try test_support.EnvGuard.set(testing.allocator, "SSL_CERT_FILE", "not-absolute.pem");
     defer env.deinit();
     init(testing.allocator);
     defer deinit();
