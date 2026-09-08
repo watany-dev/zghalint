@@ -509,6 +509,9 @@ pub const Step = struct {
     uses_value_end_byte: ?usize = null,
     /// Scalar style of the `uses:` value (for autofix replacement quoting).
     uses_value_style: ?yaml_types.ScalarStyle = null,
+    /// Nothing but blanks or a comment follows the `uses:` value on its line,
+    /// so an autofix may append a trailing `# <tag>` after it.
+    uses_value_ends_line: bool = false,
     /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
     with_last_entry_end_byte: ?usize = null,
     /// Span and style of the `run:` scalar. The style is needed to map an

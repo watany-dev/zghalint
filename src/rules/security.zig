@@ -283,8 +283,8 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
                 // Safe: the rewrite pins to the very commit the tag resolved to
                 // when we asked, so the workflow keeps running the same code.
-                // Null whenever that commit is unknown — offline, no token, or
-                // a ref that is a branch — leaving the diagnostic on its own.
+                // `buildPinFix` returns null for every case where that does not
+                // hold, leaving the diagnostic on its own.
                 .fix = sha_pin.buildPinFix(
                     list,
                     step,
@@ -5965,7 +5965,7 @@ const sec001_pin_source =
 test "SEC001: --fix pins the tag to the commit it resolves to, keeping the version in a comment" {
     sha_pin.initTagOids(testing.allocator, false, true);
     defer sha_pin.deinitTagOids();
-    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid);
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
 
     const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
     defer result.deinit(testing.allocator);
@@ -5978,7 +5978,7 @@ test "SEC001: --fix pins the tag to the commit it resolves to, keeping the versi
 test "SEC001: a quoted uses: value is pinned inside the quotes, with the comment outside" {
     sha_pin.initTagOids(testing.allocator, false, true);
     defer sha_pin.deinitTagOids();
-    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid);
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
 
     const source =
         \\name: t
@@ -5999,7 +5999,7 @@ test "SEC001: a quoted uses: value is pinned inside the quotes, with the comment
 test "SEC001: without a known commit the diagnostic stands alone (--offline)" {
     sha_pin.initTagOids(testing.allocator, true, true);
     defer sha_pin.deinitTagOids();
-    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid);
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
 
     const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
     defer result.deinit(testing.allocator);
@@ -6012,11 +6012,47 @@ test "SEC001: without a known commit the diagnostic stands alone (--offline)" {
 test "SEC001: an unrelated tag in the store is not borrowed for this action" {
     sha_pin.initTagOids(testing.allocator, false, true);
     defer sha_pin.deinitTagOids();
-    sha_pin.setCachedTagOid("actions", "setup-node", "v4", sec001_pin_oid);
+    sha_pin.setCachedTagOid("actions", "setup-node", "v4", sec001_pin_oid, false);
 
     const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), result.fix_count);
     try testing.expectEqualStrings(sec001_pin_source, result.content);
+}
+
+test "SEC001: a ref that is also a branch is left to SC006's unsafe fix" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, true);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sec001_pin_source, result.content);
+}
+
+test "SEC001: a flow-style step gets no pin, since the comment would close the mapping" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - {name: a, uses: actions/checkout@v4}
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
 }

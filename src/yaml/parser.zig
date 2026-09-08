@@ -505,13 +505,24 @@ pub const Parser = struct {
         };
     }
 
+    /// True when only blanks or a comment separate the token from the end of
+    /// its line, so an autofix may append `# ...` after it.
+    fn tokenEndsLine(self: *Parser, token: Token) bool {
+        var i = token.end;
+        while (i < self.source.len and (self.source[i] == ' ' or self.source[i] == '\t')) : (i += 1) {}
+        if (i >= self.source.len) return true;
+        return self.source[i] == '\n' or self.source[i] == '\r' or self.source[i] == '#';
+    }
+
     fn scalarFromToken(self: *Parser, token: Token) Scalar {
         const raw = token.slice(self.source);
+        const ends_line = self.tokenEndsLine(token);
         if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
             return .{
                 .value = raw[1 .. raw.len - 1],
                 .style = if (raw[0] == '\'') .single_quoted else .double_quoted,
                 .span = self.spanFromToken(token),
+                .ends_line = ends_line,
             };
         }
         if (raw.len >= 1 and (raw[0] == '|' or raw[0] == '>')) {
@@ -521,12 +532,14 @@ pub const Parser = struct {
                 .value = if (content_start < raw.len) raw[content_start..] else "",
                 .style = style,
                 .span = self.spanFromToken(token),
+                .ends_line = ends_line,
             };
         }
         return .{
             .value = raw,
             .style = .plain,
             .span = self.spanFromToken(token),
+            .ends_line = ends_line,
         };
     }
 

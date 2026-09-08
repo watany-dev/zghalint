@@ -23,9 +23,18 @@ const Fix = diagnostics.Fix;
 const FixSafety = diagnostics.FixSafety;
 const Step = workflow_types.Step;
 
+/// The commit a tag pointed at, plus whether a branch of the same name also
+/// exists. That flag is what keeps the `safe` pin honest: a name that is both
+/// a tag and a branch is SC006's finding, and choosing the tag side is a guess
+/// only the `unsafe` fix may make.
+pub const TagOid = struct {
+    oid: []const u8,
+    also_branch: bool,
+};
+
 /// Unmanaged so the map does not have to hold on to an allocator whose arena
 /// moves when the module state is swapped in tests.
-const OidMap = std.StringHashMapUnmanaged([]const u8);
+const OidMap = std.StringHashMapUnmanaged(TagOid);
 
 var oid_cache: OidMap = .{};
 var oid_arena: ?std.heap.ArenaAllocator = null;
@@ -53,18 +62,24 @@ pub fn isActive() bool {
 /// Non-SHA oids are rejected here rather than at each call site: the value is
 /// written verbatim into the user's workflow by `--fix`, and both the GraphQL
 /// response and the on-disk cache are outside this process's control.
-pub fn setCachedTagOid(owner: []const u8, repo: []const u8, tag: []const u8, oid: []const u8) void {
+pub fn setCachedTagOid(
+    owner: []const u8,
+    repo: []const u8,
+    tag: []const u8,
+    oid: []const u8,
+    also_branch: bool,
+) void {
     const alloc = if (oid_arena) |*arena| arena.allocator() else return;
     if (!engine.isValidSha(oid)) return;
     if (!engine.isValidGitRef(tag)) return;
 
     const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, tag }) catch return;
     const value = alloc.dupe(u8, oid) catch return;
-    oid_cache.put(alloc, key, value) catch return;
+    oid_cache.put(alloc, key, .{ .oid = value, .also_branch = also_branch }) catch return;
 }
 
 /// The commit `tag` pointed at, or null when this run has no answer for it.
-pub fn lookupTagOid(owner: []const u8, repo: []const u8, tag: []const u8) ?[]const u8 {
+pub fn lookupTagOid(owner: []const u8, repo: []const u8, tag: []const u8) ?TagOid {
     if (oid_arena == null) return null;
 
     var key_buf: [max_key_len]u8 = undefined;
@@ -95,7 +110,15 @@ pub fn buildPinFix(
     const owner = action_ref.owner orelse return null;
     const repo = action_ref.repo orelse return null;
     const ref = action_ref.ref orelse return null;
-    const oid = lookupTagOid(owner, repo, ref) orelse return null;
+    const entry = lookupTagOid(owner, repo, ref) orelse return null;
+    // A name that is both a tag and a branch is exactly SC006's finding:
+    // pinning it decides which of the two the author meant, so only the
+    // `unsafe` rewrite is allowed to make that call.
+    if (safety == .safe and entry.also_branch) return null;
+    // The trailing `# v4` comments out the rest of the line, so it may only be
+    // appended where nothing follows the value — inside a flow collection it
+    // would swallow the closing `}` or the next entry.
+    if (!step.uses_value_ends_line) return null;
 
     const end_byte = step.uses_value_end_byte orelse return null;
     const style = step.uses_value_style orelse return null;
@@ -112,7 +135,7 @@ pub fn buildPinFix(
     const ref_start = ref_end - ref.len;
 
     const alloc = list.fixAllocator();
-    const replacement = alloc.dupe(u8, oid) catch return null;
+    const replacement = alloc.dupe(u8, entry.oid) catch return null;
     const comment = std.fmt.allocPrint(alloc, " # {s}", .{ref}) catch return null;
 
     const edits = alloc.alloc(Edit, 2) catch return null;
@@ -129,7 +152,7 @@ const valid_oid = "a5ac7e51b41094c92402da3b24376905380afc29";
 
 test "tag_oids: inactive lookup returns null" {
     deinitTagOids();
-    setCachedTagOid("actions", "checkout", "v4", valid_oid);
+    setCachedTagOid("actions", "checkout", "v4", valid_oid, false);
     try testing.expect(lookupTagOid("actions", "checkout", "v4") == null);
     try testing.expect(!isActive());
 }
@@ -150,15 +173,15 @@ test "tag_oids: round-trips a stored oid" {
     initTagOids(testing.allocator, false, true);
     defer deinitTagOids();
 
-    setCachedTagOid("actions", "checkout", "v4", valid_oid);
-    try testing.expectEqualStrings(valid_oid, lookupTagOid("actions", "checkout", "v4").?);
+    setCachedTagOid("actions", "checkout", "v4", valid_oid, false);
+    try testing.expectEqualStrings(valid_oid, lookupTagOid("actions", "checkout", "v4").?.oid);
 }
 
 test "tag_oids: a miss is not an answer" {
     initTagOids(testing.allocator, false, true);
     defer deinitTagOids();
 
-    setCachedTagOid("actions", "checkout", "v4", valid_oid);
+    setCachedTagOid("actions", "checkout", "v4", valid_oid, false);
     try testing.expect(lookupTagOid("actions", "checkout", "v3") == null);
     try testing.expect(lookupTagOid("actions", "setup-node", "v4") == null);
 }
@@ -167,8 +190,8 @@ test "tag_oids: rejects a non-SHA oid" {
     initTagOids(testing.allocator, false, true);
     defer deinitTagOids();
 
-    setCachedTagOid("actions", "checkout", "v4", "not-a-sha");
-    setCachedTagOid("actions", "checkout", "v3", "A5AC7E51B41094C92402DA3B24376905380AFC29");
+    setCachedTagOid("actions", "checkout", "v4", "not-a-sha", false);
+    setCachedTagOid("actions", "checkout", "v3", "A5AC7E51B41094C92402DA3B24376905380AFC29", false);
     try testing.expect(lookupTagOid("actions", "checkout", "v4") == null);
     try testing.expect(lookupTagOid("actions", "checkout", "v3") == null);
 }
@@ -177,13 +200,13 @@ test "tag_oids: rejects a malformed tag name" {
     initTagOids(testing.allocator, false, true);
     defer deinitTagOids();
 
-    setCachedTagOid("actions", "checkout", "v4?evil", valid_oid);
+    setCachedTagOid("actions", "checkout", "v4?evil", valid_oid, false);
     try testing.expect(lookupTagOid("actions", "checkout", "v4?evil") == null);
 }
 
 test "tag_oids: deinit clears the store" {
     initTagOids(testing.allocator, false, true);
-    setCachedTagOid("actions", "checkout", "v4", valid_oid);
+    setCachedTagOid("actions", "checkout", "v4", valid_oid, false);
     deinitTagOids();
     try testing.expect(lookupTagOid("actions", "checkout", "v4") == null);
 }

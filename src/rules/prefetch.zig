@@ -302,7 +302,7 @@ fn applyCacheEntry(
                         .not_ambiguous;
                     refconfusion.setCachedRefResult(owner, repo, n.ref, status);
                 }
-                if (n.tag_oid) |oid| sha_pin.setCachedTagOid(owner, repo, n.ref, oid);
+                if (n.tag_oid) |oid| sha_pin.setCachedTagOid(owner, repo, n.ref, oid, n.is_branch);
                 // A row written before the oid field existed, or by a run
                 // without `--fix`, answers SC006 but not the pin. Keep the ref
                 // in the batch so the oid can still be fetched; it is not a
@@ -656,14 +656,8 @@ fn applyResults(
                         .not_ambiguous;
                     refconfusion.setCachedRefResult(res.owner, res.repo, nr.ref, status);
                 }
-                if (nr.tag_oid) |oid| sha_pin.setCachedTagOid(res.owner, res.repo, nr.ref, oid);
+                if (nr.tag_oid) |oid| sha_pin.setCachedTagOid(res.owner, res.repo, nr.ref, oid, nr.is_branch);
             }
-        }
-        // The tag listing SC005 requests carries oids too. Finding a name in it
-        // is a positive fact even when `tag_oids_complete` is false: only the
-        // *absence* of a name would need the listing to be complete.
-        if (active.tag_pin) {
-            for (res.tag_oids) |t| sha_pin.setCachedTagOid(res.owner, res.repo, t.name, t.oid);
         }
         if (active.impostor) {
             impostor_compare.classifyImpostorFromGraphql(scratch, res, pending);
@@ -1503,6 +1497,8 @@ test "applyResults: seeds the SHA-pin store from the per-ref tag oids" {
         .{ .ref = "v4", .is_tag = true, .is_branch = false, .tag_oid = oid },
         // A branch carries no tag oid, and must not gain one.
         .{ .ref = "main", .is_tag = false, .is_branch = true },
+        // A name that is both keeps its oid, flagged so only SC006 may use it.
+        .{ .ref = "edge", .is_tag = true, .is_branch = true, .tag_oid = oid },
     };
     const results = [_]graphql.RepoResult{.{
         .owner = "o",
@@ -1518,36 +1514,10 @@ test "applyResults: seeds the SHA-pin store from the per-ref tag oids" {
         .tag_pin = true,
     }, null, null);
 
-    try testing.expectEqualStrings(oid, sha_pin.lookupTagOid("o", "r", "v4").?);
+    try testing.expectEqualStrings(oid, sha_pin.lookupTagOid("o", "r", "v4").?.oid);
+    try testing.expect(!sha_pin.lookupTagOid("o", "r", "v4").?.also_branch);
     try testing.expect(sha_pin.lookupTagOid("o", "r", "main") == null);
-}
-
-test "applyResults: a truncated tag listing still seeds the names it did return" {
-    sha_pin.initTagOids(testing.allocator, false, true);
-    defer sha_pin.deinitTagOids();
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const oid = "1111111111111111111111111111111111111111";
-    const tag_oids = [_]graphql.NamedOid{.{ .name = "v1", .oid = oid }};
-    const results = [_]graphql.RepoResult{.{
-        .owner = "o",
-        .repo = "r",
-        .tag_oids = &tag_oids,
-        // Only a *missing* name would need the listing to be complete.
-        .tag_oids_complete = false,
-    }};
-
-    applyResults(arena.allocator(), &results, .{
-        .archived = false,
-        .stale = false,
-        .refconf = false,
-        .impostor = false,
-        .tag_pin = true,
-    }, null, null);
-
-    try testing.expectEqualStrings(oid, sha_pin.lookupTagOid("o", "r", "v1").?);
+    try testing.expect(sha_pin.lookupTagOid("o", "r", "edge").?.also_branch);
 }
 
 test "applyCacheEntry: a cached row without an oid keeps the ref in the batch" {
@@ -1579,7 +1549,7 @@ test "applyCacheEntry: a cached row without an oid keeps the ref in the batch" {
     };
     const hits = applyCacheEntry(&sets, "o", "r", entry, active);
 
-    try testing.expectEqualStrings(oid, sha_pin.lookupTagOid("o", "r", "v4").?);
+    try testing.expectEqualStrings(oid, sha_pin.lookupTagOid("o", "r", "v4").?.oid);
     try testing.expectEqual(@as(usize, 1), hits);
     // v3's row predates the oid field, so it has to be asked about again.
     try testing.expect(!sets.named_refs.contains("o/r@v4"));

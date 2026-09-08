@@ -264,7 +264,7 @@ fn fixWithAmbiguousRef(include_unsafe: bool) !test_support.FixOutcome {
 test "SC006: --fix-unsafe pins the ambiguous ref to the tag side" {
     sha_pin.initTagOids(testing.allocator, false, true);
     defer sha_pin.deinitTagOids();
-    sha_pin.setCachedTagOid("owner", "repo", "v4", sc006_pin_oid);
+    sha_pin.setCachedTagOid("owner", "repo", "v4", sc006_pin_oid, true);
 
     const result = try fixWithAmbiguousRef(true);
     defer result.deinit(testing.allocator);
@@ -277,7 +277,7 @@ test "SC006: --fix-unsafe pins the ambiguous ref to the tag side" {
 test "SC006: plain --fix leaves the ambiguity for a human to resolve" {
     sha_pin.initTagOids(testing.allocator, false, true);
     defer sha_pin.deinitTagOids();
-    sha_pin.setCachedTagOid("owner", "repo", "v4", sc006_pin_oid);
+    sha_pin.setCachedTagOid("owner", "repo", "v4", sc006_pin_oid, true);
 
     const result = try fixWithAmbiguousRef(false);
     defer result.deinit(testing.allocator);
