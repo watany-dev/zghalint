@@ -17,6 +17,12 @@ Nothing released yet. `v0.0.1-rc.1` is the first planned tag; the CLI contract
 (flag names, exit codes, output shapes) is not yet stable, and rule IDs may
 still be renumbered before 1.0.
 
+### Fixed
+
+- HTTP client now honors `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and
+  `SSL_CERT_FILE`, so SC003 / SC004 / SC005 / SC008 no longer skip on every
+  run behind a required proxy (#336).
+
 ### Added
 
 - GitHub Actions workflow linting across ten categories: security (`SEC*`),
