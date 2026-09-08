@@ -216,7 +216,7 @@ const whole_event_contexts = [_][]const u8{"github.event"};
 /// passes them. The payload spellings of the same idea (`github.event.inputs`,
 /// `github.event.client_payload`) live in `dispatch_payload_table`, which is
 /// shared with SEC021.
-const bare_inputs_contexts = [_][]const u8{"inputs"};
+const bare_inputs_context = "inputs";
 
 /// An `if:` condition is evaluated by the Actions expression engine and yields
 /// a boolean; the value never reaches a shell, so this is not injection. What
@@ -321,6 +321,15 @@ const script_injection_fix_hint = "assign the context to an environment variable
 /// and a `steps.<id>.outputs.*` reference is untrusted only when the step that
 /// wrote it captured an untrusted value.
 fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
+    walkWorkflowTaint(wf, list, &checkStepScriptInjection);
+}
+
+/// The taint analysis SEC002 and SEC008 share: build the workflow's table, close
+/// the taint over `env:`, step outputs and job outputs, then run `check` on
+/// every step with the table that holds at that step. Both rules ask the same
+/// question of a value — is it attacker-controlled here — and differ only in
+/// where they look for it, so neither can see a source the other misses.
+fn walkWorkflowTaint(wf: *const Workflow, list: *DiagnosticList, check: StepCheck) void {
     const contexts = runTaintContexts(wf);
     const base: ContextTable = .{ .prefix = contexts.slice(), .whole = &whole_event_contexts };
 
@@ -328,48 +337,51 @@ fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
     var workflow_env: TaintedNames = .{};
     addTaintedEnvKeys(&workflow_env, wf.env, base);
 
-    const tainted_jobs = taintedJobs(wf, base, workflow_env);
+    const outputs = taintedJobOutputs(wf, base, workflow_env);
     var reporting = base;
-    reporting.tainted_jobs = tainted_jobs.slice();
-    for (wf.jobs) |*job| _ = walkJobTaint(job, reporting, workflow_env, list);
+    reporting.tainted_jobs = outputs.slice();
+    for (wf.jobs) |*job| walkJobTaint(job, reporting, workflow_env, .{ .list = list, .check = check }, null);
 }
 
-/// The jobs whose `outputs:` export an untrusted value. A job's output can be
-/// fed from `needs.<other>.outputs.*`, so the set is closed by iteration rather
+/// A step-level check run against the taint table that holds at that step.
+const StepCheck = *const fn (step: *const Step, table: ContextTable, list: *DiagnosticList) void;
+
+const Reporter = struct {
+    list: *DiagnosticList,
+    check: StepCheck,
+};
+
+/// The job outputs that export an untrusted value. A job's output can be fed
+/// from `needs.<other>.outputs.*`, so the set is closed by iteration rather
 /// than by visiting the jobs in `needs` order: the set only grows, and one pass
 /// per job is enough to reach the fixed point. Doing it that way also needs no
 /// dependency graph, and a `needs:` cycle — which SYN rules report — cannot
 /// loop it.
-fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNames) TaintedNames {
-    var out: TaintedNames = .{};
+fn taintedJobOutputs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNames) TaintedOutputs {
+    var out: TaintedOutputs = .{};
     var round: usize = 0;
     while (round < wf.jobs.len) : (round += 1) {
-        var changed = false;
+        const before = out.len;
         var table = base;
         table.tainted_jobs = out.slice();
-        for (wf.jobs) |*job| {
-            if (out.contains(job.id)) continue;
-            if (!walkJobTaint(job, table, workflow_env, null)) continue;
-            out.append(job.id);
-            changed = true;
-        }
-        if (!changed) break;
+        for (wf.jobs) |*job| walkJobTaint(job, table, workflow_env, null, &out);
+        if (out.len == before) break;
     }
     return out;
 }
 
 /// One pass over a job's steps, threading the taint the earlier steps produced
-/// into the later ones. Returns whether the job exports an untrusted value
-/// through its `outputs:`.
-///
-/// `list` is null for the pass that only computes that answer, so the reporting
-/// pass and the fixed-point pass share one walk and cannot disagree.
+/// into the later ones. The job outputs bound to an untrusted value are
+/// appended to `out`, so the fixed-point pass and the reporting pass share one
+/// walk and cannot disagree: the reporting pass passes null there, and the
+/// fixed-point pass passes no reporter.
 fn walkJobTaint(
     job: *const Job,
     base: ContextTable,
     workflow_env: TaintedNames,
-    list: ?*DiagnosticList,
-) bool {
+    reporter: ?Reporter,
+    out: ?*TaintedOutputs,
+) void {
     var job_env = workflow_env;
     var job_table = base;
     job_table.tainted_env = workflow_env.slice();
@@ -386,9 +398,11 @@ fn walkJobTaint(
         addTaintedEnvKeys(&step_env, step.env, table);
         table.tainted_env = step_env.slice();
 
-        if (list) |l| checkStepScriptInjection(step, table, l);
+        if (reporter) |r| r.check(step, table, r.list);
         if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
     }
+
+    const sink = out orelse return;
 
     // A step-scoped `env:` entry does not outlive its step, so the outputs are
     // resolved against the job scope.
@@ -396,9 +410,9 @@ fn walkJobTaint(
     final.tainted_steps = tainted.slice();
     for (job.outputs) |output| {
         const value = output.value orelse continue;
-        if (hasUntrustedExpr(value, final)) return true;
+        if (!hasUntrustedExpr(value, final)) continue;
+        sink.append(.{ .job = job.id, .name = output.name });
     }
-    return false;
 }
 
 /// The `env:` keys of one mapping whose value interpolates an untrusted
@@ -406,11 +420,18 @@ fn walkJobTaint(
 /// works — as long as the step reads it back as `$KEY`. Written as
 /// `${{ env.KEY }}` the value is spliced into the script before the shell ever
 /// runs, which is the injection the fix was meant to remove.
+///
+/// A narrower scope re-binding a key wins at run time, so binding it to a value
+/// with no untrusted context in it clears the taint an outer scope put there.
 fn addTaintedEnvKeys(out: *TaintedNames, env: ?workflow_types.StringMap, table: ContextTable) void {
     const map = env orelse return;
     var it = map.iterator();
     while (it.next()) |entry| {
-        if (hasUntrustedExpr(entry.value_ptr.*, table)) out.append(entry.key_ptr.*);
+        if (hasUntrustedExpr(entry.value_ptr.*, table)) {
+            out.append(entry.key_ptr.*);
+        } else {
+            out.remove(entry.key_ptr.*);
+        }
     }
 }
 
@@ -446,6 +467,15 @@ const TaintedNames = struct {
         self.len += 1;
     }
 
+    fn remove(self: *TaintedNames, name: []const u8) void {
+        for (self.buf[0..self.len], 0..) |existing, i| {
+            if (!std.ascii.eqlIgnoreCase(existing, name)) continue;
+            self.buf[i] = self.buf[self.len - 1];
+            self.len -= 1;
+            return;
+        }
+    }
+
     fn contains(self: *const TaintedNames, name: []const u8) bool {
         for (self.buf[0..self.len]) |existing| {
             if (std.ascii.eqlIgnoreCase(existing, name)) return true;
@@ -454,6 +484,39 @@ const TaintedNames = struct {
     }
 
     fn slice(self: *const TaintedNames) []const []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+/// One `outputs:` entry of one job, as `needs.<job>.outputs.<name>` names it.
+const TaintedOutput = struct {
+    job: []const u8,
+    name: []const u8,
+};
+
+/// The job outputs carrying an untrusted value. The output name is kept — unlike
+/// a step output, whose name a `run:` line picks and this rule cannot know — so
+/// a job publishing one tainted output does not taint the rest of its outputs.
+const TaintedOutputs = struct {
+    buf: [max_tainted_names]TaintedOutput = undefined,
+    len: usize = 0,
+
+    fn append(self: *TaintedOutputs, output: TaintedOutput) void {
+        if (self.len >= self.buf.len) return;
+        if (self.contains(output)) return;
+        self.buf[self.len] = output;
+        self.len += 1;
+    }
+
+    fn contains(self: *const TaintedOutputs, output: TaintedOutput) bool {
+        for (self.buf[0..self.len]) |existing| {
+            if (std.ascii.eqlIgnoreCase(existing.job, output.job) and
+                std.ascii.eqlIgnoreCase(existing.name, output.name)) return true;
+        }
+        return false;
+    }
+
+    fn slice(self: *const TaintedOutputs) []const TaintedOutput {
         return self.buf[0..self.len];
     }
 };
@@ -475,9 +538,9 @@ fn stepTaintsItsOutputs(step: *const Step, table: ContextTable) bool {
     while (lines.next()) |line| {
         if (indexOfWriteToVar(line, &.{"GITHUB_OUTPUT"}) == null) continue;
         if (hasUntrustedExpr(line, table)) return true;
-        const env_map = step.env orelse continue;
-        for (env_map.keys(), env_map.values()) |key, value| {
-            if (!hasUntrustedExpr(value, table)) continue;
+        // `table.tainted_env` already layers the workflow, job and step scopes,
+        // so an inherited entry taints the output the same as a step-local one.
+        for (table.tainted_env) |key| {
             if (referencesShellVar(line, key)) return true;
         }
     }
@@ -841,11 +904,7 @@ fn indexOfWriteToVar(s: []const u8, targets: []const []const u8) ?usize {
 /// `$GITHUB_ENV` is reported exactly where `repository_dispatch` fills it
 /// (#312).
 fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
-    const contexts = runTaintContexts(wf);
-    const table: ContextTable = .{ .prefix = contexts.slice() };
-    for (wf.jobs) |*job| {
-        for (job.steps) |*step| checkGithubEnvInjection(step, table, list);
-    }
+    walkWorkflowTaint(wf, list, &checkGithubEnvInjection);
 }
 
 /// SEC008 for the steps of a composite action, which declare no triggers: the
@@ -925,30 +984,44 @@ fn runTaintContexts(wf: *const Workflow) RunTaintContexts {
     // The `inputs.*` shorthand is filled by both ways in, and neither spells it
     // through `github.event`.
     if (wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) {
-        for (bare_inputs_contexts) |context| out.append(context);
+        out.append(bare_inputs_context);
     }
     return out;
 }
 
 const max_run_taint_contexts = blk: {
-    var n: usize = run_dangerous_contexts.len + bare_inputs_contexts.len;
+    var n: usize = run_dangerous_contexts.len + 1;
     for (dispatch_payload_table) |entry| n += entry.contexts.len;
     break :blk n;
 };
 
-const RunTaintContexts = struct {
-    buf: [max_run_taint_contexts][]const u8 = undefined,
-    len: usize = 0,
+/// A fixed list of context patterns. Every entry comes from a comptime table,
+/// so deduplicating on append is what keeps the list inside its capacity: a
+/// workflow may name the same trigger twice (`on: [workflow_dispatch,
+/// repository_dispatch, workflow_dispatch]`), and the parser hands both
+/// occurrences over.
+fn ContextList(comptime cap: usize) type {
+    return struct {
+        const Self = @This();
 
-    fn append(self: *RunTaintContexts, context: []const u8) void {
-        self.buf[self.len] = context;
-        self.len += 1;
-    }
+        buf: [cap][]const u8 = undefined,
+        len: usize = 0,
 
-    fn slice(self: *const RunTaintContexts) []const []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+        fn append(self: *Self, context: []const u8) void {
+            for (self.buf[0..self.len]) |existing| {
+                if (std.mem.eql(u8, existing, context)) return;
+            }
+            self.buf[self.len] = context;
+            self.len += 1;
+        }
+
+        fn slice(self: *const Self) []const []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+}
+
+const RunTaintContexts = ContextList(max_run_taint_contexts);
 
 /// Every context in the table, plus the bare `inputs` root.
 const max_checkout_ref_contexts = blk: {
@@ -957,22 +1030,7 @@ const max_checkout_ref_contexts = blk: {
     break :blk n;
 };
 
-const CheckoutRefContexts = struct {
-    buf: [max_checkout_ref_contexts][]const u8 = undefined,
-    len: usize = 0,
-
-    fn append(self: *CheckoutRefContexts, context: []const u8) void {
-        for (self.buf[0..self.len]) |existing| {
-            if (std.mem.eql(u8, existing, context)) return;
-        }
-        self.buf[self.len] = context;
-        self.len += 1;
-    }
-
-    fn slice(self: *const CheckoutRefContexts) []const []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+const CheckoutRefContexts = ContextList(max_checkout_ref_contexts);
 
 /// The `inputs.*` shorthand names whatever started the run: the values a
 /// `workflow_dispatch` actor typed, or the values a caller passed. Analysing
@@ -1770,8 +1828,8 @@ const ContextTable = struct {
     /// Names of `env:` keys bound to an untrusted value in a scope that covers
     /// the step being checked (#314).
     tainted_env: []const []const u8 = &.{},
-    /// Ids of jobs whose `outputs:` export an untrusted value (#314).
-    tainted_jobs: []const []const u8 = &.{},
+    /// The job outputs that export an untrusted value (#314).
+    tainted_jobs: []const TaintedOutput = &.{},
 
     fn matches(self: ContextTable, path: ContextPath) bool {
         for (self.prefix) |ctx| {
@@ -1797,16 +1855,17 @@ const ContextTable = struct {
         return false;
     }
 
-    /// `needs.<job>.outputs.<name>`, with `<job>` a job that exported an
-    /// untrusted value. As with a step output, the name below `outputs` is not
-    /// looked at.
+    /// `needs.<job>.outputs.<name>`, with that exact output bound to an
+    /// untrusted value. A job's `outputs:` mapping names each entry, so — unlike
+    /// a step output — an unrelated output of the same job stays trusted.
     fn matchesTaintedJobOutput(self: ContextTable, path: ContextPath) bool {
         if (self.tainted_jobs.len == 0) return false;
         if (path.len < 4) return false;
         if (!segmentMatches(path.segments[0], "needs")) return false;
         if (!segmentMatches(path.segments[2], "outputs")) return false;
-        for (self.tainted_jobs) |id| {
-            if (segmentMatches(path.segments[1], id)) return true;
+        for (self.tainted_jobs) |output| {
+            if (segmentMatches(path.segments[1], output.job) and
+                segmentMatches(path.segments[3], output.name)) return true;
         }
         return false;
     }
@@ -2780,6 +2839,105 @@ test "SEC002: an untainted job output leaves the consumer quiet (#314)" {
     var list = sec002JobOutputList("${{ steps.s.outputs.body }}", "echo \"${{ needs.a.outputs.body }}\"", env);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: an untainted output of a tainted job stays trusted" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+
+    const producer_steps = [_]Step{.{ .id = "s", .env = env, .run = "echo \"body=$BODY\" >> \"$GITHUB_OUTPUT\"" }};
+    const outputs = [_]workflow_types.OutputKey{
+        .{ .name = "body", .span = undefined, .value = "${{ steps.s.outputs.body }}" },
+        .{ .name = "version", .span = undefined, .value = "1.0" },
+    };
+    const consumer_steps = [_]Step{.{ .run = "echo \"${{ needs.a.outputs.version }}\"" }};
+    const needs = [_][]const u8{"a"};
+    const jobs = [_]Job{
+        .{ .id = "a", .steps = &producer_steps, .outputs = &outputs, .permissions = Permissions{} },
+        .{ .id = "b", .needs = &needs, .steps = &consumer_steps, .permissions = Permissions{} },
+    };
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: taint travels two job hops whatever order the jobs are declared in" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+
+    const producer_steps = [_]Step{.{ .id = "s", .env = env, .run = "echo \"body=$BODY\" >> \"$GITHUB_OUTPUT\"" }};
+    const producer_outputs = [_]workflow_types.OutputKey{.{ .name = "body", .span = undefined, .value = "${{ steps.s.outputs.body }}" }};
+    const relay_outputs = [_]workflow_types.OutputKey{.{ .name = "body", .span = undefined, .value = "${{ needs.a.outputs.body }}" }};
+    const consumer_steps = [_]Step{.{ .run = "echo \"${{ needs.b.outputs.body }}\"" }};
+    const needs_a = [_][]const u8{"a"};
+    const needs_b = [_][]const u8{"b"};
+    // Declared consumer first, so a single pass over the jobs would miss the
+    // second hop.
+    const jobs = [_]Job{
+        .{ .id = "c", .needs = &needs_b, .steps = &consumer_steps, .permissions = Permissions{} },
+        .{ .id = "b", .needs = &needs_a, .steps = &.{}, .outputs = &relay_outputs, .permissions = Permissions{} },
+        .{ .id = "a", .steps = &producer_steps, .outputs = &producer_outputs, .permissions = Permissions{} },
+    };
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: a nearer env binding clears the taint an outer scope put there" {
+    var workflow_env = workflow_types.StringMap.init(testing.allocator);
+    defer workflow_env.deinit();
+    workflow_env.put("TITLE", "${{ github.event.issue.title }}") catch unreachable;
+
+    var job_env = workflow_types.StringMap.init(testing.allocator);
+    defer job_env.deinit();
+    job_env.put("TITLE", "constant-value") catch unreachable;
+
+    const steps = [_]Step{.{ .run = "echo \"${{ env.TITLE }}\"" }};
+    const jobs = [_]Job{.{ .id = "build", .env = job_env, .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .env = workflow_env, .jobs = &jobs, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: an inherited env entry taints the output a step captures" {
+    var workflow_env = workflow_types.StringMap.init(testing.allocator);
+    defer workflow_env.deinit();
+    workflow_env.put("TITLE", "${{ github.event.issue.title }}") catch unreachable;
+
+    const steps = [_]Step{
+        .{ .id = "cap", .run = "echo \"t=$TITLE\" >> \"$GITHUB_OUTPUT\"" },
+        .{ .run = "echo \"${{ steps.cap.outputs.t }}\"" },
+    };
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .env = workflow_env, .jobs = &jobs, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC008: a tainted env entry written to GITHUB_ENV" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+
+    const steps = [_]Step{.{ .env = env, .run = "echo \"X=${{ env.BODY }}\" >> $GITHUB_ENV" }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC002/SEC008: naming the same trigger twice does not overflow the context list" {
+    const events = [_]workflow_types.EventConfig{
+        .{ .event = .workflow_dispatch },
+        .{ .event = .repository_dispatch },
+        .{ .event = .workflow_dispatch },
+    };
+    const steps = [_]Step{.{ .run = "echo \"REF=${{ github.event.client_payload.ref }}\" >> $GITHUB_ENV" }};
+    var list = runJobOn(.{ .events = &events }, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 fn sec008FiresOn(on: Trigger, body: []const u8) bool {

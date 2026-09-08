@@ -369,6 +369,19 @@ test "SEC002: script injection inside a composite step is reported" {
     try testing.expect(lint.has("SEC002"));
 }
 
+test "SEC008: a write to GITHUB_ENV inside a composite step is reported" {
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - run: echo "TITLE=${{ github.event.issue.title }}" >> $GITHUB_ENV
+        \\      shell: bash
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("SEC008"));
+}
+
 test "DEP003: a malformed uses inside a composite step is reported" {
     var lint = try Lint.run(
         \\runs:

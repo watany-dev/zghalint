@@ -89,14 +89,16 @@ look like the recommended fix:
 
 - `env.<KEY>` — an `env:` entry bound to an untrusted value taints the
   expression spelling of that key for the scope that declares it (workflow, job
-  or step). `$KEY` stays quiet: the shell reads the value out of the
-  environment, while `${{ env.KEY }}` is spliced into the script before the
-  shell ever starts, which is the injection the `env:` binding was meant to
-  remove.
-- `needs.<job>.outputs.<name>` — untrusted when `<job>` binds that output to a
-  tainted `steps.<id>.outputs.*` (or to an untrusted context directly). The set
-  of exporting jobs is closed by iteration, so a chain of jobs is followed
-  whatever order they are declared in.
+  or step) and for the scopes below it. `$KEY` stays quiet: the shell reads the
+  value out of the environment, while `${{ env.KEY }}` is spliced into the
+  script before the shell ever starts, which is the injection the `env:` binding
+  was meant to remove. Re-binding the same key to a clean value in a nearer
+  scope clears the taint, because that binding is the one that wins at run time.
+- `needs.<job>.outputs.<name>` — untrusted when `<job>` binds *that* output to a
+  tainted `steps.<id>.outputs.*` (or to an untrusted context directly). A job's
+  `outputs:` names each entry, so a job exporting one tainted output keeps its
+  other outputs trusted. The set is closed by iteration, so a chain of jobs is
+  followed whatever order they are declared in.
 
 The fixed table covers every payload field an attacker authors, not only the
 obvious ones: alongside issue / PR / comment free text and commit messages it

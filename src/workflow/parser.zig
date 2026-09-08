@@ -1641,6 +1641,27 @@ test "parseWorkflow minimal" {
     try testing.expectEqualStrings("echo hi", wf.jobs[0].steps[0].run.?);
 }
 
+test "parseOutputKeys records a scalar value and leaves a non-scalar one null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var nested_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("value"), .value = mkScalar("x"), .span = mkSpan() },
+    };
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("version"), .value = mkScalar("${{ steps.v.outputs.version }}"), .span = mkSpan() },
+        .{ .key = mkScalarS("meta"), .value = mkMapping(&nested_entries), .span = mkSpan() },
+    };
+
+    const outputs = try parseOutputKeys(arena.allocator(), mkMapping(&entries));
+
+    try testing.expectEqual(@as(usize, 2), outputs.len);
+    try testing.expectEqualStrings("version", outputs[0].name);
+    try testing.expectEqualStrings("${{ steps.v.outputs.version }}", outputs[0].value.?);
+    try testing.expectEqualStrings("meta", outputs[1].name);
+    try testing.expect(outputs[1].value == null);
+}
+
 test "parseWorkflow missing on" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
