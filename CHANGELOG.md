@@ -19,6 +19,10 @@ still be renumbered before 1.0.
 
 ### Changed
 
+- SEC022 now flags `github.event.workflow_run.head_repository.description` as
+  an attacker-authored `if:` gate, the same class as `display_title` (#307,
+  leftover from #313). Identity fields of `head_repository` (`full_name`,
+  `id`, `owner`) remain the recommended fix and are not reported.
 - When SEC015 (artipacked) fires on a checkout, SEC018 on the same step is
   suppressed so the more specific artifact-leakage message is the one shown
   (#335). Disabling SEC015 restores SEC018. The identical-insertion guard in

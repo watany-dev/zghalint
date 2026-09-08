@@ -38,8 +38,8 @@ SEC006 が warning なのは「weak gate だが実行には至らない」ため
 
 ### D4. 対象コンテキストは fork が著者となる可変属性のみ
 
-- 報告する: `github.event.workflow_run.head_branch` / `head_commit.message` / `head_commit.author.*` / `head_commit.committer.*` / `display_title`
-- 報告しない: `head_sha` と `head_commit.id`（同一の不変コミットを指す）、`head_commit.timestamp`、`head_repository.*`（これは修正手段そのもの）、`conclusion` / `name` など base 側が決める属性
+- 報告する: `github.event.workflow_run.head_branch` / `head_commit.message` / `head_commit.author.*` / `head_commit.committer.*` / `display_title` / `head_repository.description`
+- 報告しない: `head_sha` と `head_commit.id`（同一の不変コミットを指す）、`head_commit.timestamp`、`head_repository` の同一性フィールド（`full_name` / `id` / `owner` — これは修正手段そのもの）、`conclusion` / `name` など base 側が決める属性
 
 `head_commit` を前置詞として扱うと `head_commit.id` まで報告してしまい、`head_sha` を非報告とした判断と矛盾する。そのため fork が著者となるフィールドを明示列挙する。
 
