@@ -39,6 +39,8 @@ still be renumbered before 1.0.
   or `workflow_run`. Those triggers run with the default branch's secrets, so
   turning a name that never fired into one of them requires `--fix-unsafe`
   (#346).
+- SYN001 no longer attaches a rename when the suggested key already exists as a
+  sibling (case-insensitive). That rewrite used to produce SYN002 (#347).
 - HTTP client now honors `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and
   `SSL_CERT_FILE`, so SC003 / SC004 / SC005 / SC008 no longer skip on every
   run behind a required proxy (#336).

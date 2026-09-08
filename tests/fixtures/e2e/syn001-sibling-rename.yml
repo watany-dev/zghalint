@@ -1,0 +1,18 @@
+# zghalint:expect SYN001@12 SYN001@16
+# #347: renaming runs-onn onto the existing runs-on would create SYN002.
+# wth: has no unique suggestion, so it stays either way.
+name: unknown job and step keys
+on: push
+permissions:
+  contents: read
+concurrency: g23
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    runs-onn: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        wth:
+          arg: 1
+        run: make build

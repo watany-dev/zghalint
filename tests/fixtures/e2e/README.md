@@ -63,6 +63,7 @@ silently. Fixtures without such a sibling are unaffected.
 | `expr017-github-event-overlay.yml` | #124: the curated `github.event` overlay widens EXPR017 without new EXPR003s |
 | `expr006-array-contains.yml` | #333 FP guard: `contains(labels.*.name, 'x')` is array membership |
 | `syn009-privileged-trigger-fix.yml` | #346: `--fix` leaves a `pull_request_target` typo; `--fix-unsafe` rewrites it |
+| `syn001-sibling-rename.yml` | #347: `--fix` leaves `runs-onn` when `runs-on` is already a sibling |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |

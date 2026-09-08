@@ -413,13 +413,14 @@ zizmor は書き換え後に `dangerous-triggers` を新規に出す。
 トリガへ直すのは意味保存ではない。候補が特権トリガなら `--fix` では触らず、
 `--fix-unsafe` でのみ置換する。
 
-#### G23 (#347). SYN001 の `--fix` が既にあるキーへリネームして SYN002 を作る — 要 autofix 修正
+#### G23 (#347). SYN001 の `--fix` が既にあるキーへリネームして SYN002 を作る — 対応済み
 
 `bench/cases/f-syntax-schema/unknown-key-job-and-step.yml`。
 `runs-on:` の隣の `runs-onn:` を `--fix` が `runs-on` に直すとキーが二つになり、
 再 lint で SYN002 が出る。`wth:` は候補が一意でないため触れず、こちらは残る。
 
-リネーム先の兄弟キーが既にあれば autofix を付けない。
+リネーム先の兄弟キーが既にあれば autofix を付けない。大文字小文字だけが違う
+兄弟も SYN002 と同じく衝突とみなす。
 
 #### G24 (#348). SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作る — 要 fix エンジン修正
 
@@ -663,6 +664,6 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - [x] G20 (#304): ネットワーク取得に失敗したルールを stderr の注記で伝える
 - [x] G21 (#305): DEP004 を `actions/checkout` の `path:` が作るディレクトリで沈黙させる
 - [x] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
-- [ ] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
+- [x] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
 - [ ] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [ ] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る

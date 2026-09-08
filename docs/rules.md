@@ -530,6 +530,24 @@ Validate the structural correctness of the workflow definition itself.
 | SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis (`--fix` で重複を削除) |
 | SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
 
+### SYN001 unknown-key
+
+A mapping key that is not in the GitHub Actions schema for its section is
+reported with the keys that section does accept. When a single known key sits
+within edit distance 2, `--fix` renames the typo (`timeout-minute` →
+`timeout-minutes`).
+
+The rename is omitted when that target is already a sibling in the same
+mapping, including when the sibling differs only in letter case: applying it
+would produce SYN002 (#347).
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    runs-onn: ubuntu-latest   # error: unexpected key "runs-onn"; no autofix
+```
+
 ### SYN002 duplicate-key
 
 GitHub Actions resolves mapping keys case-insensitively. A second key that
