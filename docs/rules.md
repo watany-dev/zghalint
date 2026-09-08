@@ -388,14 +388,14 @@ Validate the structural correctness of the workflow definition itself.
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` (`--fix` で重複を削除) |
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
 | SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
-| SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all |
+| SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all (`--fix-unsafe` でそのキーを削除) |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
 | SYN016 | invalid-timezone | error | `schedule` `timezone` is not a name in the IANA time zone database |
 | SYN017 | workflow-dispatch-inputs | error | `workflow_dispatch` input declares an invalid `type`, misuses `options`, or has a `default` that does not fit |
-| SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis |
+| SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis (`--fix` で重複を削除) |
 | SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
 
 ### SYN002 duplicate-key

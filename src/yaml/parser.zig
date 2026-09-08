@@ -58,6 +58,14 @@ pub const Parser = struct {
     /// past the next sibling's first token), so this is the only anchor that
     /// still marks where the node's own text stopped.
     last_end: usize,
+    /// How many anchor definitions the parse has consumed. A sequence whose
+    /// items define anchors cannot be edited by byte range: an alias far away
+    /// in the file still expands to the text being removed.
+    anchors_seen: usize,
+    /// How many comments the parse has consumed. Only flow sequences care —
+    /// their item ranges span the commas, so a comment sitting between two
+    /// items falls inside one of them.
+    comments_seen: usize,
 
     pub const Failure = struct {
         span: Span,
@@ -80,6 +88,8 @@ pub const Parser = struct {
             .alias_budget = max_alias_expansion_nodes,
             .failure = null,
             .last_end = 0,
+            .anchors_seen = 0,
+            .comments_seen = 0,
         };
     }
 
@@ -182,9 +192,16 @@ pub const Parser = struct {
             break :blk try self.parseNode(min_indent);
         } else try self.parseNode(min_indent);
 
+        // Every `*name` expands to this text, so an item cannot be removed from
+        // here by byte range without silently editing those expansions too.
+        const bound = switch (node) {
+            .sequence => |seq| Node{ .sequence = .{ .items = seq.items, .span = seq.span } },
+            else => node,
+        };
+
         // A repeated `&name` shadows the earlier definition, as in YAML.
-        self.anchors.put(self.allocator, name, node) catch return ParseError.OutOfMemory;
-        return node;
+        self.anchors.put(self.allocator, name, bound) catch return ParseError.OutOfMemory;
+        return bound;
     }
 
     /// Resolves `*name` to a copy of the anchored node whose spans all point at
@@ -353,6 +370,11 @@ pub const Parser = struct {
         var items = std.ArrayList(Node){};
         var deletes = std.ArrayList(types.ItemDelete){};
         const seq_indent = self.current.column;
+        const anchors_before = self.anchors_seen;
+        // Cleared once any item's range proves untrustworthy: the sequence then
+        // offers no `item_deletes` at all rather than one that cuts in the
+        // wrong place.
+        var deletable = true;
 
         while (self.current.kind == .sequence_entry and self.current.column == seq_indent) {
             const dash = self.current;
@@ -373,6 +395,11 @@ pub const Parser = struct {
             // comment line *between* two items stays: it introduces the one
             // that follows, so the item above must not carry it away.
             const line_start = self.lineStartByte(dash.start);
+            // A nested `- - a` puts the inner bullet mid-line: taking the line
+            // from its start would carry the outer bullet away with it.
+            for (self.source[line_start..dash.start]) |c| {
+                if (c != ' ' and c != '\t') deletable = false;
+            }
             try deletes.append(self.allocator, .{
                 .span = self.lineRangeSpan(line_start, self.contentLineEnd(), dash.line),
                 .prev_end = line_start,
@@ -380,6 +407,13 @@ pub const Parser = struct {
 
             self.skipNewlinesAndComments();
         }
+
+        // A plain scalar continued on the next line (`- foo\n  bar`) ends the
+        // loop on that continuation, and the recorded range stopped at the
+        // first line: removing it would leave the orphan behind.
+        if (self.current.kind != .eof and self.current.column > seq_indent) deletable = false;
+        if (self.anchors_seen != anchors_before) deletable = false;
+        if (!deletable) deletes.clearRetainingCapacity();
 
         const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const owned_deletes = deletes.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
@@ -459,6 +493,8 @@ pub const Parser = struct {
         var extents = std.ArrayList(ItemExtent){};
         const start_span = self.spanFromToken(self.current);
         const open_line = self.current.line;
+        const anchors_before = self.anchors_seen;
+        const comments_before = self.comments_seen;
         self.advance();
 
         while (self.current.kind != .flow_sequence_end and self.current.kind != .eof) {
@@ -485,7 +521,10 @@ pub const Parser = struct {
         }
 
         const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
-        const owned_deletes = try self.flowItemDeletes(extents.items, open_line);
+        const owned_deletes = if (self.anchors_seen != anchors_before or self.comments_seen != comments_before)
+            &[_]types.ItemDelete{}
+        else
+            try self.flowItemDeletes(extents.items, open_line);
         return Node{ .sequence = .{ .items = owned_items, .span = start_span, .item_deletes = owned_deletes } };
     }
 
@@ -551,7 +590,12 @@ pub const Parser = struct {
 
     fn advance(self: *Parser) void {
         switch (self.current.kind) {
-            .newline, .comment => {},
+            .newline => {},
+            .comment => self.comments_seen += 1,
+            .anchor => {
+                self.anchors_seen += 1;
+                self.last_end = self.current.end;
+            },
             else => self.last_end = self.current.end,
         }
         self.current = self.tokenizer.next();
@@ -1621,7 +1665,86 @@ test "alias-expanded sequence carries no item_deletes" {
     ;
     var parser = Parser.init(arena.allocator(), source);
     const node = try parser.parse();
+    const anchored = node.mapping.entries[0].value.sequence;
     const aliased = node.mapping.entries[1].value.sequence;
 
+    try std.testing.expectEqual(@as(usize, 0), anchored.item_deletes.len);
     try std.testing.expectEqual(@as(usize, 0), aliased.item_deletes.len);
+}
+
+test "block sequence continued by a plain scalar carries no item_deletes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\needs:
+        \\  - build
+        \\  - a long value
+        \\    continued here
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 0), seq.item_deletes.len);
+}
+
+test "block sequence defining an anchor carries no item_deletes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\needs:
+        \\  - &first build
+        \\  - test
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 0), seq.item_deletes.len);
+}
+
+test "nested block sequence sharing a line carries no item_deletes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\matrix:
+        \\  - - one
+        \\    - two
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const inner = node.mapping.entries[0].value.sequence.items[0].sequence;
+
+    try std.testing.expectEqual(@as(usize, 0), inner.item_deletes.len);
+}
+
+test "flow sequence with a comment between items carries no item_deletes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\needs: [
+        \\  build, # first
+        \\  test,
+        \\]
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 0), seq.item_deletes.len);
+}
+
+test "flow sequence defining an anchor carries no item_deletes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "needs: [&first build, test]\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const seq = node.mapping.entries[0].value.sequence;
+
+    try std.testing.expectEqual(@as(usize, 0), seq.item_deletes.len);
 }

@@ -298,6 +298,8 @@ fn checkCacheableSetup(
 /// keys this rule does not read — so the step goes only when the author asks
 /// for `--fix-unsafe`.
 fn buildRedundantCheckoutFix(diag_list: *DiagnosticList, job: *const Job, step_index: usize) ?Fix {
+    if (job.step_deletes.len != job.steps.len) return null;
+
     const edits = fix_builder.deleteSequenceItems(
         diag_list.fixAllocator(),
         job.step_deletes,
@@ -1140,6 +1142,25 @@ test "PERF002: a multi-line step is removed whole" {
         \\      - run: make
         \\
     , result.content);
+}
+
+test "PERF002: a step defining an anchor is reported but not removed" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - &co uses: actions/checkout@v4
+        \\      - uses: actions/checkout@v4
+        \\
+    ;
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkRedundantCheckout }, true);
+    defer std.testing.allocator.free(result.content);
+
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try std.testing.expectEqual(@as(usize, 0), result.fix_count);
+    try std.testing.expectEqualStrings(source, result.content);
 }
 
 test "PERF003: detect fail-fast false" {

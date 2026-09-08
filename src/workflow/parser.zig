@@ -1344,14 +1344,13 @@ fn parseMatrix(allocator: std.mem.Allocator, node: Node) ParseError!?types.Matri
 
     var axes = try std.ArrayList(types.MatrixAxis).initCapacity(allocator, m.entries.len);
     for (m.entries) |entry| {
-        const seq: ?yaml.Sequence = switch (entry.value) {
-            .sequence => |s| s,
-            else => null,
-        };
-        axes.appendAssumeCapacity(.{
-            .name = entry.key.value,
-            .values = if (seq) |s| s.items else &.{},
-            .value_deletes = if (seq) |s| s.item_deletes else &.{},
+        axes.appendAssumeCapacity(switch (entry.value) {
+            .sequence => |s| .{
+                .name = entry.key.value,
+                .values = s.items,
+                .value_deletes = s.item_deletes,
+            },
+            else => .{ .name = entry.key.value },
         });
     }
 

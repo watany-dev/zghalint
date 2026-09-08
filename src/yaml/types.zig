@@ -98,7 +98,9 @@ pub const ItemDelete = struct {
     /// The item plus the separator that follows it: its own lines including
     /// the trailing newline in a block sequence, and the comma up to the next
     /// item in a flow one. The last item of a flow sequence has no separator
-    /// after it, so its range stops at its own text.
+    /// after it, so its range stops at its own text. Only the byte offsets are
+    /// meaningful: a flow item's line and column describe the sequence's
+    /// opening bracket, not the item.
     span: Span,
     /// Where the previous item's text ends — the start of the separator this
     /// item is preceded by. Deleting a run that reaches the end of a flow

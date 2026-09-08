@@ -252,7 +252,6 @@ pub fn deleteSequenceItems(
         // to absorb, so it swallows the one in front of it instead.
         const takes_preceding = sorted[run_end] + 1 == items.len and sorted[run_start] > 0;
         const start_byte = if (takes_preceding) first.prev_end else first.span.start_byte;
-        if (last.span.end_byte < start_byte) return null;
         edits[count] = .{ .start_byte = start_byte, .end_byte = last.span.end_byte, .replacement = "" };
         count += 1;
         run_start = run_end + 1;
