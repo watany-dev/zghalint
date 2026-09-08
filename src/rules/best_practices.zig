@@ -474,16 +474,20 @@ const DeprecatedWorkflowCommand = struct {
     effect: []const u8,
     args: []const u8,
     replacement: []const u8,
+    /// The environment file the replacement appends to, e.g. `GITHUB_OUTPUT`.
+    env_file: []const u8,
+    /// `::set-output name=X::Y` carries a name; `::add-path::X` does not.
+    named: bool,
 };
 
 const security_reason = " for security reasons (CVE-2020-15228)";
 const named_value_args = " name=NAME::VALUE";
 
 const deprecated_workflow_commands = [_]DeprecatedWorkflowCommand{
-    .{ .marker = "::set-output", .reason = "", .effect = "the step output is never set", .args = named_value_args, .replacement = "echo \"NAME=VALUE\" >> \"$GITHUB_OUTPUT\"" },
-    .{ .marker = "::save-state", .reason = "", .effect = "the state is never saved", .args = named_value_args, .replacement = "echo \"NAME=VALUE\" >> \"$GITHUB_STATE\"" },
-    .{ .marker = "::set-env", .reason = security_reason, .effect = "the environment variable is never set", .args = named_value_args, .replacement = "echo \"NAME=VALUE\" >> \"$GITHUB_ENV\"" },
-    .{ .marker = "::add-path", .reason = security_reason, .effect = "the path is never added", .args = "::VALUE", .replacement = "echo \"VALUE\" >> \"$GITHUB_PATH\"" },
+    .{ .marker = "::set-output", .reason = "", .effect = "the step output is never set", .args = named_value_args, .replacement = "echo \"NAME=VALUE\" >> \"$GITHUB_OUTPUT\"", .env_file = "GITHUB_OUTPUT", .named = true },
+    .{ .marker = "::save-state", .reason = "", .effect = "the state is never saved", .args = named_value_args, .replacement = "echo \"NAME=VALUE\" >> \"$GITHUB_STATE\"", .env_file = "GITHUB_STATE", .named = true },
+    .{ .marker = "::set-env", .reason = security_reason, .effect = "the environment variable is never set", .args = named_value_args, .replacement = "echo \"NAME=VALUE\" >> \"$GITHUB_ENV\"", .env_file = "GITHUB_ENV", .named = true },
+    .{ .marker = "::add-path", .reason = security_reason, .effect = "the path is never added", .args = "::VALUE", .replacement = "echo \"VALUE\" >> \"$GITHUB_PATH\"", .env_file = "GITHUB_PATH", .named = false },
 };
 
 /// True when `marker` occurs as a workflow command: starting a shell word (so
@@ -507,6 +511,142 @@ fn usesDeprecatedCommand(script: []const u8, marker: []const u8) bool {
     return false;
 }
 
+/// A `NAME` GitHub accepts for `name=`. Anything else — an expression, a
+/// shell variable — makes the rewritten `NAME=VALUE` line mean something the
+/// original did not, so the line keeps its diagnostic and loses its fix.
+fn isWorkflowCommandName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
+    for (name[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return false;
+    }
+    return true;
+}
+
+/// One `run:` line rewritten in place, in offsets relative to the line.
+const CommandLineRewrite = struct {
+    /// First byte of `echo`, so the line's indentation survives untouched.
+    start: usize,
+    /// One past the last byte of the command, excluding the newline.
+    end: usize,
+    text: []const u8,
+};
+
+/// Rewrites a line that is *exactly* one quoted `echo` of `cmd`, per
+/// `docs/design/bp008-autofix-design.md`. Requiring the closing quote to end
+/// the line is what rules out a pipe, a redirect or an `&&` tail: nothing can
+/// follow it. Anything else — an unquoted form, a second command, an
+/// interpolated name — returns null and keeps the diagnostic fix-free.
+fn rewriteWorkflowCommandLine(
+    alloc: std.mem.Allocator,
+    line: []const u8,
+    cmd: DeprecatedWorkflowCommand,
+) ?CommandLineRewrite {
+    const body = if (line.len > 0 and line[line.len - 1] == '\r') line[0 .. line.len - 1] else line;
+
+    var i: usize = 0;
+    while (i < body.len and (body[i] == ' ' or body[i] == '\t')) : (i += 1) {}
+    const start = i;
+
+    if (!std.mem.startsWith(u8, body[i..], "echo ")) return null;
+    i += "echo ".len;
+    while (i < body.len and (body[i] == ' ' or body[i] == '\t')) : (i += 1) {}
+
+    if (i >= body.len) return null;
+    const quote = body[i];
+    if (quote != '"' and quote != '\'') return null;
+    if (body[body.len - 1] != quote or body.len - 1 <= i) return null;
+
+    const inner = body[i + 1 .. body.len - 1];
+    // A second quote of the same kind would close the string early, leaving a
+    // tail this rewrite has not looked at.
+    if (std.mem.indexOfScalar(u8, inner, quote) != null) return null;
+    if (!std.mem.startsWith(u8, inner, cmd.marker)) return null;
+    var rest = inner[cmd.marker.len..];
+
+    var name: []const u8 = "";
+    if (cmd.named) {
+        if (!std.mem.startsWith(u8, rest, " name=")) return null;
+        rest = rest[" name=".len..];
+        const sep = std.mem.indexOf(u8, rest, "::") orelse return null;
+        name = rest[0..sep];
+        rest = rest[sep + 2 ..];
+        if (!isWorkflowCommandName(name)) return null;
+    } else {
+        if (!std.mem.startsWith(u8, rest, "::")) return null;
+        rest = rest[2..];
+        if (rest.len == 0) return null;
+    }
+
+    // A `%0A`-encoded multi-line value needs the `NAME<<EOF` delimiter form,
+    // which is out of scope for this rewrite.
+    if (std.mem.indexOf(u8, rest, "%0A") != null) return null;
+
+    // `$GITHUB_*` is always double-quoted because it has to expand; the value
+    // keeps the quote style it came with, so a single-quoted literal stays
+    // literal and a double-quoted one keeps expanding.
+    const text = if (cmd.named)
+        std.fmt.allocPrint(alloc, "echo {c}{s}={s}{c} >> \"${s}\"", .{ quote, name, rest, quote, cmd.env_file }) catch return null
+    else
+        std.fmt.allocPrint(alloc, "echo {c}{s}{c} >> \"${s}\"", .{ quote, rest, quote, cmd.env_file }) catch return null;
+
+    return .{ .start = start, .end = body.len, .text = text };
+}
+
+/// Every rewritable line of one command kind, as a single fix: `fix/engine.zig`
+/// resolves overlaps per fix, so splitting them would let a conflict elsewhere
+/// leave the script half-migrated. Lines of *different* kinds are disjoint, so
+/// each kind's diagnostic carries its own fix.
+fn buildDeprecatedCommandFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    script: []const u8,
+    cmd: DeprecatedWorkflowCommand,
+) ?Fix {
+    const anchor = spans.runAnchor(step);
+    if (anchor.scalar == null) return null;
+    // A folded scalar joins its lines with spaces, so an offset into `run`
+    // does not map back to a source byte at all.
+    if (anchor.style == .folded) return null;
+
+    const alloc = list.fixAllocator();
+    var edits = std.ArrayList(diagnostics_mod.Edit){};
+    defer edits.deinit(alloc);
+
+    var offset: usize = 0;
+    var continued = false;
+    while (offset < script.len) {
+        const line_start = offset;
+        const nl = std.mem.indexOfScalarPos(u8, script, offset, '\n') orelse script.len;
+        const line = script[line_start..nl];
+        const was_continued = continued;
+        continued = std.mem.endsWith(u8, std.mem.trimRight(u8, line, "\r"), "\\");
+        offset = nl + 1;
+
+        // A line continued from the one above is an argument, not a command.
+        if (was_continued) continue;
+        const rewrite = rewriteWorkflowCommandLine(alloc, line, cmd) orelse continue;
+
+        const span = anchor.at(script, line_start + rewrite.start, rewrite.end - rewrite.start);
+        edits.append(alloc, .{
+            .start_byte = span.start_byte,
+            .end_byte = span.end_byte,
+            .replacement = rewrite.text,
+            // The offsets come from `run`, whose bytes match the source only
+            // for a plain or literal scalar that the parser did not unescape.
+            .expects = script[line_start + rewrite.start .. line_start + rewrite.end],
+        }) catch return null;
+    }
+
+    if (edits.items.len == 0) return null;
+    const owned = edits.toOwnedSlice(alloc) catch return null;
+    return .{
+        .description = "Replace deprecated workflow command with $GITHUB_* file append",
+        .safety = .safe,
+        .edits = owned,
+    };
+}
+
 fn checkDeprecatedWorkflowCommand(step: *const Step, diag_list: *DiagnosticList) void {
     const script = step.run orelse return;
 
@@ -519,6 +659,7 @@ fn checkDeprecatedWorkflowCommand(step: *const Step, diag_list: *DiagnosticList)
                 .message = "Deprecated workflow command '" ++ cmd.marker ++ "' in 'run:'. GitHub disabled it" ++ cmd.reason ++ ", so " ++ cmd.effect ++ ".",
                 .span = spans.runAnchor(step).whole(),
                 .fix_hint = "Replace '" ++ cmd.marker ++ cmd.args ++ "' with '" ++ cmd.replacement ++ "'.",
+                .fix = buildDeprecatedCommandFix(diag_list, step, script, cmd),
             }) catch return;
         }
     }
@@ -1538,4 +1679,148 @@ test "BP008: diagnostic span follows the run: scalar span" {
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqual(@as(u32, 7), diags.get(0).span.start_line);
     try std.testing.expectEqual(@as(usize, 120), diags.get(0).span.start_byte);
+}
+
+test "BP008: fix rewrites every convertible line in one Fix" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: |
+        \\          echo "::set-output name=version::1.0.0"
+        \\          echo "::set-output name=sha::abc"
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(
+        std.testing.allocator,
+        source,
+        .{ .step = &checkDeprecatedWorkflowCommand },
+        false,
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.fix_count);
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.safe, result.first_safety.?);
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: |
+        \\          echo "version=1.0.0" >> "$GITHUB_OUTPUT"
+        \\          echo "sha=abc" >> "$GITHUB_OUTPUT"
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "BP008: fix covers save-state, set-env and add-path" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: |
+        \\          echo "::save-state name=cache-hit::true"
+        \\          echo '::set-env name=FOO::bar'
+        \\          echo "::add-path::/usr/local/bin"
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(
+        std.testing.allocator,
+        source,
+        .{ .step = &checkDeprecatedWorkflowCommand },
+        false,
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), result.edits_applied);
+    try std.testing.expectEqualStrings(
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: |
+        \\          echo "cache-hit=true" >> "$GITHUB_STATE"
+        \\          echo 'FOO=bar' >> "$GITHUB_ENV"
+        \\          echo "/usr/local/bin" >> "$GITHUB_PATH"
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "BP008: a line the rewriter cannot read is left alone" {
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: |
+        \\          echo "::set-output name=a::1" | tee log
+        \\          echo "::set-output name=b::2"
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(
+        std.testing.allocator,
+        source,
+        .{ .step = &checkDeprecatedWorkflowCommand },
+        false,
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "::set-output name=a::1\" | tee log") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "echo \"b=2\" >> \"$GITHUB_OUTPUT\"") != null);
+}
+
+test "BP008: no fix when no line is convertible" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    const step = Step{
+        .run = "echo \"::set-output name=a::1\" && exit 0",
+        .run_meta = .{ .value_span = Span.point(1, 1, 0), .style = .plain },
+    };
+    checkDeprecatedWorkflowCommand(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP008: no fix for a folded run: scalar" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    const step = Step{
+        .run = "echo \"::set-output name=a::1\"\n",
+        .run_meta = .{ .value_span = Span.point(1, 1, 0), .style = .folded },
+    };
+    checkDeprecatedWorkflowCommand(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP008: no fix when the run: scalar span was never captured" {
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    bp008Diags("echo \"::set-output name=a::1\"", &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
 }

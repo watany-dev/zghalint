@@ -1,0 +1,26 @@
+# zghalint:expect RW001@9 RW001@11 RW001@13 RW001@15
+# The last input has no `default:`, so its type cannot be inferred and it
+# keeps its diagnostic without a fix.
+name: Reusable
+on:
+  workflow_call:
+    inputs:
+      verbose:
+        default: true
+      retries:
+        default: 3
+      branch:
+        default: main
+      version:
+        description: Version to build
+permissions:
+  contents: read
+concurrency:
+  group: rw001
+jobs:
+  call:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Build
+        run: echo ok
