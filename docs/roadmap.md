@@ -1,24 +1,24 @@
 # 実施ロードマップ（2026-09-08 時点）
 
-オープンな PR / issue を main（`b681376`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`e49a444`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
 
 | 項目 | 状態 |
 |---|---|
-| ルール数 | `docs/rules.md` の表は 98 行（DEP005 / DEP006 追加分）で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストする。残る不一致は**見出しの「90 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
-| `src/**/*.zig` | 54,454 行 |
-| ユニットテスト | 1842 件（`zig build test` 緑）。#331 で低品質なテストの削除とテーブル駆動化を行い、SEC015 の空振りパスも直した（PR #332） |
+| ルール数 | `docs/rules.md` の表は 99 行（SC007 追加分）で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストする。残る不一致は**見出しの「91 rules」だけ**（同期テストは ID 集合のみを見て本文の数字は見ない） |
+| `src/**/*.zig` | 55,228 行 |
+| ユニットテスト | 1881 件（`zig build test` 緑）。#331 で低品質なテストの削除とテーブル駆動化を行った上で（PR #332）、SC007 とドッグフーディング・形式手法由来の修正分が積み増している |
 | #55 actionlint parity | 54 sub-issue 中 **54 close 済み（100%）**。umbrella #55 本体も close 済み |
 | 型検査エンジン | T0〜T4 完了（#129 は PR #256 で overlay 接続、close 済み）。EXPR018 引数型検査（#162）も同 PR で完了・close 済み |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（53 本）と `tests/fixtures/e2e-action/*.yml`（7 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証。兄弟ファイル `<name>.fixed` を置いたフィクスチャは `--fix` 適用後のバイト列も固定する（PR #328） |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（57 本）と `tests/fixtures/e2e-action/*.yml`（7 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証。兄弟ファイル `<name>.fixed` を置いたフィクスチャは `--fix` 適用後のバイト列も固定する（PR #328） |
 | bench | `bench/cases/` に 133 ファイル（複数ファイルのケースをまとめて 128 ケース）。A〜D は PR #277、E〜J は PR #287 で揃い、G16 / G17 の堅牢性ケース 3 本が PR #301、G21 の再現ケース 1 本が PR #317 で加わった。`scripts/bench.py` の採点で zghalint は recall 100%（108/108）・precision 100%・位置一致 96%（104/108）。FN・FP ともに 0 件で、実行エラーは #284 の 1 件のみ。外部ツール未導入の環境では zghalint 単独で採点する。`--perf`（`scripts/bench_perf.py`）が wall time と最大 RSS を 4 シナリオで測り、実ワークフローのコーパスは `scripts/fetch-corpus.py` が取得する（#268、PR #296） |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
 | ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241） |
 | ADR | `docs/adr/0001`〜`0013`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003） |
-| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#306（bench 再実行記録）、#320（v0.2 マルチ CI ロードマップ = ADR-0014 + 設計 doc）の 4 本。#272 / #277 / #287（bench）と #278（G5〜G8）/ #279（#159）/ #288（G11）/ #289（G12）/ #290（#64）/ #292（G9）/ #291（G14）/ #295（#294）/ #296（#268）/ #301（G16〜G19 の起票）/ #302（#293 = G16 / G17）/ #303（G18 / G19）/ #315（形式手法の Z3 モデル）/ #316（#304 = G20）/ #317（#305 = G21）/ #318（ruff の CI 修正）/ #321（空の値に付いた行末コメントで次のキーを飲み込むパーサバグ）/ #328（#323 = AF1）/ #329（#325 = AF3）/ #330（#324 = AF2）/ #319（action の download 版解決と `scripts/check-version-sync.sh`）/ #332（#331 のテスト整理）はマージ済み。#306 / #320 は別セッションの PR のため本 PR からは触らない |
-| オープン issue | 23 件。内訳はその他 1（#135）、ドッグフーディング由来 5（#333〜#337 = D1〜D5）、autofix 拡張 3（#322 の追跡 issue と #326 / #327 = AF4 / AF5）、形式手法 8（#307 の追跡 issue と #308〜#314 = F1〜F7）、ベンチマーク系 3（#262 本体と #269 / #270）、bench 由来の parity gap 3（#281 #284 #286 = G10 / G13 / G15）。#55 #64 #263 #264 #265〜#267 #268 #271 #273〜#276 #280 #282 #283 #285 #293 #294 #297〜#300 #304 #305 #323 #324 #325 #331 #159 は実装済みのため close 済み |
+| オープン PR | #207（本ロードマップ）、#217（形式仕様とモデル検査）、#306（bench 再実行記録）、#320（v0.2 マルチ CI ロードマップ = ADR-0014 + 設計 doc）、#345（未実施の bench 評価）の 5 本。#272 / #277 / #287（bench）と #278（G5〜G8）/ #279（#159）/ #288（G11）/ #289（G12）/ #290（#64）/ #292（G9）/ #291（G14）/ #295（#294）/ #296（#268）/ #301（G16〜G19 の起票）/ #302（#293 = G16 / G17）/ #303（G18 / G19）/ #315（形式手法の Z3 モデル）/ #316（#304 = G20）/ #317（#305 = G21）/ #318（ruff の CI 修正）/ #321（空の値に付いた行末コメントで次のキーを飲み込むパーサバグ）/ #328（#323 = AF1）/ #329（#325 = AF3）/ #330（#324 = AF2）/ #319（action の download 版解決と `scripts/check-version-sync.sh`）/ #332（#331 のテスト整理）/ #338（#307 の F1〜F7）/ #339（#135 = SC007）/ #340（#333 = D1）/ #341（#334 = D2）/ #342（#336 = D4）/ #343（SEC021 の誤検知）はマージ済み。#306 / #320 / #345 は別セッションの PR のため本 PR からは触らない |
+| オープン issue | 12 件。内訳はドッグフーディング由来 2（#335 / #337 = D3 / D5）、autofix 拡張 3（#322 の追跡 issue と #326 / #327 = AF4 / AF5）、形式手法 1（#307 の追跡 issue のみ。F1〜F7 は全て close 済み）、ベンチマーク系 3（#262 本体と #269 / #270）、bench 由来の parity gap 3（#281 #284 #286 = G10 / G13 / G15）。#55 #64 #135 #263 #264 #265〜#267 #268 #271 #273〜#276 #280 #282 #283 #285 #293 #294 #297〜#300 #304 #305 #308〜#314 #323 #324 #325 #331 #333 #334 #336 #159 は実装済みのため close 済み |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
 | 既知バグ | 形式検証由来の反例はすべて解消した。security 3 件（#218 / #219 / #220）に続き、prefetch キャッシュ（#221 / #222）・`--fix` の原子性（#223）・SEC021 の誤検知（#224）が PR #261 で修正・close 済み |
 
@@ -103,12 +103,12 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 
 | 項目 | 位置づけ |
 |---|---|
-| #135 SC007 typosquat 検出 | `docs/design/sc007-typosquat-design.md` で設計済み。`src/rules/data/trusted_actions.zig` を追加しオフラインで完結するので、他と完全に並列可 |
+| #135 SC007 typosquat 検出 | 完了（close 済み、PR #339）。`src/rules/data/trusted_actions.zig` の信頼 action 表と `util.levenshteinDistance` で編集距離 1〜2 の owner 一致リポジトリを警告する。ネットワーク不要でオフラインに完結し、`--fix` は付けていない（誤った action への自動書き換えは危険なため `fix_hint` のみ） |
 | ベンチマーク #262 | zghalint / actionlint / zizmor を三者比較し、改善課題を継続的に洗い出す umbrella。基盤（#263）は PR #272、ケース A〜D（#264）は PR #277、ケース E〜J（#265〜#267）と FN 候補の検証（#271）は PR #287 で完了した。性能計測（#268）は PR #296 で `--perf` の 4 シナリオとコーパス取得スクリプトが揃い、初回計測で zghalint が actionlint 比 1.5〜3.8 倍・zizmor 比 19〜30 倍速く RSS も最小と出た（副産物として #294 の mmap 過多を発見・修正）。残る sub-issue は autofix 交差検証 #269 と運用ループ #270 の 2 本で、いずれもケース本体ではなく回し方の課題 |
 | bench 由来の parity gap #280〜#286 / #297〜#300 / #304 #305 | bench と実コーパスで出た FP・FN・実行エラーを `docs/design/external-linter-parity.md` の G9〜G21 として起票したもの。残るのは 3 本で、いずれもルール追加——#281（`needs:` の未知 job と循環）/ #284（中身のないワークフローを診断で返す）/ #286（API トークンでの publish を trusted publishing へ誘導）。実コーパス由来の FP #305（G21、`actions/checkout` の `path:` が実行時に作るディレクトリへの `uses: ./`）は PR #317 で解消し、ネットワーク不達時に SC003〜SC006 が黙る #304（G20）は PR #316 で解消して `src/rules/net_status.zig` が判定できなかったルールを stderr の注記で伝えるようになった。パーサ層の #293 = #297 / #298（G16 / G17、親キーと同一桁のシーケンスと `-` 単独行）は PR #302、BP001 の reusable workflow 誤検出（G18 = #299）と fix エンジンの二重挿入（G19 = #300）は PR #303 で解消した。ルール改善の #285（G14、PERM001 の過剰警告）は PR #291、パーサ層の #280（G9、関数呼び出し結果へのプロパティ・インデックスアクセス）は PR #292、ファイル全体が検査対象から落ちる系の #282（G11、UTF-8 BOM）は PR #288、#283（G12、ドキュメントマーカー）は PR #289 で解消し、A〜D 由来の G5〜G8（#273〜#276）は PR #278 で解消済み |
-| ドッグフーディング #333〜#337（D1〜D5） | 実リポジトリ（honojs/hono など）の `.github/workflows` に zghalint をかけて出た FP とノイズ。D1（#333、EXPR006 が配列を第 1 引数に取る `contains()` を誤検知し、fix に従うと式が壊れる）/ D2（#334、PERM002 が workflow-level の `permissions` を無視する）/ D3（#335、SEC015 と SEC018 が同一 checkout ステップに重複して出る）/ D4（#336、HTTP proxy 環境で SC003 / SC004 / SC005 / SC008 が全て skip される）/ D5（#337、BP002 が `uses` のみの step にも出て診断の過半を占める）。bench が用意したケースで測るのに対し、こちらは実際の利用体験そのものから出てくる |
-| autofix 拡張 #322（AF0〜AF5 = #323〜#327） | `--fix` / `--fix-unsafe` に fix を持つのは 98 ルール中 44 ルール。#322 が全ルールを ◎ / ○ / △ / × で評価し、基盤 1 本あたりの解決ルール数で順を付けた。AF1（#323）は PR #328 で着地し、`src/rules/rename.zig` が did-you-mean 候補を safe な rename fix に変換して SYN001 / SYN009 / SYN010 / SYN016 / SYN019、EXPR010〜EXPR014、PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004 の 18 ルールに `--fix` が付いた。AF3（#325）は PR #329 で着地し、`yaml.Sequence` の `ItemDelete` と `fix.builder.deleteSequenceItems` で SYN008 / SYN018（safe）と SYN011 / PERF002（unsafe）が直せる。AF2（#324）は PR #330 で着地し、`graphql` の tag エイリアスが commit oid を運び `src/rules/sha_pin.zig` が SEC001 / SC006 に SHA ピン止め fix を出す（書き換えで意味が変わる場合は抑制）。残るのは AF4（#326、挿入系 = BP008 / RW001 / ACT001）と AF5（#327、SEC002 / SEC008 / SEC019 の env 束縛。設計 doc 先行） |
-| 形式手法 #307（F0〜F7 = #308〜#314） | `scripts/formal/` が Z3 の有界モデル検査で SEC ルールの表の抜け漏れを列挙し（`model.py`）、実バイナリで確認する（`confirm.py`）。設計は `docs/design/formal-rule-model.md`。基盤は PR #315 で着地し、追跡 issue #307 の下に F1〜F7（#308〜#314）が並ぶ。bench が実ワークフローから経験的に穴を探すのに対し、こちらは表の定義から網羅的に探す |
+| ドッグフーディング #333〜#337（D1〜D5） | 実リポジトリ（honojs/hono など）の `.github/workflows` に zghalint をかけて出た FP とノイズ。D1（#333、EXPR006 の配列 `contains()` 誤検知）は PR #340、D2（#334、PERM002 が workflow-level の `permissions` を無視する）は PR #341、D4（#336、HTTP proxy 環境で SC003 / SC004 / SC005 / SC008 が全て skip される）は PR #342 で解消した。残るのは D3（#335、SEC015 と SEC018 が同一 checkout ステップに重複して出る）と D5（#337、BP002 が `uses` のみの step にも出て診断の過半を占める）の 2 本で、どちらも検出漏れではなく出力のノイズ。bench が用意したケースで測るのに対し、こちらは実際の利用体験そのものから出てくる |
+| autofix 拡張 #322（AF0〜AF5 = #323〜#327） | `--fix` / `--fix-unsafe` に fix を持つのは 99 ルール中 44 ルール（SC007 は fix を持たない）。#322 が全ルールを ◎ / ○ / △ / × で評価し、基盤 1 本あたりの解決ルール数で順を付けた。AF1（#323）は PR #328 で着地し、`src/rules/rename.zig` が did-you-mean 候補を safe な rename fix に変換して SYN001 / SYN009 / SYN010 / SYN016 / SYN019、EXPR010〜EXPR014、PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004 の 18 ルールに `--fix` が付いた。AF3（#325）は PR #329 で着地し、`yaml.Sequence` の `ItemDelete` と `fix.builder.deleteSequenceItems` で SYN008 / SYN018（safe）と SYN011 / PERF002（unsafe）が直せる。AF2（#324）は PR #330 で着地し、`graphql` の tag エイリアスが commit oid を運び `src/rules/sha_pin.zig` が SEC001 / SC006 に SHA ピン止め fix を出す（書き換えで意味が変わる場合は抑制）。残るのは AF4（#326、挿入系 = BP008 / RW001 / ACT001）と AF5（#327、SEC002 / SEC008 / SEC019 の env 束縛。設計 doc 先行） |
+| 形式手法 #307（F0〜F7 = #308〜#314） | `scripts/formal/` が Z3 の有界モデル検査で SEC ルールの表の抜け漏れを列挙し（`model.py`）、実バイナリで確認する（`confirm.py`）。設計は `docs/design/formal-rule-model.md`。基盤は PR #315 で着地し、F1〜F7（#308〜#314）は PR #338 で全て解消した——SEC005 に `pull_request.merge_commit_sha`、SEC009 に `github.event.workflow_run.pull_requests`、SEC002 / SEC006 / SEC008 に `head.repo.description` / `.homepage` と `*.committer.*` が加わり、SEC021 の ChatOps 判定と SEC002 の env / job outputs 1 ホップ追跡も入った。追跡 issue #307 だけが残る。bench が実ワークフローから経験的に穴を探すのに対し、こちらは表の定義から網羅的に探す |
 | PR #217 形式仕様 | Alloy（ルール所有権）と TLA+（prefetch / autofix）の仕様と反例。#218〜#224 の出所で、指摘はすべて修正済み。マージすれば以後の反例追加が同じ場所に載る |
 | リポジトリ運用・CI 基盤（旧 #230 #234〜#244） | 12 件すべて実装済み・close 済み（Dependabot / PBT 依存固定 / Zig 版一元化 / coverage / concurrency / 外部静的解析 / ファズ / 自リポジトリ dogfooding / action.yml スモーク / メタファイル / release provenance / タグ整合 / `docs/rules.md` 同期テスト）。track として終了 |
 
@@ -116,18 +116,18 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | `docs/rules.md` の見出し修正 | 表は 98 行で registry と同期済みなのに、見出しが「90 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
-| 2 | #333〜#337（D1〜D5） | ドッグフーディングで出た FP とノイズ。実利用でそのまま見える誤検知（#333 の `contains()`、#334 の workflow-level `permissions`）と、診断の過半を占めるノイズ（#337 の BP002）を含むので、新規ルールより先に潰す |
+| 1 | `docs/rules.md` の見出し修正 | 表は 99 行で registry と同期済みなのに、見出しが「91 rules」のまま。#242 の同期テストは ID 集合しか見ないので本文の数字は守られない |
+| 2 | #335 / #337（D3 / D5） | ドッグフーディングで残ったノイズ 2 本。#337 の BP002 は診断の過半を占め、#335 は同一 checkout ステップに 2 本出る重複。誤検知系（D1 / D2 / D4）が片付いた今、出力の読みやすさを決めるのはここ |
 | 3 | #284 | 中身のないワークフロー（コメントのみのファイル）を `InvalidValue` ではなく診断として返す。bench に残る唯一の実行エラー `i-robustness/comments-only.yml` がこれで消える |
-| 4 | #281 / #135 | ルール追加の 2 本。#281 は `needs:` の未知 job と循環、#135 は SC007 typosquat で設計済み・オフライン完結のため他と完全に並列できる |
-| 5 | #307 の F1〜F7 | 形式モデルが挙げた SEC ルールの抜け漏れ。表の定義から網羅的に出てくるので、bench 由来の課題が減った分ここが次の供給源になる |
+| 4 | #281 / #286 | 残る parity gap のルール追加 2 本。#281 は `needs:` の未知 job と循環、#286 は API トークンでの publish を trusted publishing へ誘導する |
+| 5 | #326 / #327（AF4 / AF5） | 残る autofix 拡張。#326 は挿入系（BP008 / RW001 / ACT001）、#327 は SEC002 / SEC008 / SEC019 の env 束縛で設計 doc 先行。検出側の課題が減った分、指摘を直せるかどうかが次の伸びしろになる |
 
 Phase 1〜4 はすべて閉じ、ルール追加の主戦場は #55 から bench（#262）へ移った。
 採点は全カテゴリを覆って recall 100% / precision 100%、実コーパス 228 ファイルのパース失敗も 0 件で、
 沈黙と「指摘なし」の区別（#304）も stderr の注記で付いた。
-実コーパスの FP（#305）も PR #317 で解消したが、実リポジトリに当てるドッグフーディングでは別種の FP とノイズ（#333〜#337 = D1〜D5）が出ており、出力の質としてはここと空ファイルの扱い（#284）が残る。
-穴を探す役目は経験的な bench から、表の定義を網羅的に検査する形式手法（#307 と F1〜F7）と、実リポジトリに当てるドッグフーディング（#333〜#337 = D1〜D5）へ移りつつある。
-検出そのものと並んで、指摘を直せるかどうか（#322 の autofix 拡張。AF1 / AF2 / AF3 の着地で fix を持つルールは 98 中 44 に増えた）と、
+実コーパスの FP（#305）も PR #317 で解消し、ドッグフーディングで出た誤検知 3 本（#333 / #334 / #336）も PR #340〜#342 で片付いた。出力の質として残るのはノイズ 2 本（#335 / #337）と空ファイルの扱い（#284）である。
+穴を探す役目は経験的な bench から、表の定義を網羅的に検査する形式手法と、実リポジトリに当てるドッグフーディングへ移った。形式手法は F1〜F7 を PR #338 で出し切り、SEC 表の抜けを 7 件埋めている。
+検出そのものと並んで、指摘を直せるかどうか（#322 の autofix 拡張。AF1 / AF2 / AF3 の着地で fix を持つルールは 99 中 44 になった）と、
 GitHub Actions 以外への展開（PR #320 の v0.2 マルチ CI ロードマップ）が次の軸として立ち上がっている。
 
 ## 4. 進め方の注意
