@@ -1623,8 +1623,7 @@ fn reportTrustedPublishing(
     }) catch return;
 }
 
-/// Matches `npm publish`, including flags written between the two words
-/// (`npm --registry=... publish`). A flag whose value is a separate word is not
+/// A flag whose value is a separate word (`npm --access public publish`) is not
 /// followed through, since nothing distinguishes that value from a subcommand.
 /// Blanks only: a newline between the two words would be two commands, not one.
 fn containsNpmPublish(s: []const u8) bool {
@@ -1640,8 +1639,6 @@ fn containsNpmPublish(s: []const u8) bool {
                 j += 1;
                 continue;
             }
-            // A self-contained flag between the command and the subcommand,
-            // e.g. `npm --registry=https://registry.npmjs.org publish`.
             if (saw_separator and s[j] == '-') {
                 while (j < s.len and s[j] != ' ' and s[j] != '\t' and s[j] != '\n') j += 1;
                 saw_separator = false;
