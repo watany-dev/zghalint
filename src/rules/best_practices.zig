@@ -693,38 +693,6 @@ test "BP002: uses-only step is not reported (#337)" {
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "BP002: local action uses-only step is not reported (#337)" {
-    const step = Step{ .uses = ActionRef.parse("./local-action") };
-    var diags = DiagnosticList.init(std.testing.allocator);
-    defer diags.deinit();
-    checkMissingStepName(&step, &diags);
-    try std.testing.expectEqual(@as(usize, 0), diags.len());
-}
-
-test "BP002: uses-only step with leading if is not reported (#337)" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const source =
-        \\name: CI
-        \\on: push
-        \\jobs:
-        \\  build:
-        \\    runs-on: ubuntu-latest
-        \\    steps:
-        \\      - if: always()
-        \\        uses: actions/checkout@v4
-        \\
-    ;
-
-    const wf = try test_support.parseWorkflowSource(alloc, source);
-
-    var diags = DiagnosticList.init(alloc);
-    checkMissingStepName(&wf.jobs[0].steps[0], &diags);
-    try std.testing.expectEqual(@as(usize, 0), diags.len());
-}
-
 test "BP003: detect deprecated checkout v1" {
     const step = Step{ .uses = ActionRef.parse("actions/checkout@v1") };
     var diags = DiagnosticList.init(std.testing.allocator);

@@ -22,6 +22,9 @@ still be renumbered before 1.0.
 - BP002 no longer reports `uses:`-only steps. The action name is already the
   GitHub Actions UI label, so requiring `name:` there drowned out higher
   severity findings (#337). Unnamed `run:` steps are unchanged.
+- EXPR006 no longer warns when `contains()` tests array membership (object
+  filters such as `labels.*.name`, `fromJSON` arrays, typed arrays). Those are
+  exact element checks, not substring matching (#333).
 - PERM002 no longer warns when the workflow already declares `permissions:`
   with no write scope. `write-all` or any `: write` at workflow level still
   asks each job to narrow the grant (#334).

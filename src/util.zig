@@ -15,34 +15,6 @@ pub fn actionBaseName(raw: []const u8) []const u8 {
     return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
 }
 
-pub fn stepNameFromRepo(allocator: std.mem.Allocator, repo: []const u8) ?[]const u8 {
-    if (repo.len == 0) return null;
-    if (!std.ascii.isAlphabetic(repo[0])) return null;
-
-    const buf = allocator.alloc(u8, repo.len) catch return null;
-    buf[0] = std.ascii.toUpper(repo[0]);
-    @memcpy(buf[1..], repo[1..]);
-    return buf;
-}
-
-pub fn stepNameFromRun(allocator: std.mem.Allocator, run: []const u8) ?[]const u8 {
-    const first_line_end = std.mem.indexOfScalar(u8, run, '\n') orelse run.len;
-    const first_line = std.mem.trim(u8, run[0..first_line_end], " \t\r");
-    if (first_line.len == 0) return null;
-
-    // Reject characters that would require escaping in a YAML plain scalar
-    for (first_line) |c| {
-        if (c < 0x20) return null;
-        switch (c) {
-            '"', '\'', ':', '#', '&', '*', '!', '|', '>', '%', '@', '`' => return null,
-            else => {},
-        }
-    }
-
-    const max_len = @min(first_line.len, 40);
-    return allocator.dupe(u8, first_line[0..max_len]) catch null;
-}
-
 /// ASCII-only. Inputs longer than MAX_LEN yield `std.math.maxInt(usize)` to
 /// avoid pathological allocations.
 pub fn levenshteinDistance(a: []const u8, b: []const u8) usize {
@@ -115,38 +87,6 @@ test "actionBaseName strips version suffix" {
     try std.testing.expectEqualStrings("actions/checkout", actionBaseName("actions/checkout"));
     try std.testing.expectEqualStrings("", actionBaseName(""));
     try std.testing.expectEqualStrings("", actionBaseName("@v1"));
-}
-
-test "stepNameFromRepo capitalizes first letter" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    try std.testing.expectEqualStrings("Checkout", stepNameFromRepo(alloc, "checkout").?);
-    try std.testing.expectEqualStrings("Setup-node", stepNameFromRepo(alloc, "setup-node").?);
-    try std.testing.expectEqualStrings("Already", stepNameFromRepo(alloc, "Already").?);
-    try std.testing.expect(stepNameFromRepo(alloc, "") == null);
-    try std.testing.expect(stepNameFromRepo(alloc, "-foo") == null);
-    try std.testing.expect(stepNameFromRepo(alloc, "123") == null);
-}
-
-test "stepNameFromRun trims and caps length" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    try std.testing.expectEqualStrings("echo hello", stepNameFromRun(alloc, "echo hello").?);
-    try std.testing.expectEqualStrings("echo hello", stepNameFromRun(alloc, "echo hello\nnext line").?);
-    try std.testing.expectEqualStrings("echo hello", stepNameFromRun(alloc, "  echo hello  \n").?);
-    try std.testing.expect(stepNameFromRun(alloc, "") == null);
-    try std.testing.expect(stepNameFromRun(alloc, "\n") == null);
-    try std.testing.expect(stepNameFromRun(alloc, "echo 'hello'") == null);
-    try std.testing.expect(stepNameFromRun(alloc, "echo # comment") == null);
-    try std.testing.expect(stepNameFromRun(alloc, "foo: bar") == null);
-
-    const long = "a" ** 50;
-    const result = stepNameFromRun(alloc, long).?;
-    try std.testing.expectEqual(@as(usize, 40), result.len);
 }
 
 test "hasEmptySection matches by name" {
