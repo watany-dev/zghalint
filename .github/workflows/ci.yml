@@ -83,6 +83,13 @@ jobs:
           shellcheck scripts/*.sh
           ./scripts/shellcheck-action.sh action.yml
 
+      # The release version is written out in places that cannot read
+      # build.zig.zon at build time (action.yml's download fallback, the README
+      # examples). Catching the drift on every PR keeps a release from shipping
+      # an action that downloads the previous version.
+      - name: Version references in sync
+        run: ./scripts/check-version-sync.sh
+
       # actionlint shells out to shellcheck for every `run:` block.
       - name: actionlint
         run: actionlint -color

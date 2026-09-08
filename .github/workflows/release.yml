@@ -39,23 +39,17 @@ jobs:
       - name: Build
         run: zig build
 
-      # タグ・build.zig.zon・バイナリの --version が食い違ったまま
-      # リリースされるのを防ぐ。build.zig 経由のバージョン伝播もここで検証する。
+      # タグ・build.zig.zon・action.yml・README・バイナリの --version が
+      # 食い違ったままリリースされるのを防ぐ。タグと突き合わせられるのは
+      # このワークフローだけなので、CI の同名チェック (引数なし) より厳しい。
       - name: Verify version consistency
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           TAG_VERSION=${TAG#v}
 
-          ZON_VERSION=$(sed -n 's/^[[:space:]]*\.version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' build.zig.zon | head -1)
-          if [ -z "$ZON_VERSION" ]; then
-            echo "::error::could not read .version from build.zig.zon"
-            exit 1
-          fi
-          if [ "$TAG_VERSION" != "$ZON_VERSION" ]; then
-            echo "::error::tag $TAG implies version $TAG_VERSION but build.zig.zon has $ZON_VERSION"
-            exit 1
-          fi
+          ./scripts/check-version-sync.sh "$TAG"
 
+          # build.zig 経由のバージョン伝播はビルド済みバイナリでしか見えない。
           # 出力は `zghalint vX.Y.Z` 形式なので、先頭の `v` を落として比較する。
           BIN_VERSION=$(./zig-out/bin/zghalint --version | tr -d '\r' | awk '{print $NF}')
           BIN_VERSION=${BIN_VERSION#v}
