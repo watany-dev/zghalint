@@ -169,15 +169,15 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **90 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **91 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (22 rules)
 
 Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, fork-controlled `workflow_run` gates, and more.
 
-### Supply Chain (7 rules)
+### Supply Chain (8 rules)
 
-Unpinned container images, compromised action SHAs, known CVEs, archived repositories, stale SHA refs, ref confusion attacks, impostor commits.
+Unpinned container images, compromised action SHAs, known CVEs, archived repositories, stale SHA refs, ref confusion attacks, typosquat action names, impostor commits.
 
 ### Performance (3 rules)
 
