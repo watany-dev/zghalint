@@ -8,6 +8,7 @@ pub const workflow = struct {
     pub const Workflow = types.Workflow;
     pub const parser = @import("workflow/parser.zig");
     pub const parseWorkflow = parser.parseWorkflow;
+    pub const parseWorkflowTracked = parser.parseWorkflowTracked;
 };
 
 pub const diagnostics = @import("diagnostics.zig");

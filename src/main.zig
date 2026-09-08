@@ -309,6 +309,37 @@ fn reportYamlParseError(
     stderr.print("{s}: YAML parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
 }
 
+/// A workflow parse error is about one field of the file, so it is reported
+/// with the path the parser recorded and, when the offending node exists in
+/// the source, its position. A missing field has no node to point at, so only
+/// the path is shown.
+fn reportWorkflowParseError(
+    stderr: *std.Io.Writer,
+    file_path: []const u8,
+    err: anyerror,
+    failure: ?zghalint.workflow.parser.Failure,
+) void {
+    if (failure) |f| {
+        if (f.span) |span| {
+            stderr.print("{s}:{d}:{d}: workflow parse error: {s}: '{s}'\n", .{
+                file_path,
+                span.start_line,
+                span.start_col,
+                @errorName(err),
+                f.path,
+            }) catch {};
+            return;
+        }
+        stderr.print("{s}: workflow parse error: {s}: '{s}'\n", .{
+            file_path,
+            @errorName(err),
+            f.path,
+        }) catch {};
+        return;
+    }
+    stderr.print("{s}: workflow parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+}
+
 /// `appendOwning` is required because `diag_list`'s fix arena dies with the
 /// caller's frame; `Fix.edits` would otherwise dangle.
 fn appendFiltered(
@@ -472,8 +503,9 @@ fn lintFile(
         return error.YamlParseError;
     };
 
-    const workflow = zghalint.workflow.parseWorkflow(arena_alloc, yaml_node) catch |err| {
-        stderr.print("{s}: workflow parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+    var workflow_failure: ?zghalint.workflow.parser.Failure = null;
+    const workflow = zghalint.workflow.parseWorkflowTracked(arena_alloc, yaml_node, &workflow_failure) catch |err| {
+        reportWorkflowParseError(stderr, file_path, err, workflow_failure);
         return error.WorkflowParseError;
     };
 

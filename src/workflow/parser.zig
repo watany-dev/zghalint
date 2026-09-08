@@ -13,10 +13,52 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
+/// Where a workflow parse gave up. Zig errors carry no payload, so callers
+/// that want to print `file:line:col` read it from the out-parameter that
+/// `parseWorkflowTracked` fills in.
+pub const Failure = struct {
+    /// Dotted path to the offending part of the workflow, e.g. `on` or
+    /// `jobs.build.steps[1]`.
+    path: []const u8,
+    /// Null when the field is missing outright: there is no node to point at.
+    span: ?yaml.Span,
+};
+
 const ParseContext = struct {
     allocator: std.mem.Allocator,
     type_mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
     unknown_collector: ?*schema.UnknownKeyCollector,
+    /// Absent for the entry points that parse a fragment (a standalone step)
+    /// and have no whole-file error to report.
+    failure: ?*?Failure = null,
+
+    /// Records where the parse gave up. The innermost frame notes its own
+    /// segment and each enclosing frame prepends its own as the error
+    /// unwinds, so the reported path reads `jobs.build.steps[1]`. `span` is
+    /// taken from the innermost note; the outer ones only extend the path.
+    fn note(self: *const ParseContext, segment: []const u8, span: ?yaml.Span) void {
+        const slot = self.failure orelse return;
+        const inner = slot.* orelse {
+            slot.* = .{ .path = segment, .span = span };
+            return;
+        };
+        const path = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ segment, inner.path }) catch segment;
+        slot.* = .{ .path = path, .span = inner.span };
+    }
+
+    /// `note` with the segment built from `fmt`. Falls back to `fallback` when
+    /// the formatting allocation fails: a parse error is already in flight and
+    /// must not be replaced by an allocation error.
+    fn noteFmt(
+        self: *const ParseContext,
+        comptime fmt: []const u8,
+        args: anytype,
+        fallback: []const u8,
+        span: ?yaml.Span,
+    ) void {
+        if (self.failure == null) return;
+        self.note(std.fmt.allocPrint(self.allocator, fmt, args) catch fallback, span);
+    }
 };
 
 const ParsedStringMap = struct {
@@ -76,6 +118,17 @@ fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator:
 }
 
 pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.Workflow {
+    var failure: ?Failure = null;
+    return parseWorkflowTracked(allocator, node, &failure);
+}
+
+/// `parseWorkflow` plus the location of the failure, for callers that report
+/// the error to the user rather than skipping the file silently.
+pub fn parseWorkflowTracked(
+    allocator: std.mem.Allocator,
+    node: Node,
+    failure: *?Failure,
+) ParseError!types.Workflow {
     var type_mismatches = std.ArrayList(type_validation.TypeMismatch){};
     errdefer type_mismatches.deinit(allocator);
 
@@ -86,25 +139,38 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
         .allocator = allocator,
         .type_mismatches = &type_mismatches,
         .unknown_collector = &unknown_collector,
+        .failure = failure,
     };
 
     const root = switch (node) {
         .mapping => |m| m,
-        else => return error.InvalidValue,
+        else => {
+            ctx.note("workflow", node.getSpan());
+            return error.InvalidValue;
+        },
     };
 
     var empty = std.ArrayList(types.EmptySection){};
     defer empty.deinit(allocator);
 
-    const on_node = root.get("on") orelse root.get("true") orelse return error.MissingField;
+    const on_node = root.get("on") orelse root.get("true") orelse {
+        ctx.note("on", null);
+        return error.MissingField;
+    };
     try recordEmpty(&empty, allocator, "on", on_node);
     try recordTriggerNestedEmpty(&empty, allocator, on_node);
     const trigger = if (isEmptyContainer(on_node))
         types.Trigger{ .events = &.{} }
     else
-        try parseTrigger(allocator, on_node);
+        parseTrigger(allocator, on_node) catch |err| {
+            ctx.note("on", on_node.getSpan());
+            return err;
+        };
 
-    const jobs_node = root.get("jobs") orelse return error.MissingField;
+    const jobs_node = root.get("jobs") orelse {
+        ctx.note("jobs", null);
+        return error.MissingField;
+    };
     try recordEmpty(&empty, allocator, "jobs", jobs_node);
     const jobs = if (isEmptyContainer(jobs_node))
         try allocator.alloc(types.Job, 0)
@@ -114,14 +180,20 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     var workflow = types.Workflow{
         .name = root.getScalar("name"),
         .on = trigger,
-        .concurrency = if (root.get("concurrency")) |n| try parseConcurrency(&ctx, n) else null,
+        .concurrency = if (root.get("concurrency")) |n| parseConcurrency(&ctx, n) catch |err| {
+            ctx.note("concurrency", n.getSpan());
+            return err;
+        } else null,
         .jobs = jobs,
         .type_mismatches = try type_mismatches.toOwnedSlice(allocator),
         .yaml_root = node,
     };
 
     if (root.get("permissions")) |n| {
-        const parsed = try parsePermissions(allocator, n);
+        const parsed = parsePermissions(allocator, n) catch |err| {
+            ctx.note("permissions", n.getSpan());
+            return err;
+        };
         workflow.permissions = parsed.permissions;
         workflow.permissions_meta = parsed.meta;
         workflow.permission_problems = parsed.problems;
@@ -130,10 +202,16 @@ pub fn parseWorkflow(allocator: std.mem.Allocator, node: Node) ParseError!types.
     if (root.get("env")) |n| {
         try recordEmpty(&empty, allocator, "env", n);
         if (!isEmptyContainer(n)) {
-            const parsed = try parseStringMapWithMeta(allocator, n);
+            const parsed = parseStringMapWithMeta(allocator, n) catch |err| {
+                ctx.note("env", n.getSpan());
+                return err;
+            };
             workflow.env = parsed.values;
             workflow.env_meta = parsed.meta;
-            workflow.env_keys = try parseEnvKeys(allocator, n);
+            workflow.env_keys = parseEnvKeys(allocator, n) catch |err| {
+                ctx.note("env", n.getSpan());
+                return err;
+            };
         }
     }
 
@@ -702,12 +780,18 @@ fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.E
 fn parseJobs(ctx: *ParseContext, node: Node) ParseError![]const types.Job {
     const m = switch (node) {
         .mapping => |m| m,
-        else => return error.InvalidValue,
+        else => {
+            ctx.note("jobs", node.getSpan());
+            return error.InvalidValue;
+        },
     };
 
     const jobs = try ctx.allocator.alloc(types.Job, m.entries.len);
     for (m.entries, 0..) |entry, i| {
-        jobs[i] = try parseJob(ctx, entry.key.value, entry.key.span, entry.value);
+        jobs[i] = parseJob(ctx, entry.key.value, entry.key.span, entry.value) catch |err| {
+            ctx.noteFmt("jobs.{s}", .{entry.key.value}, "jobs", entry.key.span);
+            return err;
+        };
     }
     return jobs;
 }
@@ -936,12 +1020,18 @@ pub fn parseStandaloneStep(allocator: std.mem.Allocator, node: Node) ParseError!
 fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
     const seq = switch (node) {
         .sequence => |s| s,
-        else => return error.InvalidValue,
+        else => {
+            ctx.note("steps", node.getSpan());
+            return error.InvalidValue;
+        },
     };
 
     const steps = try ctx.allocator.alloc(types.Step, seq.items.len);
     for (seq.items, 0..) |item, i| {
-        steps[i] = try parseStep(ctx, item);
+        steps[i] = parseStep(ctx, item) catch |err| {
+            ctx.noteFmt("steps[{d}]", .{i}, "steps", item.getSpan());
+            return err;
+        };
     }
     return steps;
 }
@@ -2899,4 +2989,83 @@ test "a CRLF workflow parses like its LF twin" {
     try testing.expectEqualStrings("build", wf.jobs[0].id);
     try testing.expectEqualStrings("ubuntu-latest", wf.jobs[0].runs_on.?);
     try testing.expectEqualStrings("actions/checkout@v4", wf.jobs[0].steps[0].uses.?.raw);
+}
+
+/// #293: a parse error used to be reported as a bare error name, leaving the
+/// user to find the offending field in a workflow of any size.
+fn parseFailure(allocator: std.mem.Allocator, source: []const u8) !Failure {
+    const yaml_parser = @import("../yaml/parser.zig");
+    var yp = yaml_parser.Parser.init(allocator, source);
+    const root = try yp.parse();
+
+    var failure: ?Failure = null;
+    _ = parseWorkflowTracked(allocator, root, &failure) catch {
+        return failure orelse error.NoFailureRecorded;
+    };
+    return error.ParseUnexpectedlySucceeded;
+}
+
+test "parseWorkflowTracked reports the line of an invalid step" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const failure = try parseFailure(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\      - 42
+        \\
+    );
+
+    try testing.expectEqualStrings("jobs.build.steps[1]", failure.path);
+    try testing.expectEqual(@as(u32, 8), failure.span.?.start_line);
+}
+
+test "parseWorkflowTracked reports the line of an invalid job" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const failure = try parseFailure(arena.allocator(), "name: t\non: push\njobs:\n  build: oops\n");
+
+    try testing.expectEqualStrings("jobs.build", failure.path);
+    try testing.expectEqual(@as(u32, 4), failure.span.?.start_line);
+    try testing.expectEqual(@as(u32, 3), failure.span.?.start_col);
+}
+
+test "parseWorkflowTracked reports the line of an invalid trigger" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const failure = try parseFailure(arena.allocator(), "name: t\non:\n  - push\n  - [nested]\njobs: {}\n");
+
+    try testing.expectEqualStrings("on", failure.path);
+    // A block sequence's span starts at its first item, so the position points
+    // at the list rather than at the `on:` key line.
+    try testing.expectEqual(@as(u32, 3), failure.span.?.start_line);
+}
+
+// A field that is absent has no node to point at, so the path alone is the
+// whole answer and the caller prints the error without a position.
+test "parseWorkflowTracked names a missing required field without a span" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const on = try parseFailure(arena.allocator(), "name: t\njobs: {}\n");
+    try testing.expectEqualStrings("on", on.path);
+    try testing.expect(on.span == null);
+
+    const jobs = try parseFailure(arena.allocator(), "name: t\non: push\n");
+    try testing.expectEqualStrings("jobs", jobs.path);
+    try testing.expect(jobs.span == null);
+}
+
+test "parseWorkflow still works without a failure sink" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expectError(error.MissingField, parseWorkflow(arena.allocator(), mkMapping(&.{})));
 }

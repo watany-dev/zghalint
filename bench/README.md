@@ -158,8 +158,9 @@ zghalint / actionlint / zizmor はすべて `bench/` の採点と同じフラグ
 (`--offline`, `-no-color`, `--offline --no-progress`) で走らせる。
 
 終了コードは表に載せる。zghalint の 2 は「lint できなかったファイルがある」
-の意味で、コーパスには自前パーサが拒否する実ファイルが含まれるため、
-many-small では 2 が出るのが現状の挙動 (堅牢性の観察点)。
+の意味で、パースを拒否した実ファイルがあれば many-small で出る (堅牢性の
+観察点)。#293 の修正以降、`scripts/fetch-corpus.py` が集める 228 件は
+すべてパースを通る。
 
 network シナリオは `GITHUB_TOKEN` が要る (zghalint は GraphQL 経路でしか
 キャッシュを書かず、zizmor はトークン無しだと黙ってオフラインになる)。

@@ -1,0 +1,18 @@
+# A `-` alone on its line opens a block sequence entry whose mapping starts on
+# the following lines (#293). Every docker/* workflow is written this way; the
+# tokenizer used to read the bare `-` as a plain scalar, so the whole file
+# failed with `workflow parse error: InvalidValue` and no rule ever ran.
+# zghalint:expect SEC001@15
+# zghalint:expect BP001@11
+name: dash on its own line
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        name: Build
+        run: echo build

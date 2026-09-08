@@ -1,0 +1,17 @@
+# YAML lets a block sequence sit at its parent key's own indentation (#293).
+# The trigger path used to read `schedule:` as an empty value and then drop
+# every following key, so the file failed with `MissingField` on `jobs`.
+# zghalint:expect SEC001@17
+# zghalint:expect BP001@15
+name: sequence at parent indent
+on:
+  schedule:
+  - cron: "0 0 * * *"
+  push:
+    branches:
+    - main
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
