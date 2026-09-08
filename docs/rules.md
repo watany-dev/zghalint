@@ -84,6 +84,20 @@ block is injection when it is written to `$GITHUB_ENV` too.
   step safe; it does nothing for whoever expands the output, so only the later
   step that expands it is reported.
 
+Taint then travels one hop further, through the two indirections that otherwise
+look like the recommended fix:
+
+- `env.<KEY>` — an `env:` entry bound to an untrusted value taints the
+  expression spelling of that key for the scope that declares it (workflow, job
+  or step). `$KEY` stays quiet: the shell reads the value out of the
+  environment, while `${{ env.KEY }}` is spliced into the script before the
+  shell ever starts, which is the injection the `env:` binding was meant to
+  remove.
+- `needs.<job>.outputs.<name>` — untrusted when `<job>` binds that output to a
+  tainted `steps.<id>.outputs.*` (or to an untrusted context directly). The set
+  of exporting jobs is closed by iteration, so a chain of jobs is followed
+  whatever order they are declared in.
+
 The fixed table covers every payload field an attacker authors, not only the
 obvious ones: alongside issue / PR / comment free text and commit messages it
 lists the head repository's `description` and `homepage` (the fork owner types

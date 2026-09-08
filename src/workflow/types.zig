@@ -27,6 +27,10 @@ pub const EnvKey = struct {
 pub const OutputKey = struct {
     name: []const u8,
     span: yaml_types.Span,
+    /// The scalar the output is bound to, when it is one. SEC002 reads it to
+    /// carry taint across the job boundary: an output bound to a tainted
+    /// `steps.<id>.outputs.*` makes `needs.<job>.outputs.<name>` untrusted.
+    value: ?[]const u8 = null,
 };
 
 /// A single entry of a job-level `with:` / `secrets:` mapping on a reusable

@@ -322,21 +322,95 @@ const script_injection_fix_hint = "assign the context to an environment variable
 /// wrote it captured an untrusted value.
 fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
     const contexts = runTaintContexts(wf);
-    const prefix = contexts.slice();
+    const base: ContextTable = .{ .prefix = contexts.slice(), .whole = &whole_event_contexts };
 
-    for (wf.jobs) |*job| {
-        // Steps are visited in source order so a later step sees the taint the
-        // earlier ones produced. A step never taints itself.
-        var tainted: TaintedSteps = .{};
-        for (job.steps) |*step| {
-            const table: ContextTable = .{
-                .prefix = prefix,
-                .whole = &whole_event_contexts,
-                .tainted_steps = tainted.slice(),
-            };
-            checkStepScriptInjection(step, table, list);
-            if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
+    // Workflow-level `env:` covers every job, so it is resolved once.
+    var workflow_env: TaintedNames = .{};
+    addTaintedEnvKeys(&workflow_env, wf.env, base);
+
+    const tainted_jobs = taintedJobs(wf, base, workflow_env);
+    var reporting = base;
+    reporting.tainted_jobs = tainted_jobs.slice();
+    for (wf.jobs) |*job| _ = walkJobTaint(job, reporting, workflow_env, list);
+}
+
+/// The jobs whose `outputs:` export an untrusted value. A job's output can be
+/// fed from `needs.<other>.outputs.*`, so the set is closed by iteration rather
+/// than by visiting the jobs in `needs` order: the set only grows, and one pass
+/// per job is enough to reach the fixed point. Doing it that way also needs no
+/// dependency graph, and a `needs:` cycle — which SYN rules report — cannot
+/// loop it.
+fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNames) TaintedNames {
+    var out: TaintedNames = .{};
+    var round: usize = 0;
+    while (round < wf.jobs.len) : (round += 1) {
+        var changed = false;
+        var table = base;
+        table.tainted_jobs = out.slice();
+        for (wf.jobs) |*job| {
+            if (out.contains(job.id)) continue;
+            if (!walkJobTaint(job, table, workflow_env, null)) continue;
+            out.append(job.id);
+            changed = true;
         }
+        if (!changed) break;
+    }
+    return out;
+}
+
+/// One pass over a job's steps, threading the taint the earlier steps produced
+/// into the later ones. Returns whether the job exports an untrusted value
+/// through its `outputs:`.
+///
+/// `list` is null for the pass that only computes that answer, so the reporting
+/// pass and the fixed-point pass share one walk and cannot disagree.
+fn walkJobTaint(
+    job: *const Job,
+    base: ContextTable,
+    workflow_env: TaintedNames,
+    list: ?*DiagnosticList,
+) bool {
+    var job_env = workflow_env;
+    var job_table = base;
+    job_table.tainted_env = workflow_env.slice();
+    addTaintedEnvKeys(&job_env, job.env, job_table);
+    job_table.tainted_env = job_env.slice();
+
+    // Steps are visited in source order so a later step sees the taint the
+    // earlier ones produced. A step never taints itself.
+    var tainted: TaintedNames = .{};
+    for (job.steps) |*step| {
+        var step_env = job_env;
+        var table = job_table;
+        table.tainted_steps = tainted.slice();
+        addTaintedEnvKeys(&step_env, step.env, table);
+        table.tainted_env = step_env.slice();
+
+        if (list) |l| checkStepScriptInjection(step, table, l);
+        if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
+    }
+
+    // A step-scoped `env:` entry does not outlive its step, so the outputs are
+    // resolved against the job scope.
+    var final = job_table;
+    final.tainted_steps = tainted.slice();
+    for (job.outputs) |output| {
+        const value = output.value orelse continue;
+        if (hasUntrustedExpr(value, final)) return true;
+    }
+    return false;
+}
+
+/// The `env:` keys of one mapping whose value interpolates an untrusted
+/// context. Binding such a value to `env:` is the fix SEC002 recommends, and it
+/// works — as long as the step reads it back as `$KEY`. Written as
+/// `${{ env.KEY }}` the value is spliced into the script before the shell ever
+/// runs, which is the injection the fix was meant to remove.
+fn addTaintedEnvKeys(out: *TaintedNames, env: ?workflow_types.StringMap, table: ContextTable) void {
+    const map = env orelse return;
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        if (hasUntrustedExpr(entry.value_ptr.*, table)) out.append(entry.key_ptr.*);
     }
 }
 
@@ -354,22 +428,32 @@ fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *Diagn
     checkScriptInputInjection(step, table, list);
 }
 
-/// A job carries few enough steps that the ids fit in a fixed buffer; a job
-/// past the cap keeps the taint it accumulated up to that point.
-const max_tainted_steps = 64;
+/// A workflow carries few enough steps, `env:` keys and jobs that the names fit
+/// in a fixed buffer; a scope past the cap keeps the taint it accumulated up to
+/// that point.
+const max_tainted_names = 64;
 
-/// The ids of the steps in one job whose `outputs.*` carry an untrusted value.
-const TaintedSteps = struct {
-    buf: [max_tainted_steps][]const u8 = undefined,
+/// Names carrying an untrusted value: step ids whose `outputs.*` hold one,
+/// `env:` keys bound to one, or job ids exporting one.
+const TaintedNames = struct {
+    buf: [max_tainted_names][]const u8 = undefined,
     len: usize = 0,
 
-    fn append(self: *TaintedSteps, id: []const u8) void {
+    fn append(self: *TaintedNames, name: []const u8) void {
         if (self.len >= self.buf.len) return;
-        self.buf[self.len] = id;
+        if (self.contains(name)) return;
+        self.buf[self.len] = name;
         self.len += 1;
     }
 
-    fn slice(self: *const TaintedSteps) []const []const u8 {
+    fn contains(self: *const TaintedNames, name: []const u8) bool {
+        for (self.buf[0..self.len]) |existing| {
+            if (std.ascii.eqlIgnoreCase(existing, name)) return true;
+        }
+        return false;
+    }
+
+    fn slice(self: *const TaintedNames) []const []const u8 {
         return self.buf[0..self.len];
     }
 };
@@ -1683,6 +1767,11 @@ const ContextTable = struct {
     /// Ids of steps whose `outputs.*` carry a value captured from an untrusted
     /// context earlier in the same job (#273).
     tainted_steps: []const []const u8 = &.{},
+    /// Names of `env:` keys bound to an untrusted value in a scope that covers
+    /// the step being checked (#314).
+    tainted_env: []const []const u8 = &.{},
+    /// Ids of jobs whose `outputs:` export an untrusted value (#314).
+    tainted_jobs: []const []const u8 = &.{},
 
     fn matches(self: ContextTable, path: ContextPath) bool {
         for (self.prefix) |ctx| {
@@ -1691,7 +1780,35 @@ const ContextTable = struct {
         for (self.whole) |ctx| {
             if (pathIsAnchor(path, ctx)) return true;
         }
-        return self.matchesTaintedStepOutput(path);
+        return self.matchesTaintedStepOutput(path) or
+            self.matchesTaintedEnv(path) or
+            self.matchesTaintedJobOutput(path);
+    }
+
+    /// `env.<KEY>`. Reading the same value as `$KEY` is safe — the shell never
+    /// parses it as code — so only the expression spelling is untrusted.
+    fn matchesTaintedEnv(self: ContextTable, path: ContextPath) bool {
+        if (self.tainted_env.len == 0) return false;
+        if (path.len < 2) return false;
+        if (!segmentMatches(path.segments[0], "env")) return false;
+        for (self.tainted_env) |key| {
+            if (segmentMatches(path.segments[1], key)) return true;
+        }
+        return false;
+    }
+
+    /// `needs.<job>.outputs.<name>`, with `<job>` a job that exported an
+    /// untrusted value. As with a step output, the name below `outputs` is not
+    /// looked at.
+    fn matchesTaintedJobOutput(self: ContextTable, path: ContextPath) bool {
+        if (self.tainted_jobs.len == 0) return false;
+        if (path.len < 4) return false;
+        if (!segmentMatches(path.segments[0], "needs")) return false;
+        if (!segmentMatches(path.segments[2], "outputs")) return false;
+        for (self.tainted_jobs) |id| {
+            if (segmentMatches(path.segments[1], id)) return true;
+        }
+        return false;
     }
 
     /// `steps.<id>.outputs.<name>`, with `<id>` a step that wrote an untrusted
@@ -2587,6 +2704,82 @@ test "SEC002: inputs.* is untrusted on a dispatched or called workflow" {
     try testing.expect(sec002FiresOn(workflow_call_trigger, "./deploy.sh ${{ inputs.target }}"));
     // `github.event.inputs` is the dispatch spelling of the same values.
     try testing.expect(sec002FiresOn(workflow_dispatch_trigger, "./deploy.sh ${{ github.event.inputs.target }}"));
+}
+
+test "SEC002: env.<KEY> bound to an untrusted value is untrusted (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+    const steps = [_]Step{.{ .env = env, .run = "echo \"${{ env.BODY }}\"" }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: reading the same env entry as $KEY stays quiet (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+    const steps = [_]Step{.{ .env = env, .run = "echo \"$BODY\"" }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: env.<KEY> bound to a trusted value stays quiet (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("SHA", "${{ github.sha }}") catch unreachable;
+    const steps = [_]Step{.{ .env = env, .run = "echo \"${{ env.SHA }}\"" }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: a workflow-level env entry taints every job (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.issue.title }}") catch unreachable;
+    const steps = [_]Step{.{ .run = "echo \"${{ env.BODY }}\"" }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = env, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+/// A producing job that captures an untrusted value into `steps.s.outputs.body`
+/// and exports it under `outputs.body`, plus a consumer that expands
+/// `needs.<producer>.outputs.body` in its `run:`.
+fn sec002JobOutputList(output_value: []const u8, consumer_run: []const u8, env: workflow_types.StringMap) DiagnosticList {
+    const producer_steps = [_]Step{.{ .id = "s", .env = env, .run = "echo \"body=$BODY\" >> \"$GITHUB_OUTPUT\"" }};
+    const outputs = [_]workflow_types.OutputKey{.{ .name = "body", .span = undefined, .value = output_value }};
+    const consumer_steps = [_]Step{.{ .run = consumer_run }};
+    const needs = [_][]const u8{"a"};
+    const jobs = [_]Job{
+        .{ .id = "a", .steps = &producer_steps, .outputs = &outputs, .permissions = Permissions{} },
+        .{ .id = "b", .needs = &needs, .steps = &consumer_steps, .permissions = Permissions{} },
+    };
+    return runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} });
+}
+
+test "SEC002: taint crosses the job boundary through outputs (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+
+    var list = sec002JobOutputList("${{ steps.s.outputs.body }}", "echo \"${{ needs.a.outputs.body }}\"", env);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: an untainted job output leaves the consumer quiet (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.sha }}") catch unreachable;
+
+    var list = sec002JobOutputList("${{ steps.s.outputs.body }}", "echo \"${{ needs.a.outputs.body }}\"", env);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
 fn sec008FiresOn(on: Trigger, body: []const u8) bool {
