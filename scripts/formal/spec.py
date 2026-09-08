@@ -128,11 +128,13 @@ _PR_FIELDS = [
 _ISSUE_FIELDS = [
     _ctx("github.event.issue.title", E, text=True),
     _ctx("github.event.issue.body", E, text=True),
-    # `refs/pull/${{ github.event.issue.number }}/merge` is the ChatOps idiom
-    # that checks out whichever PR the commenter chose.
-    _ctx("github.event.issue.number", E, ref=True),
     _ctx("github.event.issue.labels.*.name", C, text=True),
 ]
+
+# `refs/pull/${{ github.event.issue.number }}/merge` is the ChatOps idiom
+# that checks out whichever PR the commenter chose. Only `issue_comment`
+# fires on a PR; under `issues` the number never names a pull request.
+_ISSUE_NUMBER = _ctx("github.event.issue.number", E, ref=True)
 
 _COMMIT_FIELDS = [
     _ctx("github.event.commits.*.message", E, text=True),
@@ -188,7 +190,7 @@ AVAILABLE: dict[str, list[Context]] = {
     "issues": _ISSUE_FIELDS,
     # A comment on a PR also arrives as issue_comment; the payload carries
     # the issue, not the pull request object.
-    "issue_comment": _ISSUE_FIELDS + [_COMMENT],
+    "issue_comment": _ISSUE_FIELDS + [_ISSUE_NUMBER, _COMMENT],
     "discussion": _DISCUSSION_FIELDS,
     "discussion_comment": _DISCUSSION_FIELDS + [_COMMENT],
     "commit_comment": [_COMMENT],
@@ -207,13 +209,48 @@ AVAILABLE: dict[str, list[Context]] = {
 CONTEXTS: list[Context] = sorted(
     {c for cs in AVAILABLE.values() for c in cs}, key=lambda c: c.path
 )
+# Two Context objects with one path would give Z3 one symbol with two
+# different attribute sets; whichever wins would silently shape the model.
+assert len({c.path for c in CONTEXTS}) == len(CONTEXTS), "duplicate context path"
+
+
+def concrete(path: str) -> str:
+    """Turn a spec path into a reference a workflow can contain: sequences get
+    an index, open-ended roots get a member name."""
+    if path.endswith(".*"):
+        return path[:-2] + ".foo"
+    return path.replace(".*.", "[0].")
+
+
+#: Numbers that only become a ref through the `refs/pull/<n>/merge` spelling.
+_NUMBER_CONTEXTS = {
+    "github.event.issue.number",
+    "github.event.pull_request.number",
+    "github.event.number",
+}
+
+#: Names a repository rather than a ref.
+_REPOSITORY_CONTEXTS = {
+    "github.event.pull_request.head.repo.full_name",
+    "github.event.workflow_run.head_repository.full_name",
+}
+
+
+def checkout_with(path: str) -> str:
+    """The `with:` line under `actions/checkout` through which `path` picks
+    the code. This is the string the marker rules (SEC005 / SEC009) scan, so
+    the model and the generated workflow must agree on it."""
+    expr = "${{ " + concrete(path) + " }}"
+    if path in _NUMBER_CONTEXTS:
+        return f"ref: refs/pull/{expr}/merge"
+    if path in _REPOSITORY_CONTEXTS:
+        return f"repository: {expr}"
+    return f"ref: {expr}"
 
 
 SINKS = [
     # Interpolated into a shell script → command injection.
     "run",
-    # `actions/github-script` `with.script` → JavaScript injection.
-    "github_script",
     # Written to $GITHUB_ENV / $GITHUB_PATH → env / PATH injection for later steps.
     "github_env",
     # `actions/checkout` `with.ref` / `with.repository` → attacker picks the code.

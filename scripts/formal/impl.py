@@ -22,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SECURITY_ZIG = PROJECT_ROOT / "src" / "rules" / "security.zig"
 
 _STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_LINE_COMMENT = re.compile(r"//[^\n]*")
 
 
 def _block(source: str, start: str, end: str = "};") -> str:
@@ -31,28 +32,32 @@ def _block(source: str, start: str, end: str = "};") -> str:
     stop = source.find(end, begin)
     if stop < 0:
         raise LookupError(f"unterminated block starting at {start!r}")
-    return source[begin:stop]
+    return _LINE_COMMENT.sub("", source[begin:stop])
+
+
+def _nonempty(found, what: str):
+    if not found:
+        raise LookupError(f"{what} extracted nothing; the extractor is out of date")
+    return found
 
 
 def _string_table(source: str, name: str) -> list[str]:
-    return _STRING.findall(_block(source, f"const {name} = [_][]const u8{{"))
+    return _nonempty(_STRING.findall(_block(source, f"const {name} = [_][]const u8{{")), name)
 
 
 def _marker_fn(source: str, name: str) -> list[str]:
-    return _STRING.findall(_block(source, f"fn {name}(value: []const u8) bool {{", "});"))
+    return _nonempty(_STRING.findall(_block(source, f"fn {name}(value: []const u8) bool {{", "});")), name)
 
 
 def _switch_true_arms(source: str, name: str) -> list[str]:
     body = _block(source, f"fn {name}(wf: *const Workflow) bool {{", "=> return true")
-    return re.findall(r"^\s*\.(\w+),\s*$", body, re.MULTILINE)
+    return _nonempty(re.findall(r"\.(\w+),", body[body.index("switch") :]), name)
 
 
 def _trigger_table(source: str) -> dict[str, list[str]]:
     body = _block(source, "const trigger_context_table = [_]TriggerContexts{")
-    table: dict[str, list[str]] = {}
-    for event, contexts in re.findall(r"\.event = \.(\w+), \.contexts = &\.\{([^}]*)\}", body):
-        table[event] = _STRING.findall(contexts)
-    return table
+    entries = re.findall(r"\.event\s*=\s*\.(\w+),\s*\.contexts\s*=\s*&\.\{([^}]*)\}", body)
+    return _nonempty({event: _STRING.findall(contexts) for event, contexts in entries}, "trigger_context_table")
 
 
 @dataclass(frozen=True)

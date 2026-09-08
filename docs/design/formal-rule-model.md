@@ -43,8 +43,11 @@ python3 scripts/formal/model.py            # 証人一覧
 python3 scripts/formal/confirm.py          # 実バイナリで確認（--keep DIR で生成物保存）
 ```
 
-いずれも終了コードは常に 0。モデルは **finder** であって CI ゲートではない。
-列挙された抜けは issue として追跡し、直したら証人が消える（§6）。
+完走すれば何件見つかっても終了コードは 0。モデルは **finder** であって
+CI ゲートではない。列挙された抜けは issue として追跡し、直したら証人が消える（§6）。
+一方で、表が見つからない・抽出結果が空・Z3 が unknown を返す・バイナリが
+未ビルド、はエラーで止まる（fail-close）。表が空のまま「抜けなし」と
+報告する事故を防ぐため。
 
 ---
 
@@ -60,7 +63,7 @@ actionlint / zizmor が公開する untrusted 一覧から転記する。
 |---|---|---|
 | Trigger | `on:` のイベント名 20 種 | `pull_request_target`, `issue_comment`, `workflow_run`, `gollum` |
 | Ctx | `${{ }}` パス。`.*` はシーケンス要素 | `github.event.pull_request.title`, `inputs.*` |
-| Sink | 値が到達すると危険な場所 | `run`, `github_script`, `github_env`, `checkout_ref`, `condition` |
+| Sink | 値が到達すると危険な場所 | `run`, `github_env`, `checkout_ref`, `condition` |
 | Flow | 値がシンクへ届く経路 | `direct`, `env_context`, `step_output`, `job_output` |
 
 ### 3-2. 関係
@@ -102,6 +105,9 @@ labels や release は `COLLABORATOR` として載せ、実装がそれらを表
 照合意味論も写している。文脈表は `pathMatchesPattern`（セグメント前方一致、
 `*` ワイルドカード、大文字小文字無視）→ `matches_prefix`、
 `refs/pull/` 型マーカーは `containsAnyMarker`（部分文字列）→ `matches_marker`。
+マーカーは文脈パスではなく `with:` の値（`spec.checkout_with` が決める
+`ref: refs/pull/${{ … }}/merge` などの綴り）に当てる。実装が見るのはその
+文字列であり、`confirm.py` も同じ綴りでワークフローを生成する。
 
 ---
 
@@ -154,8 +160,10 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
 - P7 は `runs-on: self-hosted`。
 - 伝播経路は、取り込み側のステップで `env:` と `$TITLE` を使う安全な
   書き方にする。診断が出るなら経路を追った結果だと言えるようにするため。
+- バイナリは生成ファイルのディレクトリを cwd にして起動する。呼び出し元の
+  cwd にある `.zghalint.yml` がルールを無効化して結果を歪めないため。
 
-2026-09-08 時点: **70 / 70 の証人が false negative として確認された**。
+2026-09-08 時点: **69 / 69 の証人が false negative として確認された**。
 
 ---
 
@@ -163,7 +171,7 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
 
 | issue | 性質 | 証人（トリガ × 文脈） | 原因 |
 |---|---|---|---|
-| #308 F1 | P4 | `issue_comment`, `issues` × `issue.number` | `trigger_context_table` に `issue.number` がなく、`refs/pull/` マーカーは SEC005 だけ |
+| #308 F1 | P4 | `issue_comment` × `issue.number` | `trigger_context_table` に `issue.number` がなく、`refs/pull/` マーカーは SEC005 だけ。`issues` は PR では発火しないので対象外 |
 | #309 F2 | P4, P7 | `pull_request_review`, `pull_request_review_comment` × PR の全 ref 文脈 | `EventType.fromString` が `.other` に潰し、SEC005 / SEC020 / SEC021 のどれも見ない |
 | #310 F3 | P4 | `pull_request_target` × `merge_commit_sha` | `isPRHeadValue` のマーカーにない |
 | #311 F4 | P4 | `workflow_run` × `pull_requests.*.head.ref` | `isWorkflowRunValue` のマーカーにない（fork PR では空になる点に注意、enhancement） |

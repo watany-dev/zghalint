@@ -28,31 +28,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import model
 import impl
+import model
+import spec
+from spec import concrete
 
 BINARY = impl.PROJECT_ROOT / "zig-out" / "bin" / "zghalint"
-
-#: Contexts that are numbers a `refs/pull/<n>/merge` spelling turns into a ref.
-NUMBER_CONTEXTS = {
-    "github.event.issue.number",
-    "github.event.pull_request.number",
-    "github.event.number",
-}
-
-#: Contexts that name a repository rather than a ref.
-REPOSITORY_CONTEXTS = {
-    "github.event.pull_request.head.repo.full_name",
-    "github.event.workflow_run.head_repository.full_name",
-}
-
-
-def concrete(path: str) -> str:
-    """Turn a spec path into a reference a workflow can contain: sequences get
-    an index, open-ended roots get a member name."""
-    if path.endswith(".*"):
-        return path[:-2] + ".foo"
-    return path.replace(".*.", "[0].")
 
 
 def on_block(trigger: str) -> str:
@@ -63,15 +44,6 @@ def on_block(trigger: str) -> str:
     if trigger == "workflow_run":
         return "on:\n  workflow_run:\n    workflows: [ci]\n    types: [completed]\n"
     return f"on: {trigger}\n"
-
-
-def checkout_input(path: str) -> str:
-    expr = "${{ " + concrete(path) + " }}"
-    if path in NUMBER_CONTEXTS:
-        return f"ref: refs/pull/{expr}/merge"
-    if path in REPOSITORY_CONTEXTS:
-        return f"repository: {expr}"
-    return f"ref: {expr}"
 
 
 def workflow_for(w: model.Witness) -> str:
@@ -86,7 +58,7 @@ def workflow_for(w: model.Witness) -> str:
             "    steps:\n"
             "      - uses: actions/checkout@v4\n"
             "        with:\n"
-            f"          {checkout_input(w.context)}\n"
+            f"          {spec.checkout_with(w.context)}\n"
         )
     if w.sink == "condition":
         return head + (
@@ -159,16 +131,22 @@ class Outcome:
 
 
 def lint(path: Path) -> list[str]:
-    proc = subprocess.run(
-        [str(BINARY), "--quick", "--format", "json", str(path)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if proc.returncode not in (0, 1) or not proc.stdout:
-        raise RuntimeError(f"zghalint failed on {path}: {proc.stderr}")
-    return sorted({d["rule_id"] for d in json.loads(proc.stdout)["diagnostics"]})
+    # cwd is the directory of the generated file so a `.zghalint.yml` in
+    # the caller's cwd cannot disable or downgrade the rules under test.
+    try:
+        proc = subprocess.run(
+            [str(BINARY), "--quick", "--format", "json", path.name],
+            cwd=path.parent,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode not in (0, 1):
+            raise RuntimeError(f"exit {proc.returncode}: {proc.stderr.strip()}")
+        return sorted({d["rule_id"] for d in json.loads(proc.stdout)["diagnostics"]})
+    except (subprocess.TimeoutExpired, ValueError, KeyError, RuntimeError) as e:
+        raise RuntimeError(f"zghalint failed on {path}: {e}") from e
 
 
 def confirm(witnesses: list[model.Witness], keep: Path | None) -> list[Outcome]:

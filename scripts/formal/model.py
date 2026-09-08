@@ -17,8 +17,10 @@ binary, so nothing is filed on the strength of the model alone.
 Usage:
     python3 scripts/formal/model.py
 
-Exit status is always 0: the model is a *finder*, not a CI gate — the gaps
-it reports are tracked as issues (see docs/design/formal-rule-model.md).
+A completed run exits 0 whatever it found: the model is a *finder*, not a CI
+gate — the gaps it reports are tracked as issues (see
+docs/design/formal-rule-model.md). A table the extractor cannot find or a
+solver that does not finish is an error, not a clean run.
 """
 
 from __future__ import annotations
@@ -116,11 +118,10 @@ class Model:
             return t == "workflow_run" and impl.matches_any_prefix(c, im.workflow_run_gate)
 
         def sec005(t: str, c: str) -> bool:
-            # `with: ref: ${{ c }}` — the marker scan sees the expression text.
-            return t == "pull_request_target" and impl.matches_marker(c, im.pr_head_markers)
+            return t == "pull_request_target" and impl.matches_marker(spec.checkout_with(c), im.pr_head_markers)
 
         def sec009(t: str, c: str) -> bool:
-            return t == "workflow_run" and impl.matches_marker(c, im.workflow_run_markers)
+            return t == "workflow_run" and impl.matches_marker(spec.checkout_with(c), im.workflow_run_markers)
 
         def sec021(t: str, c: str) -> bool:
             owned = im.trigger_contexts.get(t, [])
@@ -153,7 +154,7 @@ class Model:
                 "SEC002",
                 z3.And(self.available(t, c), injectable, direct, self.sink == S["run"]),
                 self.sec002(t, c),
-                "attacker-authored value interpolated into run: / github-script",
+                "attacker-authored value interpolated into run:",
             ),
             (
                 "P2 GITHUB_ENV injection",
@@ -250,6 +251,9 @@ class Model:
             t, c, f, s = (m.eval(v, model_completion=True) for v in (self.t, self.c, self.f, self.sink))
             out.append(Witness(name, str(t), str(c), str(s), str(f), rule, note))
             self.solver.add(z3.Not(z3.And(self.t == t, self.c == c, self.f == f, self.sink == s)))
+        # The loop only ends on unsat or unknown; unknown would mean the
+        # enumeration is incomplete, which must not pass as "no more gaps".
+        assert self.solver.check() == z3.unsat, f"{name}: solver returned unknown"
         self.solver.pop()
         return out
 
