@@ -282,7 +282,7 @@ models, Pages のデプロイ) を書くか、OIDC トークンを発行する (
 SEC019 (secret を `env:` 経由にせず直接使う) が同じステップで発火するものの、
 「そもそもトークンが要らない」ことは伝えていない。#271 の FN 候補 1 の検証結果。
 
-#### G16 (#297). ブロックシーケンスを親キーと同じ桁に書くと読み落とす — 要パーサ修正
+#### G16 (#297). ブロックシーケンスを親キーと同じ桁に書くと読み落とす — 対応済み
 
 ```yaml
 steps:
@@ -309,7 +309,10 @@ steps:
 実コーパス (`bench/corpus/`、228 ファイル) では 28 ファイルがこの書き方を
 含む。actionlint / zizmor はどちらも正しく解析する。
 
-#### G17 (#298). `-` だけの行でシーケンス項目を開けない — 要トークナイザ修正
+4046a1b で `parseBlockMapping` が key_indent ちょうどのシーケンスをそのキーの
+値として取り込むようになった。§4.6 の再計測で実コーパスのパース失敗は 0 件。
+
+#### G17 (#298). `-` だけの行でシーケンス項目を開けない — 対応済み
 
 ```yaml
 steps:
@@ -329,6 +332,9 @@ steps:
 
 実コーパスでは 32 ファイルがこの書き方を含む。G16 と合わせると 60/228
 (26%) が影響を受け、うち 36 ファイルは lint 自体ができない。
+
+4046a1b で `isBlockSequenceIndicator` が行末・入力末尾の `-` も項目の指示子として
+認めるようになった。§4.6 の再計測で実コーパスのパース失敗は 0 件。
 
 #### G18 (#299). BP001 が再利用ワークフロー呼び出しジョブに `timeout-minutes` を足す (FP) — 要ルール修正
 
@@ -355,6 +361,38 @@ jobs:
 結果は SYN002 (キー重複) を出す不正なワークフローになる。
 
 同じアンカーへの同一挿入は 1 回にまとめる必要がある。
+
+#### G20. ネットワークに到達できないとき SC003〜SC006 が黙って沈黙する — 要 UX 改善
+
+`--offline` を付けた実行と、ネットワークが遮断された環境での通常実行を
+bench ケース 132 件で突き合わせたところ、**診断 ID の集合も終了コードも
+完全に一致し、stderr には何も出なかった**。つまり利用者から見ると
+「ネットワークが使えなかった」ことと「指摘が無かった」ことを区別できない。
+
+沈黙するのは GitHub API に依存する SC003 (既知脆弱性)、SC004 (アーカイブ)、
+SC005 (SHA→タグ解決)、SC006 (ref confusion) で、CI では
+`c-supply-chain/known-vulnerable-action.yml` 相当の実問題が見逃される。
+zizmor はトークンが無い場合にその旨を明示する。取得に失敗したルールを
+1 行の注記として出す (もしくは終了コードで区別する) のが対応方針。
+
+#### G21. 実行時に作られるローカル action パスに DEP004 が誤検出を出す — 要ルール改善
+
+実コーパス (33 リポジトリ / 228 ファイル) に残った DEP004 44 件はすべて
+**先行する `actions/checkout` が `path:` で作るディレクトリ**を指していた
+(`./action-under-test` 25、`./action` 9、`./candidate` 4、`./baseline` 3 ほか)。
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    path: action-under-test
+- uses: ./action-under-test
+```
+
+チェックアウト時点では存在しないディレクトリなので、リポジトリを静的に見る
+限り「ローカル action が見つからない」のは当然である。actionlint は同じ
+ワークフローで exit 0 (最小再現は `bench/` 外で確認)。同一ジョブ内の先行
+ステップが `actions/checkout` の `path:` で作るパスを DEP004 の対象から
+除外する必要がある。
 
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
@@ -455,6 +493,100 @@ autofix の枠組み自体は健全で、個別ルールの適用条件と重複
 交差検証はクリーンになる。この検証は使い捨てスクリプトで回した — 常設化は
 issue #269 の残作業。
 
+
+### 4.6 2026-09-08 の再ベンチ (G16 / G17 修正後、全モード)
+
+`bench/README.md` にある 6 モード (採点 / `--perf` / autofix 交差検証 /
+offline parity / persona 差分 / 実コーパス) を通しで実行した記録。§4.5 は
+G16 / G17 の修正前 (08c521a) の測定であり、こちらが現状の値になる。
+
+#### 採点 (`scripts/bench.py`、127 ケース)
+
+| tool | recall | precision | 位置一致 | unique-win |
+|---|---|---|---|---|
+| zghalint | 100% (108/108) | 100% | 96% (104/108) | 25 |
+| actionlint | 100% (64/64) | 100% | 94% (60/64) | – |
+| zizmor | 100% (46/46) | 100% | 87% (40/46) | – |
+
+FN・FP ともに 0。G16 / G17 のケースを追加した後も recall は落ちていない。
+
+#### 実コーパスでの堅牢性 (33 リポジトリ / 228 ファイル)
+
+**`workflow parse error` は 0 件** (§4.5 時点は 36 件 = 16%)。G16 / G17 の
+修正が実ワールドの YAML に効いていることを実測で確認した。
+
+コーパス取得側も直した。以前は全ワークフローを 1 階層に平坦化していたため、
+`uses: ./` がリポジトリルート探索を抜けて zghalint 自身の `action.yml` に
+解決され、DEP004 が 1,108 件出ていた。`scripts/fetch-corpus.py` は
+`.github/workflows/` と (深さを問わず) `action.yml` / `action.yaml` を
+元のパスのまま複製し、空の `.git` を置いてルート探索をコーパス内で止める。
+残った DEP004 44 件は G21 の真の誤検出である。
+
+#### 性能 (`scripts/bench.py --perf`)
+
+hyperfine 1.18.0 (10 runs / warmup 3)、最大 RSS は GNU time、zghalint は
+`-Doptimize=ReleaseFast`、**shellcheck 0.9.0 あり**。
+
+| シナリオ | zghalint | actionlint | zizmor |
+|---|---|---|---|
+| cases (126 ファイル / 2,112 行) | 4.1 ms · 1.9 MiB | 170.0 ms · 14.7 MiB | 108.8 ms · 35.4 MiB |
+| huge (1 ファイル / 10,035 行) | 14.3 ms · 7.5 MiB | 1.160 s · 16.8 MiB | 458.0 ms · 45.2 MiB |
+| many-small (1,000 ファイル / 89,503 行) | 138.6 ms · 8.0 MiB | 5.642 s · 69.7 MiB | 2.092 s · 169.9 MiB |
+
+**測定条件を必ず添えること。** shellcheck が PATH に無いと actionlint は
+cases 14.8 ms / many-small 200.9 ms まで速くなり、zghalint との倍率が
+41 倍から 1.5 倍まで振れる。また zghalint を Debug ビルドで測ると約 30 倍
+遅い数字になる (cases 130.1 ms) ため、`scripts/bench_perf.py` はバイナリに
+Zig の safety パニック文字列が残っているかを見てビルド種別をレポートに
+書き出すようにした。`network` シナリオは api.github.com へ到達できない
+環境のため未計測 (環境制約であって zghalint の不具合ではない)。
+
+#### autofix 交差検証
+
+bench ケース全件に `--fix` / `--fix-unsafe` をかけ、書き換わった 68 件を
+再実行・冪等性・PyYAML でのパース・外部ツールの新規指摘で検証した。
+
+- 非冪等: 0 件 / YAML が壊れたもの: 0 件 / zizmor の新規指摘: 0 件
+- actionlint の新規指摘: G18 (5 件) と G19 (1 件) のみ。G18 は safety `safe` の
+  `--fix` だけでも発生する
+
+#### offline parity
+
+132 ケースで通常実行と `--offline` の診断 ID・終了コードが完全一致した。
+一致自体は「オフラインでも壊れない」ことの確認になるが、同時に G20
+(ネットワーク不通が無言で機能低下する) が露見した。
+
+#### 外部ツールの未カバー内訳 (実コーパス)
+
+zghalint 2,636 件に対し actionlint 396 件・zizmor regular 1,781 件。
+zghalint が同じ位置で拾えていないものを分類した (zizmor は行完全一致では
+anchor 差で過大に出るため span の包含で判定)。
+
+actionlint 396 件の未カバー内訳:
+
+| 種別 | 件数 | 性格 |
+|---|---|---|
+| runner-label | 152 | actionlint 1.7.7 のラベル表が古いことによる FP (`macos-15-intel` 108 / `windows-11-arm` 44) |
+| shellcheck | 66 | G3 の意図的非対応 |
+| action | 58 | 36 は sparse checkout にビルド済み JS が無いハーネス起因、22 は `runs.using: node24` 未知 |
+| syntax-check | 9 | 8 は alias node 未解決 (actionlint 側の制約)。真の未カバーは `unexpected key "deployment" for "environment" section` の 1 件のみ |
+| expression / matrix | 10 | 同じく alias 起因 |
+
+**actionlint に対する真の未カバーは 1 件** (`environment.deployment` の
+スキーマ検証)。
+
+zizmor は persona で母数が変わる (regular 1,781 / auditor 2,861 /
+pedantic 2,766) が、未カバーの大半は zizmor 固有の推奨か persona 固有の
+方針である。regular の未カバー 603 件の内訳は self-repository 421
+(`uses: ./` の代わりに `$/` を使えという zizmor 独自の記法推奨)、
+template-injection 137 (`steps.*.outputs` — §4.3 の設計方針どおり)、
+unpinned-images 15、cache-poisoning 14 (G1 と同根) ほか。pedantic の差分
+2,653 件のうち anonymous-definition 359 / concurrency-limits 95 /
+undocumented-permissions 45 は persona 固有で、追随の対象ではない。
+
+追随を検討する価値があるのは cache-poisoning (G1) と unpinned-images の
+2 つに絞られる。
+
 ## 5. 次アクション
 
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
@@ -473,7 +605,9 @@ issue #269 の残作業。
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [x] G7 (#275): SC001 を `uses: docker://...` に対応させる
 - [x] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する
-- [ ] G16 (#297): 親キーと同じ桁のブロックシーケンスをそのキーの値として読む
-- [ ] G17 (#298): 行末の `-` をシーケンス項目の指示子として扱う
+- [x] G16 (#297): 親キーと同じ桁のブロックシーケンスをそのキーの値として読む
+- [x] G17 (#298): 行末の `-` をシーケンス項目の指示子として扱う
 - [ ] G18 (#299): BP001 を `uses:` ジョブ (reusable workflow 呼び出し) で沈黙させる
 - [ ] G19 (#300): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめる
+- [ ] G20: ネットワーク取得に失敗したルールを黙って落とさず注記する
+- [ ] G21: DEP004 から `actions/checkout` の `path:` が作るディレクトリを除外する

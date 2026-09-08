@@ -4,8 +4,12 @@
 `scripts/bench.py --perf` needs a corpus of workflows that were written by
 people rather than for the bench. The repositories in
 `scripts/popular-actions.txt` are a ready-made sample (every one of them ships
-its own CI), so each is cloned sparsely — the `.github/workflows/` directory
-only — and its workflow files are copied under `bench/corpus/<owner>__<repo>/`.
+its own CI), so each is cloned sparsely and copied under
+`bench/corpus/<owner>__<repo>/` **keeping the repository's own shape** —
+`.github/workflows/` plus the action definitions a workflow can reference with
+`uses: ./`. Flattening the workflows instead would make every local `uses:`
+unresolvable, and the ancestor search for the repository root would escape into
+this repository and match zghalint's own `action.yml`.
 
 The corpus is not committed: the files keep their upstream licences, so
 `bench/corpus/` is ignored by git and `manifest.json` records where and when
@@ -51,11 +55,22 @@ def repos_from_manifest(text: str) -> list[str]:
     return list(seen)
 
 
-def clone_workflows(repo: str, into: Path) -> tuple[str, Path]:
-    """Shallow, blob-less sparse checkout of `.github/workflows/` at HEAD.
+#: Sparse-checkout patterns (gitignore syntax, `--no-cone`): the workflows to
+#: lint, plus every action definition a workflow's `uses: ./...` can point at.
+#: The action patterns carry no leading slash on purpose — they match at any
+#: depth, because repositories keep sub-actions in directories of their own
+#: (`merge/action.yml`, `.github/actions/setup/action.yml`).
+SPARSE_PATTERNS = (
+    "/.github/workflows/*",
+    "action.yml",
+    "action.yaml",
+)
 
-    Returns the checked-out commit and the workflows directory (which may not
-    exist for a repository without workflows).
+
+def clone_workflows(repo: str, into: Path) -> tuple[str, Path]:
+    """Shallow, blob-less sparse checkout of `SPARSE_PATTERNS` at HEAD.
+
+    Returns the checked-out commit and the checkout directory.
     """
     dest = into / repo.replace("/", "__")
     subprocess.run(
@@ -74,25 +89,44 @@ def clone_workflows(repo: str, into: Path) -> tuple[str, Path]:
         check=True,
     )
     git = ["git", "-C", str(dest)]
-    subprocess.run(
-        [*git, "sparse-checkout", "set", "--no-cone", "/.github/workflows/*"], check=True
-    )
+    subprocess.run([*git, "sparse-checkout", "set", "--no-cone", *SPARSE_PATTERNS], check=True)
     subprocess.run([*git, "checkout", "--quiet"], check=True)
     commit = subprocess.run(
         [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
     ).stdout.strip()
-    return commit, dest / ".github" / "workflows"
+    return commit, dest
 
 
-def copy_workflows(workflows: Path, target: Path) -> list[str]:
+def copy_repo(checkout: Path, target: Path) -> list[str]:
+    """Copy the sparse checkout to `target`, keeping its paths.
+
+    Returns the workflow file names (relative to `.github/workflows/`).
+    """
+    workflows = checkout / ".github" / "workflows"
     if not workflows.is_dir():
         return []
-    target.mkdir(parents=True, exist_ok=True)
     names = []
+    target.mkdir(parents=True, exist_ok=True)
+    (target / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
     for path in sorted(workflows.iterdir()):
         if path.is_file() and path.suffix in (".yml", ".yaml"):
-            shutil.copyfile(path, target / path.name)
+            shutil.copyfile(path, target / ".github" / "workflows" / path.name)
             names.append(path.name)
+    # Action definitions keep their own paths: `uses: ./merge/` resolves
+    # against the repository root, so only the original directory makes it
+    # resolvable.
+    for source in sorted(checkout.rglob("action.y*ml")):
+        relative = source.relative_to(checkout)
+        if ".git" in relative.parts or not source.is_file():
+            continue
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    # zghalint and actionlint both find the repository root by walking up to a
+    # `.git`; without one here the walk leaves the corpus and lands on this
+    # repository, so every local `uses:` would resolve against zghalint's own
+    # files.
+    (target / ".git").mkdir(exist_ok=True)
     return names
 
 
@@ -128,11 +162,11 @@ def main(argv: list[str] | None = None) -> int:
         for repo in repos:
             print(f"fetching {repo}", file=sys.stderr)
             try:
-                commit, workflows = clone_workflows(repo, workdir)
+                commit, checkout = clone_workflows(repo, workdir)
             except subprocess.CalledProcessError as exc:
                 print(f"  skipped: git exited {exc.returncode}", file=sys.stderr)
                 continue
-            files = copy_workflows(workflows, args.out / repo.replace("/", "__"))
+            files = copy_repo(checkout, args.out / repo.replace("/", "__"))
             entries.append({"repo": repo, "commit": commit, "files": files})
             print(f"  {len(files)} workflow file(s) at {commit[:12]}", file=sys.stderr)
     finally:
