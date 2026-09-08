@@ -1,5 +1,10 @@
 # BP002 autofix設計書
 
+> #337: `uses:` のみの step は BP002 の対象外（アクション名が UI ラベルになる）。
+> 残る対象は `run:` step のみ。`run` 用 autofix は未実装のまま診断のみ。
+> uses 向け autofix、`Step.uses_key_start_byte`、`util.stepNameFromRepo` /
+> `stepNameFromRun` は削除した。
+
 ## 目的
 
 `BP002` は `name` フィールドが無い step を検出するが、現状は `fix_hint` のみで自動修正を提供していない。
