@@ -122,10 +122,9 @@ pub const Tokenizer = struct {
             }
         }
 
-        // `-` opens a block sequence entry when a space follows it and also
-        // when it ends the line: `-\n  name: x` puts the entry's mapping on
-        // the following lines, which docker/* workflows are written in.
-        // Inside a flow collection `[-]` is the scalar "-", never an entry.
+        // A `-` ending its line also opens an entry: `-\n  name: x` puts the
+        // entry's mapping on the following lines, which every docker/*
+        // workflow is written in (#293).
         if (c == '-' and self.isBlockSequenceIndicator()) {
             return self.emitSimple(.sequence_entry, 1);
         }
