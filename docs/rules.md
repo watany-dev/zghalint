@@ -159,6 +159,28 @@ Detect supply chain risks in action and container image references.
 | SC006 | ref-confusion | warning | Action ref matches both a tag and branch, creating exploitable ambiguity |
 | SC008 | impostor-commit | warning | SHA-pinned action ref is not reachable from any branch or tag of the upstream repo |
 
+### SEC001 / SC006 の SHA ピン止め autofix
+
+prefetch（`src/rules/prefetch.zig`）がタグの指すコミットを取得できた場合、
+SEC001 と SC006 は `uses: owner/repo@v4` を
+`uses: owner/repo@<40桁 SHA> # v4` に書き換える fix を添える。末尾のコメントは
+装飾ではなく、ピン止め後も人間がバージョンを読めるようにするためであり、
+Dependabot / Renovate がバージョンを読み取る位置でもある。annotated tag は
+GraphQL 側で dereference 済みなので、書き込まれる oid は常にコミットを指す。
+
+- **SEC001 は `safe`**: 書き換え先はそのタグが解決していたコミットそのもので、
+  実行されるコードは変わらない。
+- **SC006 は `unsafe`**: 同名のタグとブランチが両方ある状態が指摘の本体なので、
+  タグ側に決め打つことは作者の意図を先取りする。`--fix-unsafe` でのみ適用する。
+
+コミットが分からない場合（`--quick` / `--offline`、トークン無し、タグ一覧が
+`first:100` で打ち切られた、ref がタグではなくブランチ）は fix を付けず、指摘だけ
+を出す。取得結果に名前が見つからないことは「タグが存在しない」証拠にはならない
+ため、取りこぼしは常に「fix 無し」側に倒す。
+
+タグ oid の取得は `--fix` / `--fix-unsafe` を指定した実行でのみ行う。通常の lint
+は書き換えないので、余分な問い合わせを負わない。
+
 ## Performance Rules (PERF)
 
 Detect CI performance issues and resource waste.
