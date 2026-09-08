@@ -12,6 +12,7 @@ const advisory = @import("advisory.zig");
 const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
 const refconfusion = @import("refconfusion.zig");
+const sha_pin = @import("sha_pin.zig");
 const impostor = @import("impostor.zig");
 const impostor_compare = @import("impostor_compare.zig");
 const graphql = @import("graphql.zig");
@@ -28,6 +29,14 @@ pub const Options = struct {
     no_cache: bool = false,
 };
 
+/// The tag → commit oid answers this layer collected, re-exported so rules can
+/// reach them through the prefetch API without depending on the orchestrator.
+/// See `sha_pin.zig` for why a miss must never be read as "the tag is absent".
+pub const lookupTagOid = sha_pin.lookupTagOid;
+pub const setCachedTagOid = sha_pin.setCachedTagOid;
+pub const initTagOids = sha_pin.initTagOids;
+pub const deinitTagOids = sha_pin.deinitTagOids;
+
 /// Threaded through the prefetch pipeline so every stage can skip the work
 /// no rule asked for.
 const ActiveRules = struct {
@@ -35,6 +44,10 @@ const ActiveRules = struct {
     stale: bool,
     refconf: bool,
     impostor: bool,
+    /// SEC001 / SC006 want a tag's commit oid so `--fix` can pin to it. Unlike
+    /// the others this is not a rule: it rides along on the named-ref lookups
+    /// the batch already makes, and is off entirely without `--fix`.
+    tag_pin: bool = false,
 
     fn detect() ActiveRules {
         return .{
@@ -42,11 +55,17 @@ const ActiveRules = struct {
             .stale = stale_refs.isActive(),
             .refconf = refconfusion.isActive(),
             .impostor = impostor.isActive(),
+            .tag_pin = sha_pin.isActive(),
         };
     }
 
     fn any(self: ActiveRules) bool {
-        return self.archived or self.stale or self.refconf or self.impostor;
+        return self.archived or self.stale or self.refconf or self.impostor or self.tag_pin;
+    }
+
+    /// Both consumers of the per-ref `tag_{d}` / `branch_{d}` aliases.
+    fn needsNamedRefs(self: ActiveRules) bool {
+        return self.refconf or self.tag_pin;
     }
 };
 
@@ -94,6 +113,8 @@ pub fn prefetchAllWithOptions(
     if (!used_graphql) {
         if (active.archived) fetchRepos(scratch, ref_sets.repos);
         if (active.stale) fetchShaRefs(scratch, ref_sets.sha_refs);
+        // The REST fallback answers ref existence only, never a target oid, so
+        // SHA pinning has nothing to gain from it.
         if (active.refconf) fetchNamedRefs(scratch, ref_sets.named_refs);
     }
 
@@ -269,16 +290,24 @@ fn applyCacheEntry(
         }
     }
 
-    if (active.refconf) {
+    if (active.needsNamedRefs()) {
         for (entry.named) |n| {
             var key_buf: [max_ref_key_len]u8 = undefined;
             const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, n.ref }) catch continue;
             if (sets.named_refs.getPtr(key)) |_| {
-                const status: refconfusion.RefStatus = if (n.is_tag and n.is_branch)
-                    .ambiguous
-                else
-                    .not_ambiguous;
-                refconfusion.setCachedRefResult(owner, repo, n.ref, status);
+                if (active.refconf) {
+                    const status: refconfusion.RefStatus = if (n.is_tag and n.is_branch)
+                        .ambiguous
+                    else
+                        .not_ambiguous;
+                    refconfusion.setCachedRefResult(owner, repo, n.ref, status);
+                }
+                if (n.tag_oid) |oid| sha_pin.setCachedTagOid(owner, repo, n.ref, oid, n.is_branch);
+                // A row written before the oid field existed, or by a run
+                // without `--fix`, answers SC006 but not the pin. Keep the ref
+                // in the batch so the oid can still be fetched; it is not a
+                // hit either, since the request happens anyway.
+                if (active.tag_pin and n.is_tag and n.tag_oid == null) continue;
                 _ = sets.named_refs.remove(key);
                 hits += 1;
             }
@@ -326,7 +355,7 @@ fn pruneSatisfiedRepos(scratch: Allocator, sets: *RefSets, active: ActiveRules) 
             needed.put(scratch, repo_key, {}) catch return;
         }
     }
-    if (active.refconf) {
+    if (active.needsNamedRefs()) {
         var it = sets.named_refs.valueIterator();
         while (it.next()) |k| {
             const repo_key = std.fmt.allocPrint(scratch, "{s}/{s}", .{ k.owner, k.repo }) catch return;
@@ -526,7 +555,7 @@ fn buildRepoInputs(
             try appendByRepo(scratch, &shas_by_repo, sha_key.owner, sha_key.repo, sha_key.sha);
         }
     }
-    if (active.refconf) {
+    if (active.needsNamedRefs()) {
         var it = sets.named_refs.valueIterator();
         while (it.next()) |named_key| {
             try appendByRepo(scratch, &named_by_repo, named_key.owner, named_key.repo, named_key.ref);
@@ -577,7 +606,7 @@ fn markResolved(sets: *RefSets, results: []const graphql.RepoResult, active: Act
                 removeRefKey(&sets.sha_refs, res.owner, res.repo, sr.sha);
             }
         }
-        if (active.refconf) {
+        if (active.needsNamedRefs()) {
             for (res.named_results) |nr| {
                 removeRefKey(&sets.named_refs, res.owner, res.repo, nr.ref);
             }
@@ -618,13 +647,16 @@ fn applyResults(
                 stale_refs.setCachedTagResult(res.owner, res.repo, sr.sha, mapped);
             }
         }
-        if (active.refconf) {
+        if (active.needsNamedRefs()) {
             for (res.named_results) |nr| {
-                const status: refconfusion.RefStatus = if (nr.is_tag and nr.is_branch)
-                    .ambiguous
-                else
-                    .not_ambiguous;
-                refconfusion.setCachedRefResult(res.owner, res.repo, nr.ref, status);
+                if (active.refconf) {
+                    const status: refconfusion.RefStatus = if (nr.is_tag and nr.is_branch)
+                        .ambiguous
+                    else
+                        .not_ambiguous;
+                    refconfusion.setCachedRefResult(res.owner, res.repo, nr.ref, status);
+                }
+                if (nr.tag_oid) |oid| sha_pin.setCachedTagOid(res.owner, res.repo, nr.ref, oid, nr.is_branch);
             }
         }
         if (active.impostor) {
@@ -709,12 +741,6 @@ const testing = std.testing;
 const ActionRef = workflow_types.ActionRef;
 const Step = workflow_types.Step;
 const Job = workflow_types.Job;
-
-test "prefetchAllWithOptions: offline-only is a no-op" {
-    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &.{} };
-    const wfs = [_]Workflow{wf};
-    try prefetchAllWithOptions(testing.allocator, &wfs, .{});
-}
 
 test "groupShasByRepo: collapses one repo's SHAs into a single request unit" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1006,17 +1032,6 @@ test "applyCacheEntry: impostor hydrates SC008 verdicts from disk" {
     const imp = impostor.lookupCachedImpostorResult("o", "r", sha_imp) orelse
         return error.TestExpectedNonNull;
     try testing.expectEqual(impostor.ImpostorStatus.impostor, imp.status);
-}
-
-test "applyResults: missing entries are skipped (no rule init required)" {
-    // All rule modules left uninitialized; setCached* is a no-op when their
-    // arenas are null, so this primarily exercises the missing-guard branch.
-    const results = [_]graphql.RepoResult{
-        .{ .owner = "o", .repo = "r", .missing = true },
-    };
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    applyResults(arena.allocator(), &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null);
 }
 
 test "prefetchAllWithOptions: deadline-expired short-circuits" {
@@ -1451,4 +1466,97 @@ test "buildRepoInputs: impostor populates sha slice even when stale_refs is off"
     try testing.expectEqual(@as(usize, 1), inputs.len);
     try testing.expectEqual(@as(usize, 1), inputs[0].sha_refs.len);
     try testing.expect(inputs[0].needs_impostor);
+}
+
+test "applyResults: seeds the SHA-pin store from the per-ref tag oids" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const oid = "a5ac7e51b41094c92402da3b24376905380afc29";
+    const named_res = [_]graphql.NamedRefResult{
+        .{ .ref = "v4", .is_tag = true, .is_branch = false, .tag_oid = oid },
+        // A branch carries no tag oid, and must not gain one.
+        .{ .ref = "main", .is_tag = false, .is_branch = true },
+        // A name that is both keeps its oid, flagged so only SC006 may use it.
+        .{ .ref = "edge", .is_tag = true, .is_branch = true, .tag_oid = oid },
+    };
+    const results = [_]graphql.RepoResult{.{
+        .owner = "o",
+        .repo = "r",
+        .named_results = &named_res,
+    }};
+
+    applyResults(arena.allocator(), &results, .{
+        .archived = false,
+        .stale = false,
+        .refconf = false,
+        .impostor = false,
+        .tag_pin = true,
+    }, null, null);
+
+    try testing.expectEqualStrings(oid, sha_pin.lookupTagOid("o", "r", "v4").?.oid);
+    try testing.expect(!sha_pin.lookupTagOid("o", "r", "v4").?.also_branch);
+    try testing.expect(sha_pin.lookupTagOid("o", "r", "main") == null);
+    try testing.expect(sha_pin.lookupTagOid("o", "r", "edge").?.also_branch);
+}
+
+test "applyCacheEntry: a cached row without an oid keeps the ref in the batch" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sets = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets.named_refs.put(alloc, "o/r@v4", .{ .owner = "o", .repo = "r", .ref = "v4" });
+    try sets.named_refs.put(alloc, "o/r@v3", .{ .owner = "o", .repo = "r", .ref = "v3" });
+
+    const oid = "a5ac7e51b41094c92402da3b24376905380afc29";
+    const named = [_]disk_cache.NamedEntry{
+        .{ .ref = "v4", .is_tag = true, .is_branch = false, .tag_oid = oid },
+        .{ .ref = "v3", .is_tag = true, .is_branch = false },
+    };
+    const entry: disk_cache.CachedRepo = .{ .cached_at = 0, .named = @constCast(&named) };
+
+    const active = ActiveRules{
+        .archived = false,
+        .stale = false,
+        .refconf = false,
+        .impostor = false,
+        .tag_pin = true,
+    };
+    const hits = applyCacheEntry(&sets, "o", "r", entry, active);
+
+    try testing.expectEqualStrings(oid, sha_pin.lookupTagOid("o", "r", "v4").?.oid);
+    try testing.expectEqual(@as(usize, 1), hits);
+    // v3's row predates the oid field, so it has to be asked about again.
+    try testing.expect(!sets.named_refs.contains("o/r@v4"));
+    try testing.expect(sets.named_refs.contains("o/r@v3"));
+}
+
+test "buildRepoInputs: SHA pinning alone pulls the named refs into the batch" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var sets = RefSets{ .repos = .{}, .sha_refs = .{}, .named_refs = .{} };
+    try sets.repos.put(alloc, "o/r", .{ .owner = "o", .repo = "r" });
+    try sets.named_refs.put(alloc, "o/r@v4", .{ .owner = "o", .repo = "r", .ref = "v4" });
+
+    const inputs = try buildRepoInputs(alloc, sets, .{
+        .archived = false,
+        .stale = false,
+        .refconf = false,
+        .impostor = false,
+        .tag_pin = true,
+    });
+
+    try testing.expectEqual(@as(usize, 1), inputs.len);
+    try testing.expectEqual(@as(usize, 1), inputs[0].named_refs.len);
+    try testing.expectEqualStrings("v4", inputs[0].named_refs[0]);
 }

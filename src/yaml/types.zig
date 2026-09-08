@@ -90,6 +90,11 @@ pub const Scalar = struct {
     value: []const u8,
     style: ScalarStyle,
     span: Span,
+    /// Nothing but blanks or a `#` comment follows the scalar on its line.
+    /// Autofixes that append a trailing comment need this: inside a flow
+    /// collection (`{uses: a@v4}`) the `#` would swallow the closing brace.
+    /// Defaults to false so a synthesized scalar is never assumed safe.
+    ends_line: bool = false,
 };
 
 /// What one sequence item costs the source text, so an autofix can take it

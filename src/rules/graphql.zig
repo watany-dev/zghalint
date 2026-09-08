@@ -38,6 +38,11 @@ pub const NamedRefResult = struct {
     ref: []const u8,
     is_tag: bool,
     is_branch: bool,
+    /// Commit the tag of that name points at, dereferenced for annotated tags.
+    /// Null when the ref is not a tag, or when the response omitted the oid.
+    /// Only ever a positive fact: SEC001 / SC006 turn it into a SHA pin, and
+    /// its absence just means no fix.
+    tag_oid: ?[]const u8 = null,
 };
 
 pub const NamedOid = struct {
@@ -100,8 +105,11 @@ pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
         }
 
         for (repo.named_refs, 0..) |named, j| {
+            // The tag half also carries its target oid so SEC001 / SC006 can
+            // offer a SHA pin; annotated tags are dereferenced inline, exactly
+            // as the `tagNodes` listing does.
             try buf.writer(allocator).print(
-                " tag_{d}: ref(qualifiedName:\"refs/tags/{s}\") {{ name }} branch_{d}: ref(qualifiedName:\"refs/heads/{s}\") {{ name }}",
+                " tag_{d}: ref(qualifiedName:\"refs/tags/{s}\") {{ name target {{ oid ... on Tag {{ target {{ oid }} }} }} }} branch_{d}: ref(qualifiedName:\"refs/heads/{s}\") {{ name }}",
                 .{ j, named, j, named },
             );
         }
@@ -271,7 +279,12 @@ fn parseRepoObject(
 
             const is_tag = refAliasExists(obj, tag_alias);
             const is_branch = refAliasExists(obj, branch_alias);
-            named[j] = .{ .ref = ref_name, .is_tag = is_tag, .is_branch = is_branch };
+            named[j] = .{
+                .ref = ref_name,
+                .is_tag = is_tag,
+                .is_branch = is_branch,
+                .tag_oid = if (is_tag) refAliasTargetOid(obj, tag_alias) else null,
+            };
         }
         result.named_results = named;
     }
@@ -343,6 +356,25 @@ fn refAliasExists(obj: std.json.ObjectMap, alias: []const u8) bool {
     };
 }
 
+/// The commit a single aliased `ref(qualifiedName:...)` points at. Annotated
+/// tags are dereferenced, so the answer is a commit oid either way.
+fn refAliasTargetOid(obj: std.json.ObjectMap, alias: []const u8) ?[]const u8 {
+    const ref_obj = json_util.objField(obj, alias) orelse return null;
+    const target = json_util.objField(ref_obj, "target") orelse return null;
+    return targetCommitOid(target, true);
+}
+
+/// `target.target.oid` when present (an annotated tag object wrapping the
+/// commit), otherwise `target.oid`.
+fn targetCommitOid(target: std.json.ObjectMap, follow_inner_target: bool) ?[]const u8 {
+    if (follow_inner_target) {
+        if (json_util.objField(target, "target")) |inner| {
+            if (json_util.stringField(inner, "oid")) |oid| return oid;
+        }
+    }
+    return json_util.stringField(target, "oid");
+}
+
 /// For annotated tags only the dereferenced commit oid is recorded, never
 /// the tag object oid, so a SHA pinned to the tag object is still judged
 /// against the *commit*.
@@ -361,29 +393,9 @@ fn collectRefOids(
     for (nodes) |node_val| {
         const node = json_util.asObject(node_val) orelse continue;
         const name = json_util.stringField(node, "name") orelse continue;
-        const target_val = node.get("target") orelse continue;
-        const target = switch (target_val) {
-            .object => |o| o,
-            else => continue,
-        };
-
-        if (follow_inner_target) {
-            if (target.get("target")) |inner_val| {
-                if (inner_val == .object) {
-                    if (inner_val.object.get("oid")) |oid_inner| {
-                        if (oid_inner == .string) {
-                            try entries.append(allocator, .{ .name = name, .oid = oid_inner.string });
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
-        if (target.get("oid")) |oid_val| {
-            if (oid_val == .string) {
-                try entries.append(allocator, .{ .name = name, .oid = oid_val.string });
-            }
-        }
+        const target = json_util.objField(node, "target") orelse continue;
+        const oid = targetCommitOid(target, follow_inner_target) orelse continue;
+        try entries.append(allocator, .{ .name = name, .oid = oid });
     }
 
     return entries.toOwnedSlice(allocator);
@@ -886,4 +898,52 @@ test "batchQuery: no GITHUB_TOKEN in env returns NoToken" {
     const repos = [_]RepoInput{.{ .owner = "o", .repo = "r" }};
     const result = batchQuery(testing.allocator, &repos);
     try testing.expectError(error.NoToken, result);
+}
+
+test "parseResponse: tag alias carries the commit oid for SHA pinning" {
+    const body =
+        \\{"data":{"r0":{"tag_0":{"name":"v4","target":{"oid":"a5ac7e51b41094c92402da3b24376905380afc29"}},"branch_0":null}}}
+    ;
+    const named = [_][]const u8{"v4"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .named_refs = &named }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqualStrings("a5ac7e51b41094c92402da3b24376905380afc29", results[0].named_results[0].tag_oid.?);
+}
+
+test "parseResponse: annotated tag alias is dereferenced to the commit" {
+    const body =
+        \\{"data":{"r0":{"tag_0":{"name":"v4","target":{"oid":"tagobject","target":{"oid":"a5ac7e51b41094c92402da3b24376905380afc29"}}},"branch_0":null}}}
+    ;
+    const named = [_][]const u8{"v4"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .named_refs = &named }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqualStrings("a5ac7e51b41094c92402da3b24376905380afc29", results[0].named_results[0].tag_oid.?);
+}
+
+test "parseResponse: a branch-only ref carries no tag oid" {
+    const body =
+        \\{"data":{"r0":{"tag_0":null,"branch_0":{"name":"main"}}}}
+    ;
+    const named = [_][]const u8{"main"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .named_refs = &named }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expect(results[0].named_results[0].is_branch);
+    try testing.expect(results[0].named_results[0].tag_oid == null);
+}
+
+test "buildQuery: the tag alias requests the target oid" {
+    const named = [_][]const u8{"v4"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .named_refs = &named }};
+    const q = try buildQuery(testing.allocator, &repos);
+    defer testing.allocator.free(q);
+    try testing.expect(std.mem.indexOf(u8, q, "tag_0: ref(qualifiedName:\"refs/tags/v4\") { name target { oid ... on Tag { target { oid } } } }") != null);
 }

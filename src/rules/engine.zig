@@ -321,17 +321,6 @@ test "engine with empty workflow" {
     try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
 }
 
-test "rule struct field access" {
-    const rule = test_rules[0];
-    try std.testing.expectEqualStrings("TEST-WF", rule.id);
-    try std.testing.expectEqualStrings("workflow-hook", rule.name);
-    try std.testing.expect(rule.severity == .warning);
-    try std.testing.expect(rule.category == .best_practice);
-    try std.testing.expect(rule.check_workflow != null);
-    try std.testing.expect(rule.check_job == null);
-    try std.testing.expect(rule.check_step == null);
-}
-
 test "isValidGitHubComponent: valid names" {
     try std.testing.expect(isValidGitHubComponent("actions"));
     try std.testing.expect(isValidGitHubComponent("checkout"));

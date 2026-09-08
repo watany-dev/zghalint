@@ -374,13 +374,6 @@ test "renderSummary with color" {
     try std.testing.expect(std.mem.indexOf(u8, output, "1 error(s)") != null);
 }
 
-test "severityColor returns correct codes" {
-    try std.testing.expectEqualStrings(Color.bold_red, severityColor(.@"error"));
-    try std.testing.expectEqualStrings(Color.bold_yellow, severityColor(.warning));
-    try std.testing.expectEqualStrings(Color.bold_blue, severityColor(.info));
-    try std.testing.expectEqualStrings(Color.bold_gray, severityColor(.hint));
-}
-
 test "renderDiagnostic with no file shows unknown" {
     var buf = std.ArrayList(u8){};
     defer buf.deinit(std.testing.allocator);

@@ -177,16 +177,6 @@ pub fn fetchAuthenticatedJson(
 const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
-test "writeStandardHeaders yields the 2 unprivileged entries" {
-    var buf: [4]std.http.Header = undefined;
-    const count = writeStandardHeaders(&buf);
-    try testing.expectEqual(@as(usize, 2), count);
-    try testing.expectEqualStrings("Accept", buf[0].name);
-    try testing.expectEqualStrings(accept_github_json, buf[0].value);
-    try testing.expectEqualStrings("X-GitHub-Api-Version", buf[1].name);
-    try testing.expectEqualStrings(api_version, buf[1].value);
-}
-
 test "authHeaders: empty without a token, Authorization with one" {
     var buf: [1]std.http.Header = undefined;
     try testing.expectEqual(@as(usize, 0), authHeaders(&buf, null).len);

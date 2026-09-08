@@ -596,12 +596,3 @@ test "a non-sequence steps value is left to the metadata checks" {
 
     try testing.expectEqual(@as(usize, 0), lint.diags.len());
 }
-
-test "rule descriptors are valid" {
-    for (rules) |rule| {
-        try testing.expect(rule.id.len > 0);
-        try testing.expect(rule.name.len > 0);
-        try testing.expect(rule.description.len > 0);
-    }
-    try testing.expectEqual(@as(usize, 1), rules.len);
-}

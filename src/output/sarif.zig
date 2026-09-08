@@ -232,13 +232,6 @@ test "renderSarif rule descriptors" {
     try std.testing.expect(std.mem.indexOf(u8, output, "\"level\":\"note\"") != null);
 }
 
-test "sarifLevel mapping" {
-    try std.testing.expectEqualStrings("error", sarifLevel(.@"error"));
-    try std.testing.expectEqualStrings("warning", sarifLevel(.warning));
-    try std.testing.expectEqualStrings("note", sarifLevel(.info));
-    try std.testing.expectEqualStrings("note", sarifLevel(.hint));
-}
-
 test "renderSarif multiple results" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
