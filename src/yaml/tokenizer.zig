@@ -122,7 +122,10 @@ pub const Tokenizer = struct {
             }
         }
 
-        if (c == '-' and self.peekNext() == ' ') {
+        // A `-` ending its line also opens an entry: `-\n  name: x` puts the
+        // entry's mapping on the following lines, which every docker/*
+        // workflow is written in (#293).
+        if (c == '-' and self.isBlockSequenceIndicator()) {
             return self.emitSimple(.sequence_entry, 1);
         }
 
@@ -409,6 +412,14 @@ pub const Tokenizer = struct {
         while (self.pos < self.source.len and (self.source[self.pos] == ' ' or self.source[self.pos] == '\t')) {
             self.advance();
         }
+    }
+
+    /// True when the `-` at `pos` is a block sequence indicator rather than
+    /// the first character of a plain scalar such as `-1` or `--flag`.
+    fn isBlockSequenceIndicator(self: *const Tokenizer) bool {
+        if (self.pos + 1 >= self.source.len) return self.flow_depth == 0;
+        if (self.source[self.pos + 1] == ' ') return true;
+        return self.flow_depth == 0 and self.isBreakAt(self.pos + 1);
     }
 
     fn peekNext(self: *Tokenizer) ?u8 {
@@ -705,6 +716,29 @@ test "tokenizer sequence entry" {
     const item = tokenizer.next();
     try std.testing.expectEqual(TokenKind.scalar, item.kind);
     try std.testing.expectEqualStrings("item", item.slice(tokenizer.source));
+}
+
+// #293: `-` ending its line opens a sequence entry whose content is on the
+// lines below; it used to tokenize as the plain scalar "-".
+test "tokenizer sequence entry ending its line" {
+    var tokenizer = Tokenizer.init("-\n  a: b");
+    _ = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.sequence_entry, tokenizer.next().kind);
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+}
+
+test "tokenizer sequence entry at end of input" {
+    var tokenizer = Tokenizer.init("-");
+    _ = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.sequence_entry, tokenizer.next().kind);
+}
+
+test "tokenizer keeps a leading `-` that starts a plain scalar" {
+    var tokenizer = Tokenizer.init("-1");
+    _ = tokenizer.next();
+    const token = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, token.kind);
+    try std.testing.expectEqualStrings("-1", token.slice(tokenizer.source));
 }
 
 test "tokenizer flow mapping" {

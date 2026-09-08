@@ -282,11 +282,20 @@ pub const Parser = struct {
 
             const value = if (self.current.kind == .newline or self.current.kind == .eof) blk: {
                 self.skipNewlines();
-                if (self.current.kind != .eof and self.current.column > key_indent) {
-                    break :blk try self.parseNode(key_indent + 1);
-                } else {
+                if (self.current.kind == .eof) {
                     break :blk Node{ .null_value = self.spanFromToken(self.current) };
                 }
+                if (self.current.column > key_indent) {
+                    break :blk try self.parseNode(key_indent + 1);
+                }
+                // YAML lets a block sequence sit at its parent key's own
+                // indentation (`on:\n  schedule:\n  - cron: ...`). No sibling
+                // key can start with `-`, so an entry at exactly `key_indent`
+                // is this key's value rather than the end of the mapping.
+                if (self.current.kind == .sequence_entry and self.current.column == key_indent) {
+                    break :blk try self.parseBlockSequence();
+                }
+                break :blk Node{ .null_value = self.spanFromToken(self.current) };
             } else try self.parseNode(key_indent + 1);
 
             const key_scalar = self.scalarFromToken(current_key);
@@ -1278,4 +1287,98 @@ test "a comment run longer than the depth limit does not abort the parse" {
     const root = try parser.parse();
 
     try std.testing.expectEqualStrings("ci", root.mapping.entries[0].value.scalar.value);
+}
+
+// #293: docker/* workflows write every step this way. A bare `-` used to
+// tokenize as a plain scalar, so the sequence never formed.
+test "parse a block sequence whose entry mapping starts on the next line" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\steps:
+        \\  -
+        \\    name: Checkout
+        \\    uses: actions/checkout@v4
+        \\  -
+        \\    run: echo build
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    const items = root.mapping.get("steps").?.sequence.items;
+
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expectEqualStrings("Checkout", items[0].mapping.getScalar("name").?);
+    try std.testing.expectEqualStrings("actions/checkout@v4", items[0].mapping.getScalar("uses").?);
+    try std.testing.expectEqualStrings("echo build", items[1].mapping.getScalar("run").?);
+}
+
+test "parse a bare `-` entry with no value as null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a:\n  -\n  - x\n");
+    const root = try parser.parse();
+    const items = root.mapping.get("a").?.sequence.items;
+
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expect(items[0] == .null_value);
+    try std.testing.expectEqualStrings("x", items[1].scalar.value);
+}
+
+// #293: `- main` at column 3 belongs to `branches:`, not to the mapping that
+// holds it. The value used to come back null and every later key was dropped.
+test "parse a block sequence at its parent key's indentation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on:
+        \\  schedule:
+        \\  - cron: "0 0 * * *"
+        \\  push:
+        \\    branches:
+        \\    - main
+        \\    - dev
+        \\jobs: {}
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expect(root.mapping.get("jobs") != null);
+
+    const on = root.mapping.get("on").?.mapping;
+    const schedule = on.get("schedule").?.sequence.items;
+    try std.testing.expectEqual(@as(usize, 1), schedule.len);
+    try std.testing.expectEqualStrings("0 0 * * *", schedule[0].mapping.getScalar("cron").?);
+
+    const branches = on.get("push").?.mapping.get("branches").?.sequence.items;
+    try std.testing.expectEqual(@as(usize, 2), branches.len);
+    try std.testing.expectEqualStrings("main", branches[0].scalar.value);
+    try std.testing.expectEqualStrings("dev", branches[1].scalar.value);
+}
+
+test "parse a top-level block sequence at its key's indentation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "on:\n- push\n- pull_request\njobs: {}\n");
+    const root = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.get("on").?.sequence.items.len);
+    try std.testing.expect(root.mapping.get("jobs") != null);
+}
+
+test "a plain scalar starting with `-` is not a sequence entry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = Parser.init(arena.allocator(), "a: -1\nb: --verbose\nc: [-1, -2]\n");
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings("-1", root.mapping.getScalar("a").?);
+    try std.testing.expectEqualStrings("--verbose", root.mapping.getScalar("b").?);
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.get("c").?.sequence.items.len);
 }
