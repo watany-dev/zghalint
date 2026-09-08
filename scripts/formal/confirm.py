@@ -99,9 +99,7 @@ def workflow_for(w: model.Witness) -> str:
             "    runs-on: ubuntu-latest\n"
             "    outputs:\n"
             "      title: ${{ steps.s.outputs.title }}\n"
-            "    steps:\n"
-            + capture
-            + "  b:\n"
+            "    steps:\n" + capture + "  b:\n"
             "    needs: a\n"
             "    runs-on: ubuntu-latest\n"
             "    steps:\n"
@@ -111,16 +109,9 @@ def workflow_for(w: model.Witness) -> str:
         return head + (
             "  j:\n"
             "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
-            + capture
-            + '      - run: echo "${{ steps.s.outputs.title }}"\n'
+            "    steps:\n" + capture + '      - run: echo "${{ steps.s.outputs.title }}"\n'
         )
-    return head + (
-        "  j:\n"
-        f"    runs-on: {runs_on}\n"
-        "    steps:\n"
-        f'      - run: echo "{expr}"\n'
-    )
+    return head + (f'  j:\n    runs-on: {runs_on}\n    steps:\n      - run: echo "{expr}"\n')
 
 
 @dataclass(frozen=True)

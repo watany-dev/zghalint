@@ -58,10 +58,10 @@ class Model:
         self.Ctx, self.ctxs = z3.EnumSort("Ctx", [c.path for c in spec.CONTEXTS])
         self.Sink, self.sinks = z3.EnumSort("Sink", spec.SINKS)
         self.Flow, self.flows = z3.EnumSort("Flow", spec.FLOWS)
-        self.t_of = dict(zip(spec.TRIGGERS, self.triggers))
-        self.c_of = {c.path: v for c, v in zip(spec.CONTEXTS, self.ctxs)}
-        self.s_of = dict(zip(spec.SINKS, self.sinks))
-        self.f_of = dict(zip(spec.FLOWS, self.flows))
+        self.t_of = dict(zip(spec.TRIGGERS, self.triggers, strict=True))
+        self.c_of = {c.path: v for c, v in zip(spec.CONTEXTS, self.ctxs, strict=True)}
+        self.s_of = dict(zip(spec.SINKS, self.sinks, strict=True))
+        self.f_of = dict(zip(spec.FLOWS, self.flows, strict=True))
         self.solver = z3.Solver()
         self._define_spec()
         self._define_impl()
@@ -90,9 +90,15 @@ class Model:
         self.dispatcher = self._define_unary(
             "dispatcher", self.c_of, lambda c: ctx_by_path[c].author == spec.Author.DISPATCHER
         )
-        self.ref_shaped = self._define_unary("ref_shaped", self.c_of, lambda c: ctx_by_path[c].ref_shaped)
-        self.free_text = self._define_unary("free_text", self.c_of, lambda c: ctx_by_path[c].free_text)
-        self.privileged = self._define_unary("privileged", self.t_of, lambda t: t in spec.PRIVILEGED)
+        self.ref_shaped = self._define_unary(
+            "ref_shaped", self.c_of, lambda c: ctx_by_path[c].ref_shaped
+        )
+        self.free_text = self._define_unary(
+            "free_text", self.c_of, lambda c: ctx_by_path[c].free_text
+        )
+        self.privileged = self._define_unary(
+            "privileged", self.t_of, lambda t: t in spec.PRIVILEGED
+        )
         self.externally_triggerable = self._define_unary(
             "externally_triggerable", self.t_of, lambda t: t in spec.EXTERNALLY_TRIGGERABLE
         )
@@ -118,10 +124,14 @@ class Model:
             return t == "workflow_run" and impl.matches_any_prefix(c, im.workflow_run_gate)
 
         def sec005(t: str, c: str) -> bool:
-            return t == "pull_request_target" and impl.matches_marker(spec.checkout_with(c), im.pr_head_markers)
+            return t == "pull_request_target" and impl.matches_marker(
+                spec.checkout_with(c), im.pr_head_markers
+            )
 
         def sec009(t: str, c: str) -> bool:
-            return t == "workflow_run" and impl.matches_marker(spec.checkout_with(c), im.workflow_run_markers)
+            return t == "workflow_run" and impl.matches_marker(
+                spec.checkout_with(c), im.workflow_run_markers
+            )
 
         def sec021(t: str, c: str) -> bool:
             owned = im.trigger_contexts.get(t, [])
@@ -136,7 +146,9 @@ class Model:
         self.sec005 = self._define_tc("sec005", sec005)
         self.sec009 = self._define_tc("sec009", sec009)
         self.sec021 = self._define_tc("sec021", sec021)
-        self.sec020 = self._define_unary("sec020", self.t_of, lambda t: t in im.fork_accessible_triggers)
+        self.sec020 = self._define_unary(
+            "sec020", self.t_of, lambda t: t in im.fork_accessible_triggers
+        )
         self.followed = self._define_unary("followed", self.f_of, lambda f: f in im.followed_flows)
 
     def properties(self) -> list[tuple[str, str, z3.BoolRef, z3.BoolRef, str]]:
@@ -214,7 +226,13 @@ class Model:
             (
                 "P7 self-hosted fork reach",
                 "SEC020",
-                z3.And(self.carries_fork_code(t), self.externally_triggerable(t), self.sink == S["run"], direct, c == self.c_of["github.event.pull_request.head.sha"]),
+                z3.And(
+                    self.carries_fork_code(t),
+                    self.externally_triggerable(t),
+                    self.sink == S["run"],
+                    direct,
+                    c == self.c_of["github.event.pull_request.head.sha"],
+                ),
                 self.sec020(t),
                 "trigger reaches a self-hosted runner with a fork's code but SEC020 ignores it",
             ),
@@ -248,7 +266,9 @@ class Model:
         self.solver.add(query)
         while self.solver.check() == z3.sat:
             m = self.solver.model()
-            t, c, f, s = (m.eval(v, model_completion=True) for v in (self.t, self.c, self.f, self.sink))
+            t, c, f, s = (
+                m.eval(v, model_completion=True) for v in (self.t, self.c, self.f, self.sink)
+            )
             out.append(Witness(name, str(t), str(c), str(s), str(f), rule, note))
             self.solver.add(z3.Not(z3.And(self.t == t, self.c == c, self.f == f, self.sink == s)))
         # The loop only ends on unsat or unknown; unknown would mean the
