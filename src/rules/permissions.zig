@@ -288,6 +288,30 @@ fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
+/// A workflow-level `permissions:` that grants no write already limits
+/// `GITHUB_TOKEN` for every job, so asking each job to repeat the block is
+/// noise (#334). `write-all` or any `: write` still needs a job-level
+/// narrowing, and a missing workflow block is the default full token.
+fn permissionsGrantWrite(perms: Permissions) bool {
+    if (perms.write_all) return true;
+    inline for (workflow_types.permission_scopes) |field| {
+        const level: ?workflow_types.PermissionLevel = @field(perms, field);
+        if (level) |lvl| {
+            if (lvl == .write) return true;
+        }
+    }
+    return false;
+}
+
+fn checkMissingJobPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    if (wf.permissions) |perms| {
+        if (!permissionsGrantWrite(perms)) return;
+    }
+    for (wf.jobs) |*job| {
+        checkJobPermissions(job, diag_list);
+    }
+}
+
 pub const rules = [_]Rule{
     .{
         .id = "PERM001",
@@ -303,7 +327,7 @@ pub const rules = [_]Rule{
         .description = "Job with third-party actions lacks explicit permissions",
         .severity = .warning,
         .category = .permissions,
-        .check_job = checkJobPermissions,
+        .check_workflow = checkMissingJobPermissions,
     },
     .{
         .id = "PERM003",
@@ -462,6 +486,40 @@ test "PERM002: no warning with only run steps" {
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
+fn perm002On(job: Job, wf_perms: ?Permissions) DiagnosticList {
+    const jobs = [_]Job{job};
+    const wf = Workflow{
+        .on = test_support.empty_trigger,
+        .jobs = &jobs,
+        .permissions = wf_perms,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    checkMissingJobPermissions(&wf, &diags);
+    return diags;
+}
+
+test "PERM002: workflow-level permissions decide whether the job warning fires (#334)" {
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("some-org/some-action@v1") },
+        },
+    };
+    const cases = [_]struct { perms: ?Permissions, warn: bool }{
+        .{ .perms = .{ .contents = .read }, .warn = false },
+        .{ .perms = .{ .read_all = true }, .warn = false },
+        .{ .perms = .{ .write_all = true }, .warn = true },
+        .{ .perms = .{ .contents = .write }, .warn = true },
+        .{ .perms = null, .warn = true },
+    };
+    for (cases) |c| {
+        var diags = perm002On(job, c.perms);
+        defer diags.deinit();
+        try std.testing.expectEqual(c.warn, diags.len() == 1);
+        if (c.warn) try std.testing.expectEqualStrings("PERM002", diags.get(0).rule_id);
+    }
+}
+
 test "PERM002: fix metadata is attached with .unsafe" {
     const job = Job{
         .id = "build",
@@ -526,7 +584,7 @@ test "PERM002: autofix inserts permissions block after runs-on" {
         \\
     ;
 
-    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkJobPermissions }, true);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .workflow = &checkMissingJobPermissions }, true);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
@@ -560,7 +618,7 @@ test "PERM002: fix lands before the next key when runs-on is a block scalar (#17
         \\      - uses: some-org/some-action@v1
         \\
     ;
-    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkJobPermissions }, true);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .workflow = &checkMissingJobPermissions }, true);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
@@ -597,7 +655,7 @@ test "PERM002: multiple jobs get fixes applied in back-to-front order" {
         \\
     ;
 
-    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkJobPermissions }, true);
+    const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .workflow = &checkMissingJobPermissions }, true);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 2), result.diagnostic_count);
