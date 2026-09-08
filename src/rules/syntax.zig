@@ -3444,6 +3444,34 @@ test "SYN009: an empty event name is reported" {
     try testing.expectEqualStrings("unknown Webhook event \"\"", diags.get(0).message);
 }
 
+test "SYN009: a block scalar event name is reported but never rewritten" {
+    // `on: >` drops the indicator and the newline from the value, so the span is
+    // two bytes wider than the name -- the same shape as a quoted scalar. Only
+    // the byte check in `fix/engine.zig` tells them apart.
+    const source =
+        \\on: >
+        \\ pusg
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), outcome.edits_applied);
+    try testing.expectEqualStrings(source, outcome.content);
+}
+
 test "SYN012: branches with branches-ignore is an error" {
     const events = [_]EventConfig{.{
         .event = .push,

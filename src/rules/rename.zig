@@ -17,8 +17,8 @@ const DiagnosticList = diagnostics.DiagnosticList;
 const Fix = diagnostics.Fix;
 const Span = spans.Span;
 
-/// `span` must cover exactly `old_text` (optionally quoted); see
-/// `fix_builder.renameToken`.
+/// `span` must cover exactly `old_text`, optionally quoted; see
+/// `fix_builder.renameToken`, which pins the bytes the edit may replace.
 pub fn tokenFix(
     list: *DiagnosticList,
     span: Span,
@@ -26,8 +26,14 @@ pub fn tokenFix(
     new_text: []const u8,
 ) ?Fix {
     const alloc = list.fixAllocator();
-    const edits = fix_builder.renameToken(alloc, span, old_text, new_text) orelse return null;
-    const description = std.fmt.allocPrint(alloc, "rename to \"{s}\"", .{new_text}) catch return null;
+    // Both slices can point into a per-rule arena that dies before the
+    // diagnostic does -- RW003/RW004 parse the called workflow into one, and an
+    // expression path lives only for the walk -- while the edit stores them
+    // verbatim. They have to be ours.
+    const owned_new = alloc.dupe(u8, new_text) catch return null;
+    const owned_old = alloc.dupe(u8, old_text) catch return null;
+    const edits = fix_builder.renameToken(alloc, span, owned_old, owned_new) orelse return null;
+    const description = std.fmt.allocPrint(alloc, "rename to \"{s}\"", .{owned_new}) catch return null;
     return .{ .description = description, .safety = .safe, .edits = edits };
 }
 
@@ -35,9 +41,11 @@ pub fn tokenFix(
 /// `a.b.c` path, but only one of its segments is the typo. `segment_index` is
 /// 0-based over the segments `expr_check.SegmentIter` yields.
 ///
-/// Returns null unless `path_span` covers exactly `path`: inside a quoted
-/// scalar an escape makes the source wider than the value, and the segment's
-/// offset within `path` no longer maps to a file offset.
+/// Returns null unless `path_span` covers exactly `path`. A wider span means
+/// the offsets inside `path` do not map to file offsets -- `parseContextAccess`
+/// reconstructs the path, so `needs . buld` arrives shorter than its source --
+/// and a fallback span standing in for one the parser never captured can be any
+/// width at all. `renameToken` re-checks the bytes on top of that.
 pub fn pathSegmentFix(
     list: *DiagnosticList,
     path_span: Span,
@@ -119,7 +127,7 @@ test "segmentSpan rejects a computed segment and an out-of-range index" {
 
 test "segmentSpan rejects a span that does not cover the path" {
     const path = "matrix.oss";
-    // A quoted scalar whose escapes widened the source.
+    // A span that covers more than the path -- a fallback span, say.
     try testing.expect(segmentSpan(pathSpan(10, path.len + 2), path, 1) == null);
 }
 
