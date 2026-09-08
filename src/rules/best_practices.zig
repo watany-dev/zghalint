@@ -22,6 +22,9 @@ const Fix = diagnostics_mod.Fix;
 const FixSafety = diagnostics_mod.FixSafety;
 
 fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
+    // GitHub Actions rejects `timeout-minutes` on a job that calls a reusable
+    // workflow; the timeout belongs to the jobs inside the called workflow.
+    if (job.uses != null) return;
     if (job.timeout_minutes != null or job.timeout_minutes_specified) return;
 
     var fix: ?Fix = null;
