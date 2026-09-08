@@ -6,9 +6,8 @@ pub const TrustedAction = struct {
     repo: []const u8,
 };
 
-/// Official actions whose names SC007 compares against. The `owner` field is
-/// how the list grows past `actions/*` later; the initial set is that org
-/// only (ADR 0006 D8), so a fork such as `myorg/chekout` cannot match.
+/// `owner` is how the list grows past `actions/*` later. The initial set is
+/// that org only (ADR 0006 D8), so a fork such as `myorg/chekout` cannot match.
 pub const trusted_actions = [_]TrustedAction{
     .{ .owner = "actions", .repo = "checkout" },
     .{ .owner = "actions", .repo = "setup-node" },
