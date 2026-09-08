@@ -12,6 +12,7 @@ const archived = @import("archived.zig");
 const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
+const sha_pin = @import("sha_pin.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
 const permissions = @import("permissions.zig");
@@ -280,6 +281,17 @@ fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
                 .message = "action reference is not pinned to a SHA",
                 .span = spans.usesSpan(step),
                 .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
+                // Safe: the rewrite pins to the very commit the tag resolved to
+                // when we asked, so the workflow keeps running the same code.
+                // `buildPinFix` returns null for every case where that does not
+                // hold, leaving the diagnostic on its own.
+                .fix = sha_pin.buildPinFix(
+                    list,
+                    step,
+                    action_ref,
+                    .safe,
+                    "pin to the commit this tag points at",
+                ),
             }) catch return;
         }
     }
@@ -5935,4 +5947,112 @@ test "SEC001: unpinned action is reported at the uses: value" {
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expectEqual(@as(u32, 7), list.get(0).span.start_line);
     try testing.expectEqual(@as(u32, 15), list.get(0).span.start_col);
+}
+
+const sec001_pin_oid = "a5ac7e51b41094c92402da3b24376905380afc29";
+
+const sec001_pin_source =
+    \\name: t
+    \\on: push
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - uses: actions/checkout@v4
+    \\
+;
+
+test "SEC001: --fix pins the tag to the commit it resolves to, keeping the version in a comment" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.safe, result.first_safety.?);
+    try testing.expect(std.mem.indexOf(u8, result.content, "uses: actions/checkout@" ++ sec001_pin_oid ++ " # v4") != null);
+}
+
+test "SEC001: a quoted uses: value is pinned inside the quotes, with the comment outside" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: "actions/checkout@v4"
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "uses: \"actions/checkout@" ++ sec001_pin_oid ++ "\" # v4") != null);
+}
+
+test "SEC001: without a known commit the diagnostic stands alone (--offline)" {
+    sha_pin.initTagOids(testing.allocator, true, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sec001_pin_source, result.content);
+}
+
+test "SEC001: an unrelated tag in the store is not borrowed for this action" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "setup-node", "v4", sec001_pin_oid, false);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sec001_pin_source, result.content);
+}
+
+test "SEC001: a ref that is also a branch is left to SC006's unsafe fix" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, true);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec001_pin_source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sec001_pin_source, result.content);
+}
+
+test "SEC001: a flow-style step gets no pin, since the comment would close the mapping" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("actions", "checkout", "v4", sec001_pin_oid, false);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - {name: a, uses: actions/checkout@v4}
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkUnpinnedAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
 }

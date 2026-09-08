@@ -1,15 +1,14 @@
 const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
-const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
 const rest_fallback = @import("rest_fallback.zig");
 const net_status = @import("net_status.zig");
+const sha_pin = @import("sha_pin.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
 const spans = @import("spans.zig");
-const Span = yaml.Span;
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
@@ -77,26 +76,44 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     };
 
     switch (status) {
-        .ambiguous => emitDiagnostic(list, spans.usesSpan(step), owner, repo, ref),
+        .ambiguous => emitDiagnostic(list, step, action_ref, owner, repo, ref),
         .not_ambiguous => {},
         // 曖昧かどうかを判定できていない。無指摘と区別できるよう記録する (#304)。
         .fetch_failed => net_status.markUnavailable(.sc006),
     }
 }
 
-fn emitDiagnostic(list: *DiagnosticList, span: Span, owner: []const u8, repo: []const u8, ref: []const u8) void {
+fn emitDiagnostic(
+    list: *DiagnosticList,
+    step: *const Step,
+    action_ref: ActionRef,
+    owner: []const u8,
+    repo: []const u8,
+    ref: []const u8,
+) void {
     const alloc = list.fixAllocator();
     const message = std.fmt.allocPrint(alloc, "action ref '{s}' matches both a tag and a branch in {s}/{s}; an attacker could create a tag to hijack this reference", .{ ref, owner, repo }) catch return;
     list.append(.{
         .rule_id = "SC006",
         .severity = .warning,
         .message = message,
-        .span = span,
+        .span = spans.usesSpan(step),
         .fix_hint = "pin to a full 40-character commit SHA to avoid ref confusion",
+        // Unsafe: the whole finding is that the name is ambiguous, so pinning
+        // to the tag's commit decides on the author's behalf which of the two
+        // they meant. That guess needs `--fix-unsafe` and a human to read it.
+        .fix = sha_pin.buildPinFix(
+            list,
+            step,
+            action_ref,
+            .unsafe,
+            "pin to the commit the tag of this name points at",
+        ),
     }) catch return;
 }
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
 const RefCacheEntry = struct { key: []const u8, status: RefStatus };
 
@@ -209,4 +226,74 @@ test "SC006: invalid ref characters rejected" {
     var list = runWithRefCache(&.{}, "owner/repo@ref?query");
     defer list.deinit();
     try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+const sc006_pin_oid = "a5ac7e51b41094c92402da3b24376905380afc29";
+
+const sc006_source =
+    \\name: t
+    \\on: push
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - uses: owner/repo@v4
+    \\
+;
+
+/// `lintAndFix` needs a real parsed step (the rewrite addresses source bytes),
+/// which `runWithRefCache`'s synthetic `Step` cannot provide.
+fn fixWithAmbiguousRef(include_unsafe: bool) !test_support.FixOutcome {
+    const prev_cache = ref_cache;
+    const prev_arena = ref_arena;
+    defer {
+        ref_cache = prev_cache;
+        ref_arena = prev_arena;
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
+    try cache.put("owner/repo@v4", .ambiguous);
+    ref_cache = cache;
+    ref_arena = arena;
+
+    return test_support.lintAndFix(testing.allocator, sc006_source, .{ .step = &checkRefConfusion }, include_unsafe);
+}
+
+test "SC006: --fix-unsafe pins the ambiguous ref to the tag side" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("owner", "repo", "v4", sc006_pin_oid, true);
+
+    const result = try fixWithAmbiguousRef(true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expect(std.mem.indexOf(u8, result.content, "uses: owner/repo@" ++ sc006_pin_oid ++ " # v4") != null);
+}
+
+test "SC006: plain --fix leaves the ambiguity for a human to resolve" {
+    sha_pin.initTagOids(testing.allocator, false, true);
+    defer sha_pin.deinitTagOids();
+    sha_pin.setCachedTagOid("owner", "repo", "v4", sc006_pin_oid, true);
+
+    const result = try fixWithAmbiguousRef(false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sc006_source, result.content);
+}
+
+test "SC006: without a known commit the diagnostic stands alone" {
+    sha_pin.initTagOids(testing.allocator, true, true);
+    defer sha_pin.deinitTagOids();
+
+    const result = try fixWithAmbiguousRef(true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
 }

@@ -1,0 +1,20 @@
+# SEC001 offers a SHA-pin rewrite (`uses: ...@<sha> # v4`) when the prefetch
+# layer knows the commit the tag points at. The e2e harness runs offline, so
+# there is no commit to pin to here and the rule must still report the finding
+# on its own — a fix is an addition to SEC001, never a precondition for it.
+# The fix path itself is covered by the unit tests in src/rules/sha_pin.zig,
+# src/rules/security.zig and src/rules/refconfusion.zig.
+# zghalint:expect SEC001@18
+# zghalint:expect SEC001@20
+name: sec001 sha pin fix
+on: push
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: "actions/setup-node@v4"
