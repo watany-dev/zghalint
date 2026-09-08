@@ -10,6 +10,16 @@ zghalint includes **90 rules** across 11 categories to help you write secure, ef
 | warning | Should fix — potential issue or bad practice |
 | info | Consider fixing — suggestion for improvement |
 
+## did you mean ...? と `--fix`
+
+キー名・イベント名・識別子のタイプミスを検出するルールは、既知の名前と編集距離
+2 以内で候補が一意に定まるときに `did you mean "..."?` を添える。この候補は
+そのまま safe な autofix でもあり、`--fix` はタイプミスした綴りだけを置き換える
+（引用符は保持する）。候補が定まらない場合は診断のみで、autofix は付かない。
+
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019、EXPR010–EXPR014、
+PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
+
 ---
 
 ## Security Rules (SEC)
@@ -388,7 +398,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN008 | duplicate-needs | warning | The same job ID is listed more than once in `needs` (`--fix` で重複を削除) |
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
 | SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
-| SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all (`--fix-unsafe` でそのキーを削除) |
+| SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all (`--fix` で綴りを修正、候補が無ければ `--fix-unsafe` でキーを削除) |
 | SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
@@ -558,8 +568,9 @@ The same check covers the non-filter keys an event accepts, so a misspelled
 `inputs` under `workflow_dispatch` is reported too. An event name SYN009 already
 flagged is left alone rather than reported twice.
 
-`--fix-unsafe` はそのキーの行ごと削除する。綴り間違いなら書き直したかった内容が
-消えるため、unsafe 扱いとする。
+綴り間違いで候補が 1 つに絞れる場合は `--fix` が正しい綴りに書き換える。候補が
+無い場合のみ `--fix-unsafe` がそのキーの行ごと削除する。フィルタが消えると
+ワークフローの起動条件が広がるため、削除は unsafe 扱いとする。
 
 ```yaml
 on:

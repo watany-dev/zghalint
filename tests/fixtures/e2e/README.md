@@ -25,6 +25,14 @@ Each fixture declares its own expectations in the leading comment block:
 Directives accumulate across lines, and parsing stops at the first
 non-comment line. A fixture with neither directive fails the test.
 
+## Pinning `--fix`
+
+A fixture may also declare what `--fix` makes of it: put the expected result in
+a sibling `<fixture>.yml.fixed` file and the harness applies the safe fixes and
+compares. The `expect` directives pin *where* a rule fires; a `.fixed` file
+pins *what* its fix rewrites, which is the half a wrong byte range would
+otherwise get wrong silently. Fixtures without such a sibling are unaffected.
+
 ## Fixtures
 
 | File | Purpose |
@@ -63,6 +71,8 @@ non-comment line. A fixture with neither directive fails the test.
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
 | `clean.yml` | A well-formed workflow: nothing may fire |
+| `rename-fix-schema.yml` | #323: every did-you-mean rename on schema keys and values, with its `--fix` result pinned |
+| `rename-fix-contexts.yml` | #323: the same for the `needs` / `inputs` / `secrets` expression contexts |
 
 Network-backed rules (SC003–SC006, SC008) stay offline in tests, so fixtures
 only exercise local analysis.

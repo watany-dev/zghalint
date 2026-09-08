@@ -13,6 +13,7 @@ const expr_check = @import("expr_check.zig");
 const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
@@ -70,12 +71,13 @@ const Resolver = struct {
         for (self.declared) |declared| {
             if (nameEql(declared, name)) return;
         }
-        self.report(name, span);
+        self.report(path, name, span);
     }
 
-    fn report(self: Resolver, name: []const u8, span: Span) void {
+    fn report(self: Resolver, path: []const u8, name: []const u8, span: Span) void {
         const alloc = self.list.fixAllocator();
-        const suffix = if (util.didYouMean(name, self.declared)) |s|
+        const suggestion = util.didYouMean(name, self.declared);
+        const suffix = if (suggestion) |s|
             std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -91,6 +93,7 @@ const Resolver = struct {
             .message = message,
             .span = span,
             .fix_hint = "declare the secret under `on.workflow_call.secrets:`",
+            .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 1, s) else null,
         }) catch return;
     }
 };

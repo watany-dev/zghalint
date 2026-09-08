@@ -30,6 +30,7 @@ const parser = @import("../workflow/parser.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 
 const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
@@ -212,7 +213,7 @@ const ContextResolver = struct {
         for (declared) |name| {
             if (std.ascii.eqlIgnoreCase(name, input)) return;
         }
-        self.reportInput(input, declared, span);
+        self.reportInput(path, input, declared, span);
     }
 
     fn reportContext(self: ContextResolver, name: []const u8, span: Span) void {
@@ -232,9 +233,16 @@ const ContextResolver = struct {
         }) catch return;
     }
 
-    fn reportInput(self: ContextResolver, name: []const u8, declared: []const []const u8, span: Span) void {
+    fn reportInput(
+        self: ContextResolver,
+        path: []const u8,
+        name: []const u8,
+        declared: []const []const u8,
+        span: Span,
+    ) void {
         const alloc = self.list.fixAllocator();
-        const suffix = if (util.didYouMean(name, declared)) |s|
+        const suggestion = util.didYouMean(name, declared);
+        const suffix = if (suggestion) |s|
             std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -250,6 +258,7 @@ const ContextResolver = struct {
             .message = message,
             .span = span,
             .fix_hint = "declare the input under the action's `inputs:` section",
+            .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 1, s) else null,
         }) catch return;
     }
 };

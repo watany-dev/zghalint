@@ -1,0 +1,41 @@
+# zghalint:expect EXPR012 EXPR013 EXPR014
+# #323: the did-you-mean suggestions for the `needs` / `inputs` / `secrets`
+# contexts are autofixes too, and each one rewrites a single segment of the
+# path. The applied result is pinned by `rename-fix-contexts.yml.fixed`.
+name: rename fix contexts
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+    secrets:
+      token:
+        required: true
+permissions:
+  contents: read
+concurrency: rename-fix-contexts
+jobs:
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - name: pick
+        id: pick
+        run: echo "version=1" >> "$GITHUB_OUTPUT"
+  build:
+    name: build
+    needs: [setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TARGET: ${{ inputs.target }}
+      TOKEN: ${{ secrets.token }}
+    steps:
+      - name: report
+        run: echo "${{ needs.setup.outputs.version }} ${{ needs.setup.outputs.version }}"
+      - name: property
+        run: echo "${{ needs.setup.outputs.version }}"
