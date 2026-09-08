@@ -29,9 +29,11 @@ non-comment line. A fixture with neither directive fails the test.
 
 A fixture may also declare what `--fix` makes of it: put the expected result in
 a sibling `<fixture>.yml.fixed` file and the harness applies the safe fixes and
-compares. The `expect` directives pin *where* a rule fires; a `.fixed` file
-pins *what* its fix rewrites, which is the half a wrong byte range would
-otherwise get wrong silently. Fixtures without such a sibling are unaffected.
+compares. A `<fixture>.yml.fixed-unsafe` sibling does the same for
+`--fix-unsafe`, which is the only way to pin a rule whose fix is `unsafe`. The
+`expect` directives pin *where* a rule fires; these files pin *what* its fix
+rewrites, which is the half a wrong byte range would otherwise get wrong
+silently. Fixtures without such a sibling are unaffected.
 
 ## Fixtures
 
@@ -40,6 +42,8 @@ otherwise get wrong silently. Fixtures without such a sibling are unaffected.
 | `sec002-run-plain-scalar.yml` | #131 repro: `${{ }}` in an unquoted `run:` |
 | `sec002-run-quoted-scalar.yml` | Same injection in a single-quoted scalar |
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
+| `sec002-env-binding.yml` | #327: `--fix-unsafe` binds the tainted expression to the step's `env:` per shell |
+| `sec019-secret-env-binding.yml` | #327: the same binding for a secret in `run:`, with a `with:`-only step left alone |
 | `sec002-taint-one-hop.yml` | #314 repro: `env.<KEY>` and `needs.<job>.outputs.*` carry taint one hop |
 | `security-misc.yml` | SEC003 / SEC005 / SEC006 / SEC007 / SEC008 / SC002 |
 | `sc007-typosquat.yml` | #135: `actions/chekout` fires SC007; `myorg/chekout` and exact `actions/checkout` do not |
@@ -74,6 +78,8 @@ otherwise get wrong silently. Fixtures without such a sibling are unaffected.
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
+| `bp008-workflow-commands.yml` | #326: every deprecated workflow command rewritten by `--fix`, with a piped line left alone |
+| `rw001-input-type-fix.yml` | #326: `--fix-unsafe` infers a `workflow_call` input `type:` from its `default:` |
 | `clean.yml` | A well-formed workflow: nothing may fire |
 | `rename-fix-schema.yml` | #323: every did-you-mean rename on schema keys and values, with its `--fix` result pinned |
 | `rename-fix-contexts.yml` | #323: the same for the `needs` / `inputs` / `secrets` expression contexts |

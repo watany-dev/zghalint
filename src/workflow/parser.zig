@@ -456,6 +456,30 @@ fn parseWorkflowCallOutputs(allocator: std.mem.Allocator, node: Node) ParseError
     return outputs;
 }
 
+/// Where RW001's autofix writes the `type:` it inferred: in front of the
+/// definition's first key, so the new entry lands inside the input's own
+/// mapping whatever order the author wrote the other keys in. Returns null
+/// when there is no `default:` to infer from, or no key to anchor on (a flow
+/// mapping `{}`, or one whose key the parser gave no column for).
+fn callInputTypeInsertion(
+    input_mapping: Mapping,
+    default_value: ?[]const u8,
+    default_style: ?yaml.ScalarStyle,
+) ?types.CallInputTypeInsertion {
+    const value = default_value orelse return null;
+    const style = default_style orelse return null;
+    if (input_mapping.entries.len == 0) return null;
+
+    const first = input_mapping.entries[0].key.span;
+    if (first.start_col == 0) return null;
+
+    return .{
+        .anchor_byte = first.start_byte,
+        .indent = first.start_col - 1,
+        .type_name = types.CallableInputType.inferFromScalar(value, style).name(),
+    };
+}
+
 fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowCallInputs {
     const inputs_mapping = switch (node) {
         .mapping => |m| m,
@@ -478,6 +502,20 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
             .name = input_name,
             .name_span = entry.key.span,
         };
+
+        // Read `default:` before `type:` so a missing `type:` can name the
+        // type its default implies (RW001 autofix).
+        var default_style: ?yaml.ScalarStyle = null;
+        if (input_mapping.get("default")) |default_node| {
+            switch (default_node) {
+                .scalar => |s| {
+                    def.default_value = s.value;
+                    def.default_span = s.span;
+                    default_style = s.style;
+                },
+                else => {},
+            }
+        }
 
         const type_node = input_mapping.get("type");
         if (type_node) |tn| {
@@ -510,21 +548,12 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
                 .input_name = input_name,
                 .detail = "",
                 .span = entry.value.getSpan(),
+                .type_insertion = callInputTypeInsertion(input_mapping, def.default_value, default_style),
             });
         }
 
         if (input_mapping.get("required")) |required_node| {
             def.required = parseYamlBool(required_node);
-        }
-
-        if (input_mapping.get("default")) |default_node| {
-            switch (default_node) {
-                .scalar => |s| {
-                    def.default_value = s.value;
-                    def.default_span = s.span;
-                },
-                else => {},
-            }
         }
 
         if (def.required == true and def.default_value != null) {
@@ -1166,7 +1195,26 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             step.env = parsed.values;
             step.env_meta = parsed.meta;
             step.env_keys = try parseEnvKeys(ctx.allocator, n);
+            switch (n) {
+                .mapping => |env_mapping| {
+                    if (env_mapping.entries.len > 0) {
+                        step.env_key_col = env_mapping.entries[0].key.span.start_col;
+                        const last = env_mapping.entries[env_mapping.entries.len - 1];
+                        // Same conditions as `with_last_entry_end_byte`: only a
+                        // block mapping whose last value is an inline scalar
+                        // ends where its span says it does (#171).
+                        if (last.full_span != null and isInlineScalar(last.value)) {
+                            step.env_last_entry_end_byte = last.value.getSpan().end_byte;
+                        }
+                    }
+                },
+                else => {},
+            }
         }
+    }
+    if (m.entries.len > 0) {
+        step.first_key_start_byte = m.entries[0].key.span.start_byte;
+        step.first_key_col = m.entries[0].key.span.start_col;
     }
     step.empty_sections = try empty.toOwnedSlice(ctx.allocator);
 
@@ -3083,4 +3131,62 @@ test "parseWorkflow still works without a failure sink" {
     defer arena.deinit();
 
     try testing.expectError(error.MissingField, parseWorkflow(arena.allocator(), mkMapping(&.{})));
+}
+
+test "step: first key and env: insertion anchors are captured" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: one
+        \\        env:
+        \\          FOO: bar
+        \\        run: echo hi
+        \\
+    ;
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    const step = wf.jobs[0].steps[0];
+
+    // `name` is the first key of the step mapping, at column 9.
+    try testing.expectEqual(@as(u32, 9), step.first_key_col.?);
+    try testing.expectEqual(std.mem.indexOf(u8, source, "name: one").?, step.first_key_start_byte.?);
+    try testing.expectEqual(@as(u32, 11), step.env_key_col.?);
+    try testing.expectEqual(
+        std.mem.indexOf(u8, source, "FOO: bar").? + "FOO: bar".len,
+        step.env_last_entry_end_byte.?,
+    );
+}
+
+test "step: no env: leaves the append anchors unset" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    const step = wf.jobs[0].steps[0];
+
+    try testing.expect(step.env_key_col == null);
+    try testing.expect(step.env_last_entry_end_byte == null);
+    try testing.expectEqual(@as(u32, 9), step.first_key_col.?);
 }

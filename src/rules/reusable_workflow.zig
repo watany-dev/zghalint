@@ -7,6 +7,7 @@ const spans = @import("spans.zig");
 const workflow_types = @import("../workflow/types.zig");
 const util = @import("../util.zig");
 const rename = @import("rename.zig");
+const fix_builder = @import("../fix/builder.zig");
 const test_support = @import("../test_support.zig");
 const diagnostics = @import("../diagnostics.zig");
 
@@ -54,6 +55,33 @@ fn workflowCallInputProblemMessage(
     };
 }
 
+/// The `type:` a missing declaration's `default:` implies. Unsafe because the
+/// inference only ever sees one literal: an author who meant `string` but wrote
+/// `default: 1` gets `number`, which changes how the value reaches the called
+/// workflow.
+fn buildMissingTypeFix(
+    list: *DiagnosticList,
+    problem: WorkflowCallInputProblem,
+) ?diagnostics.Fix {
+    if (problem.kind != .missing_type) return null;
+    const insertion = problem.type_insertion orelse return null;
+
+    const alloc = list.fixAllocator();
+    const edits = fix_builder.insertMappingEntryBefore(
+        alloc,
+        .{ .byte = insertion.anchor_byte, .indent = insertion.indent },
+        "type",
+        insertion.type_name,
+    ) orelse return null;
+    const description = std.fmt.allocPrint(
+        alloc,
+        "Add type: {s} inferred from the default value",
+        .{insertion.type_name},
+    ) catch return null;
+
+    return .{ .description = description, .safety = .unsafe, .edits = edits };
+}
+
 fn checkWorkflowCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.on.events) |event| {
@@ -71,6 +99,7 @@ fn checkWorkflowCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
                     .default_type_mismatch => "change the default value to match the declared type.",
                     .required_with_default => "remove either `required: true` or `default`.",
                 },
+                .fix = buildMissingTypeFix(list, problem),
             }) catch return;
         }
     }
@@ -1437,4 +1466,110 @@ test "RW005: a job the caller does not need is left to EXPR012" {
         \\      - run: echo "${{ needs.call.outputs.ver }}"
         \\
     , &.{});
+}
+
+test "RW001: missing type: is fixed by inferring the type from the default" {
+    const source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      verbose:
+        \\        default: true
+        \\      retries:
+        \\        default: 3
+        \\      branch:
+        \\        default: main
+        \\jobs:
+        \\  call:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkWorkflowCallInputs },
+        true,
+    );
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expectEqualStrings(
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      verbose:
+        \\        type: boolean
+        \\        default: true
+        \\      retries:
+        \\        type: number
+        \\        default: 3
+        \\      branch:
+        \\        type: string
+        \\        default: main
+        \\jobs:
+        \\  call:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "RW001: an input without a default gets no fix" {
+    const source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      version:
+        \\        description: Version
+        \\jobs:
+        \\  call:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    checkWorkflowCallInputs(&wf, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "RW001: a quoted default infers string, not the literal it looks like" {
+    const source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      verbose:
+        \\        default: 'true'
+        \\jobs:
+        \\  call:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ;
+
+    const result = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkWorkflowCallInputs },
+        true,
+    );
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "type: string") != null);
 }

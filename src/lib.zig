@@ -72,6 +72,7 @@ test {
     _ = @import("rules/engine.zig");
     _ = @import("rules/registry.zig");
     _ = @import("rules/spans.zig");
+    _ = @import("rules/env_binding.zig");
     _ = @import("rules/expressions.zig");
     _ = @import("rules/expr_overlay.zig");
     _ = @import("rules/expr_type.zig");

@@ -13,6 +13,7 @@ const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
 const sha_pin = @import("sha_pin.zig");
+const env_binding = @import("env_binding.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
 const trusted_data = @import("data/trusted_actions.zig");
@@ -332,7 +333,7 @@ fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
     const tainted_jobs = taintedJobs(wf, base, workflow_env);
     var reporting = base;
     reporting.tainted_jobs = tainted_jobs.slice();
-    for (wf.jobs) |*job| _ = walkJobTaint(job, reporting, workflow_env, list);
+    for (wf.jobs) |*job| _ = walkJobTaint(job, reporting, workflow_env, list, wf);
 }
 
 /// The jobs whose `outputs:` export an untrusted value. A job's output can be
@@ -350,7 +351,7 @@ fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNam
         table.tainted_jobs = out.slice();
         for (wf.jobs) |*job| {
             if (out.contains(job.id)) continue;
-            if (!walkJobTaint(job, table, workflow_env, null)) continue;
+            if (!walkJobTaint(job, table, workflow_env, null, wf)) continue;
             out.append(job.id);
             changed = true;
         }
@@ -370,6 +371,7 @@ fn walkJobTaint(
     base: ContextTable,
     workflow_env: TaintedNames,
     list: ?*DiagnosticList,
+    wf: *const Workflow,
 ) bool {
     var job_env = workflow_env;
     var job_table = base;
@@ -387,7 +389,7 @@ fn walkJobTaint(
         addTaintedEnvKeys(&step_env, step.env, table);
         table.tainted_env = step_env.slice();
 
-        if (list) |l| checkStepScriptInjection(step, table, l);
+        if (list) |l| checkStepScriptInjection(step, table, l, env_binding.resolveShell(step, job, wf));
         if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
     }
 
@@ -419,14 +421,50 @@ fn addTaintedEnvKeys(out: *TaintedNames, env: ?workflow_types.StringMap, table: 
 /// them: the fixed table only. A composite action declares no triggers, and its
 /// step list is walked by `composite_steps.zig` rather than by this rule.
 pub fn checkStandaloneStepScriptInjection(step: *const Step, list: *DiagnosticList) void {
-    checkStepScriptInjection(step, .{ .prefix = &run_dangerous_contexts, .whole = &whole_event_contexts }, list);
+    // A composite action has no job around it, so `shell:` on the step is the
+    // only thing that can decide the reference form.
+    checkStepScriptInjection(
+        step,
+        .{ .prefix = &run_dangerous_contexts, .whole = &whole_event_contexts },
+        list,
+        env_binding.resolveShell(step, null, null),
+    );
 }
 
-fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
+fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *DiagnosticList, shell: ?env_binding.Shell) void {
     if (step.run) |run_body| {
-        checkContextsInString(run_body, spans.runAnchor(step), table, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list);
+        // One `Fix` per step, on the first diagnostic only: it rewrites every
+        // offending expression at once, and `fix/engine.zig` would drop a
+        // second fix covering the same bytes anyway (design doc §5).
+        const fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table));
+        checkContextsInString(run_body, spans.runAnchor(step), table, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list, fix);
     }
     checkScriptInputInjection(step, table, list);
+}
+
+/// Every untrusted `${{ ... }}` in the step's `run:`, which is exactly the set
+/// the env binding has to cover for the step to come out clean.
+fn taintedRunOccurrences(step: *const Step, table: ContextTable) env_binding.Occurrences {
+    var occs: env_binding.Occurrences = .{};
+    const run_body = step.run orelse return occs;
+    var it: ExprIter = .{ .s = run_body };
+    while (it.next()) |e| {
+        if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), table)) continue;
+        occs.append(.{ .offset = e.match.offset, .len = e.match.len });
+    }
+    return occs;
+}
+
+const env_binding_description = "bind the expression to the step's env: and read it as a shell variable";
+
+fn buildEnvBindingFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    shell: ?env_binding.Shell,
+    occs: env_binding.Occurrences,
+) ?Fix {
+    const s = shell orelse return null;
+    return env_binding.buildFix(list, step, s, &occs, env_binding_description);
 }
 
 /// A workflow carries few enough steps, `env:` keys and jobs that the names fit
@@ -521,7 +559,7 @@ fn checkScriptInputInjection(step: *const Step, table: ContextTable, list: *Diag
     if (!isAction(ref, "actions/github-script")) return;
     const with_map = step.with orelse return;
     const input = getWithInput(with_map, "script") orelse return;
-    checkContextsInString(input.value, withAnchor(step, input.key), table, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list);
+    checkContextsInString(input.value, withAnchor(step, input.key), table, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list, null);
 }
 
 /// Match `owner/repo` against a marketplace action reference. A nested path is a
@@ -732,7 +770,7 @@ fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *Di
 fn reportConditionContexts(cond: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
     const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
     if (has_expr) {
-        checkContextsInString(cond, anchor, contexts, rule_id, severity, message, fix_hint, list);
+        checkContextsInString(cond, anchor, contexts, rule_id, severity, message, fix_hint, list, null);
         return;
     }
     if (!containsAnyContext(cond, contexts)) return;
@@ -845,17 +883,19 @@ fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) v
     const contexts = runTaintContexts(wf);
     const table: ContextTable = .{ .prefix = contexts.slice() };
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| checkGithubEnvInjection(step, table, list);
+        for (job.steps) |*step| {
+            checkGithubEnvInjection(step, table, list, env_binding.resolveShell(step, job, wf));
+        }
     }
 }
 
 /// SEC008 for the steps of a composite action, which declare no triggers: the
 /// fixed table only.
 pub fn checkStandaloneGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
-    checkGithubEnvInjection(step, .{ .prefix = &run_dangerous_contexts }, list);
+    checkGithubEnvInjection(step, .{ .prefix = &run_dangerous_contexts }, list, env_binding.resolveShell(step, null, null));
 }
 
-fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
+fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList, shell: ?env_binding.Shell) void {
     const run_body = step.run orelse return;
     const write_offset = indexOfGithubEnvWrite(run_body) orelse return;
     if (!hasUntrustedExpr(run_body, table)) return;
@@ -865,6 +905,9 @@ fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *Diagno
         .message = "untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment variable injection",
         .span = spans.runAnchor(step).at(run_body, write_offset, 2),
         .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
+        // Binding the untrusted value to `env:` removes the interpolation the
+        // write is built from; the write itself stays as the author wrote it.
+        .fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table)),
     }) catch return;
 }
 
@@ -1460,7 +1503,17 @@ fn exprIsNonTokenSecretRef(inner: []const u8) bool {
     return !std.ascii.eqlIgnoreCase(trimmed["secrets.".len..], "GITHUB_TOKEN");
 }
 
-fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
+/// Workflow-scoped rather than step-scoped so the autofix can resolve the shell
+/// the step runs under, which needs `runs-on` and both `defaults:` levels.
+fn checkSecretsOutsideEnvWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
+    for (wf.jobs) |*job| {
+        for (job.steps) |*step| {
+            checkSecretsOutsideEnv(step, list, env_binding.resolveShell(step, job, wf));
+        }
+    }
+}
+
+fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList, shell: ?env_binding.Shell) void {
     // env: is the recommended binding, so a secret there is not a finding.
     const span = findStepExprSpan(step, .{ .env = false }, exprIsNonTokenSecretRef) orelse return;
     list.append(.{
@@ -1469,7 +1522,21 @@ fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList) void {
         .message = "secret used directly in run:/with: instead of being bound through env:",
         .span = span,
         .fix_hint = "bind the secret to an env: variable first, then reference the env var in run:/with:",
+        // Only `run:` is rewritten; a secret in `with:` has no spelling that
+        // reads the binding back without interpolating it again (design doc).
+        .fix = buildEnvBindingFix(list, step, shell, secretRunOccurrences(step)),
     }) catch return;
+}
+
+fn secretRunOccurrences(step: *const Step) env_binding.Occurrences {
+    var occs: env_binding.Occurrences = .{};
+    const run_body = step.run orelse return occs;
+    var it: ExprIter = .{ .s = run_body };
+    while (it.next()) |e| {
+        if (!exprIsNonTokenSecretRef(e.inner)) continue;
+        occs.append(.{ .offset = e.match.offset, .len = e.match.len });
+    }
+    return occs;
 }
 
 fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
@@ -1771,7 +1838,8 @@ fn checkTyposquatAction(step: *const Step, list: *DiagnosticList) void {
 /// Every offending expression is reported separately: a single `run:` block can
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
-fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
+fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList, fix: ?Fix) void {
+    var first = true;
     var it: ExprIter = .{ .s = s };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
@@ -1781,7 +1849,9 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, 
             .message = message,
             .span = anchor.at(s, e.match.offset, e.match.len),
             .fix_hint = fix_hint,
+            .fix = if (first) fix else null,
         }) catch return;
+        first = false;
     }
 }
 
@@ -2456,7 +2526,7 @@ pub const security_rules = [_]Rule{
         .description = "Secrets should be bound to env: variables instead of used directly in run:/with:",
         .severity = .info,
         .category = .security,
-        .check_step = &checkSecretsOutsideEnv,
+        .check_workflow = &checkSecretsOutsideEnvWorkflow,
     },
     .{
         .id = "SEC020",
@@ -6497,5 +6567,348 @@ test "SEC001: a flow-style step gets no pin, since the comment would close the m
 
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+fn envBindingFix(source: []const u8, check: test_support.Check) !test_support.FixOutcome {
+    return test_support.lintAndFix(testing.allocator, source, check, true);
+}
+
+test "SEC002: the untrusted expressions of a step are bound in one env: block" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        run: |
+        \\          echo "${{ github.event.pull_request.title }}"
+        \\          echo ${{ github.event.issue.body }}
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    // Two diagnostics, but only the first carries the step's single fix.
+    try testing.expectEqual(@as(usize, 2), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expectEqualStrings(
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - env:
+        \\          PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
+        \\          ISSUE_BODY: ${{ github.event.issue.body }}
+        \\        name: echo
+        \\        run: |
+        \\          echo "$PULL_REQUEST_TITLE"
+        \\          echo "$ISSUE_BODY"
+        \\
+    , result.content);
+}
+
+test "SEC002: an existing env: is appended to rather than replaced" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        env:
+        \\          FOO: bar
+        \\        run: echo "${{ github.event.comment.body }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        env:
+        \\          FOO: bar
+        \\          COMMENT_BODY: ${{ github.event.comment.body }}
+        \\        run: echo "$COMMENT_BODY"
+        \\
+    , result.content);
+}
+
+test "SEC002: the same expression twice shares one binding" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        run: |
+        \\          echo "${{ github.event.issue.title }}"
+        \\          echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.content, "ISSUE_TITLE: "));
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, result.content, "echo \"$ISSUE_TITLE\""));
+}
+
+test "SEC002: a name colliding with an existing env: key is suffixed" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        env:
+        \\          ISSUE_TITLE: fixed
+        \\        run: echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "ISSUE_TITLE_2: ${{ github.event.issue.title }}") != null);
+    try testing.expect(std.mem.indexOf(u8, result.content, "echo \"$ISSUE_TITLE_2\"") != null);
+}
+
+test "SEC002: a shell the workflow does not pin down gets no fix" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: self-hosted
+        \\    steps:
+        \\      - name: echo
+        \\        run: echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC002: the job's defaults decide the shell when the step has none" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: self-hosted
+        \\    defaults:
+        \\      run:
+        \\        shell: pwsh
+        \\    steps:
+        \\      - name: echo
+        \\        run: echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "echo \"$env:ISSUE_TITLE\"") != null);
+}
+
+test "SEC002: an expression inside single quotes gets no fix" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        run: echo '${{ github.event.issue.body }}'
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC002: an expression that is not a plain context path gets no fix" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        run: echo "${{ toJSON(github.event.issue.title) }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC002: a folded run: scalar gets no fix" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        run: >
+        \\          echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC002: an env: key with no value gets no fix" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: echo
+        \\        env:
+        \\        run: echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC008: the untrusted value written to GITHUB_ENV is bound to env:" {
+    const source =
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: write
+        \\        run: echo "TITLE=${{ github.event.pull_request.title }}" >> "$GITHUB_ENV"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkGithubEnvInjectionWorkflow });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expectEqualStrings(
+        \\name: t
+        \\on: pull_request
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - env:
+        \\          PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
+        \\        name: write
+        \\        run: echo "TITLE=$PULL_REQUEST_TITLE" >> "$GITHUB_ENV"
+        \\
+    , result.content);
+}
+
+test "SEC019: a secret used in run: is bound to env:" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: publish
+        \\        run: curl -H "token ${{ secrets.NPM_TOKEN }}" https://example.com
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkSecretsOutsideEnvWorkflow });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expectEqualStrings(
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - env:
+        \\          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        \\        name: publish
+        \\        run: curl -H "token $NPM_TOKEN" https://example.com
+        \\
+    , result.content);
+}
+
+test "SEC019: a secret used only in with: is reported without a fix" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: publish
+        \\        uses: some/action@v1
+        \\        with:
+        \\          token: ${{ secrets.NPM_TOKEN }}
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkSecretsOutsideEnvWorkflow });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC019: secrets.GITHUB_TOKEN stays exempt" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: publish
+        \\        run: gh pr list --token "${{ secrets.GITHUB_TOKEN }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkSecretsOutsideEnvWorkflow });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.diagnostic_count);
     try testing.expectEqualStrings(source, result.content);
 }

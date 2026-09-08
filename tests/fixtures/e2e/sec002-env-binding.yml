@@ -1,0 +1,47 @@
+# zghalint:expect SEC002 SEC008
+# #327: `--fix-unsafe` binds the tainted expression to the step's `env:` and
+# reads it back as a shell variable. The `posix` job has no `env:` yet, the
+# `existing-env` job appends to one, `pwsh` picks the shell up from the job
+# defaults, and the single-quoted occurrence in `no-fix` is left alone.
+name: Env binding
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+concurrency:
+  group: env-binding
+jobs:
+  posix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Two expressions in one block
+        run: |
+          echo "${{ github.event.issue.title }}"
+          echo ${{ github.event.issue.body }}
+  existing-env:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Append to the existing env
+        env:
+          GREETING: hello
+        run: echo "${{ github.event.issue.title }}"
+  pwsh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Shell from the job defaults
+        run: echo "${{ github.event.issue.title }}"
+  no-fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Single-quoted, so the expression would not expand
+        run: echo '${{ github.event.issue.title }}'
+      - name: Write to GITHUB_ENV
+        run: echo "TITLE=${{ github.event.issue.title }}" >> "$GITHUB_ENV"

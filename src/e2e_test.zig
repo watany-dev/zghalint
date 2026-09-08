@@ -114,28 +114,42 @@ fn lintActionSource(
 }
 
 /// Expected result of `--fix` for a fixture, held in a sibling `<name>.fixed`
-/// file. Only the safe fixes run, the same set a plain `--fix` applies.
+/// file, and of `--fix-unsafe`, held in `<name>.fixed-unsafe`. Either sibling
+/// is optional; a fixture with neither is only checked for its diagnostics.
 ///
 /// The diagnostic directives pin where a rule fires; this pins what its fix
 /// rewrites, which is the half a wrong byte range would silently get wrong.
-fn checkFixedOutput(
+fn checkFixedOutputs(
     alloc: std.mem.Allocator,
     dir: std.fs.Dir,
     name: []const u8,
     source: []const u8,
     diags: []const diagnostics.Diagnostic,
 ) !void {
-    const expected_name = try std.fmt.allocPrint(alloc, "{s}.fixed", .{name});
+    try checkFixedOutput(alloc, dir, name, source, diags, false);
+    try checkFixedOutput(alloc, dir, name, source, diags, true);
+}
+
+fn checkFixedOutput(
+    alloc: std.mem.Allocator,
+    dir: std.fs.Dir,
+    name: []const u8,
+    source: []const u8,
+    diags: []const diagnostics.Diagnostic,
+    include_unsafe: bool,
+) !void {
+    const suffix = if (include_unsafe) ".fixed-unsafe" else ".fixed";
+    const expected_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ name, suffix });
     const expected = dir.readFileAlloc(alloc, expected_name, 256 * 1024) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
 
-    const fixes = try fix_engine.collectFixes(alloc, diags, false);
+    const fixes = try fix_engine.collectFixes(alloc, diags, include_unsafe);
     const result = try fix_engine.applyFixes(alloc, source, fixes);
 
     if (!std.mem.eql(u8, result.content, expected)) {
-        std.debug.print("fixture '{s}': --fix output does not match {s}\n--- got ---\n{s}\n--- want ---\n{s}\n", .{
+        std.debug.print("fixture '{s}': fix output does not match {s}\n--- got ---\n{s}\n--- want ---\n{s}\n", .{
             name, expected_name, result.content, expected,
         });
         return error.FixedOutputMismatch;
@@ -206,7 +220,7 @@ fn runFixtures(
             }
         }
 
-        try checkFixedOutput(alloc, dir, entry.name, source, list.items.items);
+        try checkFixedOutputs(alloc, dir, entry.name, source, list.items.items);
     }
 }
 
@@ -227,11 +241,11 @@ test "E2E: fixtures produce the declared diagnostics" {
     // Minimum coverage: every rule family must fire at least once through a
     // real file, so a parser regression cannot silence a whole category.
     const must_cover = [_][]const u8{
-        "SEC001",  "SEC002",    "SEC003",    "SEC004",  "SEC005",  "SEC006",
-        "SEC007",  "SEC008",    "SEC015",    "SEC018",  "SC001",   "SC002",
-        "EXPR001", "EXPR002",   "SYN001",    "SYN004",  "SYN005",  "BP001",
-        "BP002",   "BP005",     "PERF001",   "PERF002", "PERM001", "PERM002",
-        "PERM003", "RUNNER001", "RUNNER002", "DEP003",  "RW001",
+        "SEC001",  "SEC002",  "SEC003",    "SEC004",    "SEC005",  "SEC006",
+        "SEC007",  "SEC008",  "SEC015",    "SEC018",    "SEC019",  "SC001",
+        "SC002",   "EXPR001", "EXPR002",   "SYN001",    "SYN004",  "SYN005",
+        "BP001",   "BP002",   "BP005",     "PERF001",   "PERF002", "PERM001",
+        "PERM002", "PERM003", "RUNNER001", "RUNNER002", "DEP003",  "RW001",
     };
     for (must_cover) |rule_id| {
         if (covered.get(rule_id) == null) {
