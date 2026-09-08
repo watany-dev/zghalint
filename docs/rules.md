@@ -79,6 +79,13 @@ from a step alone and need the whole workflow.
   step safe; it does nothing for whoever expands the output, so only the later
   step that expands it is reported.
 
+The fixed table covers every payload field an attacker authors, not only the
+obvious ones: alongside issue / PR / comment free text and commit messages it
+lists the head repository's `description` and `homepage` (the fork owner types
+them in its settings) and the `committer.name` / `.email` of a commit, which
+whoever authored the commit fills in. SEC006 gets the same free-text additions;
+they are not ref-shaped, so the #138 exclusion does not apply to them.
+
 Expanding the event as a whole — `toJSON(github.event)` — is a taint source too.
 The root matches only as a whole reference, so server-generated fields such as
 `github.event.number` stay out of scope.

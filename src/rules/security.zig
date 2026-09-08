@@ -169,12 +169,19 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.pull_request.head.ref",
     "github.event.pull_request.head.label",
     "github.event.pull_request.head.repo.default_branch",
+    // Repository metadata the fork's owner types in its settings.
+    "github.event.pull_request.head.repo.description",
+    "github.event.pull_request.head.repo.homepage",
     "github.head_ref",
     // Container prefixes: cover `[0].message`, `.*.author.name`, ...
     "github.event.commits",
     "github.event.head_commit.message",
     "github.event.head_commit.author.email",
     "github.event.head_commit.author.name",
+    // Whoever authored the commit fills the committer identity in too, and a
+    // merged external PR carries it into a `push` payload.
+    "github.event.head_commit.committer.email",
+    "github.event.head_commit.committer.name",
     "github.event.pages",
     "github.event.workflow_run.head_branch",
     // A fork authors the triggering run's commit message, its PR branch
@@ -184,6 +191,9 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.workflow_run.head_commit.message",
     "github.event.workflow_run.head_commit.author.email",
     "github.event.workflow_run.head_commit.author.name",
+    "github.event.workflow_run.head_commit.committer.email",
+    "github.event.workflow_run.head_commit.committer.name",
+    "github.event.workflow_run.head_repository.description",
     "github.event.workflow_run.pull_requests.*.head.ref",
     "github.event.workflow_run.display_title",
     // Label names need triage permission to set, so they are a weak injection
@@ -231,11 +241,17 @@ const condition_dangerous_contexts = [_][]const u8{
     "github.event.discussion_comment.body",
     "github.event.pull_request.title",
     "github.event.pull_request.body",
+    // Free text the fork's owner types in its repository settings. Not
+    // ref-shaped, so the #138 exclusion does not apply.
+    "github.event.pull_request.head.repo.description",
+    "github.event.pull_request.head.repo.homepage",
     // Container prefixes: cover `[0].message`, `.*.author.name`, ...
     "github.event.commits",
     "github.event.head_commit.message",
     "github.event.head_commit.author.email",
     "github.event.head_commit.author.name",
+    "github.event.head_commit.committer.email",
+    "github.event.head_commit.committer.name",
     "github.event.pages",
 };
 
@@ -2387,6 +2403,21 @@ test "SEC002: untrusted contexts in run block" {
     }
 }
 
+test "SEC002: free text a fork owner or a commit author writes (#313)" {
+    const bodies = [_][]const u8{
+        "echo \"${{ github.event.pull_request.head.repo.description }}\"",
+        "echo \"${{ github.event.pull_request.head.repo.homepage }}\"",
+        "echo \"${{ github.event.head_commit.committer.name }}\"",
+        "echo \"${{ github.event.head_commit.committer.email }}\"",
+        "echo \"${{ github.event.workflow_run.head_repository.description }}\"",
+        "echo \"${{ github.event.workflow_run.head_commit.committer.name }}\"",
+        "echo \"${{ github.event.workflow_run.head_commit.committer.email }}\"",
+    };
+    for (bodies) |body| {
+        try testing.expect(sec002Fires(body, null));
+    }
+}
+
 test "SEC002: element access under a container context" {
     // `github.event.pages` is stored as a container prefix, so its element
     // accesses are caught without a dedicated entry.
@@ -3514,6 +3545,11 @@ test "SEC006: attacker-authored free text in conditions is a warning" {
     try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.issue.body, 'ship it')"));
     try testing.expectEqual(Severity.warning, sec006Severity("github.event.pull_request.title == 'release'"));
     try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.head_commit.message, '[deploy]')"));
+    // Free text of the head repository and the committer identity: written by
+    // the fork's owner and by the commit author, not ref-shaped (#313).
+    try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.pull_request.head.repo.description, 'deploy')"));
+    try testing.expectEqual(Severity.warning, sec006Severity("github.event.pull_request.head.repo.homepage == 'https://example.com'"));
+    try testing.expectEqual(Severity.warning, sec006Severity("github.event.head_commit.committer.name == 'release-bot'"));
 }
 
 test "SEC006: safe context in condition (no false positive)" {
