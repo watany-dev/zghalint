@@ -42,7 +42,8 @@ pub fn reset() void {
     unavailable = 0;
 }
 
-/// `note: SC003, SC005 skipped (github api unreachable)` の 1 行を書く。
+/// Names HTTPS_PROXY / SSL_CERT_FILE because those are the usual miss when
+/// GitHub is reachable from a browser but not from this process (#336).
 pub fn writeNote(w: *std.Io.Writer, ids: []const []const u8) !void {
     if (ids.len == 0) return;
     try w.writeAll("note: ");
@@ -50,7 +51,7 @@ pub fn writeNote(w: *std.Io.Writer, ids: []const []const u8) !void {
         if (i > 0) try w.writeAll(", ");
         try w.writeAll(id);
     }
-    try w.writeAll(" skipped (github api unreachable)\n");
+    try w.writeAll(" skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)\n");
 }
 
 const testing = std.testing;
@@ -83,7 +84,7 @@ test "writeNote formats a single line" {
     var buf: [128]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     try writeNote(&w, &.{ "SC003", "SC005" });
-    try testing.expectEqualStrings("note: SC003, SC005 skipped (github api unreachable)\n", w.buffered());
+    try testing.expectEqualStrings("note: SC003, SC005 skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)\n", w.buffered());
 }
 
 test "writeNote is silent for an empty list" {

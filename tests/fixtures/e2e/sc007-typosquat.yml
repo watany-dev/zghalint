@@ -1,0 +1,20 @@
+# zghalint:expect SC007
+# Issue #135: official actions/* typosquat. A similarly spelled fork must not
+# count as a hit, and the real checkout action must stay quiet.
+name: sc007 typosquat
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Typo of checkout
+        uses: actions/chekout@v4
+      - name: Legitimate fork spelling
+        uses: myorg/chekout@v4
+      - name: Exact official action
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false

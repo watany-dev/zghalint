@@ -29,6 +29,15 @@
 - `std.Thread.Mutex` で POST/GET を直列化する。本設計では prefetch を
   シーケンシャルに走らせるので競合は起きないが、将来の並列化に耐えるため
   Mutex を残す。
+- `init()` は `std.http.Client.initDefaultProxies` を呼び、`http_proxy` /
+  `HTTP_PROXY` / `https_proxy` / `HTTPS_PROXY` / `all_proxy` / `ALL_PROXY`
+  を読む。`std.http.Client` はこれらを自動では解釈しない (#336)。
+- `SSL_CERT_FILE` が指す CA を `ca_bundle` に足す。Zig の既定スキャンは
+  ディストリごとの固定パスだけで、プロキシが TLS を終端する環境の CA を
+  拾わない。読み込み後は `next_https_rescan_certs` を下ろし、初回 HTTPS
+  の rescan がカスタム CA を消さないようにする。
+- GitHub API に届かなかったときは `note: … skipped (github api unreachable;
+  check HTTPS_PROXY / SSL_CERT_FILE)` を出す。
 
 ### 2.2 GraphQL バッチ
 

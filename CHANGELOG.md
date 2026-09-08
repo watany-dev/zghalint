@@ -17,8 +17,28 @@ Nothing released yet. `v0.0.1-rc.1` is the first planned tag; the CLI contract
 (flag names, exit codes, output shapes) is not yet stable, and rule IDs may
 still be renumbered before 1.0.
 
+### Changed
+
+- EXPR006 no longer warns when `contains()` tests array membership (object
+  filters such as `labels.*.name`, `fromJSON` arrays, typed arrays). Those are
+  exact element checks, not substring matching (#333).
+- PERM002 no longer warns when the workflow already declares `permissions:`
+  with no write scope. `write-all` or any `: write` at workflow level still
+  asks each job to narrow the grant (#334).
+
+### Fixed
+
+- HTTP client now honors `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and
+  `SSL_CERT_FILE`, so SC003 / SC004 / SC005 / SC008 no longer skip on every
+  run behind a required proxy (#336).
+- SEC021 no longer treats `github.event.issue.number` as a ChatOps checkout
+  taint under `on: issues`. That event does not fire on pull requests; the
+  `refs/pull/<n>/merge` pattern is `issue_comment` only (#308).
+
 ### Added
 
+- SC007 (`typosquat-action`): warn when an `actions/*` reference is 1–2 edits
+  away from a well-known official action such as `actions/checkout`.
 - GitHub Actions workflow linting across ten categories: security (`SEC*`),
   supply chain (`SC*`), performance (`PERF*`), best practices (`BP*`),
   permissions (`PERM*`), expression validation (`EXPR*`), dependencies

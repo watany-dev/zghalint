@@ -82,11 +82,16 @@ const composite_step_checks = [_]StepCheck{
     },
     stepCheck(&security.security_rules, "SEC003"),
     stepCheck(&security.security_rules, "SEC006"),
-    stepCheck(&security.security_rules, "SEC008"),
+    // SEC008 is workflow-scoped for the same reason as SEC002.
+    blk: {
+        requireRule(&security.security_rules, "SEC008");
+        break :blk &security.checkStandaloneGithubEnvInjection;
+    },
     stepCheck(&security.security_rules, "SEC014"),
     stepCheck(&security.security_rules, "SEC017"),
     stepCheck(&security.security_rules, "SEC018"),
     stepCheck(&security.security_rules, "SC002"),
+    stepCheck(&security.security_rules, "SC007"),
     stepCheck(&security.security_rules, "BP007"),
     stepCheck(&best_practices.rules, "BP003"),
     stepCheck(&best_practices.rules, "BP008"),
@@ -350,6 +355,18 @@ test "SEC001: an unpinned action inside a composite step is reported" {
     defer lint.deinit();
 
     try testing.expect(lint.has("SEC001"));
+}
+
+test "SC007: a typosquat action inside a composite step is reported" {
+    var lint = try Lint.run(
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/chekout@v4
+    );
+    defer lint.deinit();
+
+    try testing.expect(lint.has("SC007"));
 }
 
 test "SEC002: script injection inside a composite step is reported" {

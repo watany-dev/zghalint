@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **90 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **91 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -68,20 +68,66 @@ names, because branching on them — `if: startsWith(github.head_ref, 'release/'
 ### SEC002 taint sources
 
 Besides the fixed `github.event.*` table, two taint sources cannot be decided
-from a step alone and need the whole workflow.
+from a step alone and need the whole workflow. SEC008 is workflow-scoped for the
+same reason and reads the same table, so a value that is injection in a `run:`
+block is injection when it is written to `$GITHUB_ENV` too.
 
-- `inputs.*` / `github.event.inputs.*` — untrusted only when the workflow
-  declares `workflow_dispatch` or `workflow_call`. The values are typed by the
-  dispatching actor or passed by the caller, and neither can be validated on the
-  callee side.
+- The dispatch payloads — `inputs.*` / `github.event.inputs.*` under
+  `workflow_dispatch` or `workflow_call`, and `github.event.client_payload.*`
+  under `repository_dispatch`. The values are typed by the dispatching actor,
+  passed by the caller, or forwarded verbatim by whatever posted the dispatch,
+  and none of them can be validated on the callee side. Each root is untrusted
+  only under the trigger that fills it (#224), and the pairing is the same table
+  SEC021 reads, so the two rules cannot disagree about what a caller controls.
 - `steps.<id>.outputs.*` — untrusted when step `<id>` wrote an untrusted value
   to `$GITHUB_OUTPUT`. Binding the value to `env:` is what makes the *capturing*
   step safe; it does nothing for whoever expands the output, so only the later
   step that expands it is reported.
 
+Taint then travels one hop further, through the two indirections that otherwise
+look like the recommended fix:
+
+- `env.<KEY>` — an `env:` entry bound to an untrusted value taints the
+  expression spelling of that key for the scope that declares it (workflow, job
+  or step). `$KEY` stays quiet: the shell reads the value out of the
+  environment, while `${{ env.KEY }}` is spliced into the script before the
+  shell ever starts, which is the injection the `env:` binding was meant to
+  remove.
+- `needs.<job>.outputs.<name>` — untrusted when `<job>` binds that output to a
+  tainted `steps.<id>.outputs.*` (or to an untrusted context directly). The set
+  of exporting jobs is closed by iteration, so a chain of jobs is followed
+  whatever order they are declared in.
+
+The fixed table covers every payload field an attacker authors, not only the
+obvious ones: alongside issue / PR / comment free text and commit messages it
+lists the head repository's `description` and `homepage` (the fork owner types
+them in its settings) and the `committer.name` / `.email` of a commit, which
+whoever authored the commit fills in. SEC006 gets the same free-text additions;
+they are not ref-shaped, so the #138 exclusion does not apply to them.
+
 Expanding the event as a whole — `toJSON(github.event)` — is a taint source too.
 The root matches only as a whole reference, so server-generated fields such as
 `github.event.number` stay out of scope.
+
+### Refs SEC005 and SEC009 recognize
+
+SEC005 covers the triggers that run with the base repository's privileges while
+carrying the fork's `pull_request.head` in the payload: `pull_request_target`,
+`pull_request_review` and `pull_request_review_comment`. Anyone who can see a
+pull request can post a review on it, so the last two share the
+`pull_request_target` threat model; the finding names the trigger it found.
+
+SEC005 reports a checkout whose `ref` / `repository` names the PR head:
+`github.event.pull_request.head.*`, `github.head_ref`, a literal `refs/pull/`,
+`github.event.pull_request.number` / `github.event.number` used to build one,
+and `github.event.pull_request.merge_commit_sha` — the test merge of the head
+into the base carries the fork's changes just as `refs/pull/<n>/merge` does.
+
+SEC009 reports `github.event.workflow_run.head_*`, `.display_title` and
+`.pull_requests[*].*`. The last one keeps SEC009 in step with SEC002, which
+already treats `pull_requests.*.head.ref` as untrusted; GitHub empties the
+array for fork-triggered runs, so the reachable case is a branch name a
+same-repository PR author picks.
 
 ### Fork guards
 
@@ -100,7 +146,8 @@ has no such gate: the triggers it owns (`workflow_dispatch`, `issue_comment`,
 ### SEC021 vs. SEC005 / SEC009
 
 All three report the same shape — `actions/checkout` fed a ref the attacker
-picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
+picks — split by trigger. SEC005 owns the privileged PR-head triggers above,
+SEC009 owns
 `workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
 `discussion_comment`.
@@ -117,8 +164,13 @@ workflow would hide a `ref` fed from a comment body just because
 `pull_request_target` also appears in `on:`.
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
-`github.event.client_payload.*`) and the free text of an issue, comment or
-discussion. The bare `inputs.*` shorthand counts too, unless every way into the
+`github.event.client_payload.*`), the free text of an issue, comment or
+discussion, and `github.event.issue.number`. The last one is the ChatOps shape:
+anyone may comment `/test` on any pull request, so
+`ref: refs/pull/${{ github.event.issue.number }}/merge` lets the commenter pick
+which fork's code the job runs with the base repository's secrets (#308). The
+`issues` event does not fire on pull requests, so the same number is not a
+checkout taint there. The bare `inputs.*` shorthand counts too, unless every way into the
 workflow fills it from a caller — a `workflow_call` workflow with no
 `workflow_dispatch`, or one whose `workflow_dispatch` declares no inputs of its
 own. Analysing callers is out of scope. A `workflow_call` declared beside a
@@ -155,6 +207,14 @@ does not parse anchors nothing. Values that name one immutable commit — `head_
 `head_commit.id` — are never reported. A trust check on the job covers the
 steps inside it.
 
+### Triggers SEC020 treats as fork-accessible
+
+`pull_request`, `pull_request_target`, `pull_request_review`,
+`pull_request_review_comment`, `workflow_run` and `issue_comment`. The two
+review events belong in that list for the same reason as
+`pull_request_target`: anyone who can see the pull request can post a review,
+and the run that reacts to it carries the fork's code onto the runner.
+
 ## Supply Chain Security Rules (SC)
 
 Detect supply chain risks in action and container image references.
@@ -167,7 +227,15 @@ Detect supply chain risks in action and container image references.
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
 | SC005 | stale-action-refs | info | SHA-pinned action does not correspond to any known Git tag |
 | SC006 | ref-confusion | warning | Action ref matches both a tag and branch, creating exploitable ambiguity |
+| SC007 | typosquat-action | warning | Action name is similar to a well-known `actions/*` action (possible typosquat) |
 | SC008 | impostor-commit | warning | SHA-pinned action ref is not reachable from any branch or tag of the upstream repo |
+
+### SC007 typosquat-action
+
+`uses: actions/chekout@v4` のように、公式 `actions/*` のよく知られたリポジトリ名
+から編集距離 1 または 2 の参照を warning する。完全一致（`actions/checkout`）と、
+`myorg/chekout` のような別 owner の fork は対象外。候補の置き換えは作者の意図を
+先取りするため、autofix は付けない。
 
 ### SEC001 / SC006 の SHA ピン止め autofix
 
@@ -252,6 +320,11 @@ Validate the principle of least privilege in workflow permissions.
 | PERM002 | missing-job-permissions | warning | Job with third-party actions lacks explicit permissions |
 | PERM003 | invalid-permissions | error | Unknown permission scope or invalid permission level |
 
+PERM002 stays quiet when the workflow already declares `permissions:` with no
+write scope (`contents: read`, `read-all`, `{}`). The token is already
+minimized for every job. `write-all` or any `: write` at workflow level still
+warns, because those jobs should narrow the grant (#334).
+
 ## Expression Validation Rules (EXPR)
 
 Validate `${{ }}` expression syntax, context access, and function calls.
@@ -282,6 +355,10 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR016 | function-availability | error | `success()` / `failure()` / `always()` / `cancelled()` outside an `if:`, or `hashFiles()` under a key that does not provide it |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
+
+EXPR006 is substring matching, so it fires only when the first argument is a
+string. Array membership — `contains(github.event.pull_request.labels.*.name, 'label')`,
+`fromJSON('[...]')`, or a `TypeEnv` array — is exact and is not reported (#333).
 
 ## Dependency Rules (DEP)
 
@@ -878,7 +955,7 @@ composite action の step は、ワークフローの step と同じ実体なの
 
 - `uses:` 系: SEC001（SHA ピン止め）、DEP003（`uses:` の形式）、DEP004（ローカル
   action の入力）、DEP005 / DEP006（widely used action の入力）、SC002（改竄された
-  リリース）、BP003（廃止されたバージョン）
+  リリース）、SC007（`actions/*` への typosquat）、BP003（廃止されたバージョン）
 - `run:` 系: SEC002（スクリプトインジェクション）、SEC008（`GITHUB_ENV` 汚染）、
   SEC017、BP007、BP008
 - その他: SEC003、SEC006、SEC014、SEC018

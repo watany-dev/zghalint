@@ -40,7 +40,9 @@ otherwise get wrong silently. Fixtures without such a sibling are unaffected.
 | `sec002-run-plain-scalar.yml` | #131 repro: `${{ }}` in an unquoted `run:` |
 | `sec002-run-quoted-scalar.yml` | Same injection in a single-quoted scalar |
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
+| `sec002-taint-one-hop.yml` | #314 repro: `env.<KEY>` and `needs.<job>.outputs.*` carry taint one hop |
 | `security-misc.yml` | SEC003 / SEC005 / SEC006 / SEC007 / SEC008 / SC002 |
+| `sc007-typosquat.yml` | #135: `actions/chekout` fires SC007; `myorg/chekout` and exact `actions/checkout` do not |
 | `sec006-condition-scope.yml` | #138 repro: ref/label routing in `if:` must not fire SEC006 |
 | `sec005-pr-target-head-repository.yml` | #218 repro: `pull_request_target` checkout of the PR head repository |
 | `sec021-untrusted-checkout-ref.yml` | #134 repro: checkout ref from an `issue_comment` body |
@@ -55,6 +57,7 @@ otherwise get wrong silently. Fixtures without such a sibling are unaffected.
 | `expr014-secrets-context.yml` | EXPR014: `secrets.<name>` against a declared `workflow_call.secrets` set |
 | `expr015-expr016-availability.yml` | EXPR015/EXPR016: contexts and special functions against the key they appear under |
 | `expr017-github-event-overlay.yml` | #124: the curated `github.event` overlay widens EXPR017 without new EXPR003s |
+| `expr006-array-contains.yml` | #333 FP guard: `contains(labels.*.name, 'x')` is array membership |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |
@@ -63,6 +66,7 @@ otherwise get wrong silently. Fixtures without such a sibling are unaffected.
 | `syn018-duplicate-matrix-value.yml` | #74: repeated values and `include` entries in `strategy.matrix` |
 | `perm001-scope-placement.yml` | #285 FP guard: a metadata scope at `write` on the job that needs it |
 | `perm001-workflow-level-grant.yml` | #285: the same scopes at workflow level, plus `contents: write` |
+| `perm002-workflow-level-read.yml` | #334 FP guard: workflow-level `contents: read` covers jobs |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |

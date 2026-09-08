@@ -895,7 +895,7 @@ test "reportUnreachableRules notes marked rules in SC order, skipping disabled o
     reportUnreachableRules(&w, &config);
 
     try std.testing.expectEqualStrings(
-        "note: SC003, SC006 skipped (github api unreachable)\n",
+        "note: SC003, SC006 skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)\n",
         w.buffered(),
     );
 }
