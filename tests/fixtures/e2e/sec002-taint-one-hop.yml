@@ -1,0 +1,41 @@
+# zghalint:expect SEC002@23 SEC002@41
+# zghalint:forbid SEC008
+# #314: two one-hop indirections that used to break the taint chain. The first
+# job reads back an `env:` entry as `${{ env.BODY }}`, which splices the value
+# into the script exactly as writing the context would. The second pair carries
+# the same value out through `outputs:` and expands it in a dependent job.
+name: sec002 one-hop taint propagation
+on: issue_comment
+permissions:
+  contents: read
+jobs:
+  env-context:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Safe shell read
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: echo "$BODY"
+      - name: Interpolated env read
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: echo "${{ env.BODY }}"
+  produce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      body: ${{ steps.capture.outputs.body }}
+    steps:
+      - name: Capture the comment
+        id: capture
+        env:
+          BODY: ${{ github.event.comment.body }}
+        run: echo "body=$BODY" >> "$GITHUB_OUTPUT"
+  consume:
+    needs: produce
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Expand the job output
+        run: echo "${{ needs.produce.outputs.body }}"

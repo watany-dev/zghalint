@@ -68,20 +68,66 @@ names, because branching on them — `if: startsWith(github.head_ref, 'release/'
 ### SEC002 taint sources
 
 Besides the fixed `github.event.*` table, two taint sources cannot be decided
-from a step alone and need the whole workflow.
+from a step alone and need the whole workflow. SEC008 is workflow-scoped for the
+same reason and reads the same table, so a value that is injection in a `run:`
+block is injection when it is written to `$GITHUB_ENV` too.
 
-- `inputs.*` / `github.event.inputs.*` — untrusted only when the workflow
-  declares `workflow_dispatch` or `workflow_call`. The values are typed by the
-  dispatching actor or passed by the caller, and neither can be validated on the
-  callee side.
+- The dispatch payloads — `inputs.*` / `github.event.inputs.*` under
+  `workflow_dispatch` or `workflow_call`, and `github.event.client_payload.*`
+  under `repository_dispatch`. The values are typed by the dispatching actor,
+  passed by the caller, or forwarded verbatim by whatever posted the dispatch,
+  and none of them can be validated on the callee side. Each root is untrusted
+  only under the trigger that fills it (#224), and the pairing is the same table
+  SEC021 reads, so the two rules cannot disagree about what a caller controls.
 - `steps.<id>.outputs.*` — untrusted when step `<id>` wrote an untrusted value
   to `$GITHUB_OUTPUT`. Binding the value to `env:` is what makes the *capturing*
   step safe; it does nothing for whoever expands the output, so only the later
   step that expands it is reported.
 
+Taint then travels one hop further, through the two indirections that otherwise
+look like the recommended fix:
+
+- `env.<KEY>` — an `env:` entry bound to an untrusted value taints the
+  expression spelling of that key for the scope that declares it (workflow, job
+  or step). `$KEY` stays quiet: the shell reads the value out of the
+  environment, while `${{ env.KEY }}` is spliced into the script before the
+  shell ever starts, which is the injection the `env:` binding was meant to
+  remove.
+- `needs.<job>.outputs.<name>` — untrusted when `<job>` binds that output to a
+  tainted `steps.<id>.outputs.*` (or to an untrusted context directly). The set
+  of exporting jobs is closed by iteration, so a chain of jobs is followed
+  whatever order they are declared in.
+
+The fixed table covers every payload field an attacker authors, not only the
+obvious ones: alongside issue / PR / comment free text and commit messages it
+lists the head repository's `description` and `homepage` (the fork owner types
+them in its settings) and the `committer.name` / `.email` of a commit, which
+whoever authored the commit fills in. SEC006 gets the same free-text additions;
+they are not ref-shaped, so the #138 exclusion does not apply to them.
+
 Expanding the event as a whole — `toJSON(github.event)` — is a taint source too.
 The root matches only as a whole reference, so server-generated fields such as
 `github.event.number` stay out of scope.
+
+### Refs SEC005 and SEC009 recognize
+
+SEC005 covers the triggers that run with the base repository's privileges while
+carrying the fork's `pull_request.head` in the payload: `pull_request_target`,
+`pull_request_review` and `pull_request_review_comment`. Anyone who can see a
+pull request can post a review on it, so the last two share the
+`pull_request_target` threat model; the finding names the trigger it found.
+
+SEC005 reports a checkout whose `ref` / `repository` names the PR head:
+`github.event.pull_request.head.*`, `github.head_ref`, a literal `refs/pull/`,
+`github.event.pull_request.number` / `github.event.number` used to build one,
+and `github.event.pull_request.merge_commit_sha` — the test merge of the head
+into the base carries the fork's changes just as `refs/pull/<n>/merge` does.
+
+SEC009 reports `github.event.workflow_run.head_*`, `.display_title` and
+`.pull_requests[*].*`. The last one keeps SEC009 in step with SEC002, which
+already treats `pull_requests.*.head.ref` as untrusted; GitHub empties the
+array for fork-triggered runs, so the reachable case is a branch name a
+same-repository PR author picks.
 
 ### Fork guards
 
@@ -100,7 +146,8 @@ has no such gate: the triggers it owns (`workflow_dispatch`, `issue_comment`,
 ### SEC021 vs. SEC005 / SEC009
 
 All three report the same shape — `actions/checkout` fed a ref the attacker
-picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
+picks — split by trigger. SEC005 owns the privileged PR-head triggers above,
+SEC009 owns
 `workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
 `discussion_comment`.
@@ -117,8 +164,11 @@ workflow would hide a `ref` fed from a comment body just because
 `pull_request_target` also appears in `on:`.
 
 SEC021 reads the dispatch payloads (`github.event.inputs.*`,
-`github.event.client_payload.*`) and the free text of an issue, comment or
-discussion. The bare `inputs.*` shorthand counts too, unless every way into the
+`github.event.client_payload.*`), the free text of an issue, comment or
+discussion, and `github.event.issue.number`. The last one is the ChatOps shape:
+anyone may comment `/test` on any pull request, so
+`ref: refs/pull/${{ github.event.issue.number }}/merge` lets the commenter pick
+which fork's code the job runs with the base repository's secrets (#308). The bare `inputs.*` shorthand counts too, unless every way into the
 workflow fills it from a caller — a `workflow_call` workflow with no
 `workflow_dispatch`, or one whose `workflow_dispatch` declares no inputs of its
 own. Analysing callers is out of scope. A `workflow_call` declared beside a
@@ -154,6 +204,14 @@ a fork inherits the name of the repository it came from, and neither is
 does not parse anchors nothing. Values that name one immutable commit — `head_sha`,
 `head_commit.id` — are never reported. A trust check on the job covers the
 steps inside it.
+
+### Triggers SEC020 treats as fork-accessible
+
+`pull_request`, `pull_request_target`, `pull_request_review`,
+`pull_request_review_comment`, `workflow_run` and `issue_comment`. The two
+review events belong in that list for the same reason as
+`pull_request_target`: anyone who can see the pull request can post a review,
+and the run that reacts to it carries the fork's code onto the runner.
 
 ## Supply Chain Security Rules (SC)
 

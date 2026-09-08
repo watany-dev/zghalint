@@ -1513,7 +1513,14 @@ fn parseOutputKeys(allocator: std.mem.Allocator, node: Node) ParseError![]const 
 
     const keys = try allocator.alloc(types.OutputKey, m.entries.len);
     for (m.entries, keys) |entry, *key| {
-        key.* = .{ .name = entry.key.value, .span = entry.key.span };
+        key.* = .{
+            .name = entry.key.value,
+            .span = entry.key.span,
+            .value = switch (entry.value) {
+                .scalar => |scalar| scalar.value,
+                else => null,
+            },
+        };
     }
     return keys;
 }

@@ -169,12 +169,19 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.pull_request.head.ref",
     "github.event.pull_request.head.label",
     "github.event.pull_request.head.repo.default_branch",
+    // Repository metadata the fork's owner types in its settings.
+    "github.event.pull_request.head.repo.description",
+    "github.event.pull_request.head.repo.homepage",
     "github.head_ref",
     // Container prefixes: cover `[0].message`, `.*.author.name`, ...
     "github.event.commits",
     "github.event.head_commit.message",
     "github.event.head_commit.author.email",
     "github.event.head_commit.author.name",
+    // Whoever authored the commit fills the committer identity in too, and a
+    // merged external PR carries it into a `push` payload.
+    "github.event.head_commit.committer.email",
+    "github.event.head_commit.committer.name",
     "github.event.pages",
     "github.event.workflow_run.head_branch",
     // A fork authors the triggering run's commit message, its PR branch
@@ -184,6 +191,9 @@ const run_dangerous_contexts = [_][]const u8{
     "github.event.workflow_run.head_commit.message",
     "github.event.workflow_run.head_commit.author.email",
     "github.event.workflow_run.head_commit.author.name",
+    "github.event.workflow_run.head_commit.committer.email",
+    "github.event.workflow_run.head_commit.committer.name",
+    "github.event.workflow_run.head_repository.description",
     "github.event.workflow_run.pull_requests.*.head.ref",
     "github.event.workflow_run.display_title",
     // Label names need triage permission to set, so they are a weak injection
@@ -203,9 +213,10 @@ const whole_event_contexts = [_][]const u8{"github.event"};
 
 /// The `inputs.*` root of a workflow something dispatches or calls: a
 /// `workflow_dispatch` actor types those values, and a `workflow_call` caller
-/// passes them. `github.event.inputs` is the dispatch spelling of the same
-/// values.
-const dispatched_inputs_contexts = [_][]const u8{ "inputs", "github.event.inputs" };
+/// passes them. The payload spellings of the same idea (`github.event.inputs`,
+/// `github.event.client_payload`) live in `dispatch_payload_table`, which is
+/// shared with SEC021.
+const bare_inputs_contexts = [_][]const u8{"inputs"};
 
 /// An `if:` condition is evaluated by the Actions expression engine and yields
 /// a boolean; the value never reaches a shell, so this is not injection. What
@@ -231,11 +242,17 @@ const condition_dangerous_contexts = [_][]const u8{
     "github.event.discussion_comment.body",
     "github.event.pull_request.title",
     "github.event.pull_request.body",
+    // Free text the fork's owner types in its repository settings. Not
+    // ref-shaped, so the #138 exclusion does not apply.
+    "github.event.pull_request.head.repo.description",
+    "github.event.pull_request.head.repo.homepage",
     // Container prefixes: cover `[0].message`, `.*.author.name`, ...
     "github.event.commits",
     "github.event.head_commit.message",
     "github.event.head_commit.author.email",
     "github.event.head_commit.author.name",
+    "github.event.head_commit.committer.email",
+    "github.event.head_commit.committer.name",
     "github.event.pages",
 };
 
@@ -304,29 +321,96 @@ const script_injection_fix_hint = "assign the context to an environment variable
 /// and a `steps.<id>.outputs.*` reference is untrusted only when the step that
 /// wrote it captured an untrusted value.
 fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
-    var prefix: [run_dangerous_contexts.len + dispatched_inputs_contexts.len][]const u8 = undefined;
-    prefix[0..run_dangerous_contexts.len].* = run_dangerous_contexts;
-    var prefix_len: usize = run_dangerous_contexts.len;
-    if (wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) {
-        for (dispatched_inputs_contexts) |ctx| {
-            prefix[prefix_len] = ctx;
-            prefix_len += 1;
+    const contexts = runTaintContexts(wf);
+    const base: ContextTable = .{ .prefix = contexts.slice(), .whole = &whole_event_contexts };
+
+    // Workflow-level `env:` covers every job, so it is resolved once.
+    var workflow_env: TaintedNames = .{};
+    addTaintedEnvKeys(&workflow_env, wf.env, base);
+
+    const tainted_jobs = taintedJobs(wf, base, workflow_env);
+    var reporting = base;
+    reporting.tainted_jobs = tainted_jobs.slice();
+    for (wf.jobs) |*job| _ = walkJobTaint(job, reporting, workflow_env, list);
+}
+
+/// The jobs whose `outputs:` export an untrusted value. A job's output can be
+/// fed from `needs.<other>.outputs.*`, so the set is closed by iteration rather
+/// than by visiting the jobs in `needs` order: the set only grows, and one pass
+/// per job is enough to reach the fixed point. Doing it that way also needs no
+/// dependency graph, and a `needs:` cycle — which SYN rules report — cannot
+/// loop it.
+fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNames) TaintedNames {
+    var out: TaintedNames = .{};
+    var round: usize = 0;
+    while (round < wf.jobs.len) : (round += 1) {
+        var changed = false;
+        var table = base;
+        table.tainted_jobs = out.slice();
+        for (wf.jobs) |*job| {
+            if (out.contains(job.id)) continue;
+            if (!walkJobTaint(job, table, workflow_env, null)) continue;
+            out.append(job.id);
+            changed = true;
         }
+        if (!changed) break;
+    }
+    return out;
+}
+
+/// One pass over a job's steps, threading the taint the earlier steps produced
+/// into the later ones. Returns whether the job exports an untrusted value
+/// through its `outputs:`.
+///
+/// `list` is null for the pass that only computes that answer, so the reporting
+/// pass and the fixed-point pass share one walk and cannot disagree.
+fn walkJobTaint(
+    job: *const Job,
+    base: ContextTable,
+    workflow_env: TaintedNames,
+    list: ?*DiagnosticList,
+) bool {
+    var job_env = workflow_env;
+    var job_table = base;
+    job_table.tainted_env = workflow_env.slice();
+    addTaintedEnvKeys(&job_env, job.env, job_table);
+    job_table.tainted_env = job_env.slice();
+
+    // Steps are visited in source order so a later step sees the taint the
+    // earlier ones produced. A step never taints itself.
+    var tainted: TaintedNames = .{};
+    for (job.steps) |*step| {
+        var step_env = job_env;
+        var table = job_table;
+        table.tainted_steps = tainted.slice();
+        addTaintedEnvKeys(&step_env, step.env, table);
+        table.tainted_env = step_env.slice();
+
+        if (list) |l| checkStepScriptInjection(step, table, l);
+        if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
     }
 
-    for (wf.jobs) |*job| {
-        // Steps are visited in source order so a later step sees the taint the
-        // earlier ones produced. A step never taints itself.
-        var tainted: TaintedSteps = .{};
-        for (job.steps) |*step| {
-            const table: ContextTable = .{
-                .prefix = prefix[0..prefix_len],
-                .whole = &whole_event_contexts,
-                .tainted_steps = tainted.slice(),
-            };
-            checkStepScriptInjection(step, table, list);
-            if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
-        }
+    // A step-scoped `env:` entry does not outlive its step, so the outputs are
+    // resolved against the job scope.
+    var final = job_table;
+    final.tainted_steps = tainted.slice();
+    for (job.outputs) |output| {
+        const value = output.value orelse continue;
+        if (hasUntrustedExpr(value, final)) return true;
+    }
+    return false;
+}
+
+/// The `env:` keys of one mapping whose value interpolates an untrusted
+/// context. Binding such a value to `env:` is the fix SEC002 recommends, and it
+/// works — as long as the step reads it back as `$KEY`. Written as
+/// `${{ env.KEY }}` the value is spliced into the script before the shell ever
+/// runs, which is the injection the fix was meant to remove.
+fn addTaintedEnvKeys(out: *TaintedNames, env: ?workflow_types.StringMap, table: ContextTable) void {
+    const map = env orelse return;
+    var it = map.iterator();
+    while (it.next()) |entry| {
+        if (hasUntrustedExpr(entry.value_ptr.*, table)) out.append(entry.key_ptr.*);
     }
 }
 
@@ -344,22 +428,32 @@ fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *Diagn
     checkScriptInputInjection(step, table, list);
 }
 
-/// A job carries few enough steps that the ids fit in a fixed buffer; a job
-/// past the cap keeps the taint it accumulated up to that point.
-const max_tainted_steps = 64;
+/// A workflow carries few enough steps, `env:` keys and jobs that the names fit
+/// in a fixed buffer; a scope past the cap keeps the taint it accumulated up to
+/// that point.
+const max_tainted_names = 64;
 
-/// The ids of the steps in one job whose `outputs.*` carry an untrusted value.
-const TaintedSteps = struct {
-    buf: [max_tainted_steps][]const u8 = undefined,
+/// Names carrying an untrusted value: step ids whose `outputs.*` hold one,
+/// `env:` keys bound to one, or job ids exporting one.
+const TaintedNames = struct {
+    buf: [max_tainted_names][]const u8 = undefined,
     len: usize = 0,
 
-    fn append(self: *TaintedSteps, id: []const u8) void {
+    fn append(self: *TaintedNames, name: []const u8) void {
         if (self.len >= self.buf.len) return;
-        self.buf[self.len] = id;
+        if (self.contains(name)) return;
+        self.buf[self.len] = name;
         self.len += 1;
     }
 
-    fn slice(self: *const TaintedSteps) []const []const u8 {
+    fn contains(self: *const TaintedNames, name: []const u8) bool {
+        for (self.buf[0..self.len]) |existing| {
+            if (std.ascii.eqlIgnoreCase(existing, name)) return true;
+        }
+        return false;
+    }
+
+    fn slice(self: *const TaintedNames) []const []const u8 {
         return self.buf[0..self.len];
     }
 };
@@ -503,8 +597,36 @@ fn checkWriteAll(list: *DiagnosticList, maybe_perms: ?Permissions, comptime scop
     }) catch return;
 }
 
+/// Triggers that run against the base repository — its secrets, a writable
+/// `GITHUB_TOKEN` — while carrying the fork's `pull_request.head` in the
+/// payload. `pull_request_review` and `pull_request_review_comment` share the
+/// threat model of `pull_request_target`: anyone may post a review on a pull
+/// request, and the job that reacts to it is privileged (#309).
+const privileged_pr_head_events = [_]EventType{
+    .pull_request_target,
+    .pull_request_review,
+    .pull_request_review_comment,
+};
+
+fn hasPrivilegedPRHeadTrigger(wf: *const Workflow) bool {
+    return privilegedPRHeadMessage(wf) != null;
+}
+
+/// The SEC005 message for the first such trigger the workflow declares, or
+/// null when it declares none. The trigger is named in the text so a
+/// `pull_request_review` finding does not read as if it were about
+/// `pull_request_target`.
+fn privilegedPRHeadMessage(wf: *const Workflow) ?[]const u8 {
+    inline for (privileged_pr_head_events) |event| {
+        if (wf.hasEvent(event)) {
+            return "dangerous: " ++ @tagName(event) ++ " workflow checks out PR head, allowing arbitrary code execution from forks";
+        }
+    }
+    return null;
+}
+
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
-    if (!wf.hasEvent(.pull_request_target)) return;
+    const message = privilegedPRHeadMessage(wf) orelse return;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
@@ -513,9 +635,9 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             list.append(.{
                 .rule_id = "SEC005",
                 .severity = .@"error",
-                .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
+                .message = message,
                 .span = withAnchor(step, input.key).whole(),
-                .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
+                .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
             }) catch return;
         }
     }
@@ -542,10 +664,13 @@ fn checkoutCodeInput(step: *const Step, untrusted: *const fn ([]const u8) bool) 
 
 /// `github.event.pull_request.head.{sha,ref}` (and `.head.repo.full_name`),
 /// `github.head_ref` and the `refs/pull/<n>/{head,merge}` spellings all name
-/// fork-controlled code (SEC005).
+/// fork-controlled code (SEC005). `merge_commit_sha` names the test merge of
+/// the head into the base, so it carries the fork's changes just as
+/// `refs/pull/<n>/merge` does.
 fn isPRHeadValue(value: []const u8) bool {
     return containsAnyMarker(value, &.{
         "github.event.pull_request.head",
+        "github.event.pull_request.merge_commit_sha",
         "github.head_ref",
         "refs/pull/",
         "github.event.pull_request.number",
@@ -557,10 +682,16 @@ fn isPRHeadValue(value: []const u8) bool {
 /// `workflow_run.repository` is deliberately absent: it names the base
 /// repository the run belongs to, which is the sound spelling SEC022
 /// recommends, not the fork's.
+///
+/// `pull_requests` is included so SEC009 agrees with SEC002, which already
+/// treats `pull_requests.*.head.ref` as untrusted: a fork author names the
+/// branch. GitHub empties the array for runs triggered from a fork, so the
+/// reachable case is a same-repository PR branch.
 fn isWorkflowRunValue(value: []const u8) bool {
     return containsAnyMarker(value, &.{
         "github.event.workflow_run.head_",
         "github.event.workflow_run.display_title",
+        "github.event.workflow_run.pull_requests",
     });
 }
 
@@ -705,19 +836,28 @@ fn indexOfWriteToVar(s: []const u8, targets: []const []const u8) ?usize {
     return null;
 }
 
-/// `s` is always a `run:` body here, so it uses the same list as SEC002.
-fn hasDangerousContextExpression(s: []const u8) bool {
-    return findExpr(s, isRunDangerousExpr) != null;
+/// SEC008 is workflow-scoped for the same reason as SEC002: what counts as
+/// untrusted depends on the triggers, so a `client_payload` written to
+/// `$GITHUB_ENV` is reported exactly where `repository_dispatch` fills it
+/// (#312).
+fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
+    const contexts = runTaintContexts(wf);
+    const table: ContextTable = .{ .prefix = contexts.slice() };
+    for (wf.jobs) |*job| {
+        for (job.steps) |*step| checkGithubEnvInjection(step, table, list);
+    }
 }
 
-fn isRunDangerousExpr(inner: []const u8) bool {
-    return containsAnyContext(std.mem.trim(u8, inner, " \t\n\r"), .{ .prefix = &run_dangerous_contexts });
+/// SEC008 for the steps of a composite action, which declare no triggers: the
+/// fixed table only.
+pub fn checkStandaloneGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
+    checkGithubEnvInjection(step, .{ .prefix = &run_dangerous_contexts }, list);
 }
 
-fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
+fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
     const run_body = step.run orelse return;
     const write_offset = indexOfGithubEnvWrite(run_body) orelse return;
-    if (!hasDangerousContextExpression(run_body)) return;
+    if (!hasUntrustedExpr(run_body, table)) return;
     list.append(.{
         .rule_id = "SEC008",
         .severity = .@"error",
@@ -742,14 +882,72 @@ const TriggerContexts = struct {
     contexts: []const []const u8,
 };
 
-const trigger_context_table = [_]TriggerContexts{
+/// The payload roots a dispatching caller fills. SEC002 / SEC008 (taint) and
+/// SEC021 (checkout ref) read the same knowledge, so the table is written once
+/// and both derive from it: a context SEC021 calls attacker-controlled is one
+/// SEC002 must treat as tainted, and the two cannot drift apart (#312).
+const dispatch_payload_table = [_]TriggerContexts{
     .{ .event = .workflow_dispatch, .contexts = &.{"github.event.inputs"} },
     .{ .event = .repository_dispatch, .contexts = &.{"github.event.client_payload"} },
-    .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body" } },
+};
+
+/// Free text an attacker types into an issue, a comment or a discussion. These
+/// contexts are in `run_dangerous_contexts` unconditionally — a `run:` block
+/// expanding them is injection whatever started the run — so only SEC021, which
+/// pairs a context with the trigger that populates it, reads this half.
+const attacker_text_table = [_]TriggerContexts{
+    .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number" } },
     // `issue_comment` carries the issue it was left on alongside the comment.
-    .{ .event = .issue_comment, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.comment.body" } },
+    // `issue.number` is the ChatOps vector: anyone may comment `/test` on any
+    // pull request, and `refs/pull/<number>/merge` then names that fork's code
+    // while the job holds the base repository's secrets (#308).
+    .{ .event = .issue_comment, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number", "github.event.comment.body" } },
     .{ .event = .discussion, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body" } },
     .{ .event = .discussion_comment, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body", "github.event.comment.body" } },
+};
+
+const trigger_context_table = dispatch_payload_table ++ attacker_text_table;
+
+/// The taint table SEC002 and SEC008 use for one workflow: the fixed
+/// `run_dangerous_contexts`, plus the dispatch payload roots the declared
+/// triggers actually fill. Gating on the trigger keeps the #224 rule — never
+/// report a combination that cannot occur — so a `push` workflow reading
+/// `github.event.client_payload` is not flagged for a payload it never carries.
+fn runTaintContexts(wf: *const Workflow) RunTaintContexts {
+    var out: RunTaintContexts = .{};
+    for (run_dangerous_contexts) |context| out.append(context);
+    for (wf.on.events) |event| {
+        for (dispatch_payload_table) |entry| {
+            if (event.event != entry.event) continue;
+            for (entry.contexts) |context| out.append(context);
+        }
+    }
+    // The `inputs.*` shorthand is filled by both ways in, and neither spells it
+    // through `github.event`.
+    if (wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) {
+        for (bare_inputs_contexts) |context| out.append(context);
+    }
+    return out;
+}
+
+const max_run_taint_contexts = blk: {
+    var n: usize = run_dangerous_contexts.len + bare_inputs_contexts.len;
+    for (dispatch_payload_table) |entry| n += entry.contexts.len;
+    break :blk n;
+};
+
+const RunTaintContexts = struct {
+    buf: [max_run_taint_contexts][]const u8 = undefined,
+    len: usize = 0,
+
+    fn append(self: *RunTaintContexts, context: []const u8) void {
+        self.buf[self.len] = context;
+        self.len += 1;
+    }
+
+    fn slice(self: *const RunTaintContexts) []const []const u8 {
+        return self.buf[0..self.len];
+    }
 };
 
 /// Every context in the table, plus the bare `inputs` root.
@@ -817,7 +1015,7 @@ fn untrustedRefContexts(wf: *const Workflow) CheckoutRefContexts {
 /// dropping the whole workflow because `pull_request_target` appears somewhere
 /// in `on:` would silence SEC021 on refs SEC005 never looks at.
 fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
-    return (wf.hasEvent(.pull_request_target) and isPRHeadValue(value)) or
+    return (hasPrivilegedPRHeadTrigger(wf) and isPRHeadValue(value)) or
         (wf.hasEvent(.workflow_run) and isWorkflowRunValue(value));
 }
 
@@ -876,7 +1074,7 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
             // both a PR head and a workflow_run ref. SEC005 is the more
             // specific finding, so it owns the step: reporting both puts two
             // diagnostics on one mistake (#224).
-            if (wf.hasEvent(.pull_request_target) and checkoutCodeInput(step, isPRHeadValue) != null) continue;
+            if (hasPrivilegedPRHeadTrigger(wf) and checkoutCodeInput(step, isPRHeadValue) != null) continue;
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
@@ -1569,6 +1767,11 @@ const ContextTable = struct {
     /// Ids of steps whose `outputs.*` carry a value captured from an untrusted
     /// context earlier in the same job (#273).
     tainted_steps: []const []const u8 = &.{},
+    /// Names of `env:` keys bound to an untrusted value in a scope that covers
+    /// the step being checked (#314).
+    tainted_env: []const []const u8 = &.{},
+    /// Ids of jobs whose `outputs:` export an untrusted value (#314).
+    tainted_jobs: []const []const u8 = &.{},
 
     fn matches(self: ContextTable, path: ContextPath) bool {
         for (self.prefix) |ctx| {
@@ -1577,7 +1780,35 @@ const ContextTable = struct {
         for (self.whole) |ctx| {
             if (pathIsAnchor(path, ctx)) return true;
         }
-        return self.matchesTaintedStepOutput(path);
+        return self.matchesTaintedStepOutput(path) or
+            self.matchesTaintedEnv(path) or
+            self.matchesTaintedJobOutput(path);
+    }
+
+    /// `env.<KEY>`. Reading the same value as `$KEY` is safe — the shell never
+    /// parses it as code — so only the expression spelling is untrusted.
+    fn matchesTaintedEnv(self: ContextTable, path: ContextPath) bool {
+        if (self.tainted_env.len == 0) return false;
+        if (path.len < 2) return false;
+        if (!segmentMatches(path.segments[0], "env")) return false;
+        for (self.tainted_env) |key| {
+            if (segmentMatches(path.segments[1], key)) return true;
+        }
+        return false;
+    }
+
+    /// `needs.<job>.outputs.<name>`, with `<job>` a job that exported an
+    /// untrusted value. As with a step output, the name below `outputs` is not
+    /// looked at.
+    fn matchesTaintedJobOutput(self: ContextTable, path: ContextPath) bool {
+        if (self.tainted_jobs.len == 0) return false;
+        if (path.len < 4) return false;
+        if (!segmentMatches(path.segments[0], "needs")) return false;
+        if (!segmentMatches(path.segments[2], "outputs")) return false;
+        for (self.tainted_jobs) |id| {
+            if (segmentMatches(path.segments[1], id)) return true;
+        }
+        return false;
     }
 
     /// `steps.<id>.outputs.<name>`, with `<id>` a step that wrote an untrusted
@@ -1805,6 +2036,10 @@ fn hasForkAccessibleTrigger(wf: *const Workflow) bool {
         switch (event.event) {
             .pull_request,
             .pull_request_target,
+            // A review or a review comment is posted by anyone who can see the
+            // pull request, and the run carries the fork's code (#309).
+            .pull_request_review,
+            .pull_request_review_comment,
             .workflow_run,
             .issue_comment,
             => return true,
@@ -2086,7 +2321,7 @@ pub const security_rules = [_]Rule{
         .description = "Untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment injection",
         .severity = .@"error",
         .category = .security,
-        .check_step = &checkGithubEnvInjection,
+        .check_workflow = &checkGithubEnvInjectionWorkflow,
     },
     .{
         .id = "SEC009",
@@ -2280,6 +2515,8 @@ const pr_target_trigger = test_support.makeTrigger(.pull_request_target);
 const pr_trigger = test_support.makeTrigger(.pull_request);
 const issue_comment_trigger = test_support.makeTrigger(.issue_comment);
 const workflow_run_trigger = test_support.makeTrigger(.workflow_run);
+const pr_review_trigger = test_support.makeTrigger(.pull_request_review);
+const pr_review_comment_trigger = test_support.makeTrigger(.pull_request_review_comment);
 const push_trigger = test_support.makeTrigger(.push);
 const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch);
 const workflow_call_trigger = test_support.makeTrigger(.workflow_call);
@@ -2378,6 +2615,21 @@ test "SEC002: untrusted contexts in run block" {
     }
 }
 
+test "SEC002: free text a fork owner or a commit author writes (#313)" {
+    const bodies = [_][]const u8{
+        "echo \"${{ github.event.pull_request.head.repo.description }}\"",
+        "echo \"${{ github.event.pull_request.head.repo.homepage }}\"",
+        "echo \"${{ github.event.head_commit.committer.name }}\"",
+        "echo \"${{ github.event.head_commit.committer.email }}\"",
+        "echo \"${{ github.event.workflow_run.head_repository.description }}\"",
+        "echo \"${{ github.event.workflow_run.head_commit.committer.name }}\"",
+        "echo \"${{ github.event.workflow_run.head_commit.committer.email }}\"",
+    };
+    for (bodies) |body| {
+        try testing.expect(sec002Fires(body, null));
+    }
+}
+
 test "SEC002: element access under a container context" {
     // `github.event.pages` is stored as a container prefix, so its element
     // accesses are caught without a dedicated entry.
@@ -2452,6 +2704,108 @@ test "SEC002: inputs.* is untrusted on a dispatched or called workflow" {
     try testing.expect(sec002FiresOn(workflow_call_trigger, "./deploy.sh ${{ inputs.target }}"));
     // `github.event.inputs` is the dispatch spelling of the same values.
     try testing.expect(sec002FiresOn(workflow_dispatch_trigger, "./deploy.sh ${{ github.event.inputs.target }}"));
+}
+
+test "SEC002: env.<KEY> bound to an untrusted value is untrusted (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+    const steps = [_]Step{.{ .env = env, .run = "echo \"${{ env.BODY }}\"" }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: reading the same env entry as $KEY stays quiet (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+    const steps = [_]Step{.{ .env = env, .run = "echo \"$BODY\"" }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: env.<KEY> bound to a trusted value stays quiet (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("SHA", "${{ github.sha }}") catch unreachable;
+    const steps = [_]Step{.{ .env = env, .run = "echo \"${{ env.SHA }}\"" }};
+    var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: a workflow-level env entry taints every job (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.issue.title }}") catch unreachable;
+    const steps = [_]Step{.{ .run = "echo \"${{ env.BODY }}\"" }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = env, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+/// A producing job that captures an untrusted value into `steps.s.outputs.body`
+/// and exports it under `outputs.body`, plus a consumer that expands
+/// `needs.<producer>.outputs.body` in its `run:`.
+fn sec002JobOutputList(output_value: []const u8, consumer_run: []const u8, env: workflow_types.StringMap) DiagnosticList {
+    const producer_steps = [_]Step{.{ .id = "s", .env = env, .run = "echo \"body=$BODY\" >> \"$GITHUB_OUTPUT\"" }};
+    const outputs = [_]workflow_types.OutputKey{.{ .name = "body", .span = undefined, .value = output_value }};
+    const consumer_steps = [_]Step{.{ .run = consumer_run }};
+    const needs = [_][]const u8{"a"};
+    const jobs = [_]Job{
+        .{ .id = "a", .steps = &producer_steps, .outputs = &outputs, .permissions = Permissions{} },
+        .{ .id = "b", .needs = &needs, .steps = &consumer_steps, .permissions = Permissions{} },
+    };
+    return runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} });
+}
+
+test "SEC002: taint crosses the job boundary through outputs (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+
+    var list = sec002JobOutputList("${{ steps.s.outputs.body }}", "echo \"${{ needs.a.outputs.body }}\"", env);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: an untainted job output leaves the consumer quiet (#314)" {
+    var env = workflow_types.StringMap.init(testing.allocator);
+    defer env.deinit();
+    env.put("BODY", "${{ github.sha }}") catch unreachable;
+
+    var list = sec002JobOutputList("${{ steps.s.outputs.body }}", "echo \"${{ needs.a.outputs.body }}\"", env);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+fn sec008FiresOn(on: Trigger, body: []const u8) bool {
+    const steps = [_]Step{.{ .run = body }};
+    var list = runJobOn(on, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC008");
+}
+
+test "SEC002: client_payload is untrusted on a repository_dispatch workflow (#312)" {
+    try testing.expect(sec002FiresOn(repository_dispatch_trigger, "echo \"${{ github.event.client_payload.ref }}\""));
+}
+
+test "SEC002: client_payload without repository_dispatch is not reported (#224)" {
+    try testing.expect(!sec002FiresOn(push_trigger, "echo \"${{ github.event.client_payload.ref }}\""));
+}
+
+test "SEC008: client_payload written to GITHUB_ENV (#312)" {
+    try testing.expect(sec008FiresOn(repository_dispatch_trigger, "echo \"REF=${{ github.event.client_payload.ref }}\" >> $GITHUB_ENV"));
+    try testing.expect(!sec008FiresOn(push_trigger, "echo \"REF=${{ github.event.client_payload.ref }}\" >> $GITHUB_ENV"));
+}
+
+test "SEC008: dispatch inputs written to GITHUB_ENV (#312)" {
+    try testing.expect(sec008FiresOn(workflow_dispatch_trigger, "echo \"REF=${{ inputs.target }}\" >> $GITHUB_ENV"));
+    try testing.expect(sec008FiresOn(workflow_dispatch_trigger, "echo \"REF=${{ github.event.inputs.target }}\" >> $GITHUB_ENV"));
+    try testing.expect(!sec008FiresOn(push_trigger, "echo \"REF=${{ inputs.target }}\" >> $GITHUB_ENV"));
 }
 
 test "SEC002: inputs.* without a trigger that fills it (no false positive)" {
@@ -2838,6 +3192,43 @@ test "SEC005: refs/pull/N/head built from the PR number" {
     try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
 
+test "SEC005: pull_request_review checkout of PR head (#309)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_review_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.indexOf(u8, d.message, "pull_request_review") != null);
+}
+
+test "SEC005: pull_request_review_comment checkout of head_ref (#309)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.head_ref }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_review_comment_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: PR target checkout of merge_commit_sha (#310)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.pull_request.merge_commit_sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
 fn sec005GuardedList(job_if: ?[]const u8, step_if: ?[]const u8, with: workflow_types.StringMap) DiagnosticList {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with, .if_condition = step_if },
@@ -3014,6 +3405,18 @@ test "SEC009: workflow_run with checkout of workflow_run head_branch" {
     try testing.expect(hasDiagnostic(&list, "SEC009"));
 }
 
+test "SEC009: workflow_run checkout of a triggering PR head ref (#311)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.workflow_run.pull_requests[0].head.ref }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
 test "SEC009: workflow_run without checkout (no false positive)" {
     const steps = [_]Step{
         .{ .run = "echo safe" },
@@ -3099,6 +3502,12 @@ test "SEC021: workflow_dispatch checkout ref from the inputs shorthand" {
 
 test "SEC021: issue_comment checkout ref from issue body" {
     var list = runCheckoutWith(issue_comment_trigger, "ref", "${{ github.event.issue.body }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: issue_comment ChatOps checkout of refs/pull/<issue.number>/merge (#308)" {
+    var list = runCheckoutWith(issue_comment_trigger, "ref", "refs/pull/${{ github.event.issue.number }}/merge");
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC021"));
 }
@@ -3481,6 +3890,11 @@ test "SEC006: attacker-authored free text in conditions is a warning" {
     try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.issue.body, 'ship it')"));
     try testing.expectEqual(Severity.warning, sec006Severity("github.event.pull_request.title == 'release'"));
     try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.head_commit.message, '[deploy]')"));
+    // Free text of the head repository and the committer identity: written by
+    // the fork's owner and by the commit author, not ref-shaped (#313).
+    try testing.expectEqual(Severity.warning, sec006Severity("contains(github.event.pull_request.head.repo.description, 'deploy')"));
+    try testing.expectEqual(Severity.warning, sec006Severity("github.event.pull_request.head.repo.homepage == 'https://example.com'"));
+    try testing.expectEqual(Severity.warning, sec006Severity("github.event.head_commit.committer.name == 'release-bot'"));
 }
 
 test "SEC006: safe context in condition (no false positive)" {
@@ -5576,6 +5990,24 @@ test "SEC020: self-hosted + issue_comment -> fires" {
     defer setRepoVisibility(.unknown);
 
     var list = runJobOn(issue_comment_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + pull_request_review -> fires (#309)" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    var list = runJobOn(pr_review_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + pull_request_review_comment -> fires (#309)" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    var list = runJobOn(pr_review_comment_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }
