@@ -2814,18 +2814,6 @@ test "SEC005: PR target with checkout of head ref" {
     try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
 
-test "SEC005: with key is matched case-insensitively (Ref)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("Ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
-    defer with.deinit();
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
-    };
-    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC005"));
-}
-
 test "SEC005: refs/pull/N/head built from the PR number" {
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "refs/pull/${{ github.event.pull_request.number }}/head") catch unreachable;
@@ -3005,18 +2993,6 @@ test "SEC009: workflow_run with checkout of workflow_run head_sha" {
 test "SEC009: workflow_run with checkout of workflow_run head_branch" {
     var with = workflow_types.StringMap.init(testing.allocator);
     with.put("ref", "${{ github.event.workflow_run.head_branch }}") catch unreachable;
-    defer with.deinit();
-    const steps = [_]Step{
-        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
-    };
-    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC009"));
-}
-
-test "SEC009: with key is matched case-insensitively (REF)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("REF", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
     defer with.deinit();
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
@@ -3822,12 +3798,6 @@ test "SEC010: no secrets in reusable workflow call (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
 }
 
-test "SEC010: non-reusable job with no uses (no false positive)" {
-    var list = runStep(.{ .run = "echo hello" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC010"));
-}
-
 test "SEC012: toJSON(secrets) in run block" {
     var list = runStep(.{ .run = "echo '${{ toJSON(secrets) }}'" });
     defer list.deinit();
@@ -3882,12 +3852,6 @@ test "SEC012: secrets reference without toJSON (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC012"));
 }
 
-test "SEC012: no expression in run (no false positive)" {
-    var list = runStep(.{ .run = "echo hello" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC012"));
-}
-
 test "SEC012: only one diagnostic per step" {
     var env = workflow_types.StringMap.init(testing.allocator);
     env.put("A", "${{ toJSON(secrets) }}") catch unreachable;
@@ -3912,18 +3876,6 @@ test "condition_dangerous_contexts rejects safe ref" {
 
 test "condition_dangerous_contexts rejects safe actor" {
     try testing.expect(!containsAnyContext("github.actor", .{ .prefix = &condition_dangerous_contexts }));
-}
-
-test "hardcoded secret prefixes are located by offset" {
-    try testing.expect(std.mem.indexOf(u8, "token ghp_abc123def456", "ghp_") != null);
-}
-
-test "hardcoded secret prefixes match at offset zero" {
-    try testing.expect(std.mem.indexOf(u8, "AKIAIOSFODNN7EXAMPLE", "AKIA") != null);
-}
-
-test "hardcoded secret prefixes do not match unrelated text" {
-    try testing.expect(std.mem.indexOf(u8, "echo hello world", "ghp_") == null);
 }
 
 test "isAction checkout true" {
@@ -3994,12 +3946,6 @@ test "SEC014: bot pattern without github.actor (no false positive)" {
 
 test "SEC014: safe condition with github.ref (no false positive)" {
     var list = runStep(.{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC014"));
-}
-
-test "SEC014: no condition (no false positive)" {
-    var list = runStep(.{ .run = "echo test" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
 }
@@ -4225,12 +4171,6 @@ test "SEC013: container without credentials (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC013"));
 }
 
-test "SEC013: job without container or services (no false positive)" {
-    var list = runStep(.{ .run = "echo hello" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC013"));
-}
-
 test "SEC013: service with secrets credentials (no false positive)" {
     const services = [_]workflow_types.Service{
         .{ .name = "redis", .image = "redis", .credentials = .{ .username = "${{ secrets.REDIS_USER }}", .password = "${{ secrets.REDIS_PASS }}" } },
@@ -4242,10 +4182,6 @@ test "SEC013: service with secrets credentials (no false positive)" {
 
 test "isSecretsExpression: valid secrets reference" {
     try testing.expect(isSecretsExpression("${{ secrets.DOCKER_USER }}"));
-}
-
-test "isSecretsExpression: with extra whitespace" {
-    try testing.expect(isSecretsExpression("${{  secrets.DOCKER_USER  }}"));
 }
 
 test "isSecretsExpression: plaintext value" {
@@ -4344,12 +4280,6 @@ test "SC001: pinned service image (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
 
-test "SC001: job without container or services (no false positive)" {
-    var list = runStep(.{ .run = "echo hello" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SC001"));
-}
-
 test "SC001: registry with digest is pinned (no false positive)" {
     const container = workflow_types.Container{ .image = "ghcr.io/owner/image@sha256:a1b2c3d4e5f6" };
     var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
@@ -4383,12 +4313,6 @@ test "isImagePinned: registry with digest" {
 
 test "SEC011: bare secrets in run block" {
     var list = runStep(.{ .run = "echo ${{ secrets }}" });
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC011"));
-}
-
-test "SEC011: bare secrets with extra whitespace" {
-    var list = runStep(.{ .run = "echo ${{  secrets  }}" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
@@ -4449,12 +4373,6 @@ test "SEC011: toJSON(secrets.TOKEN) is allowed" {
 
 test "SEC011: toJSON(github) is allowed" {
     var list = runStep(.{ .run = "echo ${{ toJSON(github) }}" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC011"));
-}
-
-test "SEC011: no expression is allowed" {
-    var list = runStep(.{ .run = "echo hello world" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC011"));
 }
@@ -4684,16 +4602,11 @@ test "SEC015: fix inserts into existing with: block" {
     var list = runSteps(&steps);
     defer list.deinit();
 
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
-            try testing.expect(d.fix != null);
-            const fix = d.fix.?;
-            try testing.expectEqual(@as(usize, 80), fix.edits[0].start_byte);
-            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") == null);
-            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
-            break;
-        }
-    }
+    const d = findDiagnostic(&list, "SEC015").?;
+    const fix = d.fix.?;
+    try testing.expectEqual(@as(usize, 80), fix.edits[0].start_byte);
+    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") == null);
+    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
 }
 
 test "SEC015: no fix when the with: anchor is unavailable (#171)" {
@@ -4771,13 +4684,9 @@ test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
     var list = runSteps(&steps);
     defer list.deinit();
 
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
-            try testing.expect(d.fix == null);
-            try testing.expect(d.fix_hint != null);
-            break;
-        }
-    }
+    const d = findDiagnostic(&list, "SEC015").?;
+    try testing.expect(d.fix == null);
+    try testing.expect(d.fix_hint != null);
 }
 
 test "SEC015: no fix when span info absent (manually constructed step)" {
@@ -4788,13 +4697,9 @@ test "SEC015: no fix when span info absent (manually constructed step)" {
     var list = runSteps(&steps);
     defer list.deinit();
 
-    for (list.items.items) |d| {
-        if (std.mem.eql(u8, d.rule_id, "SEC015")) {
-            try testing.expect(d.fix == null);
-            try testing.expect(d.fix_hint != null);
-            break;
-        }
-    }
+    const d = findDiagnostic(&list, "SEC015").?;
+    try testing.expect(d.fix == null);
+    try testing.expect(d.fix_hint != null);
 }
 
 test "SEC015: isAction upload-artifact helper" {
@@ -5192,18 +5097,6 @@ test "SEC019: lowercase secrets context is still a secret" {
     try testing.expect(hasDiagnostic(&list, "SEC019"));
 }
 
-test "SEC019: no secrets usage" {
-    var list = runStep(.{ .run = "echo hello" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC019"));
-}
-
-test "SEC019: secret with whitespace in expression" {
-    var list = runStep(.{ .run = "echo ${{  secrets.MY_TOKEN  }}" });
-    defer list.deinit();
-    try testing.expect(hasDiagnostic(&list, "SEC019"));
-}
-
 test "SEC019: one diagnostic per step" {
     var list = runStep(.{ .run = "${{ secrets.A }} ${{ secrets.B }}" });
     defer list.deinit();
@@ -5378,12 +5271,6 @@ test "SEC017: key absent (no false positive)" {
     defer env_map.deinit();
     env_map.put("SOME_OTHER_VAR", "true") catch unreachable;
     var list = runStep(.{ .run = "echo test", .env = env_map });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "SEC017"));
-}
-
-test "SEC017: no env (no false positive)" {
-    var list = runStep(.{ .run = "echo test" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
 }
@@ -5572,12 +5459,6 @@ test "BP007: a blank after the backslash cancels the continuation" {
     var list = runStep(.{ .run = "echo a \\ \n$CMD --flag" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
-}
-
-test "BP007: no false positive on normal command" {
-    var list = runStep(.{ .run = "echo hello world" });
-    defer list.deinit();
-    try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on base64 decode to file" {

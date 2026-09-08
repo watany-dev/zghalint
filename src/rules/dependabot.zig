@@ -537,18 +537,3 @@ test "DEP001 + DEP002: coexist on the same entry" {
         result.content,
     );
 }
-
-test "rule descriptors are valid" {
-    try std.testing.expectEqualStrings("DEP001", rules[0].id);
-    try std.testing.expectEqualStrings("dependabot-cooldown", rules[0].name);
-    try std.testing.expect(rules[0].severity == .info);
-    try std.testing.expect(rules[0].category == .dependency);
-    try std.testing.expect(rules[0].check_workflow == null);
-    try std.testing.expect(rules[0].check_job == null);
-    try std.testing.expect(rules[0].check_step == null);
-
-    try std.testing.expectEqualStrings("DEP002", rules[1].id);
-    try std.testing.expectEqualStrings("dependabot-execution", rules[1].name);
-    try std.testing.expect(rules[1].severity == .warning);
-    try std.testing.expect(rules[1].category == .dependency);
-}

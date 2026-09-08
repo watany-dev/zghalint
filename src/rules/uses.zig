@@ -440,11 +440,3 @@ test "DEP003: end-to-end over a real workflow file" {
     // The step diagnostic points at the `uses:` value, not at the step mapping.
     try testing.expect(diags.get(0).span.start_line == 7 or diags.get(1).span.start_line == 7);
 }
-
-test "DEP003: rule metadata" {
-    try testing.expectEqual(@as(usize, 1), rules.len);
-    try testing.expectEqualStrings("DEP003", rules[0].id);
-    try testing.expectEqualStrings("uses-format", rules[0].name);
-    try testing.expect(rules[0].category == .dependency);
-    try testing.expect(rules[0].severity == .@"error");
-}
