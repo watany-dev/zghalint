@@ -17,6 +17,12 @@ Nothing released yet. `v0.0.1-rc.1` is the first planned tag; the CLI contract
 (flag names, exit codes, output shapes) is not yet stable, and rule IDs may
 still be renumbered before 1.0.
 
+### Fixed
+
+- SEC021 no longer treats `github.event.issue.number` as a ChatOps checkout
+  taint under `on: issues`. That event does not fire on pull requests; the
+  `refs/pull/<n>/merge` pattern is `issue_comment` only (#308).
+
 ### Added
 
 - GitHub Actions workflow linting across ten categories: security (`SEC*`),
