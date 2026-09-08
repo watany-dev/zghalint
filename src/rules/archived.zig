@@ -45,7 +45,7 @@ pub fn isActive() bool {
 pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
     if (is_offline) return;
 
-    // Get stable pointer to module-level arena via |*a| capture
+    // Must capture `|*a|`; `|a|` copies the arena and the allocator would dangle.
     const alloc = if (archived_arena) |*a| a.allocator() else return;
 
     const action_ref = step.uses orelse return;

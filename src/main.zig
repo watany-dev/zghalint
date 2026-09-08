@@ -758,7 +758,7 @@ pub fn main() !u8 {
     zghalint.rules.runner.setAllowedLabels(config.runner_labels.items);
     defer zghalint.rules.runner.setAllowedLabels(&.{});
 
-    // Set a 10-second deadline for all network operations to prevent hangs
+    // Hung GitHub requests must not block the whole lint.
     zghalint.rules.engine.setNetworkDeadline(10 * std.time.ns_per_s);
     defer zghalint.rules.engine.clearNetworkDeadline();
 

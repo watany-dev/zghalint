@@ -414,24 +414,23 @@ pub const Tokenizer = struct {
         }
     }
 
-    /// YAML `s-white` is space or tab. A `:` is a mapping indicator only when
-    /// the next character is s-white, a line break, or EOF (`ns-plain-safe`).
+    /// YAML `s-white` is space or tab.
     fn isSWhiteAt(self: *const Tokenizer, i: usize) bool {
         if (i >= self.source.len) return false;
         const ch = self.source[i];
         return ch == ' ' or ch == '\t';
     }
 
-    /// True when the `:` at `colon_pos` starts a mapping value rather than
-    /// belonging to a plain scalar such as `http://example.com`.
+    /// A `:` is a mapping indicator only when the next character is s-white,
+    /// a line break, or EOF (`ns-plain-safe`). `http://example.com` is not.
     fn colonStartsMappingValue(self: *const Tokenizer, colon_pos: usize) bool {
         const after = colon_pos + 1;
         if (after >= self.source.len) return true;
         return self.isSWhiteAt(after) or self.isBreakAt(after);
     }
 
-    /// True when the `-` at `pos` is a block sequence indicator rather than
-    /// the first character of a plain scalar such as `-1` or `--flag`.
+    /// `-1` and `--flag` are plain scalars; a following s-white or line break
+    /// makes `-` a block sequence indicator.
     fn isBlockSequenceIndicator(self: *const Tokenizer) bool {
         if (self.pos + 1 >= self.source.len) return self.flow_depth == 0;
         if (self.isSWhiteAt(self.pos + 1)) return true;
