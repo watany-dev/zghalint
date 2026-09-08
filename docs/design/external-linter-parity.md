@@ -399,7 +399,7 @@ E2E ハーネスがローカル action のルートをリポジトリルート�
 した (それまでは `uses: ./x` が常に `.unavailable` になり、`forbid DEP004`
 が空振りしていた)。
 
-#### G22. SYN009 の `--fix` がタイポを特権トリガへ直す — 要 autofix 修正
+#### G22 (#346). SYN009 の `--fix` がタイポを特権トリガへ直す — 要 autofix 修正
 
 `bench/cases/f-syntax-schema/invalid-event-name.yml`。
 `on: pull_request_targt:` は実行されない無効イベントだが、`--fix` が
@@ -411,7 +411,7 @@ zizmor は書き換え後に `dangerous-triggers` を新規に出す。
 トリガへ直すのは意味保存ではない。候補が特権トリガなら `--fix` では触らず、
 `--fix-unsafe` にするか、置換しない。
 
-#### G23. SYN001 の `--fix` が既にあるキーへリネームして SYN002 を作る — 要 autofix 修正
+#### G23 (#347). SYN001 の `--fix` が既にあるキーへリネームして SYN002 を作る — 要 autofix 修正
 
 `bench/cases/f-syntax-schema/unknown-key-job-and-step.yml`。
 `runs-on:` の隣の `runs-onn:` を `--fix` が `runs-on` に直すとキーが二つになり、
@@ -419,7 +419,7 @@ zizmor は書き換え後に `dangerous-triggers` を新規に出す。
 
 リネーム先の兄弟キーが既にあれば autofix を付けない。
 
-#### G24. SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作る — 要 fix エンジン修正
+#### G24 (#348). SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作る — 要 fix エンジン修正
 
 `bench/cases/f-syntax-schema/unknown-key-top-level.yml`。`prmissions:` は
 SYN001 が `permissions` へリネームし、SEC007 はトップレベルに `permissions:` が
@@ -428,7 +428,7 @@ SYN001 が `permissions` へリネームし、SEC007 はトップレベルに `p
 同じキーを二経路で足す」問題で、リネーム先と挿入キーの衝突を fix エンジンが
 見ていない。
 
-#### G25. `*-dependabot.yml` を Dependabot 設定と誤認してワークフロー検査をしない — 要 CLI 修正
+#### G25 (#349). `*-dependabot.yml` を Dependabot 設定と誤認してワークフロー検査をしない — 要 CLI 修正
 
 `src/main.zig` の `isDependabotFile` はパスが `dependabot.yml` /
 `dependabot.yaml` で終わるかだけを見る。実コーパスの
@@ -605,7 +605,7 @@ zizmor regular が出して zghalint がカバーしていない主なものは�
 | `self-repository` | 50 | `uses: ./` に対し `$/.` 構文を勧める。採用しない |
 | `adhoc-packages` | 2 | `npm install --global` 等。新監査。未採用 |
 | `misfeature` | 1 | `shell: cmd`。未採用 |
-| `bot-conditions` | 1 | G25。中身は SEC014 対象だがファイル名で捨てている |
+| `bot-conditions` | 1 | G25 (#349)。中身は SEC014 対象だがファイル名で捨てている |
 
 #### persona 差分 (zizmor regular / pedantic / auditor)
 
@@ -631,7 +631,7 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - 非冪等: 0
 - YAML が壊れたもの: 0
 - コメント欠落: 0
-- 問題あり 5 適用 = G22 (1 ケース × 2 フラグ) / G23 (1 ケース × 2 フラグ) / G24 (1 ケース × `--fix-unsafe`)
+- 問題あり 5 適用 = G22 (#346) / G23 (#347) / G24 (#348)
 
 常設ハーネスは `python3 scripts/bench.py --fix`。
 
@@ -659,7 +659,7 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - [x] G19 (#300): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめる
 - [x] G20 (#304): ネットワーク取得に失敗したルールを stderr の注記で伝える
 - [x] G21 (#305): DEP004 を `actions/checkout` の `path:` が作るディレクトリで沈黙させる
-- [ ] G22: SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
-- [ ] G23: SYN001 のリネーム先が既にあるキーなら autofix を付けない
-- [ ] G24: SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
-- [ ] G25: `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
+- [ ] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
+- [ ] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
+- [ ] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
+- [ ] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
