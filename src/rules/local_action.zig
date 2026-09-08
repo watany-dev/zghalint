@@ -16,6 +16,7 @@ const engine = @import("engine.zig");
 const spans = @import("spans.zig");
 const uses = @import("uses.zig");
 const with_inputs = @import("with_inputs.zig");
+const workflow_types = @import("../workflow/types.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
 
@@ -226,6 +227,81 @@ pub fn checkLocalActionInputs(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
+/// DEP004 with the surrounding step list in hand: `steps[index]` is checked
+/// unless an earlier `actions/checkout` creates its directory at run time
+/// (#305). Both the job path and the composite-action path go through here.
+pub fn checkStepAmongSteps(steps: []const Step, index: usize, list: *DiagnosticList) void {
+    if (isCheckedOutAtRuntime(steps, index)) return;
+    checkLocalActionInputs(&steps[index], list);
+}
+
+fn checkJobLocalActionInputs(job: *const engine.Job, list: *DiagnosticList) void {
+    for (job.steps, 0..) |_, index| checkStepAmongSteps(job.steps, index, list);
+}
+
+/// True when `steps[index]` uses a local action under a directory that an
+/// earlier `actions/checkout` in the same job populates through its `path:`
+/// input — the pattern an action's own test workflow uses to check itself
+/// out beside the workflow. Nothing lives at that path in the repository as
+/// checked out here, so whatever DEP004 would read there is not the tree the
+/// runner sees.
+fn isCheckedOutAtRuntime(steps: []const Step, index: usize) bool {
+    const action = steps[index].uses orelse return false;
+    if (!action.is_local) return false;
+    const rel = relativeDir(action.raw) orelse return false;
+
+    for (steps[0..index]) |prior| {
+        const prior_action = prior.uses orelse continue;
+        if (!isCheckoutAction(prior_action)) continue;
+        const with = prior.with orelse continue;
+        const path = with.get("path") orelse continue;
+
+        // Only the part before the first `${{` is knowable here; the rest
+        // resolves on the runner, so everything under that prefix has to be
+        // treated as possibly created.
+        const expression = std.mem.indexOf(u8, path, "${{");
+        const dir = normalizeCheckoutPath(path[0..(expression orelse path.len)]);
+        // A literal `path: .` checks the repository out over the workspace
+        // root, which is the tree already on disk here: no new directory
+        // appears, so the step is judged as usual.
+        if (dir.len == 0 and expression == null) continue;
+        if (dirContains(dir, rel)) return true;
+    }
+    return false;
+}
+
+fn isCheckoutAction(action: workflow_types.ActionRef) bool {
+    if (action.is_local or action.is_docker) return false;
+    const owner = action.owner orelse return false;
+    const repo = action.repo orelse return false;
+    // Action references resolve case-insensitively on GitHub.
+    return std.ascii.eqlIgnoreCase(owner, "actions") and
+        std.ascii.eqlIgnoreCase(repo, "checkout");
+}
+
+/// `path:` is relative to the workspace, so it is written the same way as a
+/// local `uses:` minus the mandatory `./`. `.` and `./` name the workspace
+/// root itself and normalize to the empty path.
+fn normalizeCheckoutPath(path: []const u8) []const u8 {
+    var out = std.mem.trim(u8, path, " \t");
+    while (std.mem.startsWith(u8, out, "./")) out = out["./".len..];
+    out = std.mem.trimRight(u8, out, "/");
+    if (std.mem.eql(u8, out, ".")) return "";
+    return out;
+}
+
+/// True when `dir` is `path` or one of its ancestors. Both are
+/// workspace-relative and compared case-sensitively, matching how a runner's
+/// filesystem resolves them. An empty `dir` is the workspace root, which
+/// contains every path.
+fn dirContains(dir: []const u8, path: []const u8) bool {
+    if (dir.len == 0) return true;
+    if (!std.mem.startsWith(u8, path, dir)) return false;
+    if (path.len == dir.len) return true;
+    // Windows accepts both separators, same as `relativeDir`.
+    return path[dir.len] == '/' or path[dir.len] == '\\';
+}
+
 fn reportMissingManifest(step: *const Step, raw: []const u8, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     const message = std.fmt.allocPrint(
@@ -257,13 +333,14 @@ pub const rules = [_]Rule{
         .description = "`with:` must match the `inputs:` declared by the referenced local action",
         .severity = .@"error",
         .category = .dependency,
-        .check_step = &checkLocalActionInputs,
+        // Job-scoped rather than step-scoped: the sibling steps decide
+        // whether the referenced directory exists at run time (#305).
+        .check_job = &checkJobLocalActionInputs,
     },
 };
 
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
-const workflow_types = @import("../workflow/types.zig");
 
 const ActionRef = workflow_types.ActionRef;
 const hasDiagnostic = test_support.hasDiagnostic;
@@ -567,9 +644,213 @@ test "resolve memoizes repeated lookups" {
     try testing.expectEqual(@as(usize, 1), cache.?.count());
 }
 
+test "normalizeCheckoutPath reduces a path: value to a workspace-relative dir" {
+    try testing.expectEqualStrings("action-under-test", normalizeCheckoutPath("action-under-test"));
+    try testing.expectEqualStrings("action-under-test", normalizeCheckoutPath("./action-under-test/"));
+    try testing.expectEqualStrings("a/b", normalizeCheckoutPath("  a/b  "));
+    try testing.expectEqualStrings("", normalizeCheckoutPath("."));
+    try testing.expectEqualStrings("", normalizeCheckoutPath("./"));
+}
+
+test "dirContains covers a directory and everything below it" {
+    try testing.expect(dirContains("action", "action"));
+    try testing.expect(dirContains("action", "action/nested"));
+    try testing.expect(dirContains("action", "action\\nested"));
+    try testing.expect(!dirContains("action", "action-under-test"));
+    try testing.expect(!dirContains("action", "other"));
+    // The empty dir is what an unresolvable `path: ${{ ... }}` reduces to.
+    try testing.expect(dirContains("", "anything"));
+}
+
+/// The tests below cover #305: an action's own test workflow checks the
+/// repository out into a sibling directory and then runs it, so that
+/// directory only exists on the runner and DEP004 has nothing to read.
+///
+/// `with` is borrowed rather than owned so the caller can free it.
+fn checkoutStep(path: []const u8, with: *workflow_types.StringMap) !Step {
+    try with.put("path", path);
+    return .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with.* };
+}
+
+fn runSteps(steps: []const Step) DiagnosticList {
+    var list = DiagnosticList.init(testing.allocator);
+    for (steps, 0..) |_, index| checkStepAmongSteps(steps, index, &list);
+    return list;
+}
+
+test "DEP004: a directory an earlier checkout creates is not reported" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+
+    const steps = [_]Step{
+        try checkoutStep("action-under-test", &with),
+        .{ .uses = ActionRef.parse("./action-under-test") },
+        .{ .uses = ActionRef.parse("./action-under-test/nested") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a directory no checkout creates is still reported" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+
+    const steps = [_]Step{
+        try checkoutStep("action-under-test", &with),
+        .{ .uses = ActionRef.parse("./elsewhere") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "./elsewhere") != null);
+}
+
+test "DEP004: a checkout without path: creates no directory" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+}
+
+test "DEP004: a checkout after the step does not excuse it" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("./action-under-test") },
+        try checkoutStep("action-under-test", &with),
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+}
+
+test "DEP004: an expression path: is unresolvable, so nothing is reported" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+
+    const steps = [_]Step{
+        try checkoutStep("${{ inputs.dir }}", &with),
+        .{ .uses = ActionRef.parse("./candidate") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a checkout over the workspace root creates no new directory" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+
+    const steps = [_]Step{
+        try checkoutStep(".", &with),
+        .{ .uses = ActionRef.parse("./missing-local-action") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+}
+
+test "DEP004: an expression path: excuses only what its literal prefix covers" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+
+    const steps = [_]Step{
+        try checkoutStep("vendor/${{ matrix.repo }}", &with),
+        .{ .uses = ActionRef.parse("./vendor/tool") },
+        .{ .uses = ActionRef.parse("./.github/actions/setup") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "./.github/actions/setup") != null);
+}
+
+test "DEP004: another action's path: input does not excuse the step" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    try with.put("path", "action-under-test");
+
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v4"), .with = with },
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+}
+
+test "DEP004: with: is not checked against a tree the checkout replaces" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    // A directory of the same name exists here, but the runner overwrites it
+    // with whatever the checkout fetches, so its inputs say nothing.
+    try fx.write("action-under-test/action.yml",
+        \\name: Stale
+        \\description: d
+        \\runs:
+        \\  using: node24
+        \\  main: index.js
+        \\
+    );
+
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+
+    var step_with = workflow_types.StringMap.init(testing.allocator);
+    defer step_with.deinit();
+    try step_with.put("version", "1");
+
+    const steps = [_]Step{
+        try checkoutStep("action-under-test", &with),
+        .{ .uses = ActionRef.parse("./action-under-test"), .with = step_with },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
 test "DEP004: rule metadata" {
     try testing.expectEqual(@as(usize, 1), rules.len);
     try testing.expectEqualStrings("DEP004", rules[0].id);
     try testing.expect(rules[0].category == .dependency);
     try testing.expect(rules[0].severity == .@"error");
+    try testing.expect(rules[0].check_job != null);
 }

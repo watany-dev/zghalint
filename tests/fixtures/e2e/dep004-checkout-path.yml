@@ -1,0 +1,26 @@
+# zghalint:expect DEP004@26
+# zghalint:forbid DEP004@22
+# zghalint:forbid DEP004@24
+# #305: `actions/checkout` with a `path:` creates the directory on the runner,
+# so DEP004 has no tree to read and must stay silent for it.
+name: dep004 checkout path
+on: push
+concurrency: ci
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the action out beside the workflow
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: action-under-test
+          persist-credentials: false
+      - name: Run the action under test
+        uses: ./action-under-test
+      - name: Run a nested action under test
+        uses: ./action-under-test/nested
+      - name: Run an action no checkout creates
+        uses: ./missing-local-action
