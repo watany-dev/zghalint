@@ -2592,6 +2592,10 @@ test "EXPR006: fromJSON string haystack is still substring matching" {
     try expectSingleRule("contains(fromJSON('\"hello\"'), 'ell')", "EXPR006");
 }
 
+test "EXPR006: curated string event fields are still substring matching" {
+    try expectSingleRule("contains(github.event.issue.title, 'deploy')", "EXPR006");
+}
+
 test "EXPR006 fix: no fix when context path contains [ (bracket access)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
