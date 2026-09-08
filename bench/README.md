@@ -11,6 +11,8 @@ python3 scripts/bench.py                    # 行列を stdout へ
 python3 scripts/bench.py -o /tmp/bench.md   # ファイルへ
 python3 scripts/bench.py --case 'a-*'       # 一部のケースだけ
 python3 scripts/bench.py --json /tmp/b.json # 生スコアも出す
+python3 scripts/bench.py --fix               # autofix 交差検証 (issue #269)
+python3 scripts/bench.py --fix -o /tmp/fix.md --json /tmp/fix.json
 ```
 
 `actionlint` / `zizmor` が PATH になければ、そのツールは採点対象から外れる
@@ -125,6 +127,21 @@ lint できなかった」) も同じ扱いにする。JSON 自体は正常に�
 
 `--fail-on-fp` を付けると、zghalint が `forbid` に反した時点で非ゼロ終了
 する。CI で誤検出の混入を止める用途。
+
+## autofix 交差検証 (`--fix`)
+
+採点ではなく、`--fix` / `--fix-unsafe` の書き換え品質を外部ツールで見る
+モード (issue #269)。実装は `scripts/bench_fix.py`。ケースごとにコピーへ
+適用し、次を記録する。
+
+1. 書き換え後に zghalint がクラッシュせず、**新しい rule ID** が増えていない
+2. actionlint / zizmor にも、修正前に無かった指摘 ID が増えていない
+3. もう一度同じフラグを適用してバイト列が変わらない (冪等)
+4. 書き換え前に PyYAML が読めていたファイルが、書き換え後も読める
+5. コメント行が消えていない
+
+SEC001 の SHA ピン留めは `--offline` では解決できないので、このモードでは
+意図どおり無変更になる。指摘が増えたケースは fix エンジンの個別 issue にする。
 
 ## 性能計測 (`--perf`)
 

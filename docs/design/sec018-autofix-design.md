@@ -106,7 +106,7 @@ SEC015 との差分:
 
 | 観点 | SEC015 | SEC018 |
 |---|---|---|
-| 発火経路 | `upload-artifact` と同一 job 内で組み合わさるごく狭い状況 | `actions/checkout` 単独で常に発火（デフォルト挙動への一律警告） |
+| 発火経路 | `upload-artifact` と同一 job 内で組み合わさるごく狭い状況。SEC015 が成立する step では SEC018 は出さない (#335) | `actions/checkout` 単独で常に発火（デフォルト挙動への一律警告）。SEC015 と重なる step では抑制される |
 | autofix 後の副作用範囲 | artifact 漏洩経路が消えるだけ、既存 step の動作は基本維持 | `GITHUB_TOKEN` が `.git/config` から消える → 後続の `git push` / `gh` / composite action が動作不能化しうる |
 | 結論 | `.safe` | `.unsafe` |
 

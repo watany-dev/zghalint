@@ -12,6 +12,7 @@ tool reports.
     python3 scripts/bench.py --case a-*      # only matching cases
     python3 scripts/bench.py --json out.json # machine-readable scores too
     python3 scripts/bench.py --perf          # wall time / RSS instead (bench_perf.py)
+    python3 scripts/bench.py --fix          # autofix cross-check (bench_fix.py)
 
 A missing external tool is reported as unavailable rather than scored, so the
 harness stays usable with only zghalint installed.
@@ -32,6 +33,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import bench_fix
 import bench_perf
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1187,14 +1189,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     perf.add_argument("--runs", type=int, default=10, help="measured runs per command")
     perf.add_argument("--warmup", type=int, default=3, help="unmeasured runs before them")
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="cross-check --fix / --fix-unsafe rewrites against actionlint and zizmor",
+    )
     args = parser.parse_args(argv)
 
     if args.kinds:
         print(render_kind_table())
         return 0
 
+    if args.perf and args.fix:
+        print("use --perf or --fix, not both", file=sys.stderr)
+        return 2
+
     if args.perf:
         return main_perf(args)
+
+    if args.fix:
+        return main_fix(args)
 
     if not args.cases_dir.is_dir():
         print(f"no such case directory: {args.cases_dir}", file=sys.stderr)
@@ -1270,6 +1284,53 @@ def main_perf(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
     return 0
+
+
+def main_fix(args: argparse.Namespace) -> int:
+    if not args.zghalint.is_file():
+        print(
+            f"zghalint binary not found at {args.zghalint}; run `zig build` first",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.cases_dir.is_dir():
+        print(f"no such case directory: {args.cases_dir}", file=sys.stderr)
+        return 2
+    try:
+        cases = discover_cases(args.cases_dir, args.case)
+    except CaseError as exc:
+        print(f"bench case error: {exc}", file=sys.stderr)
+        return 2
+    if not cases:
+        print("no cases matched", file=sys.stderr)
+        return 2
+    available = {
+        "zghalint": True,
+        "actionlint": shutil.which("actionlint") is not None,
+        "zizmor": shutil.which("zizmor") is not None,
+    }
+    with tempfile.TemporaryDirectory(prefix="zghalint-fix-") as tmp:
+        results = bench_fix.run_fix(
+            zghalint=args.zghalint,
+            cases=cases,
+            available=available,
+            tmp=Path(tmp),
+            stage=stage,
+            run_case=run_case,
+            run_cmd=_run,
+        )
+    text = bench_fix.render_markdown(results, available)
+    if args.out:
+        args.out.write_text(text, encoding="utf-8")
+        print(f"wrote {args.out}")
+    else:
+        print(text)
+    if args.json:
+        args.json.write_text(
+            json.dumps(bench_fix.as_json(results), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    return 1 if any(f.problems for r in results for f in r.flags) else 0
 
 
 if __name__ == "__main__":

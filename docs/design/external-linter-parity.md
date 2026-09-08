@@ -346,7 +346,7 @@ jobs:
 壊れる。`bench/cases/d-permissions-secrets/secrets-inherit.yml` ほか、
 `g-reusable/` の caller 4 件で再現する。
 
-#### G19 (#300). SEC015 と SEC018 が同じステップへ `with:` を二重挿入する — 要 fix エンジン修正
+#### G19 (#300 / #335). SEC015 と SEC018 が同じステップへ `with:` を二重挿入する — 対応済み
 
 `bench/cases/d-permissions-secrets/artipacked-upload.yml` の
 `actions/checkout` には SEC015 と SEC018 が同時に発火し、どちらも
@@ -354,7 +354,9 @@ jobs:
 `--fix-unsafe` は両方を適用するため同じステップに `with:` が 2 つ並び、
 結果は SYN002 (キー重複) を出す不正なワークフローになる。
 
-同じアンカーへの同一挿入は 1 回にまとめる必要がある。
+同じアンカーへの同一挿入は 1 回にまとめる (#300)。加えて SEC015 が成立する
+step では SEC018 を抑制し、より具体的な artifact 漏洩のメッセージだけを出す
+(#335)。SEC015 を `.zghalint.yml` で無効にすると SEC018 は残る。
 
 #### G20 (#304). ネットワークに到達できないとき SC003〜SC006 が黙って沈黙する — 対応済み
 
@@ -399,6 +401,50 @@ E2E ハーネスがローカル action のルートをリポジトリルート�
 した (それまでは `uses: ./x` が常に `.unavailable` になり、`forbid DEP004`
 が空振りしていた)。
 
+#### G22 (#346). SYN009 の `--fix` がタイポを特権トリガへ直す — 要 autofix 修正
+
+`bench/cases/f-syntax-schema/invalid-event-name.yml`。
+`on: pull_request_targt:` は実行されない無効イベントだが、`--fix` が
+`did you mean "pull_request_target"` をそのまま適用して特権トリガにする。
+zizmor は書き換え後に `dangerous-triggers` を新規に出す。
+
+`docs/rules.md` は SYN009 の候補置換を safe な autofix と書いてあるが、
+無効な名前を `pull_request_target` / `workflow_run` のような secrets 付き
+トリガへ直すのは意味保存ではない。候補が特権トリガなら `--fix` では触らず、
+`--fix-unsafe` にするか、置換しない。
+
+#### G23 (#347). SYN001 の `--fix` が既にあるキーへリネームして SYN002 を作る — 要 autofix 修正
+
+`bench/cases/f-syntax-schema/unknown-key-job-and-step.yml`。
+`runs-on:` の隣の `runs-onn:` を `--fix` が `runs-on` に直すとキーが二つになり、
+再 lint で SYN002 が出る。`wth:` は候補が一意でないため触れず、こちらは残る。
+
+リネーム先の兄弟キーが既にあれば autofix を付けない。
+
+#### G24 (#348). SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作る — 要 fix エンジン修正
+
+`bench/cases/f-syntax-schema/unknown-key-top-level.yml`。`prmissions:` は
+SYN001 が `permissions` へリネームし、SEC007 はトップレベルに `permissions:` が
+無いと見て別のブロックを挿入する。`--fix` だけならリネームだけで済むが、
+`--fix-unsafe` は両方を適用して SYN002 になる。G19 と同じ「同一ファイルへ
+同じキーを二経路で足す」問題で、リネーム先と挿入キーの衝突を fix エンジンが
+見ていない。
+
+#### G25 (#349). `*-dependabot.yml` を Dependabot 設定と誤認してワークフロー検査をしない — 要 CLI 修正
+
+`src/main.zig` の `isDependabotFile` はパスが `dependabot.yml` /
+`dependabot.yaml` で終わるかだけを見る。実コーパスの
+`peter-evans/create-pull-request` の `automerge-dependabot.yml` は
+`github.actor == 'dependabot[bot]'` をジョブの `if:` に持つ普通の
+ワークフローだが、ファイル名が `dependabot.yml` で終わるため Dependabot
+用のパーサへ送られ、**指摘 0 件・終了コード 0** で終わる。
+同じ中身を `automerge.yml` にリネームすると SEC014 / BP001 / SEC007 が
+普通に出る。
+
+判定はベース名がちょうど `dependabot.yml` / `dependabot.yaml` であること
+（または `.github/dependabot.yml` という位置）に限るべきで、
+`*-dependabot.yml` のワークフローを黙って捨ててはいけない。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -429,6 +475,11 @@ E2E ハーネスがローカル action のルートをリポジトリルート�
 - 外部ツール側の観察: zizmor 1.30.0 は中身のないワークフロー
   (`i-robustness/comments-only.yml`) と `timeout-minutes: "10m"`
   (`f-syntax-schema/shell-and-timeout-types.yml`) でクラッシュする (exit 3)。
+- zizmor pedantic / auditor の `anonymous-definition` (workflow / action に
+  `name:` が無い) と `self-repository` (`uses: ./` を `$/.` に書き換えろ) は
+  採用しない。前者は GitHub UI の表示の話で、後者は公式ドキュメントが
+  `./` を正規のローカル参照として載せており、zghalint が DEP004 で見ている
+  のもその形である。
 
 ### 4.4 ルール間の相互作用メモ
 
@@ -495,8 +546,96 @@ bench ケース全件に `--fix` / `--fix-unsafe` をかけ、書き換わった
 - zghalint / actionlint の新規指摘: G18 (5 ケース) と G19 (1 ケース) の 2 件のみ
 
 autofix の枠組み自体は健全で、個別ルールの適用条件と重複挿入の 2 点を直せば
-交差検証はクリーンになる。この検証は使い捨てスクリプトで回した — 常設化は
-issue #269 の残作業。
+交差検証はクリーンになる。この検証は当時使い捨てスクリプトで回した。
+常設化 (`scripts/bench.py --fix`) は §4.6。
+
+### 4.6 2026-09-08 午後のベンチ (未実施観点の再実行)
+
+#262 の評価観点のうち、§4.5 で回していなかったもの (autofix 常設化、
+persona 3 列、offline vs online、G16/G17 後の実コーパス) を再実行した。
+環境は同じく Linux x86_64 / 4 logical CPU、zghalint は
+`-Doptimize=ReleaseFast`、actionlint 1.7.7、zizmor 1.30.0。
+
+#### 採点 (`scripts/bench.py`、128 ケース)
+
+| tool | recall | precision | 位置一致 | unique-win |
+|---|---|---|---|---|
+| zghalint | 100% (108/108) | 100% | 96% (104/108) | 25 |
+| actionlint | 100% (64/64) | 100% | 94% (60/64) | – |
+| zizmor | 100% (46/46) | 100% | 87% (40/46) | – |
+
+意図して書いた expect では FN / FP は無い。位置不一致 4 件は以前からある
+(`container-image-no-digest`、credentials 2 件、`secrets-inherit`)。
+実行エラーは G13 の `comments-only.yml` (zghalint exit 2) と、zizmor が
+空ワークフロー / `"10m"` で落ちる 2 ケース。
+
+#### 性能 (`scripts/bench.py --perf --runs 3 --warmup 1`)
+
+| シナリオ | zghalint | actionlint | zizmor |
+|---|---|---|---|
+| cases (127 ファイル / 2,136 行) | 87.2 ms · 7.8 MiB | 10.2 ms · 11.4 MiB | 67.5 ms · 33.2 MiB |
+| huge (1 ファイル / 10,035 行) | 340.1 ms · 13.0 MiB | 35.2 ms · 15.0 MiB | 306.7 ms · 42.0 MiB |
+| many-small (1,000 ファイル / 89,503 行) | 3.277 s · 12.7 MiB | 126.2 ms · 20.2 MiB | 1.423 s · 167.0 MiB |
+
+many-small の zghalint 終了コードは 1 (指摘あり) で、§4.5 の 2 (パース拒否)
+から変わった — G16 / G17 の後は 228 ファイルすべてが lint できる。
+`network` は GITHUB_TOKEN を渡しても GraphQL キャッシュが書かれず未計測
+(「api.github.com に到達できない」)。ケース単位の online 実行では
+`impostor-commit.yml` だけ SC005 が追加で出る一方、SC008 は
+`note: SC008 skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)`
+で沈黙する。REST 経路と GraphQL 経路の到達性が揃っていない。
+
+wall time は §4.5 より zghalint が遅く、actionlint より遅い。ルール追加と
+「パース拒否で短絡しなくなった」効果を含むため、同じハーネスで継続計測する。
+
+#### 実コーパス (33 リポジトリ / 228 ファイル)
+
+G16 / G17 の後は **lint 不能 0 件**。パース不能は一通り潰せた。残る差はルール。
+
+zizmor regular が出して zghalint がカバーしていない主なものは次のとおり。
+コーパスは `.github/workflows/` だけ sparse clone しているので、
+`uses: ./` の DEP004 はリポジトリの残りが無く誤検出に見える — これは
+計測の母集団の制約であり G21 の続きではない。
+
+| zizmor ident | ファイル数 | 扱い |
+|---|---|---|
+| `cache-poisoning` | 12 | G1。`actions/setup-node` が既定でキャッシュする |
+| `use-trusted-publishing` | 1 | G15 |
+| `dangerous-triggers` | 4 | 意図的。zizmor はトリガ自体、zghalint は危険な checkout |
+| `unpinned-uses` | 36 | 多くは `actions/*@vN` と `actions/reusable-workflows@main`。SEC001 が GitHub 公式を外している |
+| `template-injection` | 28 | 多くは `steps.*.outputs`。SEC002 は汚染源からの 1 hop に限定 |
+| `self-repository` | 50 | `uses: ./` に対し `$/.` 構文を勧める。採用しない |
+| `adhoc-packages` | 2 | `npm install --global` 等。新監査。未採用 |
+| `misfeature` | 1 | `shell: cmd`。未採用 |
+| `bot-conditions` | 1 | G25 (#349)。中身は SEC014 対象だがファイル名で捨てている |
+
+#### persona 差分 (zizmor regular / pedantic / auditor)
+
+| ident | regular | pedantic | auditor |
+|---|---|---|---|
+| `anonymous-definition` | 0 | 122 | 122 |
+| `concurrency-limits` | 0 | 92 | 92 |
+| `template-injection` | 32 | 44 | 44 |
+| `undocumented-permissions` | 0 | 7 | 7 |
+| `unpinned-images` | 0 | 2 | 2 |
+| `secrets-outside-env` | 0 | 0 | 3 |
+| `self-hosted-runner` | 0 | 0 | 1 |
+
+`anonymous-definition` (無名の workflow / action) と pedantic の
+`concurrency-limits` / `undocumented-permissions` は §4.3 どおり採用しない。
+`template-injection` の pedantic 増分は `matrix.*` (既存の意図的不一致)。
+auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ。
+
+#### autofix 交差検証 (`scripts/bench.py --fix`、issue #269)
+
+128 ケース × `--fix` / `--fix-unsafe`。書き換え 86 適用。
+
+- 非冪等: 0
+- YAML が壊れたもの: 0
+- コメント欠落: 0
+- 問題あり 5 適用 = G22 (#346) / G23 (#347) / G24 (#348)
+
+常設ハーネスは `python3 scripts/bench.py --fix`。
 
 ## 5. 次アクション
 
@@ -519,6 +658,11 @@ issue #269 の残作業。
 - [x] G16 (#297): 親キーと同じ桁のブロックシーケンスをそのキーの値として読む
 - [x] G17 (#298): 行末の `-` をシーケンス項目の指示子として扱う
 - [x] G18 (#299): BP001 を `uses:` ジョブ (reusable workflow 呼び出し) で沈黙させる
-- [x] G19 (#300): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめる
+- [x] G19 (#300 / #335): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめ、
+      SEC015 成立時は SEC018 を抑制する
 - [x] G20 (#304): ネットワーク取得に失敗したルールを stderr の注記で伝える
 - [x] G21 (#305): DEP004 を `actions/checkout` の `path:` が作るディレクトリで沈黙させる
+- [ ] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
+- [ ] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
+- [ ] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
+- [ ] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
