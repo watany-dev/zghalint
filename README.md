@@ -83,8 +83,10 @@ With auto-fix enabled:
 
 The action downloads the release archive for the ref it was referenced by, so
 pinning to a full commit SHA — what zghalint's own `SEC001` asks of every
-action — works too: a ref that is not a release tag resolves to the release
-that commit was cut for.
+action — works too: a ref that is not a release tag (a SHA, a branch, a moving
+major tag) resolves to the release its commit belongs to. Pin a commit that is
+part of a release; a commit made after a version bump but before its tag has no
+archive to download yet.
 
 ```yaml
 - uses: watany-dev/zghalint@<full-sha> # v0.0.1-rc.1

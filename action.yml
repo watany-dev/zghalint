@@ -21,7 +21,8 @@ inputs:
       Release tag to download (for example `v0.1.0`). When empty, the version
       is derived from the ref this action was referenced by; a ref that is not
       a release tag (a commit SHA, a moving major tag, a branch) falls back to
-      the release this commit belongs to.
+      the release this commit belongs to, which only exists once that release
+      is tagged.
     default: ''
   binary:
     description: >-
@@ -51,12 +52,10 @@ runs:
         # `build.zig.zon`'s `.version` by CI (see docs/maintenance.md).
         FALLBACK_VERSION=v0.0.1-rc.1
 
-        # $GITHUB_ACTION_REF is whatever the caller wrote after `@`, which is
-        # only a download target when it is a release tag. SEC001 tells users
-        # to pin actions to a full SHA, and a moving major tag (`@v0`) or a
-        # branch has no release of that name either; in all of those cases the
-        # ref still identifies this commit, so the release this commit was cut
-        # for is the right archive to fetch.
+        # $GITHUB_ACTION_REF is whatever the caller wrote after `@`, and only a
+        # release tag names a downloadable archive. A SHA (what SEC001 asks
+        # users to pin), a moving major tag and a branch all still identify
+        # this commit, so they resolve to the release it belongs to.
         VERSION="$INPUT_VERSION"
         if [ -z "$VERSION" ]; then
           case "${GITHUB_ACTION_REF:-}" in

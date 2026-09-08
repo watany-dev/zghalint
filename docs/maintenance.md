@@ -69,7 +69,9 @@
 2. `action.yml` の `FALLBACK_VERSION` と `README.md` の例を同じバージョンへ揃え、
    `./scripts/check-version-sync.sh` で確認する
 3. コミットして `main` へ入れる
-4. `git tag v<version> && git push origin v<version>`
+4. `git tag v<version> && git push origin v<version>` — 3 を入れた時点で
+   `FALLBACK_VERSION` は未公開のリリースを指す。その間に `main` のコミットを
+   SHA ピンした利用者はダウンロードに失敗するので、3 と 4 は続けて行う
 5. `release.yml` の `verify` ジョブが以下を検証する
    - タグ（先頭 `v` を除く）と `build.zig.zon` の `.version` が一致すること
    - ビルドしたバイナリの `--version` 出力がタグと一致すること

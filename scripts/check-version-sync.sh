@@ -43,14 +43,15 @@ elif [ "$ACTION_VERSION" != "$ZON_VERSION" ]; then
   fail "action.yml FALLBACK_VERSION is v$ACTION_VERSION but build.zig.zon has $ZON_VERSION"
 fi
 
-# Every `uses: watany-dev/zghalint@v...` in the README is copy-pasted by
-# readers, so a stale tag there sends them to a release that may not exist.
-while read -r ref; do
+# The README is copy-pasted by readers, so a stale version there sends them to
+# a release that may not exist. Every `vX.Y.Z` in it is a zghalint release —
+# the Zig version is written without a leading `v` — so they are all compared.
+while IFS=: read -r line ref; do
   [ -n "$ref" ] || continue
   if [ "${ref#v}" != "$ZON_VERSION" ]; then
-    fail "README.md references watany-dev/zghalint@$ref but build.zig.zon has $ZON_VERSION"
+    fail "README.md:$line says $ref but build.zig.zon has $ZON_VERSION"
   fi
-done <<<"$(sed -n 's|.*watany-dev/zghalint@\(v[0-9][^ `"'"'"']*\).*|\1|p' README.md)"
+done <<<"$(grep -nEo 'v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?' README.md)"
 
 if [ "$status" -eq 0 ]; then
   echo "version OK: $ZON_VERSION"

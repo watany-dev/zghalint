@@ -83,10 +83,8 @@ jobs:
           shellcheck scripts/*.sh
           ./scripts/shellcheck-action.sh action.yml
 
-      # The release version is written out in places that cannot read
-      # build.zig.zon at build time (action.yml's download fallback, the README
-      # examples). Catching the drift on every PR keeps a release from shipping
-      # an action that downloads the previous version.
+      # action.yml's download fallback and the README examples cannot read
+      # build.zig.zon at build time, so drift there is only caught by comparing.
       - name: Version references in sync
         run: ./scripts/check-version-sync.sh
 
