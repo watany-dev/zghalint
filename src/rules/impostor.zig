@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
 const graphql = @import("graphql.zig");
+const net_status = @import("net_status.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -109,7 +110,16 @@ pub fn checkImpostorCommit(step: *const Step, list: *DiagnosticList) void {
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
     if (!isValidSha(sha)) return;
 
-    const cached = lookupCachedImpostorResult(owner, repo, sha) orelse return;
+    // キャッシュ未登録も `.unknown` も「到達性を確かめられなかった」であり、
+    // 沈黙が無指摘と読まれないよう記録する (#304)。
+    const cached = lookupCachedImpostorResult(owner, repo, sha) orelse {
+        net_status.markUnavailable(.sc008);
+        return;
+    };
+    if (cached.status == .unknown) {
+        net_status.markUnavailable(.sc008);
+        return;
+    }
     if (cached.status != .impostor) return;
 
     const alloc = list.fixAllocator();
@@ -276,6 +286,62 @@ test "SC008: unknown status produces no diagnostic" {
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC008"));
+}
+
+test "SC008: unknown status records the rule as unreachable" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = try runWithImpostorCache(
+        &.{
+            .{
+                .key = "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                .result = .{ .status = .unknown },
+            },
+        },
+        "actions/checkout@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    defer list.deinit();
+
+    try testing.expect(net_status.isUnavailable(.sc008));
+}
+
+test "SC008: a missing cache entry records the rule as unreachable" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = try runWithImpostorCache(&.{}, "evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+    defer list.deinit();
+
+    try testing.expect(net_status.isUnavailable(.sc008));
+}
+
+test "SC008: a decided verdict leaves the rule unmarked" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = try runWithImpostorCache(
+        &.{
+            .{
+                .key = "actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11",
+                .result = .{ .status = .legitimate },
+            },
+        },
+        "actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11",
+    );
+    defer list.deinit();
+
+    try testing.expect(!net_status.isUnavailable(.sc008));
+}
+
+test "SC008: offline mode leaves the rule unmarked" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = try runWithImpostorCache(null, "evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+    defer list.deinit();
+
+    try testing.expect(!net_status.isUnavailable(.sc008));
 }
 
 test "SC008: offline mode produces no diagnostic" {

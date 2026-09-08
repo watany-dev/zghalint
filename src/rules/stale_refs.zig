@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
 const rest_fallback = @import("rest_fallback.zig");
+const net_status = @import("net_status.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -84,6 +85,13 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
         cache.put(key, result) catch return;
         break :blk result;
     };
+
+    // `.unknown` は取得失敗のみを表す (タグの有無が確定した場合は has_tag /
+    // no_tag)。沈黙が無指摘と読まれないよう記録する (#304)。
+    if (resolution == .unknown) {
+        net_status.markUnavailable(.sc005);
+        return;
+    }
 
     if (resolution == .no_tag) {
         list.append(.{
@@ -174,6 +182,28 @@ test "SC005: unknown resolution produces no diagnostic" {
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC005"));
+}
+
+test "SC005: unknown resolution records the rule as unreachable" {
+    net_status.reset();
+    defer net_status.reset();
+
+    const sha_ref = "private/repo@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    var list = runWithTagCache(&.{.{ .key = sha_ref, .resolution = .unknown }}, sha_ref);
+    defer list.deinit();
+
+    try testing.expect(net_status.isUnavailable(.sc005));
+}
+
+test "SC005: a decided resolution leaves the rule unmarked" {
+    net_status.reset();
+    defer net_status.reset();
+
+    const sha_ref = "evil/action@deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    var list = runWithTagCache(&.{.{ .key = sha_ref, .resolution = .no_tag }}, sha_ref);
+    defer list.deinit();
+
+    try testing.expect(!net_status.isUnavailable(.sc005));
 }
 
 test "SC005: non-pinned action (tag ref) is skipped" {

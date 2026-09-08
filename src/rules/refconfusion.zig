@@ -4,6 +4,7 @@ const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
 const engine = @import("engine.zig");
 const rest_fallback = @import("rest_fallback.zig");
+const net_status = @import("net_status.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -69,18 +70,17 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
 
     const key = std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, ref }) catch return;
 
-    if (cache.get(key)) |status| {
-        if (status == .ambiguous) {
-            emitDiagnostic(list, spans.usesSpan(step), owner, repo, ref);
-        }
-        return;
-    }
+    const status = cache.get(key) orelse blk: {
+        const fetched = rest_fallback.queryRefStatus(allocator, owner, repo, ref);
+        cache.put(key, fetched) catch return;
+        break :blk fetched;
+    };
 
-    const status = rest_fallback.queryRefStatus(allocator, owner, repo, ref);
-    cache.put(key, status) catch return;
-
-    if (status == .ambiguous) {
-        emitDiagnostic(list, spans.usesSpan(step), owner, repo, ref);
+    switch (status) {
+        .ambiguous => emitDiagnostic(list, spans.usesSpan(step), owner, repo, ref),
+        .not_ambiguous => {},
+        // 曖昧かどうかを判定できていない。無指摘と区別できるよう記録する (#304)。
+        .fetch_failed => net_status.markUnavailable(.sc006),
     }
 }
 
@@ -155,6 +155,24 @@ test "SC006: fetch failed (no false positive, fail-open)" {
     var list = runWithRefCache(&.{.{ .key = "owner/repo@develop", .status = .fetch_failed }}, "owner/repo@develop");
     defer list.deinit();
     try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC006: fetch failed records the rule as unreachable" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = runWithRefCache(&.{.{ .key = "owner/repo@develop", .status = .fetch_failed }}, "owner/repo@develop");
+    defer list.deinit();
+    try testing.expect(net_status.isUnavailable(.sc006));
+}
+
+test "SC006: a decided status leaves the rule unmarked" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = runWithRefCache(&.{.{ .key = "owner/repo@v1", .status = .not_ambiguous }}, "owner/repo@v1");
+    defer list.deinit();
+    try testing.expect(!net_status.isUnavailable(.sc006));
 }
 
 test "SC006: pinned SHA (no false positive)" {

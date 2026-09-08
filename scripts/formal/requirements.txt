@@ -1,0 +1,2 @@
+# Pinned so the model's witness list is reproducible (same policy as tests/pbt).
+z3-solver==5.1.0.0
