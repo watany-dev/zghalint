@@ -591,6 +591,8 @@ many-small の zghalint 終了コードは 1 (指摘あり) で、§4.5 の 2 (�
 
 wall time は §4.5 より zghalint が遅く、actionlint より遅い。ルール追加と
 「パース拒否で短絡しなくなった」効果を含むため、同じハーネスで継続計測する。
+→ §4.7 で再計測した。この表の zghalint 列は Debug ビルド、actionlint 列は
+shellcheck 無しの環境の数字で、性能比較には使えない。
 
 #### 実コーパス (33 リポジトリ / 228 ファイル)
 
@@ -640,6 +642,60 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - 問題あり 5 適用 = G22 (#346) / G23 (#347) / G24 (#348)（いずれも対応済み）
 
 常設ハーネスは `python3 scripts/bench.py --fix`。
+
+### 4.7 2026-09-08 夕方の性能再計測 (§4.6 の乖離の原因)
+
+§4.6 の性能表は §4.5 と 20 倍以上ずれ、zghalint が actionlint より遅く
+読める。同じハーネス (`scripts/bench.py --perf`、hyperfine 1.18.0、GNU time、
+Linux x86_64 / 4 logical CPU、actionlint 1.7.7、zizmor 1.30.0、コーパス
+33 リポジトリ / 228 ファイル) で条件を変えて回し、原因を 2 つに特定した。
+
+#### ReleaseFast、10 runs / warmup 3 (§4.5 と同条件)
+
+| シナリオ | zghalint | actionlint | zizmor |
+|---|---|---|---|
+| cases (127 ファイル / 2,136 行) | 6.1 ms · 2.5 MiB | 177.1 ms · 14.7 MiB | 101.0 ms · 34.6 MiB |
+| huge (1 ファイル / 10,035 行) | 18.4 ms · 8.6 MiB | 1.151 s · 16.7 MiB | 439.3 ms · 43.7 MiB |
+| many-small (1,000 ファイル / 89,503 行) | 133.8 ms · 7.3 MiB | 5.706 s · 69.2 MiB | 1.967 s · 168.6 MiB |
+
+§4.5 と同じ水準 (wall time で 15〜60 倍、RSS で 6〜23 倍の差)。ルール追加と
+G16 / G17 (パース拒否で短絡しなくなった) を含めても、性能面の後退は無い。
+
+#### 原因 1: §4.6 の zghalint は Debug ビルド
+
+同じバイナリの Debug 版 (`zig build` を最適化指定なしで実行したもの) を
+§4.6 と同じ 3 runs / warmup 1 で回すと、§4.6 の zghalint 列を再現する。
+
+| シナリオ | ReleaseFast | Debug | §4.6 の記録 |
+|---|---|---|---|
+| cases | 6.5 ms · 2.5 MiB | 160.6 ms · 8.4 MiB | 87.2 ms · 7.8 MiB |
+| huge | 17.9 ms · 8.4 MiB | 478.6 ms · 13.7 MiB | 340.1 ms · 13.0 MiB |
+| many-small | 128.7 ms · 7.3 MiB | 4.141 s · 12.8 MiB | 3.277 s · 12.7 MiB |
+
+Debug と ReleaseFast の比は 25 倍前後で、§4.6 と §4.5 の比 (21〜31 倍) と
+一致する。決め手は最大 RSS で、Debug の 12.8 MiB と §4.6 の 12.7 MiB が
+ほぼ同じ (ReleaseFast は 7.3 MiB)。RSS は実行環境の速さに依存しないので、
+バイナリが Debug だったことの直接の証拠になる。`bench/README.md` が
+`-Doptimize=ReleaseFast` を要求しているのはこのためで、手順を飛ばすと
+同じことが再発する。
+
+#### 原因 2: §4.6 の actionlint は shellcheck 無し
+
+actionlint は `run:` ブロックごとに shellcheck を子プロセスで起動し、
+PATH に無ければ黙って省く。cases を shellcheck あり / なしで比べると
+170.5 ms → 12.2 ms (14 倍) で、§4.6 の 10.2 ms は shellcheck 無しの数字。
+
+同じ 4 論理 CPU の環境で、shellcheck ありの actionlint は user 364 ms +
+sys 250 ms を並列に使って wall 170 ms になる。zghalint はシングルスレッドで
+user 3 ms + sys 3 ms。
+
+#### 結論
+
+§4.6 の性能表は zghalint が Debug、actionlint が shellcheck 無しという二重の
+環境差で、性能比較としては無効。§4.5 の結論 (性能面の改善課題は当面無い)
+は維持する。今後 `--perf` を回すときは `zig build -Doptimize=ReleaseFast`
+と `which shellcheck` を先に確かめる。`network` は今回も api.github.com に
+到達できず未計測。
 
 ## 5. 次アクション
 
