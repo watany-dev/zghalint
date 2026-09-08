@@ -15,6 +15,7 @@ const refconfusion = @import("refconfusion.zig");
 const sha_pin = @import("sha_pin.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
+const trusted_data = @import("data/trusted_actions.zig");
 const permissions = @import("permissions.zig");
 const runner = @import("runner.zig");
 
@@ -1735,6 +1736,38 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
+fn checkTyposquatAction(step: *const Step, list: *DiagnosticList) void {
+    const action_ref = step.uses orelse return;
+    if (action_ref.is_local or action_ref.is_docker) return;
+    const owner = action_ref.owner orelse return;
+    const repo = action_ref.repo orelse return;
+
+    for (trusted_data.trusted_actions) |trusted| {
+        if (std.mem.eql(u8, owner, trusted.owner) and std.mem.eql(u8, repo, trusted.repo)) return;
+    }
+
+    for (trusted_data.trusted_actions) |trusted| {
+        if (!std.mem.eql(u8, owner, trusted.owner)) continue;
+        const distance = util.levenshteinDistance(repo, trusted.repo);
+        if (distance < 1 or distance > 2) continue;
+
+        const message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "'{s}/{s}' looks like a typosquat of '{s}/{s}' (edit distance {d}). did you mean \"{s}\"?",
+            .{ owner, repo, trusted.owner, trusted.repo, distance, trusted.repo },
+        ) catch return;
+
+        list.append(.{
+            .rule_id = "SC007",
+            .severity = .warning,
+            .message = message,
+            .span = spans.usesSpan(step),
+            .fix_hint = "verify this is the intended action",
+        }) catch return;
+        return;
+    }
+}
+
 /// Every offending expression is reported separately: a single `run:` block can
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
@@ -2490,6 +2523,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .dependency,
         .check_step = &refconfusion.checkRefConfusion,
+    },
+    .{
+        .id = "SC007",
+        .name = "typosquat-action",
+        .description = "Action name is similar to a well-known actions/* action (possible typosquat)",
+        .severity = .warning,
+        .category = .dependency,
+        .check_step = &checkTyposquatAction,
     },
     .{
         .id = "SC008",
@@ -6221,6 +6262,68 @@ test "SC002: uppercase SHA still fires (case-insensitive match)" {
     defer list.deinit();
 
     try testing.expect(hasDiagnostic(&list, "SC002"));
+}
+
+test "SC007: actions/chekout fires warning and suggests checkout" {
+    var list = runStep(.{ .uses = ActionRef.parse("actions/chekout@v4") });
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC007"));
+    const diag = findDiagnostic(&list, "SC007").?;
+    try testing.expectEqual(Severity.warning, diag.severity);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"checkout\"") != null);
+}
+
+test "SC007: actions/setup-nodes fires" {
+    var list = runStep(.{ .uses = ActionRef.parse("actions/setup-nodes@v4") });
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: exact actions/checkout does not fire" {
+    var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@v4") });
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: myorg/chekout does not fire" {
+    var list = runStep(.{ .uses = ActionRef.parse("myorg/chekout@v4") });
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: unrelated actions repo does not fire" {
+    var list = runStep(.{ .uses = ActionRef.parse("actions/unrelated-action-name@v4") });
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: local action skipped" {
+    var list = runStep(.{ .uses = ActionRef.parse("./chekout") });
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: docker action skipped" {
+    var list = runStep(.{ .uses = ActionRef.parse("docker://actions/chekout:latest") });
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: every trusted action is not a typosquat of another" {
+    for (trusted_data.trusted_actions) |entry| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "{s}/{s}@v1", .{ entry.owner, entry.repo });
+        defer testing.allocator.free(raw);
+        var list = runStep(.{ .uses = ActionRef.parse(raw) });
+        defer list.deinit();
+        try testing.expect(!hasDiagnostic(&list, "SC007"));
+    }
 }
 
 test "SEC002: each untrusted reference in a run: block is reported at its own position" {

@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **90 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **91 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -227,7 +227,15 @@ Detect supply chain risks in action and container image references.
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
 | SC005 | stale-action-refs | info | SHA-pinned action does not correspond to any known Git tag |
 | SC006 | ref-confusion | warning | Action ref matches both a tag and branch, creating exploitable ambiguity |
+| SC007 | typosquat-action | warning | Action name is similar to a well-known `actions/*` action (possible typosquat) |
 | SC008 | impostor-commit | warning | SHA-pinned action ref is not reachable from any branch or tag of the upstream repo |
+
+### SC007 typosquat-action
+
+`uses: actions/chekout@v4` のように、公式 `actions/*` のよく知られたリポジトリ名
+から編集距離 1 または 2 の参照を warning する。完全一致（`actions/checkout`）と、
+`myorg/chekout` のような別 owner の fork は対象外。候補の置き換えは作者の意図を
+先取りするため、autofix は付けない。
 
 ### SEC001 / SC006 の SHA ピン止め autofix
 
@@ -311,6 +319,11 @@ Validate the principle of least privilege in workflow permissions.
 | PERM001 | broad-permissions | warning | Overly broad permission scope detected |
 | PERM002 | missing-job-permissions | warning | Job with third-party actions lacks explicit permissions |
 | PERM003 | invalid-permissions | error | Unknown permission scope or invalid permission level |
+
+PERM002 stays quiet when the workflow already declares `permissions:` with no
+write scope (`contents: read`, `read-all`, `{}`). The token is already
+minimized for every job. `write-all` or any `: write` at workflow level still
+warns, because those jobs should narrow the grant (#334).
 
 ## Expression Validation Rules (EXPR)
 
@@ -938,7 +951,7 @@ composite action の step は、ワークフローの step と同じ実体なの
 
 - `uses:` 系: SEC001（SHA ピン止め）、DEP003（`uses:` の形式）、DEP004（ローカル
   action の入力）、DEP005 / DEP006（widely used action の入力）、SC002（改竄された
-  リリース）、BP003（廃止されたバージョン）
+  リリース）、SC007（`actions/*` への typosquat）、BP003（廃止されたバージョン）
 - `run:` 系: SEC002（スクリプトインジェクション）、SEC008（`GITHUB_ENV` 汚染）、
   SEC017、BP007、BP008
 - その他: SEC003、SEC006、SEC014、SEC018
