@@ -343,7 +343,6 @@ fn walkWorkflowTaint(wf: *const Workflow, list: *DiagnosticList, check: StepChec
     for (wf.jobs) |*job| walkJobTaint(job, reporting, workflow_env, .{ .list = list, .check = check }, null);
 }
 
-/// A step-level check run against the taint table that holds at that step.
 const StepCheck = *const fn (step: *const Step, table: ContextTable, list: *DiagnosticList) void;
 
 const Reporter = struct {
@@ -488,7 +487,6 @@ const TaintedNames = struct {
     }
 };
 
-/// One `outputs:` entry of one job, as `needs.<job>.outputs.<name>` names it.
 const TaintedOutput = struct {
     job: []const u8,
     name: []const u8,
@@ -950,10 +948,12 @@ const dispatch_payload_table = [_]TriggerContexts{
     .{ .event = .repository_dispatch, .contexts = &.{"github.event.client_payload"} },
 };
 
-/// Free text an attacker types into an issue, a comment or a discussion. These
-/// contexts are in `run_dangerous_contexts` unconditionally — a `run:` block
-/// expanding them is injection whatever started the run — so only SEC021, which
-/// pairs a context with the trigger that populates it, reads this half.
+/// What an attacker authors on an issue, a comment or a discussion: the free
+/// text, plus the issue number a ChatOps checkout builds a ref from. The free
+/// text is in `run_dangerous_contexts` unconditionally — a `run:` block
+/// expanding it is injection whatever started the run — while a number is
+/// harmless there and dangerous only as a ref. So only SEC021, which pairs a
+/// context with the trigger that populates it, reads this half.
 const attacker_text_table = [_]TriggerContexts{
     .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number" } },
     // `issue_comment` carries the issue it was left on alongside the comment.
