@@ -282,12 +282,18 @@ Enforce workflow best practices for maintainability and reliability.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
-| BP002 | missing-step-name | info | Step is missing a `name` field |
+| BP002 | missing-step-name | info | `run:` step is missing a `name` field. `uses:`-only steps are skipped |
 | BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or an action declaring a retired `runs.using` runtime (error) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
+
+### BP002 missing-step-name
+
+`uses:`-only steps are skipped: GitHub Actions already labels them with the
+action name, and requiring `name:` there is not the usual style. Unnamed
+`run:` steps are still reported, because the log label is the command text.
 
 ### BP003 の 2 つの判定
 
