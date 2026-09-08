@@ -45,7 +45,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `src/diagnostics.zig` — Diagnostic types, severity, categories
 - `src/util.zig` — Shared helpers (e.g. step name generation for autofix)
 - `src/e2e_test.zig` — Fixture-driven E2E tests over `tests/fixtures/e2e/` (real files through parser → rules)
-- `bench/` — actionlint / zizmor との三者比較ベンチ (`scripts/bench.py`。`--perf` で wall time / RSS 計測、コーパス取得は `scripts/fetch-corpus.py`。形式は `bench/README.md`)
+- `bench/` — actionlint / zizmor との三者比較ベンチ (`scripts/bench.py`。`--perf` で wall time / RSS、`--fix` で autofix 交差検証、コーパス取得は `scripts/fetch-corpus.py`。形式は `bench/README.md`)
 - `scripts/formal/` — SEC ルールの表の抜け漏れを Z3 有界モデル検査で列挙し実バイナリで確認 (`model.py` → `confirm.py`。設計は `docs/design/formal-rule-model.md`)
 - `src/fix/` — Auto-fix engine
   - `engine.zig` — Collect and apply `--fix` / `--fix-unsafe` rewrites in place
