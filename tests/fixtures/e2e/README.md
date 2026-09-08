@@ -57,6 +57,7 @@ otherwise get wrong silently. Fixtures without such a sibling are unaffected.
 | `expr014-secrets-context.yml` | EXPR014: `secrets.<name>` against a declared `workflow_call.secrets` set |
 | `expr015-expr016-availability.yml` | EXPR015/EXPR016: contexts and special functions against the key they appear under |
 | `expr017-github-event-overlay.yml` | #124: the curated `github.event` overlay widens EXPR017 without new EXPR003s |
+| `expr006-array-contains.yml` | #333 FP guard: `contains(labels.*.name, 'x')` is array membership |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |

@@ -356,6 +356,10 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
 
+EXPR006 is substring matching, so it fires only when the first argument is a
+string. Array membership — `contains(github.event.pull_request.labels.*.name, 'label')`,
+`fromJSON('[...]')`, or a `TypeEnv` array — is exact and is not reported (#333).
+
 ## Dependency Rules (DEP)
 
 Validate Dependabot configuration files (`dependabot.yml`) and the format of
