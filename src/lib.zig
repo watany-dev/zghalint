@@ -113,6 +113,7 @@ test {
     _ = @import("rules/json_util.zig");
     _ = @import("rules/rename.zig");
     _ = @import("rules/data/compromised_actions.zig");
+    _ = @import("rules/data/trusted_actions.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");

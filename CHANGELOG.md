@@ -22,9 +22,14 @@ still be renumbered before 1.0.
 - EXPR006 no longer warns when `contains()` tests array membership (object
   filters such as `labels.*.name`, `fromJSON` arrays, typed arrays). Those are
   exact element checks, not substring matching (#333).
+- PERM002 no longer warns when the workflow already declares `permissions:`
+  with no write scope. `write-all` or any `: write` at workflow level still
+  asks each job to narrow the grant (#334).
 
 ### Added
 
+- SC007 (`typosquat-action`): warn when an `actions/*` reference is 1–2 edits
+  away from a well-known official action such as `actions/checkout`.
 - GitHub Actions workflow linting across ten categories: security (`SEC*`),
   supply chain (`SC*`), performance (`PERF*`), best practices (`BP*`),
   permissions (`PERM*`), expression validation (`EXPR*`), dependencies
