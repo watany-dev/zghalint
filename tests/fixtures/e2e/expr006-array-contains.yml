@@ -1,0 +1,17 @@
+# zghalint:forbid EXPR006
+# #333: `contains()` on an object-filter path is array membership, the
+# documented way to test labels. The string haystack in the second job is
+# substring matching and would be EXPR006, so it is omitted; this file only
+# guards the false positive.
+name: expr006 array contains
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: github.repository == 'honojs/hono' && contains(github.event.pull_request.labels.*.name, 'cr-tracked')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op
+        run: echo ok
