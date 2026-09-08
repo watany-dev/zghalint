@@ -1,0 +1,15 @@
+# zghalint:forbid PERM002
+# #334: a workflow-level `permissions:` that grants no write already limits
+# GITHUB_TOKEN for every job. Repeating the block on each job is not required.
+name: perm002 workflow-level read
+on: push
+permissions:
+  contents: read
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: oven-sh/setup-bun@0c50774d8b6e2ad232b809ecd1d933233d9150ca # v2
+        with:
+          bun-version: latest

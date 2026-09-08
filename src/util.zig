@@ -101,6 +101,8 @@ test "levenshteinDistance basic cases" {
     try std.testing.expectEqual(@as(usize, 1), levenshteinDistance("chekout", "checkout"));
     try std.testing.expectEqual(@as(usize, 1), levenshteinDistance("runs", "run"));
     try std.testing.expectEqual(@as(usize, 1), levenshteinDistance("cache", "cach"));
+    try std.testing.expectEqual(@as(usize, 2), levenshteinDistance("kitten", "sittin"));
+    try std.testing.expectEqual(@as(usize, 3), levenshteinDistance("kitten", "sitting"));
     try std.testing.expectEqual(
         std.math.maxInt(usize),
         levenshteinDistance("a" ** 65, "b"),
