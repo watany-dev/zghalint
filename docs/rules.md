@@ -289,6 +289,20 @@ action / reusable workflow references.
 Dockerfile の上書きなので報告しない。DEP003 が既に弾く形式の参照（`../` 始まり、
 `@ref` 付きなど）は二重報告を避けるため対象外。
 
+同一ジョブ内で、当該ステップより前にある `actions/checkout` の `path:` が指す
+ディレクトリ以下への参照も対象外とする（#305）。
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    path: action-under-test
+- uses: ./action-under-test   # 実行時に作られるので報告しない
+```
+
+アクション自身をテストするワークフローの定番の書き方で、ディレクトリは実行時に
+できるためリポジトリ側には存在しない。`path:` が `${{ }}` を含む場合も実行時に
+しか解決できないため同様に対象外。
+
 ディスクだけを読むので `--quick` / `--offline` でも動作する。
 
 ### DEP005 / DEP006 のスコープ

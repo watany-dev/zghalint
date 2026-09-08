@@ -373,6 +373,32 @@ bench 132 件をネットワーク遮断下の通常実行と `--offline` で突
 注記しない。終了コードは 0/1/2 の意味を変えると利用者の CI を壊すため
 据え置き。JSON / SARIF への搭載は別途検討。
 
+#### G21 (#305). DEP004 が `actions/checkout` の `path:` で作られるローカル action を誤検出する (FP) — 対応済み
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    path: action-under-test
+- uses: ./action-under-test
+```
+
+`./action-under-test` はリポジトリには無く、直前の `actions/checkout` が
+`path:` で**実行時に作る**ディレクトリである。静的に見て「見つからない」のは
+当然で、DEP004 の指摘は誤検出になる (actionlint は exit 0)。実コーパス
+(33 リポジトリ / 228 ワークフロー) の DEP004 44 件は**すべて**この形だった。
+
+DEP004 を step スコープから job スコープへ移し、同一ジョブ内で当該ステップ
+より前にある `actions/checkout` の `path:` が指すディレクトリ以下への
+`uses: ./...` を対象外にした。`path:` が `${{ }}` を含む場合は実行時にしか
+解決できないので同様に対象外とする。composite action の `runs.steps` も
+同じ経路を通る。
+
+回帰ガードは `tests/fixtures/e2e/dep004-checkout-path.yml` と
+`bench/cases/g-reusable/checkout-path-local-action/`。前者を効かせるため、
+E2E ハーネスがローカル action のルートをリポジトリルートに設定するように
+した (それまでは `uses: ./x` が常に `.unavailable` になり、`forbid DEP004`
+が空振りしていた)。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -495,3 +521,4 @@ issue #269 の残作業。
 - [x] G18 (#299): BP001 を `uses:` ジョブ (reusable workflow 呼び出し) で沈黙させる
 - [x] G19 (#300): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめる
 - [x] G20 (#304): ネットワーク取得に失敗したルールを stderr の注記で伝える
+- [x] G21 (#305): DEP004 を `actions/checkout` の `path:` が作るディレクトリで沈黙させる
