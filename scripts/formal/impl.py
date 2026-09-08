@@ -46,7 +46,9 @@ def _string_table(source: str, name: str) -> list[str]:
 
 
 def _marker_fn(source: str, name: str) -> list[str]:
-    return _nonempty(_STRING.findall(_block(source, f"fn {name}(value: []const u8) bool {{", "});")), name)
+    return _nonempty(
+        _STRING.findall(_block(source, f"fn {name}(value: []const u8) bool {{", "});")), name
+    )
 
 
 def _switch_true_arms(source: str, name: str) -> list[str]:
@@ -57,7 +59,9 @@ def _switch_true_arms(source: str, name: str) -> list[str]:
 def _trigger_table(source: str) -> dict[str, list[str]]:
     body = _block(source, "const trigger_context_table = [_]TriggerContexts{")
     entries = re.findall(r"\.event\s*=\s*\.(\w+),\s*\.contexts\s*=\s*&\.\{([^}]*)\}", body)
-    return _nonempty({event: _STRING.findall(contexts) for event, contexts in entries}, "trigger_context_table")
+    return _nonempty(
+        {event: _STRING.findall(contexts) for event, contexts in entries}, "trigger_context_table"
+    )
 
 
 @dataclass(frozen=True)
@@ -107,7 +111,7 @@ def matches_prefix(path: str, pattern: str) -> bool:
         return False
     return all(
         p == "*" or s == "*" or p.lower() == s.lower()
-        for s, p in zip(path_segs, pat_segs)
+        for s, p in zip(path_segs, pat_segs, strict=False)
     )
 
 

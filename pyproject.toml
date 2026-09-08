@@ -3,8 +3,9 @@ testpaths = ["tests/pbt"]
 pythonpath = ["."]
 
 [tool.ruff]
-# tests/pbt/ is the only Python in the repository.
-src = ["."]
+# scripts/formal/ imports its siblings by bare name (it runs as a script), so
+# that directory is a source root too — otherwise isort files them as third-party.
+src = [".", "scripts/formal"]
 line-length = 100
 
 [tool.ruff.lint]

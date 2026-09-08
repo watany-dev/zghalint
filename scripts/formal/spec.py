@@ -206,9 +206,7 @@ AVAILABLE: dict[str, list[Context]] = {
     "watch": [],
 }
 
-CONTEXTS: list[Context] = sorted(
-    {c for cs in AVAILABLE.values() for c in cs}, key=lambda c: c.path
-)
+CONTEXTS: list[Context] = sorted({c for cs in AVAILABLE.values() for c in cs}, key=lambda c: c.path)
 # Two Context objects with one path would give Z3 one symbol with two
 # different attribute sets; whichever wins would silently shape the model.
 assert len({c.path for c in CONTEXTS}) == len(CONTEXTS), "duplicate context path"
