@@ -2,6 +2,7 @@ const std = @import("std");
 const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const fix_builder = @import("../fix/builder.zig");
+const rename = @import("rename.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml_types = @import("../yaml/types.zig");
@@ -217,8 +218,20 @@ fn reportPermissionProblems(
                 .invalid_level => "use 'read', 'write' or 'none' as the permission level.",
                 .invalid_all => "use 'read-all' or 'write-all', or list scopes individually.",
             },
+            .fix = unknownScopeFix(diag_list, problem),
         }) catch return;
     }
+}
+
+/// Only `unknown_scope` renames: an invalid *level* is a value the workflow
+/// author has to choose, and `didYouMean` is not consulted for it.
+fn unknownScopeFix(
+    list: *DiagnosticList,
+    problem: workflow_types.PermissionProblem,
+) ?Fix {
+    if (problem.kind != .unknown_scope) return null;
+    const suggestion = util.didYouMean(problem.text, workflow_types.permission_scope_keys) orelse return null;
+    return rename.tokenFix(list, problem.span, problem.text, suggestion);
 }
 
 fn checkInvalidPermissions(wf: *const Workflow, diag_list: *DiagnosticList) void {

@@ -36,6 +36,12 @@ pub const Edit = struct {
     start_byte: usize,
     end_byte: usize,
     replacement: []const u8,
+    /// The bytes the edit expects to find at `[start_byte, end_byte)`. When set,
+    /// `fix/engine.zig` drops the edit unless the source matches, so a builder
+    /// that derives a byte range from a span it cannot fully trust -- a fallback
+    /// span, or a scalar whose span covers more than its value -- fails closed
+    /// instead of rewriting unrelated bytes.
+    expects: ?[]const u8 = null,
 };
 
 pub const Fix = struct {
@@ -143,6 +149,7 @@ fn cloneFix(alloc: std.mem.Allocator, src: Fix) !Fix {
         .start_byte = e.start_byte,
         .end_byte = e.end_byte,
         .replacement = try alloc.dupe(u8, e.replacement),
+        .expects = if (e.expects) |x| try alloc.dupe(u8, x) else null,
     };
     return .{
         .description = try alloc.dupe(u8, src.description),

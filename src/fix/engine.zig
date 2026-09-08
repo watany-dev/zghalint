@@ -51,7 +51,6 @@ const Selection = struct {
 /// the one that starts earlier in the file.
 /// Edits with invalid byte ranges are dropped without penalising their fix.
 fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []const u8) !Selection {
-    const source_len = source.len;
     var total: usize = 0;
     for (fixes) |f| {
         total += f.edits.len;
@@ -65,7 +64,7 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
     var idx: usize = 0;
     for (fixes, 0..) |f, fix_index| {
         for (f.edits) |e| {
-            if (!isValidEdit(e, source_len)) continue;
+            if (!isValidEdit(e, source)) continue;
             owned[idx] = .{ .edit = snapInsertionToLineEnd(e, source), .fix_index = fix_index };
             idx += 1;
         }
@@ -231,9 +230,12 @@ fn snapInsertionToLineEnd(e: Edit, source: []const u8) Edit {
 
 /// Invalid edits are dropped by `flattenAndSort` to avoid arithmetic underflow or
 /// out-of-bounds reads in `applyFixes`.
-fn isValidEdit(e: Edit, source_len: usize) bool {
+fn isValidEdit(e: Edit, source: []const u8) bool {
     if (e.end_byte < e.start_byte) return false;
-    if (e.end_byte > source_len) return false;
+    if (e.end_byte > source.len) return false;
+    if (e.expects) |x| {
+        if (!std.mem.eql(u8, source[e.start_byte..e.end_byte], x)) return false;
+    }
     return true;
 }
 
@@ -312,6 +314,40 @@ test "single replacement edit" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("uses: actions/checkout@abc123def456", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "an edit whose `expects` does not match the source is dropped" {
+    const allocator = std.testing.allocator;
+    const source = "on: >\n pusg";
+    const edits = [_]Edit{
+        // The span of the block scalar is two bytes wider than its value, so a
+        // width-based builder lands one byte to the left of the name.
+        .{ .start_byte = 5, .end_byte = 10, .replacement = "push", .expects = " pusg" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "rename to \"push\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(source, result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "an edit whose `expects` matches is applied" {
+    const allocator = std.testing.allocator;
+    const source = "on: 'pusg'";
+    const edits = [_]Edit{
+        .{ .start_byte = 5, .end_byte = 9, .replacement = "push", .expects = "pusg" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "rename to \"push\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("on: 'push'", result.content);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
 }
 

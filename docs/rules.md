@@ -10,6 +10,16 @@ zghalint includes **90 rules** across 11 categories to help you write secure, ef
 | warning | Should fix — potential issue or bad practice |
 | info | Consider fixing — suggestion for improvement |
 
+## did you mean ...? と `--fix`
+
+キー名・イベント名・識別子のタイプミスを検出するルールは、既知の名前と編集距離
+2 以内で候補が一意に定まるときに `did you mean "..."?` を添える。この候補は
+そのまま safe な autofix でもあり、`--fix` はタイプミスした綴りだけを置き換える
+（引用符は保持する）。候補が定まらない場合は診断のみで、autofix は付かない。
+
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019、EXPR010–EXPR014、
+PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
+
 ---
 
 ## Security Rules (SEC)

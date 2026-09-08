@@ -10,6 +10,8 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
+const diagnostics = @import("../diagnostics.zig");
 
 const DiagnosticList = engine.DiagnosticList;
 const Step = engine.Step;
@@ -65,9 +67,20 @@ pub fn check(
                 "input \"{s}\" is not declared by {s} \"{s}\"",
                 .{ key, wording.noun, raw },
             ) catch return;
-            const hint = didYouMean(alloc, Input, inputs, key) orelse wording.unknown_hint;
+            const suggestion = nearestInput(alloc, Input, inputs, key);
+            const hint = if (suggestion) |near|
+                std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{near}) catch wording.unknown_hint
+            else
+                wording.unknown_hint;
 
-            report(list, wording.rule_id, message, keySpan(step, key), hint);
+            report(
+                list,
+                wording.rule_id,
+                message,
+                keySpan(step, key),
+                hint,
+                if (suggestion) |near| renameKeyFix(list, step, key, near) else null,
+            );
         }
     }
 
@@ -84,7 +97,7 @@ pub fn check(
         ) catch return;
         const hint = std.fmt.allocPrint(alloc, "add `{s}:` under `with:`", .{input.name}) catch return;
 
-        report(list, wording.rule_id, message, spans.usesSpan(step), hint);
+        report(list, wording.rule_id, message, spans.usesSpan(step), hint, null);
     }
 }
 
@@ -95,7 +108,7 @@ fn containsIgnoreCase(names: []const []const u8, name: []const u8) bool {
     return false;
 }
 
-fn didYouMean(
+fn nearestInput(
     alloc: std.mem.Allocator,
     comptime Input: type,
     inputs: []const Input,
@@ -104,8 +117,15 @@ fn didYouMean(
     const names = alloc.alloc([]const u8, inputs.len) catch return null;
     for (inputs, 0..) |input, i| names[i] = input.name;
 
-    const suggestion = util.didYouMean(key, names) orelse return null;
-    return std.fmt.allocPrint(alloc, "did you mean \"{s}\"?", .{suggestion}) catch null;
+    return util.didYouMean(key, names);
+}
+
+/// The `with:` key itself, not the value `keySpan` points the caret at. Absent
+/// when the parser captured no meta for the entry (a non-scalar value).
+fn renameKeyFix(list: *DiagnosticList, step: *const Step, key: []const u8, suggestion: []const u8) ?diagnostics.Fix {
+    const meta = (step.with_meta orelse return null).get(key) orelse return null;
+    const key_span = meta.key_span orelse return null;
+    return rename.tokenFix(list, key_span, key, suggestion);
 }
 
 /// `args:` and `entrypoint:` override the Dockerfile rather than naming an
@@ -130,6 +150,7 @@ fn report(
     message: []const u8,
     span: spans.Span,
     hint: []const u8,
+    fix: ?diagnostics.Fix,
 ) void {
     list.append(.{
         .rule_id = rule_id,
@@ -137,6 +158,7 @@ fn report(
         .message = message,
         .span = span,
         .fix_hint = hint,
+        .fix = fix,
     }) catch return;
 }
 
@@ -236,6 +258,64 @@ test "an unknown key points at its own value, a missing input at uses" {
     try testing.expect(std.mem.indexOf(u8, list.get(0).fix_hint.?, "version") != null);
     try testing.expectEqual(@as(usize, 7), list.get(1).span.start_line);
     try testing.expect(std.mem.indexOf(u8, list.get(1).message, "required input") != null);
+}
+
+test "an unknown key with a captured key span renames the key" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    try with.put("versoin", "1");
+
+    var meta = workflow_types.ScalarValueMetaMap.init(testing.allocator);
+    defer meta.deinit();
+    try meta.put("versoin", .{
+        .value_span = .{ .start_line = 9, .start_col = 18, .end_line = 9, .end_col = 19, .start_byte = 40, .end_byte = 41 },
+        .key_span = .{ .start_line = 9, .start_col = 9, .end_line = 9, .end_col = 16, .start_byte = 31, .end_byte = 38 },
+        .style = .plain,
+    });
+
+    const step = Step{
+        .uses = ActionRef.parse("actions/setup-node@v4"),
+        .with = with,
+        .with_meta = meta,
+        .uses_value_span = .{ .start_line = 7, .start_col = 14, .end_line = 7, .end_col = 35, .start_byte = 10, .end_byte = 31 },
+    };
+    var list = runCheck(&step, &.{.{ .name = "version" }}, "node24");
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    const fix = list.get(0).fix.?;
+    try testing.expectEqual(diagnostics.FixSafety.safe, fix.safety);
+    try testing.expectEqual(@as(usize, 1), fix.edits.len);
+    // The key, not the value the caret points at.
+    try testing.expectEqual(@as(usize, 31), fix.edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 38), fix.edits[0].end_byte);
+    try testing.expectEqualStrings("version", fix.edits[0].replacement);
+}
+
+test "an unknown key without a close name carries no fix" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    defer with.deinit();
+    try with.put("completely-different", "1");
+
+    var meta = workflow_types.ScalarValueMetaMap.init(testing.allocator);
+    defer meta.deinit();
+    try meta.put("completely-different", .{
+        .value_span = .{ .start_line = 9, .start_col = 31, .end_line = 9, .end_col = 32, .start_byte = 60, .end_byte = 61 },
+        .key_span = .{ .start_line = 9, .start_col = 9, .end_line = 9, .end_col = 29, .start_byte = 31, .end_byte = 51 },
+        .style = .plain,
+    });
+
+    const step = Step{
+        .uses = ActionRef.parse("actions/setup-node@v4"),
+        .with = with,
+        .with_meta = meta,
+        .uses_value_span = .{ .start_line = 7, .start_col = 14, .end_line = 7, .end_col = 35, .start_byte = 10, .end_byte = 31 },
+    };
+    var list = runCheck(&step, &.{.{ .name = "version" }}, "node24");
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expect(list.get(0).fix == null);
 }
 
 test "without with_meta an unknown key falls back to the uses span" {

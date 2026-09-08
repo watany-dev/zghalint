@@ -14,7 +14,7 @@ const ScalarStyle = yaml_types.ScalarStyle;
 
 /// Every builder here produces exactly one edit; only its byte range and
 /// replacement text differ.
-fn oneEdit(alloc: std.mem.Allocator, start_byte: usize, end_byte: usize, replacement: []const u8) ?[]const Edit {
+fn oneEdit(alloc: std.mem.Allocator, start_byte: usize, end_byte: usize, replacement: []const u8) ?[]Edit {
     const edits = alloc.alloc(Edit, 1) catch return null;
     edits[0] = .{ .start_byte = start_byte, .end_byte = end_byte, .replacement = replacement };
     return edits;
@@ -203,6 +203,45 @@ pub fn replaceScalar(
     if (content_end < content_start) return null;
 
     return oneEdit(alloc, content_start, content_end, new_value);
+}
+
+/// The key-side counterpart of `replaceScalar`: renames a token that a rule has
+/// already reported, such as a mapping key, an event name, or an identifier
+/// inside a `${{ }}` path.
+///
+/// `span` must cover exactly `old_text`, optionally wrapped in one pair of
+/// quotes; only the text itself is replaced, so the quoting survives.
+///
+/// The width alone does not prove that: a `|` / `>` block scalar drops the
+/// indicator and the newline from its value, so its span is two bytes wider
+/// too, and a fallback span standing in for a token span the parser never
+/// captured can be any width at all. The edit therefore carries `expects`, and
+/// `fix/engine.zig` drops it unless those bytes really are `old_text`.
+pub fn renameToken(
+    alloc: std.mem.Allocator,
+    span: Span,
+    old_text: []const u8,
+    new_text: []const u8,
+) ?[]const Edit {
+    if (span.end_byte < span.start_byte) return null;
+    const width = span.end_byte - span.start_byte;
+
+    // `'push'` / `"push"`: the span covers the quotes, the replacement must not.
+    const quote_offset: usize = if (width == old_text.len)
+        0
+    else if (width == old_text.len + 2)
+        1
+    else
+        return null;
+
+    const edits = oneEdit(
+        alloc,
+        span.start_byte + quote_offset,
+        span.end_byte - quote_offset,
+        new_text,
+    ) orelse return null;
+    edits[0].expects = old_text;
+    return edits;
 }
 
 /// Typical usage is with `MappingEntry.full_span`, which covers the key line
@@ -411,4 +450,50 @@ test "insertMappingEntryBlock: empty sub_entries returns null" {
         &subs,
         2,
     ) == null);
+}
+
+test "renameToken replaces an unquoted token" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const edits = renameToken(arena.allocator(), mkSpan(10, 14), "pusg", "push") orelse
+        return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 10), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 14), edits[0].end_byte);
+    try testing.expectEqualStrings("push", edits[0].replacement);
+}
+
+test "renameToken keeps the quotes of a quoted token" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const edits = renameToken(arena.allocator(), mkSpan(10, 16), "pusg", "push") orelse
+        return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 11), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 15), edits[0].end_byte);
+    try testing.expectEqualStrings("push", edits[0].replacement);
+}
+
+test "renameToken records the bytes it expects to replace" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const plain = renameToken(arena.allocator(), mkSpan(10, 14), "pusg", "push").?;
+    try testing.expectEqualStrings("pusg", plain[0].expects.?);
+
+    // The quoted branch guesses; `expects` is what makes the guess checkable.
+    const quoted = renameToken(arena.allocator(), mkSpan(10, 16), "pusg", "push").?;
+    try testing.expectEqual(@as(usize, 11), quoted[0].start_byte);
+    try testing.expectEqualStrings("pusg", quoted[0].expects.?);
+}
+
+test "renameToken rejects a span that does not cover the token" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // A step span standing in for a token span the parser never captured.
+    try testing.expect(renameToken(arena.allocator(), mkSpan(0, 120), "pusg", "push") == null);
+    try testing.expect(renameToken(arena.allocator(), mkSpan(10, 10), "pusg", "push") == null);
+    try testing.expect(renameToken(arena.allocator(), mkSpan(14, 10), "pusg", "push") == null);
 }

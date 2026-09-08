@@ -1440,7 +1440,9 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
         switch (entry.value) {
             .scalar => |s| {
                 try values.put(entry.key.value, s.value);
-                try meta.put(entry.key.value, scalarMeta(s));
+                var entry_meta = scalarMeta(s);
+                entry_meta.key_span = entry.key.span;
+                try meta.put(entry.key.value, entry_meta);
             },
             // A key whose value is a sequence, a mapping, or nothing at all is
             // still a key the workflow wrote. Dropping it made DEP004/DEP005

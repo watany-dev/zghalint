@@ -12,6 +12,7 @@ const diagnostics_mod = @import("../diagnostics.zig");
 const composite_steps = @import("composite_steps.zig");
 const local_action = @import("local_action.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 
 const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
@@ -148,7 +149,8 @@ fn checkUnknownKeys(
         if (contains(allowed, key)) continue;
 
         const alloc = list.fixAllocator();
-        const suffix = if (util.didYouMean(key, allowed)) |s|
+        const suggestion = util.didYouMean(key, allowed);
+        const suffix = if (suggestion) |s|
             std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -164,6 +166,7 @@ fn checkUnknownKeys(
             .message = message,
             .span = entry.key.span,
             .fix_hint = "remove the key or correct its spelling",
+            .fix = if (suggestion) |s| rename.tokenFix(list, entry.key.span, key, s) else null,
         }) catch return;
     }
 }
@@ -177,7 +180,8 @@ fn classifyUsing(using: []const u8) ?Runtime {
 
 fn reportUnknownUsing(list: *DiagnosticList, using: []const u8, span: Span) void {
     const alloc = list.fixAllocator();
-    const suffix = if (util.didYouMean(using, &supported_using)) |s|
+    const suggestion = util.didYouMean(using, &supported_using);
+    const suffix = if (suggestion) |s|
         std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
     else
         "";
@@ -193,6 +197,7 @@ fn reportUnknownUsing(list: *DiagnosticList, using: []const u8, span: Span) void
         .message = message,
         .span = span,
         .fix_hint = "set `using:` to " ++ using_expected,
+        .fix = if (suggestion) |s| rename.tokenFix(list, span, using, s) else null,
     }) catch return;
 }
 

@@ -1,0 +1,39 @@
+# zghalint:expect SYN001 SYN009 SYN010 SYN016 SYN019
+# zghalint:expect PERM003 DEP005 EXPR010 EXPR011
+# #323: every did-you-mean suggestion below is also an autofix; the applied
+# result is pinned by `rename-fix-schema.yml.fixed`.
+name: rename fix
+run-name: rename
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened]
+  schedule:
+    - cron: "0 0 * * *"
+      timezone: Asia/Tokyo
+    - cron: "30 1 * * *"
+      timezone: 'Europe/Berlin'
+permissions:
+  contents: read
+  actions: read
+concurrency: rename-fix
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        exclude:
+          - os: ubuntu-latest
+    steps:
+      - name: checkout
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: report
+        run: echo "${{ steps.checkout.outputs.ref }} ${{ matrix.os }}"

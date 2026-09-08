@@ -26,6 +26,9 @@ Identical to `tests/fixtures/e2e/README.md`:
 Directives accumulate across lines, and parsing stops at the first
 non-comment line. A fixture with neither directive fails the test.
 
+A sibling `<fixture>.yml.fixed` file pins what `--fix` makes of the fixture,
+the same as for the workflow fixtures.
+
 ## Fixtures
 
 | File | Purpose |
@@ -35,6 +38,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `act002-unknown-using.yml` | ACT002: a `using` value that is not a runtime, with a suggestion |
 | `act003-unknown-keys.yml` | ACT003: misspelled document key and input key |
 | `act004-invalid-definitions.yml` | ACT004: non-boolean `required`, `value` outside a composite action |
+| `act005-composite-steps.yml` | ACT005: an unavailable context and a misspelled `inputs.<name>` in a composite step |
 | `clean-composite.yml` | A well-formed composite action: nothing may fire |
 
 Fixtures are read at runtime via `std.fs.cwd()` (tests run with
