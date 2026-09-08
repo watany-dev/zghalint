@@ -68,18 +68,12 @@ fn segmentSpan(path_span: Span, path: []const u8, segment_index: usize) ?Segment
             .ident => |name| name,
             else => return null,
         };
-        const start = path_span.start_byte + iter.prev_end - text.len;
-        return .{
-            .text = text,
-            .span = .{
-                .start_line = path_span.start_line,
-                .start_col = path_span.start_col,
-                .end_line = path_span.start_line,
-                .end_col = path_span.start_col,
-                .start_byte = start,
-                .end_byte = start + text.len,
-            },
-        };
+        // Only the byte range decides what gets rewritten; the line/column of
+        // the whole path stays as the caret the diagnostic already points at.
+        var span = path_span;
+        span.start_byte = path_span.start_byte + iter.prev_end - text.len;
+        span.end_byte = span.start_byte + text.len;
+        return .{ .text = text, .span = span };
     }
     return null;
 }
