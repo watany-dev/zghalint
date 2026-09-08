@@ -90,6 +90,13 @@ def idents_from_run(run) -> set[str]:
     return {f.ident for f in run.findings}
 
 
+def added_idents(before_runs: dict, after_runs: dict, tool: str) -> list[str]:
+    before_run = before_runs.get(tool)
+    if before_run is None or before_run.error is not None:
+        return []
+    return new_idents(idents_from_run(before_run), idents_from_run(after_runs.get(tool)))
+
+
 # ============================================================
 # Per-case / per-flag run
 # ============================================================
@@ -196,19 +203,9 @@ def check_flag(
         restore_tree(staged.root, before_snap)
         return result
 
-    for tool, dest in (
-        ("zghalint", "new_zghalint"),
-        ("actionlint", "new_actionlint"),
-        ("zizmor", "new_zizmor"),
-    ):
-        before_run = before_runs.get(tool)
-        if before_run is None or before_run.error is not None:
-            continue
-        setattr(
-            result,
-            dest,
-            new_idents(idents_from_run(before_run), idents_from_run(after_runs.get(tool))),
-        )
+    result.new_zghalint = added_idents(before_runs, after_runs, "zghalint")
+    result.new_actionlint = added_idents(before_runs, after_runs, "actionlint")
+    result.new_zizmor = added_idents(before_runs, after_runs, "zizmor")
 
     if result.rewritten:
         _apply(binary, staged, flag, run_cmd)
