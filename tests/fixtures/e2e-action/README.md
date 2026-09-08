@@ -27,13 +27,15 @@ Directives accumulate across lines, and parsing stops at the first
 non-comment line. A fixture with neither directive fails the test.
 
 A sibling `<fixture>.yml.fixed` file pins what `--fix` makes of the fixture,
-the same as for the workflow fixtures.
+and `<fixture>.yml.fixed-unsafe` what `--fix-unsafe` makes of it, the same as
+for the workflow fixtures.
 
 ## Fixtures
 
 | File | Purpose |
 |---|---|
 | `act001-missing-keys.yml` | ACT001: no `name`, and a node action without `main` |
+| `act001-composite-steps-fix.yml` | ACT001: `--fix-unsafe` inserts a placeholder `steps:` item under a composite `runs:` |
 | `act002-deprecated-and-unknown-using.yml` | ACT002: `node16`, a runtime GitHub is retiring |
 | `act002-unknown-using.yml` | ACT002: a `using` value that is not a runtime, with a suggestion |
 | `act003-unknown-keys.yml` | ACT003: misspelled document key and input key |

@@ -179,6 +179,45 @@ pub fn insertMappingEntryBlock(
     return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
+/// The sequence counterpart of `insertMappingEntryBlock`, anchored the way
+/// `insertMappingEntryBefore` is: at an already-indented sibling key, whose
+/// leading whitespace becomes this entry's indent and is restored afterwards
+/// for the displaced sibling.
+///
+/// Writes exactly one block-sequence item, made of `sub_entries`. Empty
+/// `sub_entries` yields null rather than a `key:` with no item under it.
+pub fn insertSequenceItemEntryBefore(
+    alloc: std.mem.Allocator,
+    pos: InsertPos,
+    key: []const u8,
+    sub_entries: []const SubEntry,
+    child_indent: u32,
+) ?[]const Edit {
+    if (sub_entries.len == 0) return null;
+
+    const item_indent: usize = @as(usize, pos.indent) + child_indent;
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(alloc);
+
+    buf.appendSlice(alloc, key) catch return null;
+    buf.appendSlice(alloc, ":\n") catch return null;
+    for (sub_entries, 0..) |sub, i| {
+        // The `- ` bullet occupies the first item line; the rest align past it.
+        buf.appendNTimes(alloc, ' ', if (i == 0) item_indent else item_indent + 2) catch return null;
+        if (i == 0) buf.appendSlice(alloc, "- ") catch return null;
+        buf.appendSlice(alloc, sub.key) catch return null;
+        buf.appendSlice(alloc, ": ") catch return null;
+        buf.appendSlice(alloc, sub.value) catch return null;
+        buf.append(alloc, '\n') catch return null;
+    }
+    // Restore the indentation the displaced sibling key had.
+    buf.appendNTimes(alloc, ' ', pos.indent) catch return null;
+
+    const owned = buf.toOwnedSlice(alloc) catch return null;
+    return oneEdit(alloc, pos.byte, pos.byte, owned);
+}
+
 /// Honors the original `style` so quote characters stay intact.
 ///
 /// Returns null for `literal` / `folded` block scalars, matching the existing
@@ -496,6 +535,45 @@ test "insertMappingEntryBlock: empty sub_entries returns null" {
         arena.allocator(),
         .{ .byte = 0, .indent = 0 },
         "permissions",
+        &subs,
+        2,
+    ) == null);
+}
+
+test "insertSequenceItemEntryBefore: aligns the item under the key and restores the sibling indent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const subs = [_]SubEntry{
+        .{ .key = "run", .value = "echo TODO" },
+        .{ .key = "shell", .value = "bash" },
+    };
+    const edits = insertSequenceItemEntryBefore(
+        arena.allocator(),
+        .{ .byte = 40, .indent = 2 },
+        "steps",
+        &subs,
+        2,
+    ) orelse return error.TestExpectedNonNull;
+
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 40), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 40), edits[0].end_byte);
+    try testing.expectEqualStrings(
+        "steps:\n    - run: echo TODO\n      shell: bash\n  ",
+        edits[0].replacement,
+    );
+}
+
+test "insertSequenceItemEntryBefore: empty sub_entries returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const subs = [_]SubEntry{};
+    try testing.expect(insertSequenceItemEntryBefore(
+        arena.allocator(),
+        .{ .byte = 0, .indent = 0 },
+        "steps",
         &subs,
         2,
     ) == null);

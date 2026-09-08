@@ -287,7 +287,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
-| BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` |
+| BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
 
 ### BP003 の 2 つの判定
 
@@ -910,7 +910,7 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い |
+| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入） |
 | ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
 | ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
 | ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
@@ -989,7 +989,7 @@ callers, and the calls made against it.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted |
+| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted (`--fix-unsafe` で `default:` から `type:` を推論して挿入) |
 | RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
 | RW003 | workflow-call-input-values | error | A job calling a local reusable workflow passes an input it does not declare, or a value that does not match the declared type |
 | RW004 | workflow-call-secrets | error | A job calling a local reusable workflow omits one of its `required` secrets, or passes a secret it does not declare |

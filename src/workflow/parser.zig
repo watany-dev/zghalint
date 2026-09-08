@@ -456,6 +456,30 @@ fn parseWorkflowCallOutputs(allocator: std.mem.Allocator, node: Node) ParseError
     return outputs;
 }
 
+/// Where RW001's autofix writes the `type:` it inferred: in front of the
+/// definition's first key, so the new entry lands inside the input's own
+/// mapping whatever order the author wrote the other keys in. Returns null
+/// when there is no `default:` to infer from, or no key to anchor on (a flow
+/// mapping `{}`, or one whose key the parser gave no column for).
+fn callInputTypeInsertion(
+    input_mapping: Mapping,
+    default_value: ?[]const u8,
+    default_style: ?yaml.ScalarStyle,
+) ?types.CallInputTypeInsertion {
+    const value = default_value orelse return null;
+    const style = default_style orelse return null;
+    if (input_mapping.entries.len == 0) return null;
+
+    const first = input_mapping.entries[0].key.span;
+    if (first.start_col == 0) return null;
+
+    return .{
+        .anchor_byte = first.start_byte,
+        .indent = first.start_col - 1,
+        .type_name = types.CallableInputType.inferFromScalar(value, style).name(),
+    };
+}
+
 fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!ParsedWorkflowCallInputs {
     const inputs_mapping = switch (node) {
         .mapping => |m| m,
@@ -478,6 +502,20 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
             .name = input_name,
             .name_span = entry.key.span,
         };
+
+        // Read `default:` before `type:` so a missing `type:` can name the
+        // type its default implies (RW001 autofix).
+        var default_style: ?yaml.ScalarStyle = null;
+        if (input_mapping.get("default")) |default_node| {
+            switch (default_node) {
+                .scalar => |s| {
+                    def.default_value = s.value;
+                    def.default_span = s.span;
+                    default_style = s.style;
+                },
+                else => {},
+            }
+        }
 
         const type_node = input_mapping.get("type");
         if (type_node) |tn| {
@@ -510,21 +548,12 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
                 .input_name = input_name,
                 .detail = "",
                 .span = entry.value.getSpan(),
+                .type_insertion = callInputTypeInsertion(input_mapping, def.default_value, default_style),
             });
         }
 
         if (input_mapping.get("required")) |required_node| {
             def.required = parseYamlBool(required_node);
-        }
-
-        if (input_mapping.get("default")) |default_node| {
-            switch (default_node) {
-                .scalar => |s| {
-                    def.default_value = s.value;
-                    def.default_span = s.span;
-                },
-                else => {},
-            }
         }
 
         if (def.required == true and def.default_value != null) {

@@ -1,0 +1,10 @@
+# zghalint:expect ACT001@6
+# zghalint:forbid ACT002
+# `runs.using` is composite, so `--fix-unsafe` inserts a placeholder step.
+name: Composite without steps
+description: Runs nothing yet
+runs:
+  steps:
+    - run: echo TODO
+      shell: bash
+  using: composite

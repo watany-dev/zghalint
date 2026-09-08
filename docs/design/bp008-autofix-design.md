@@ -3,11 +3,10 @@
 ## 目的
 
 `BP008`（deprecated-workflow-command）は `run:` スクリプト中の無効化済みワークフローコマンド
-（`::set-output` / `::save-state` / `::set-env` / `::add-path`）を検出するが、現状は `fix_hint` のみで
-自動修正を提供していない。
+（`::set-output` / `::save-state` / `::set-env` / `::add-path`）を検出する。
 
-本設計書では、`--fix-unsafe` 側の autofix として実装するための前提条件・変換規則・安全境界を定義する。
-検出（issue #80 の第一段階）は実装済みで、autofix は本設計書に基づく後続イテレーションとする。
+本設計書では autofix の変換規則・安全境界を定義する。検出（issue #80 の第一段階）に続き、
+autofix は issue #326 で実装済みである。
 
 関連資料:
 - `docs/design/bp003-autofix-design.md`（scalar style 分岐の先例）
@@ -16,7 +15,8 @@
 ## スコープ
 
 - `run:` の中で検出された deprecated workflow command 呼び出しを、対応する `$GITHUB_*` ファイル追記形式へ書き換える
-- `Fix.safety` は `.unsafe`（`--fix-unsafe` でのみ適用）
+- `Fix.safety` は `.safe`（`--fix` で適用）。書き換えは「変換可能な形」に限定され、
+  元の引用符とインデントを保存したうえで同じ値を同じ名前に書き込むため、ワークフローの意味は変わらない
 - 変換が機械的に安全と判断できる形（後述の「変換可能な形」）に限定し、それ以外は `fix_hint` のみに留める
 
 ## 非スコープ
@@ -25,23 +25,22 @@
 - `run:` を跨いだ step output の参照（`steps.<id>.outputs.<name>`）の整合性検査
 - multiline value（`%0A` エンコードを含む値）の delimiter 形式（`NAME<<EOF`）への展開
 
-## 前提条件（ブロッカー）
+## 原文 byte offset の復元
 
-現状の rule engine は **source text にアクセスできない**。
+`Step.run` は parser が正規化した値で、block scalar（`|` / `>`）ではインデントが除去されている。
+したがって `Step.run` 内のオフセットはそのままでは原文の byte offset に一致しない。
 
-- `Rule.check_step` のシグネチャは `fn (*const Step, *DiagnosticList) void` で、原文バイト列を受け取らない
-- `Step.run` は parser が正規化した値であり、block scalar（`|` / `>`）では
-  インデントが除去されている。したがって `Step.run` 内のオフセットは原文の byte offset に一致しない
-- `Step.run_value_span` は block scalar の場合、インジケータ（`|`）からブロック末尾までを指す
+この対応付けは `src/rules/spans.zig` の `Anchor` が既に提供する。`spans.runAnchor(step)` が
+`Step.run_meta`（値の token span と scalar style）から `Anchor` を作り、`Anchor.at(value, offset, len)` が
+正規化後オフセットを原文の `Span` に戻す。したがって parser 側の追加情報は不要である。
 
-したがって autofix の実装には、以下いずれかの前処理が必要となる。
+ただし次の 2 つは対応付けが成立しないため fix を生成しない。
 
-1. **推奨**: parser 側で `run:` の各行について「正規化後オフセット → 原文 byte offset」を復元できる情報
-   （block scalar の base indent と本文開始 byte、または行単位の byte offset 表）を `Step` に持たせる
-2. rule engine に source slice を渡し、`run_value_span` の範囲内を直接走査する
+- `run_meta` が無い（parser が値の span を取れなかった）場合
+- folded scalar（`>`）: 行が空白で連結されるため、正規化後のオフセットに対応する原文 byte が存在しない
 
-1 は `Step` に `run_value_style` / `run_body_start_byte` / `run_base_indent` を追加するだけで済み、
-既存の rule シグネチャを変えないため影響範囲が小さい。本設計書は 1 を前提とする。
+加えて、正規化で原文と byte 列が変わりうる escape（double-quoted scalar 等）に備え、各 `Edit` には
+`expects` に元の行スライスを入れる。原文が一致しない場合 `fix/engine.zig` が edit を捨てる（fail-closed）。
 
 ## 変換規則
 
@@ -77,12 +76,13 @@ echo '::set-output name=NAME::VALUE'
   書き換え後も double quote 内に置かれるため意味は保存される
 - 元が single quote の場合、`VALUE` はリテラルである。書き換え後も single quote を維持し
   `echo 'NAME=VALUE' >> "$GITHUB_OUTPUT"` とする（`$GITHUB_OUTPUT` 側は展開が必要なため double quote 固定）
-- `VALUE` に `${{ ... }}` 式が含まれる場合は展開結果が予測できないため `.unsafe` である根拠となる。
-  edit 自体は生成してよい（引用は保存される）
+- `VALUE` に `${{ ... }}` 式が含まれる場合も、式はそのまま引用ごと移動するだけで展開のされ方は変わらない
 
 ## Edit 生成
 
 - 各変換対象行につき 1 つの `Edit` を生成し、1 つの `Fix` にまとめる
+  （`fix/engine.zig` は重なりを `Fix` 単位で捨てるため、まとめる粒度は「同一コマンド種別の診断 1 件」＝
+  `Fix` 1 件とする。種別が違う行同士は重ならない）
 - `start_byte` = 行の `echo` 開始位置の原文 byte、`end_byte` = 行末（改行を含まない）の原文 byte
 - `replacement` は `DiagnosticList.fixAllocator()` 上に構築する
 - `Fix.description` は `"Replace deprecated workflow command with $GITHUB_* file append"` 相当
@@ -93,5 +93,6 @@ echo '::set-output name=NAME::VALUE'
 - インデント保持: block scalar 内の 6 スペースインデントが維持されること
 - 非変換: パイプ付き、リダイレクト付き、引用符なし、`NAME` 不正、`%0A` 含みの各ケースで `fix` が `null`
 - 混在: 1 つの `run:` 内で変換可能行のみが edit 対象になること
-- `--fix` では適用されず `--fix-unsafe` でのみ適用されること
-- 適用後の YAML を再度 lint して BP008 が消えること（round-trip）
+- `--fix` で適用されること（`Fix.safety` は `.safe`）
+- 適用後の YAML を再度 lint して BP008 が消えること（round-trip）。e2e fixture
+  `tests/fixtures/e2e/bp008-workflow-commands.yml` と その `.fixed` sibling が実ファイル経路で固定する

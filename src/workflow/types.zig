@@ -232,6 +232,19 @@ pub const CallableInputType = enum {
             } else false,
         };
     }
+
+    /// The type a `default:` with no declared `type:` implies (RW001 autofix).
+    /// Quoting decides here where `matchesScalar` ignores it: `default: true`
+    /// is a boolean to the runner, `default: "true"` is the string `"true"`.
+    pub fn inferFromScalar(value: []const u8, style: yaml_types.ScalarStyle) CallableInputType {
+        switch (style) {
+            .plain => {},
+            else => return .string,
+        }
+        if (CallableInputType.boolean.matchesScalar(value)) return .boolean;
+        if (value.len > 0 and CallableInputType.number.matchesScalar(value)) return .number;
+        return .string;
+    }
 };
 
 pub const InputDef = struct {
@@ -273,12 +286,27 @@ pub const WorkflowCallInputProblemKind = enum {
     required_with_default,
 };
 
+/// Where a `type:` entry goes for a `workflow_call` input declared without
+/// one, and the type its `default:` implies (RW001 autofix). Null unless the
+/// input has both a scalar `default:` to infer from and a key to anchor on.
+pub const CallInputTypeInsertion = struct {
+    /// Start byte of the input definition's first key, which the new entry is
+    /// written in front of.
+    anchor_byte: usize,
+    /// Indentation of that key, i.e. its column minus one.
+    indent: u32,
+    /// `string`, `number` or `boolean`.
+    type_name: []const u8,
+};
+
 pub const WorkflowCallInputProblem = struct {
     kind: WorkflowCallInputProblemKind,
     input_name: []const u8,
     /// Invalid type name, or declared type name for `default_type_mismatch`.
     detail: []const u8,
     span: yaml_types.Span,
+    /// Only set for `missing_type`, and only when the type can be inferred.
+    type_insertion: ?CallInputTypeInsertion = null,
 };
 
 /// The `type:` values `workflow_dispatch` accepts. `workflow_call` uses the
@@ -744,4 +772,18 @@ test "ActionRef unpinned ref" {
 test "ActionRef SHA-like but wrong length" {
     const ref = ActionRef.parse("actions/checkout@abcdef1234");
     try std.testing.expect(!ref.is_pinned);
+}
+
+test "CallableInputType.inferFromScalar reads a plain default" {
+    try std.testing.expectEqual(CallableInputType.boolean, CallableInputType.inferFromScalar("true", .plain));
+    try std.testing.expectEqual(CallableInputType.boolean, CallableInputType.inferFromScalar("false", .plain));
+    try std.testing.expectEqual(CallableInputType.number, CallableInputType.inferFromScalar("3", .plain));
+    try std.testing.expectEqual(CallableInputType.number, CallableInputType.inferFromScalar("-1.5", .plain));
+    try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("main", .plain));
+    try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("", .plain));
+}
+
+test "CallableInputType.inferFromScalar treats a quoted default as a string" {
+    try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("true", .double_quoted));
+    try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("3", .single_quoted));
 }

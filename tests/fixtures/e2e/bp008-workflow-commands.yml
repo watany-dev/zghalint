@@ -1,0 +1,21 @@
+# zghalint:expect BP008@16
+# Every command below is on a line the rewriter can read, except the piped
+# one, which must survive `--fix` untouched.
+name: Deprecated workflow commands
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: bp008
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Emit
+        run: |
+          echo "::set-output name=version::1.0.0"
+          echo '::save-state name=cache-hit::true'
+          echo "::set-env name=FOO::bar"
+          echo "::add-path::/usr/local/bin"
+          echo "::set-output name=piped::x" | tee log

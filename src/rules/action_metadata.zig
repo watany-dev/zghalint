@@ -13,6 +13,7 @@ const composite_steps = @import("composite_steps.zig");
 const local_action = @import("local_action.zig");
 const util = @import("../util.zig");
 const rename = @import("rename.zig");
+const fix_builder = @import("../fix/builder.zig");
 
 const Rule = engine.Rule;
 const DiagnosticList = engine.DiagnosticList;
@@ -111,6 +112,16 @@ fn hasValue(m: Mapping, key: []const u8) bool {
 }
 
 fn missingKey(list: *DiagnosticList, key: []const u8, context: []const u8, span: Span) void {
+    missingKeyWithFix(list, key, context, span, null);
+}
+
+fn missingKeyWithFix(
+    list: *DiagnosticList,
+    key: []const u8,
+    context: []const u8,
+    span: Span,
+    fix: ?diagnostics_mod.Fix,
+) void {
     const alloc = list.fixAllocator();
     const message = std.fmt.allocPrint(
         alloc,
@@ -125,7 +136,62 @@ fn missingKey(list: *DiagnosticList, key: []const u8, context: []const u8, span:
         .message = message,
         .span = span,
         .fix_hint = hint,
+        .fix = fix,
     }) catch return;
+}
+
+/// Placeholder body for the key each runtime requires. The values cannot be
+/// derived from the file — nothing in it says which script or image the action
+/// runs — so the fix writes a stub the author still has to fill in. That is
+/// what makes it `unsafe`: applying it turns a metadata error into a file that
+/// parses but does not do the right thing yet.
+const runtime_placeholders = std.StaticStringMap([]const u8).initComptime(.{
+    .{ "main", "index.js" },
+    .{ "image", "Dockerfile" },
+});
+
+const placeholder_composite_step = [_]fix_builder.SubEntry{
+    .{ .key = "run", .value = "echo TODO" },
+    .{ .key = "shell", .value = "bash" },
+};
+
+/// Anchors the insertion at `runs.using`, the one key a classified runtime is
+/// guaranteed to have. Returns null when its column is unknown, which leaves
+/// the diagnostic without a fix rather than guessing an indent.
+fn buildMissingRunsKeyFix(
+    list: *DiagnosticList,
+    using_span: Span,
+    key: []const u8,
+) ?diagnostics_mod.Fix {
+    if (using_span.start_col == 0) return null;
+    const alloc = list.fixAllocator();
+    const pos = fix_builder.InsertPos{
+        .byte = using_span.start_byte,
+        .indent = using_span.start_col - 1,
+    };
+
+    const edits = if (std.mem.eql(u8, key, "steps"))
+        fix_builder.insertSequenceItemEntryBefore(alloc, pos, key, &placeholder_composite_step, 2) orelse return null
+    else
+        fix_builder.insertMappingEntryBefore(
+            alloc,
+            pos,
+            key,
+            runtime_placeholders.get(key) orelse return null,
+        ) orelse return null;
+
+    const description = std.fmt.allocPrint(alloc, "Add a placeholder `{s}:`", .{key}) catch return null;
+    return .{ .description = description, .safety = .unsafe, .edits = edits };
+}
+
+fn missingRunsKey(
+    list: *DiagnosticList,
+    key: []const u8,
+    context: []const u8,
+    runs_span: Span,
+    using_span: Span,
+) void {
+    missingKeyWithFix(list, key, context, runs_span, buildMissingRunsKeyFix(list, using_span, key));
 }
 
 fn reportInvalid(list: *DiagnosticList, message: []const u8, span: Span, hint: []const u8) void {
@@ -272,14 +338,15 @@ fn checkRuns(root: Mapping, list: *DiagnosticList) ?Runtime {
         .{using},
     ) catch "the \"runs\" section";
 
+    const using_span = using_entry.key.span;
     switch (runtime) {
         .node => {
             checkUnknownKeys(list, runs, &node_runs_keys, context);
-            if (!hasValue(runs, "main")) missingKey(list, "main", context, runs_span);
+            if (!hasValue(runs, "main")) missingRunsKey(list, "main", context, runs_span, using_span);
         },
         .docker => {
             checkUnknownKeys(list, runs, &docker_runs_keys, context);
-            if (!hasValue(runs, "image")) missingKey(list, "image", context, runs_span);
+            if (!hasValue(runs, "image")) missingRunsKey(list, "image", context, runs_span, using_span);
         },
         .composite => {
             checkUnknownKeys(list, runs, &composite_runs_keys, context);
@@ -294,7 +361,7 @@ fn checkRuns(root: Mapping, list: *DiagnosticList) ?Runtime {
                     ),
                 }
             } else {
-                missingKey(list, "steps", context, runs_span);
+                missingRunsKey(list, "steps", context, runs_span, using_span);
             }
         },
     }
@@ -1009,4 +1076,95 @@ test "diagnostics point at the offending line" {
 
     const unknown = findDiagnostic(&lint.diags, "ACT003") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u32, 6), unknown.span.start_line);
+}
+
+fn actionFix(source: []const u8) !test_support.FixOutcome {
+    return test_support.lintAndFix(
+        std.testing.allocator,
+        source,
+        .{ .document = &lintActionMetadata },
+        true,
+    );
+}
+
+test "ACT001: fix inserts a placeholder main: for a node action" {
+    const result = try actionFix(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  using: node24
+        \\
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(diagnostics_mod.FixSafety.unsafe, result.first_safety.?);
+    try std.testing.expectEqualStrings(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  main: index.js
+        \\  using: node24
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "ACT001: fix inserts a placeholder image: for a docker action" {
+    const result = try actionFix(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  using: docker
+        \\
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  image: Dockerfile
+        \\  using: docker
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "ACT001: fix inserts a placeholder steps: item for a composite action" {
+    const result = try actionFix(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  using: composite
+        \\
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  steps:
+        \\    - run: echo TODO
+        \\      shell: bash
+        \\  using: composite
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "ACT001: a missing using: gets no fix, because the runtime is unknown" {
+    var lint = try Lint.run(
+        \\name: My Action
+        \\description: Does something
+        \\runs:
+        \\  main: dist/index.js
+    );
+    defer lint.deinit();
+
+    const d = findDiagnostic(&lint.diags, "ACT001") orelse return error.TestExpectedNonNull;
+    try std.testing.expect(d.fix == null);
 }
