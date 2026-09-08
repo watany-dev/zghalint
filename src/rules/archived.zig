@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
 const rest_fallback = @import("rest_fallback.zig");
+const net_status = @import("net_status.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -53,7 +54,12 @@ pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
     const repo = action_ref.repo orelse return;
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
 
-    const is_archived = lookupOrFetch(alloc, owner, repo) orelse return;
+    // 取得できなければアーカイブ済みかどうかを判定していない。無指摘と
+    // 区別できるよう記録する (#304)。
+    const is_archived = lookupOrFetch(alloc, owner, repo) orelse {
+        net_status.markUnavailable(.sc004);
+        return;
+    };
 
     if (is_archived) {
         list.append(.{

@@ -424,6 +424,23 @@ fn prefetchNetworkData(
     ) catch return;
 }
 
+/// 注記を出すだけで終了コードは変えない — 既存の 0/1/2 の意味を動かすと
+/// 利用者の CI を壊すため (#304)。
+fn reportUnreachableRules(stderr: *std.Io.Writer, config: *const Config) void {
+    const net_status = zghalint.rules.net_status;
+    var buf: [net_status.rule_count][]const u8 = undefined;
+    var count: usize = 0;
+    for (std.enums.values(net_status.Rule)) |rule| {
+        if (!net_status.isUnavailable(rule)) continue;
+        // .zghalint.yml で無効にされたルールは元々指摘を出さないので、取得
+        // できなかったことを伝えても利用者の判断材料にならない。
+        if (!config.isRuleEnabled(rule.id())) continue;
+        buf[count] = rule.id();
+        count += 1;
+    }
+    net_status.writeNote(stderr, buf[0..count]) catch {};
+}
+
 /// A config that exists but cannot be read or parsed is an error, not a
 /// silent fallback to defaults: the run would otherwise drop the user's
 /// severity overrides and report a clean result.
@@ -762,6 +779,9 @@ pub fn main() !u8 {
     zghalint.rules.impostor.initImpostor(allocator, cli_args.offline);
     defer zghalint.rules.impostor.deinitImpostor();
 
+    zghalint.rules.net_status.reset();
+    defer zghalint.rules.net_status.reset();
+
     // Batch all network-rule fetches before the lint pass so TLS/TCP
     // connections, advisories, and repo metadata are primed in the caches.
     if (!cli_args.offline) {
@@ -844,6 +864,7 @@ pub fn main() !u8 {
     if (unlinted_count > 0) {
         stderr.print("error: {d} file(s) could not be linted; results above are incomplete\n", .{unlinted_count}) catch {};
     }
+    reportUnreachableRules(stderr, &config);
     if (had_fatal) return 2;
     if (hasErrors(&all_diags)) return 1;
     return 0;
@@ -851,6 +872,43 @@ pub fn main() !u8 {
 
 test {
     _ = zghalint;
+}
+
+test "reportUnreachableRules notes marked rules in SC order, skipping disabled ones" {
+    zghalint.rules.net_status.reset();
+    defer zghalint.rules.net_status.reset();
+    zghalint.rules.net_status.markUnavailable(.sc006);
+    zghalint.rules.net_status.markUnavailable(.sc005);
+    zghalint.rules.net_status.markUnavailable(.sc003);
+
+    var config = zghalint.config.Config.init(std.testing.allocator);
+    defer config.deinit();
+    try config.rule_overrides.put("SC005", .{ .severity = null, .enabled = false });
+
+    var buf: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    reportUnreachableRules(&w, &config);
+
+    try std.testing.expectEqualStrings(
+        "note: SC003, SC006 skipped (github api unreachable)\n",
+        w.buffered(),
+    );
+}
+
+test "reportUnreachableRules stays silent when every marked rule is disabled" {
+    zghalint.rules.net_status.reset();
+    defer zghalint.rules.net_status.reset();
+    zghalint.rules.net_status.markUnavailable(.sc003);
+
+    var config = zghalint.config.Config.init(std.testing.allocator);
+    defer config.deinit();
+    try config.rule_overrides.put("SC003", .{ .severity = null, .enabled = false });
+
+    var buf: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    reportUnreachableRules(&w, &config);
+
+    try std.testing.expectEqualStrings("", w.buffered());
 }
 
 test "isDependabotFile detects dependabot yml" {
