@@ -449,6 +449,75 @@ fix エンジンは、同一マッピングでリネームが作るキーと挿�
 （または `.github/dependabot.yml` という位置）に限るべきで、
 `*-dependabot.yml` のワークフローを黙って捨ててはいけない。
 
+#### G26. BP003 が第三者アクションの古い major を見逃す — 要データ拡充
+
+`cline/cline` の 6 ワークフローが `softprops/action-gh-release@v1` を使う。
+actionlint は 6 件すべてに `the runner of "softprops/action-gh-release@v1"
+action is too old to run on GitHub Actions` を出すが、zghalint は 0 件。
+
+BP003 は 2 つの経路を持つ。
+
+1. 埋め込みメタデータ表 (`src/rules/data/popular_actions.zig`) の `using` が
+   `node12` / `node16` なら `error`
+2. `deprecated_actions` の版数表に載っていれば `warning` + autofix
+
+`softprops/action-gh-release` は 1 の表に **major 2 の項目しかない**
+(`.major = 2, .using = "node20"`)。`@v1` は `lookup` が一致せず、2 の版数表は
+`actions/*` 8 件のみなので、どちらの経路にも掛からず沈黙する。
+表が「アクションごとに現行 major 1 つ」しか持たない構造そのものが原因で、
+`softprops/action-gh-release` 固有の問題ではない。
+
+対応方針は 2 つある。(a) `scripts/gen-popular-actions.py` に旧 major の
+`using` も採らせて 1 の経路で拾う、(b) 参照 major が表の major を下回るときに
+2 の経路の `warning` を第三者アクションへも広げる。(a) は runtime 引退の
+`error` を正しく出せる代わりに表が膨らむ。
+
+#### G27. EXPR011 が動的マトリクス (`include: ${{ fromJson(...) }}`) で誤検出する (FP) — 要ルール修正
+
+`cline/cline` の `ext-vscode-test-e2e.yml`:
+
+```yaml
+strategy:
+    matrix:
+        include: ${{ fromJson(needs.matrix_prep.outputs.matrix) }}
+runs-on: ${{ matrix.runner }}-latest
+```
+
+zghalint は `matrix.runner` の 5 箇所すべてに EXPR011
+(`"runner" is not defined in the matrix of this job`) を出す。マトリクスの
+キー集合は前段ジョブの出力から実行時に決まるので、静的には**未定義とも
+定義済みとも言えない**。actionlint は同じファイルで沈黙する。
+
+`matrix:` (または `include:` / `exclude:`) の値が `${{ }}` 式であるジョブでは、
+EXPR011 はキー集合が不明として発火を止めるべき。実ワークフロー 67 本で
+見つかった FP 29 件のうち 5 件がこれ。
+
+#### G28. EXPR007 が値の位置の `||` / `&&` を条件として扱う (FP) — 要ルール修正
+
+残る 24 件の FP。EXPR007 は `${{ }}` 内の `||` / `&&` に裸のリテラル
+オペランドがあれば「unsound condition」を出すが、`validateNode`
+(`src/rules/expressions.zig`) は**式の位置を見ずに全ての `${{ }}` へ掛かる**。
+GitHub Actions で最も一般的な既定値・三項の書き方が丸ごと誤検出になる。
+
+| 実例 | 位置 | 現在の指摘 |
+|---|---|---|
+| `CLOSE_FLAG: ${{ github.event.inputs.close \|\| 'false' }}` (litellm) | `env:` | 「bare literal 'false' … is always truthy」 |
+| `CONFIG_ARGS: ${{ needs.validate.outputs.channel == 'beta' && '--config a.json' \|\| '--config b.json' }}` (cline) | `env:` | 同 (2 件) |
+| `text: "… ${{ … && ' (beta)' \|\| '' }}"` (cline) | ステップ入力 | 同 (2 件) |
+
+条件として読んでも `''` は GitHub Actions では falsy なので、
+「bare literal `''` … is always truthy」というメッセージ自体が誤りである。
+EXPR018 の `fix_hint` が `${{ value || '' }}` を勧めており、そのとおりに
+直すと EXPR007 が出る、という内部矛盾にもなっている。
+
+さらに EXPR007 の autofix は `.unsafe` なので `--fix` では動かないが、
+`--fix-unsafe` を掛けると `${{ inputs.close || 'false' }}` を比較式へ
+書き換えて **env の値を壊す**。FP を直すまでこの経路は危険である。
+
+修正方針: EXPR007 は `if:` (ジョブ / ステップ) の式と、`${{ }}` 単独で
+真偽値として消費される位置に限る。値の位置では `a && 'x' || 'y'` と
+`a || 'default'` を正常な語法として通す。`''` を truthy と言う文言も直す。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -641,6 +710,102 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 
 常設ハーネスは `python3 scripts/bench.py --fix`。
 
+### 4.7 2026-09-08 実ワークフロー比較 (litellm / cline)
+
+`bench/cases/` は「指摘が出るように書いたケース」なので、書き手が
+リンターを意識していない実ワークフローでの挙動は別に見る必要がある。
+2 リポジトリの `.github/workflows/` を 3 ツールへそのまま流した。
+
+| リポジトリ | commit | ファイル | 行数 | 備考 |
+|---|---|---|---|---|
+| `BerriAI/litellm` | `1af7a40` | 50 | 5,246 | CI で zizmor を常用している (`zizmor.yml`) |
+| `cline/cline` | `8ff5f22` | 17 | 4,571 | 外部リンターの常用なし |
+
+フラグは bench と同じ (`zghalint --offline`、`actionlint`、
+`zizmor --offline --no-progress`、regular persona)。リポジトリは
+full clone する — `.github/workflows/` だけの sparse clone だと
+ローカル `uses: ./...` が解決できず DEP004 が丸ごと誤検出になる (§4.6 と同じ制約)。
+3 ツールとも 67 ファイル全部を解析でき、パース失敗・クラッシュは 0 件。
+
+#### 件数
+
+| | zghalint | actionlint | zizmor |
+|---|---|---|---|
+| litellm | 104 | 0 | 59 |
+| cline | 270 | 6 | 191 |
+
+litellm 側で zizmor が `self-repository` (§4.6 で採用しないと決めたもの)
+59 件しか出さないのは、このリポジトリが zizmor を CI で回して
+指摘を潰し切っているため。**外部ツールがグリーンなワークフローに対しても
+zghalint は 104 件出す**、という形の比較になっている (内訳は PERF001 24 /
+PERM001 19 / BP001 18 / BP002 15 と、ハードニング寄りのルールが中心)。
+
+#### 重なり (cline、行番号まで突き合わせ)
+
+| 種別 | zghalint | zizmor | 同一行で一致 |
+|---|---|---|---|
+| `unpinned-action` (SEC001 / `unpinned-uses`) | 92 | 92 | 92 |
+| `artipacked` (SEC015 / SEC018) | 24 | 24 | 24 (行は 1 ずれ) |
+| `template-injection` (SEC002) | 15 | 40 | 15 |
+
+`unpinned-uses` は 92 件が完全一致した。`artipacked` は対象ステップが
+24 件とも一致し、zizmor がステップ先頭 (`name:`) を、zghalint が `uses:` 行を
+指す 1 行のずれだけ。`template-injection` は zizmor の 40 件のうち
+zghalint が 15 件を同一行で拾い、25 件を落とす。その 25 件は
+
+- 22 件が `steps.<id>.outputs.*` の展開 (zizmor では Informational / Low)。
+  SEC002 は汚染源から追跡した出力だけを指摘する (G5) ので、これは
+  §4.3 の意図的な精度差
+- 3 件が High / High。`github.event.action` (`pull_request_target` の
+  ワークフロー内) と `github.ref`。どちらも zghalint が汚染源に入れていない
+  もので、`src/rules/security.zig` に「発火しない」ことを固定する
+  テストがある。実害が薄い一方で FP を生みやすい汚染源であり、判断は据え置く
+
+#### 外部ツールだけが出したもの
+
+| ツール | ident | 件数 | 扱い |
+|---|---|---|---|
+| actionlint | `action` (runner too old) | 6 | **G26** (新規)。`softprops/action-gh-release@v1` |
+| zizmor | `cache-poisoning` | 9 | G1 の実データでの再現。`softprops/action-gh-release` |
+| zizmor | `dangerous-triggers` | 2 | 意図的 (§4.3) |
+| zizmor | `superfluous-actions` | 6 | 未採用 |
+| zizmor | `adhoc-packages` | 5 | 未採用 (§4.6 と同じ) |
+| zizmor | `github-app` | 1 | 未採用。App トークンの権限が広い |
+| zizmor | `self-repository` | 65 | 採用しない (§4.6) |
+
+#### zghalint の FP (実ワークフロー 67 本で 29 件)
+
+意図して書いたケースでは precision 100% (§4.6) だが、実ワークフローでは
+2 系統の FP が出た。どちらも「GitHub Actions で最も普通の書き方」に当たる。
+
+| ルール | 件数 | 内容 |
+|---|---|---|
+| EXPR007 | 24 (litellm 6 / cline 18) | 値の位置の `a \|\| 'default'` と `cond && 'x' \|\| 'y'` を条件として読む → **G28** |
+| EXPR011 | 5 (cline) | `matrix: include: ${{ fromJson(...) }}` の動的マトリクス → **G27** |
+
+EXPR007 の 24 件は `env:` の値やステップ入力に現れる既定値・三項の語法で、
+1 件も条件式ではない。cline の 270 件のうち 18 件、litellm の 104 件のうち
+6 件がこれに当たる。
+
+両方を `bench/cases/e-expression/value-position-ternary.yml` と
+`.../dynamic-matrix-include.yml` に `bench:forbid` として落とした
+(actionlint / zizmor はどちらのケースでも沈黙する)。修正するまで
+`scripts/bench.py` の zghalint precision は 100% を割る — 実ワークフローで
+起きている FP を採点上も見えるようにするのが `forbid` の役目なので、
+ケース側は消さない。
+
+#### wall time (5 回平均、warmup 1)
+
+hyperfine と GNU time が無い環境のためシェルループで測った概算値。RSS は未計測。
+
+| | zghalint | actionlint | zizmor |
+|---|---|---|---|
+| litellm (50 ファイル / 5,246 行) | 11.6 ms | 3.6 ms | 123.3 ms |
+| cline (17 ファイル / 4,571 行) | 13.3 ms | 3.2 ms | 131.2 ms |
+
+zizmor の約 1/10、actionlint の約 3〜4 倍という §4.6 と同じ並びで、
+実ファイルでも傾向は変わらない。
+
 ## 5. 次アクション
 
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
@@ -670,3 +835,7 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - [x] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
 - [x] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [ ] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
+- [ ] G26: BP003 が第三者アクションの古い major (`softprops/action-gh-release@v1`)
+      を見逃す。埋め込み表に旧 major を持たせるか、版数表の warning を広げる
+- [ ] G27: EXPR011 を動的マトリクス (`matrix` / `include` が `${{ }}`) で沈黙させる
+- [ ] G28: EXPR007 を `if:` と真偽値位置に限る (値の位置の `|| 'default'` は正常な語法)

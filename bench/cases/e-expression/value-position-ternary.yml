@@ -1,0 +1,23 @@
+# bench:forbid unsound-condition
+# G28: `a || 'default'` and `cond && 'x' || 'y'` in a value position are the
+# idiomatic GitHub Actions default / ternary spellings, not conditions.
+# EXPR007 reads every `${{ }}` as a condition and reports all three below.
+name: default and ternary values
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        type: string
+        default: stable
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CHANNEL: ${{ inputs.channel || 'stable' }}
+      CONFIG_ARGS: ${{ inputs.channel == 'beta' && '--config beta.json' || '--config release.json' }}
+    steps:
+      - name: Announce
+        run: echo "building $CHANNEL${{ inputs.channel == 'beta' && ' (beta)' || '' }}"
