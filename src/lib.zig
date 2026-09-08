@@ -36,6 +36,7 @@ pub const rules = struct {
     pub const stale_refs = @import("rules/stale_refs.zig");
     pub const impostor = @import("rules/impostor.zig");
     pub const http_client = @import("rules/http_client.zig");
+    pub const net_status = @import("rules/net_status.zig");
     pub const prefetch = @import("rules/prefetch.zig");
     pub const runner = @import("rules/runner.zig");
     pub const composite_steps = @import("rules/composite_steps.zig");
@@ -101,6 +102,7 @@ test {
     _ = @import("rules/reusable_workflow.zig");
     _ = @import("rules/called_workflow.zig");
     _ = @import("rules/http_client.zig");
+    _ = @import("rules/net_status.zig");
     _ = @import("rules/prefetch.zig");
     _ = @import("rules/graphql.zig");
     _ = @import("rules/disk_cache.zig");
