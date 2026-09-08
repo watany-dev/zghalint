@@ -16,6 +16,7 @@ const expr_check = @import("expr_check.zig");
 const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
@@ -81,9 +82,12 @@ const Resolver = struct {
     }
 };
 
-fn appendUnknownStep(res: Resolver, id: []const u8, span: Span) void {
+/// `path` is the whole `steps.<id>...` path the span covers; the rename lands
+/// on the id segment alone.
+fn appendUnknownStep(res: Resolver, path: []const u8, id: []const u8, span: Span) void {
     const alloc = res.list.fixAllocator();
-    const message = if (util.didYouMean(id, res.ids)) |s|
+    const suggestion = util.didYouMean(id, res.ids);
+    const message = if (suggestion) |s|
         std.fmt.allocPrint(alloc, "step \"{s}\" is not defined in this job. did you mean \"{s}\"?", .{ id, s }) catch return
     else
         std.fmt.allocPrint(alloc, "step \"{s}\" is not defined in this job", .{id}) catch return;
@@ -94,6 +98,7 @@ fn appendUnknownStep(res: Resolver, id: []const u8, span: Span) void {
         .message = message,
         .span = span,
         .fix_hint = "give the target step an `id:` and reference that id, or fix the typo",
+        .fix = if (suggestion) |s| rename.pathSegmentFix(res.list, span, path, 1, s) else null,
     }) catch return;
 }
 
@@ -131,9 +136,10 @@ fn appendSelfReference(res: Resolver, id: []const u8, span: Span) void {
     }) catch return;
 }
 
-fn appendUnknownProperty(res: Resolver, id: []const u8, prop: []const u8, span: Span) void {
+fn appendUnknownProperty(res: Resolver, path: []const u8, id: []const u8, prop: []const u8, span: Span) void {
     const alloc = res.list.fixAllocator();
-    const message = if (util.didYouMean(prop, &step_properties)) |s|
+    const suggestion = util.didYouMean(prop, &step_properties);
+    const message = if (suggestion) |s|
         std.fmt.allocPrint(alloc, "unknown property \"{s}\" on step \"{s}\". did you mean \"{s}\"?", .{ prop, id, s }) catch return
     else
         std.fmt.allocPrint(
@@ -148,6 +154,7 @@ fn appendUnknownProperty(res: Resolver, id: []const u8, prop: []const u8, span: 
         .message = message,
         .span = span,
         .fix_hint = "use `outputs`, `conclusion` or `outcome`",
+        .fix = if (suggestion) |s| rename.pathSegmentFix(res.list, span, path, 2, s) else null,
     }) catch return;
 }
 
@@ -171,7 +178,7 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     const id = segmentName(id_seg) orelse return;
 
     const target = res.find(id) orelse {
-        appendUnknownStep(res, id, span);
+        appendUnknownStep(res, path, id, span);
         return;
     };
     if (target.index == res.current) {
@@ -188,7 +195,7 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     for (step_properties) |valid| {
         if (std.ascii.eqlIgnoreCase(prop, valid)) return;
     }
-    appendUnknownProperty(res, id, prop, span);
+    appendUnknownProperty(res, path, id, prop, span);
 }
 
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {

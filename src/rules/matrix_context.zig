@@ -14,6 +14,7 @@ const expr_check = @import("expr_check.zig");
 const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
@@ -90,7 +91,7 @@ const Resolver = struct {
         for (declared) |name| {
             if (keyEql(name, key)) return;
         }
-        self.reportUnknownKey(key, declared, span);
+        self.reportUnknownKey(path, key, declared, span);
     }
 
     fn reportUnavailable(self: Resolver, span: Span) void {
@@ -103,9 +104,16 @@ const Resolver = struct {
         }) catch return;
     }
 
-    fn reportUnknownKey(self: Resolver, key: []const u8, declared: []const []const u8, span: Span) void {
+    fn reportUnknownKey(
+        self: Resolver,
+        path: []const u8,
+        key: []const u8,
+        declared: []const []const u8,
+        span: Span,
+    ) void {
         const alloc = self.list.fixAllocator();
-        const suffix = if (util.didYouMean(key, declared)) |s|
+        const suggestion = util.didYouMean(key, declared);
+        const suffix = if (suggestion) |s|
             std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -121,6 +129,7 @@ const Resolver = struct {
             .message = message,
             .span = span,
             .fix_hint = "declare the key under `strategy.matrix:` or one of its `include:` entries",
+            .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 1, s) else null,
         }) catch return;
     }
 };

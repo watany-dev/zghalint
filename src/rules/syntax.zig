@@ -6,6 +6,7 @@ const workflow_events = @import("../workflow/events.zig");
 const workflow_parser = @import("../workflow/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
@@ -187,6 +188,7 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
             .severity = .@"error",
             .message = message,
             .span = uk.span,
+            .fix = if (suggestion) |s| rename.tokenFix(list, uk.span, uk.key, s) else null,
         }) catch continue;
     }
 }
@@ -524,7 +526,8 @@ fn checkMatrixExclude(
 
             const axis = findMatrixAxis(matrix, key) orelse {
                 var suffix_buf: [64]u8 = undefined;
-                const suffix = if (util.didYouMean(key, axis_names)) |s|
+                const suggestion = util.didYouMean(key, axis_names);
+                const suffix = if (suggestion) |s|
                     std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
                 else
                     "";
@@ -539,6 +542,7 @@ fn checkMatrixExclude(
                     ) catch "unknown key in \"exclude\"",
                     .span = kv.key.span,
                     .fix_hint = "name one of the matrix axes, or drop the entry",
+                    .fix = if (suggestion) |s| rename.tokenFix(list, kv.key.span, key, s) else null,
                 }) catch return;
                 continue;
             };
@@ -649,7 +653,8 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
         if (workflow_events.isKnown(event.name)) continue;
 
         var suffix_buf: [64]u8 = undefined;
-        const suffix = if (util.didYouMean(event.name, &workflow_events.trigger_names)) |s|
+        const suggestion = util.didYouMean(event.name, &workflow_events.trigger_names);
+        const suffix = if (suggestion) |s|
             std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -664,6 +669,7 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
             ) catch "unknown Webhook event",
             .span = event.name_span,
             .fix_hint = "use one of the event names GitHub Actions supports under 'on'",
+            .fix = if (suggestion) |s| rename.tokenFix(list, event.name_span, event.name, s) else null,
         }) catch return;
     }
 }
@@ -723,10 +729,15 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
             if (found) continue;
 
             var suffix_buf: [64]u8 = undefined;
-            const suffix = if (util.didYouMean(value, known)) |s|
+            const suggestion = util.didYouMean(value, known);
+            const suffix = if (suggestion) |s|
                 std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
             else
                 "";
+            const value_span: ?Span = if (i < event.activity_types.spans.len)
+                event.activity_types.spans[i]
+            else
+                null;
 
             list.append(.{
                 .rule_id = "SYN010",
@@ -736,16 +747,17 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
                     "invalid activity type \"{s}\" for \"{s}\" event{s}",
                     .{ value, event.name, suffix },
                 ) catch "invalid activity type",
-                .span = if (i < event.activity_types.spans.len)
-                    event.activity_types.spans[i]
-                else
-                    event.name_span,
+                .span = value_span orelse event.name_span,
                 .fix_hint = availableHint(
                     alloc,
                     "available types are",
                     known,
                     "use one of the activity types this event defines",
                 ),
+                .fix = if (suggestion) |s|
+                    if (value_span) |vs| rename.tokenFix(list, vs, value, s) else null
+                else
+                    null,
             }) catch return;
         }
     }
@@ -965,7 +977,8 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
             if (timezones.isKnown(tz)) continue;
 
             var suffix_buf: [96]u8 = undefined;
-            const suffix = if (util.didYouMean(tz, &timezones.timezone_names)) |s|
+            const suggestion = util.didYouMean(tz, &timezones.timezone_names);
+            const suffix = if (suggestion) |s|
                 std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
             else
                 "";
@@ -980,6 +993,10 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
                 ) catch "invalid timezone in schedule event",
                 .span = entry.timezone_span orelse entry.cron_span,
                 .fix_hint = "use a name from the IANA time zone database, such as \"Asia/Tokyo\" or \"UTC\"",
+                .fix = if (suggestion) |s|
+                    if (entry.timezone_span) |ts| rename.tokenFix(list, ts, tz, s) else null
+                else
+                    null,
             }) catch return;
         }
     }
