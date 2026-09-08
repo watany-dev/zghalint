@@ -6,6 +6,7 @@ const engine = @import("engine.zig");
 const http_client = @import("http_client.zig");
 const json_util = @import("json_util.zig");
 const cache_dir = @import("cache_dir.zig");
+const net_status = @import("net_status.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -67,12 +68,18 @@ fn ensureLoaded() void {
 pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void {
     ensureLoaded();
 
-    const advisories = advisory_cache orelse return;
     const action_ref = step.uses orelse return;
     if (action_ref.is_local or action_ref.is_docker) return;
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
+
+    // アドバイザリを 1 件も持てなかった = 調べられなかった。--offline なら
+    // 沈黙は意図どおりなので記録しない (#304)。
+    const advisories = advisory_cache orelse {
+        if (!is_offline) net_status.markUnavailable(.sc003);
+        return;
+    };
 
     for (advisories) |adv| {
         if (!slugMatches(adv.action_slug, owner, repo)) continue;
@@ -586,6 +593,72 @@ fn runWithAdvisories(advisories: []const Advisory, uses_ref: ?[]const u8) Diagno
     var list = DiagnosticList.init(testing.allocator);
     checkKnownVulnerableAction(&step, &list);
     return list;
+}
+
+/// アドバイザリを 1 件も読めなかった状態を作る。`fetched` を立てるので
+/// `ensureLoaded` はディスクにもネットワークにも触れない。
+fn runWithoutAdvisories(offline: bool, uses_ref: ?[]const u8) DiagnosticList {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+    advisory_cache = null;
+    is_offline = offline;
+    fetched = true;
+
+    const step = Step{
+        .uses = if (uses_ref) |r| ActionRef.parse(r) else null,
+        .run = if (uses_ref == null) "echo hello" else null,
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    checkKnownVulnerableAction(&step, &list);
+    return list;
+}
+
+test "SC003: unloadable advisories record the rule as unreachable" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = runWithoutAdvisories(false, "actions/checkout@v4");
+    defer list.deinit();
+
+    try testing.expectEqual(@as(usize, 0), list.len());
+    try testing.expect(net_status.isUnavailable(.sc003));
+}
+
+test "SC003: offline mode leaves the rule unmarked" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = runWithoutAdvisories(true, "actions/checkout@v4");
+    defer list.deinit();
+
+    try testing.expect(!net_status.isUnavailable(.sc003));
+}
+
+test "SC003: a step with no GitHub action leaves the rule unmarked" {
+    net_status.reset();
+    defer net_status.reset();
+
+    // 照会する action が無いのだから「調べられなかった」ことも起きていない。
+    var list = runWithoutAdvisories(false, null);
+    defer list.deinit();
+
+    try testing.expect(!net_status.isUnavailable(.sc003));
+}
+
+test "SC003: loaded advisories leave the rule unmarked" {
+    net_status.reset();
+    defer net_status.reset();
+
+    var list = runWithAdvisories(&mock_advisories, "actions/checkout@v4");
+    defer list.deinit();
+
+    try testing.expect(!net_status.isUnavailable(.sc003));
 }
 
 test "serializeAdvisories: tabs and newlines in fields cannot split records" {
