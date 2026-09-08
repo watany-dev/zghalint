@@ -88,6 +88,8 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
     defer allocator.free(dropped);
     @memset(dropped, false);
 
+    dropRenameInsertCollisions(flat, source, dropped);
+
     const selected = try allocator.alloc(Edit, idx);
     errdefer allocator.free(selected);
 
@@ -190,6 +192,88 @@ fn dropInsertionGroup(flat: []const OwnedEdit, e: Edit, dropped: []bool) void {
         const other_key = firstInsertedKey(oe.edit.replacement) orelse continue;
         if (std.mem.eql(u8, other_key, key)) dropped[oe.fix_index] = true;
     }
+}
+
+/// Drops an insertion of key K when a rename in the same mapping produces K.
+/// SYN001 rewriting `prmissions:` to `permissions:` and SEC007 inserting a
+/// new `permissions:` would otherwise both fire and leave SYN002 (#348).
+/// The rename is kept: it preserves the existing block.
+fn dropRenameInsertCollisions(flat: []const OwnedEdit, source: []const u8, dropped: []bool) void {
+    for (flat) |insert_oe| {
+        if (dropped[insert_oe.fix_index]) continue;
+        if (insert_oe.edit.start_byte != insert_oe.edit.end_byte) continue;
+        const insert_key = firstInsertedKey(insert_oe.edit.replacement) orelse continue;
+        const insert_indent = insertedKeyIndent(source, insert_oe.edit);
+
+        for (flat) |rename_oe| {
+            if (rename_oe.fix_index == insert_oe.fix_index) continue;
+            if (dropped[rename_oe.fix_index]) continue;
+            const new_key = renamedMappingKey(source, rename_oe.edit) orelse continue;
+            if (!std.ascii.eqlIgnoreCase(new_key, insert_key)) continue;
+            if (lineIndent(source, rename_oe.edit.start_byte) != insert_indent) continue;
+            if (!sameMappingBlock(source, insert_oe.edit.start_byte, rename_oe.edit.start_byte, insert_indent)) {
+                continue;
+            }
+            dropped[insert_oe.fix_index] = true;
+            break;
+        }
+    }
+}
+
+fn lineIndent(source: []const u8, byte: usize) u32 {
+    var i = byte;
+    while (i > 0 and source[i - 1] != '\n' and source[i - 1] != '\r') : (i -= 1) {}
+    var indent: u32 = 0;
+    while (i < source.len and source[i] == ' ') : (i += 1) indent += 1;
+    return indent;
+}
+
+/// The key a replacement rewrites a mapping key to. Null when the edit is not
+/// a key token (a value rename such as `opend` → `opened` is followed by
+/// something other than `:`).
+fn renamedMappingKey(source: []const u8, e: Edit) ?[]const u8 {
+    if (e.start_byte == e.end_byte) return null;
+    if (e.replacement.len == 0) return null;
+    if (std.mem.indexOfAny(u8, e.replacement, ":\n\r \t") != null) return null;
+    var i = e.end_byte;
+    if (i < source.len and (source[i] == '\'' or source[i] == '"')) i += 1;
+    if (i < source.len and source[i] == ':') return e.replacement;
+    return null;
+}
+
+fn insertedKeyIndent(source: []const u8, e: Edit) u32 {
+    const r = e.replacement;
+    var i: usize = 0;
+    var new_line = false;
+    while (i < r.len and (r[i] == '\n' or r[i] == '\r')) : (i += 1) new_line = true;
+    var indent: u32 = 0;
+    while (i < r.len and r[i] == ' ') : (i += 1) indent += 1;
+    if (new_line) return indent;
+    return lineIndent(source, e.start_byte) + indent;
+}
+
+/// True when `a` and `b` sit in the same mapping: no intervening line is
+/// indented less than `indent`. Indent 0 is the document root, so every pair
+/// is in the same mapping.
+fn sameMappingBlock(source: []const u8, a: usize, b: usize, indent: u32) bool {
+    if (indent == 0) return true;
+    const lo = @min(a, b);
+    const hi = @max(a, b);
+    var i = lo;
+    while (i < hi) {
+        while (i < hi and source[i] != '\n' and source[i] != '\r') : (i += 1) {}
+        if (i >= hi) break;
+        if (source[i] == '\r') i += 1;
+        if (i < source.len and source[i] == '\n') i += 1;
+        if (i >= hi) break;
+        var spaces: u32 = 0;
+        var j = i;
+        while (j < source.len and source[j] == ' ') : (j += 1) spaces += 1;
+        if (j >= source.len) break;
+        if (source[j] == '\n' or source[j] == '\r' or source[j] == '#') continue;
+        if (spaces < indent) return false;
+    }
+    return true;
 }
 
 /// The mapping key an insertion opens with, e.g. `with` for
@@ -656,6 +740,122 @@ test "insertions of different keys at one anchor both survive" {
         "  timeout-minutes: 30\n  permissions:\n    contents: read\n  build:\n",
         result.content,
     );
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+}
+
+test "a rename onto a key drops an insertion of the same key (#348)" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\on: push
+        \\prmissions:
+        \\  contents: read
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\
+    ;
+    const key = std.mem.indexOf(u8, source, "prmissions").?;
+    const rename = [_]Edit{
+        .{ .start_byte = key, .end_byte = key + "prmissions".len, .replacement = "permissions" },
+    };
+    const insert = [_]Edit{
+        .{ .start_byte = key, .end_byte = key, .replacement = "permissions: {contents: read}\n" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "SYN001", .safety = .safe, .edits = &rename },
+        .{ .description = "SEC007", .safety = .unsafe, .edits = &insert },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(
+        \\on: push
+        \\permissions:
+        \\  contents: read
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\
+    , result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "a job-level rename does not drop a workflow-level insertion of the same key" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    permssions:
+        \\      contents: read
+        \\    runs-on: ubuntu-latest
+        \\
+    ;
+    const key = std.mem.indexOf(u8, source, "permssions").?;
+    const insert_at = std.mem.indexOf(u8, source, "jobs:").?;
+    const rename = [_]Edit{
+        .{ .start_byte = key, .end_byte = key + "permssions".len, .replacement = "permissions" },
+    };
+    const insert = [_]Edit{
+        .{ .start_byte = insert_at, .end_byte = insert_at, .replacement = "permissions: {contents: read}\n" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "SYN001", .safety = .safe, .edits = &rename },
+        .{ .description = "SEC007", .safety = .unsafe, .edits = &insert },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(
+        \\on: push
+        \\permissions: {contents: read}
+        \\jobs:
+        \\  a:
+        \\    permissions:
+        \\      contents: read
+        \\    runs-on: ubuntu-latest
+        \\
+    , result.content);
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
+}
+
+test "a value rename does not drop an insertion of a matching key name" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\on:
+        \\  pull_request:
+        \\    types: [opend]
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\
+    ;
+    const value = std.mem.indexOf(u8, source, "opend").?;
+    const insert_at = std.mem.indexOf(u8, source, "jobs:").?;
+    const rename = [_]Edit{
+        .{ .start_byte = value, .end_byte = value + "opend".len, .replacement = "opened" },
+    };
+    const insert = [_]Edit{
+        .{ .start_byte = insert_at, .end_byte = insert_at, .replacement = "opened: true\n" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "SYN010", .safety = .safe, .edits = &rename },
+        .{ .description = "other", .safety = .safe, .edits = &insert },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(
+        \\on:
+        \\  pull_request:
+        \\    types: [opened]
+        \\opened: true
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\
+    , result.content);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
 }
 

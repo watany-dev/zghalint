@@ -180,6 +180,23 @@ fn formatUnexpectedKeyMessage(
     return try message.toOwnedSlice(alloc);
 }
 
+fn siblingHasKeyIgnoreCase(m: Mapping, self_span: Span, key: []const u8) bool {
+    for (m.entries) |entry| {
+        if (entry.key.span.start_byte == self_span.start_byte and
+            entry.key.span.end_byte == self_span.end_byte) continue;
+        if (std.ascii.eqlIgnoreCase(entry.key.value, key)) return true;
+    }
+    return false;
+}
+
+/// A rename that would duplicate a sibling key is dropped: applying it would
+/// turn SYN001 into SYN002 (#347). The unknown key itself is not a sibling,
+/// even when it equals the suggestion ignoring case (`Timeout-minutes`).
+fn unknownKeyFix(list: *DiagnosticList, uk: UnknownKey, suggestion: []const u8) ?diagnostics_mod.Fix {
+    if (siblingHasKeyIgnoreCase(uk.mapping, uk.span, suggestion)) return null;
+    return rename.tokenFix(list, uk.span, uk.key, suggestion);
+}
+
 fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.unknown_keys) |uk| {
@@ -190,7 +207,7 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
             .severity = .@"error",
             .message = message,
             .span = uk.span,
-            .fix = if (suggestion) |s| rename.tokenFix(list, uk.span, uk.key, s) else null,
+            .fix = if (suggestion) |s| unknownKeyFix(list, uk, s) else null,
         }) catch continue;
     }
 }
@@ -713,6 +730,20 @@ fn checkMatrixIncludeExclude(job: *const Job, list: *DiagnosticList) void {
     checkMatrixInclude(matrix, axis_names, list);
 }
 
+/// Privileged triggers (`pull_request_target`, `workflow_run`) run with the
+/// default branch's secrets, so correcting a typo into one of them is unsafe
+/// (#346). Ordinary trigger names stay `safe`.
+fn eventNameFix(
+    list: *DiagnosticList,
+    span: Span,
+    old_name: []const u8,
+    suggestion: []const u8,
+) ?diagnostics_mod.Fix {
+    var fix = rename.tokenFix(list, span, old_name, suggestion) orelse return null;
+    if (workflow_events.isPrivileged(suggestion)) fix.safety = .unsafe;
+    return fix;
+}
+
 fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.on.events) |event| {
@@ -738,7 +769,7 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
             ) catch "unknown Webhook event",
             .span = event.name_span,
             .fix_hint = "use one of the event names GitHub Actions supports under 'on'",
-            .fix = if (suggestion) |s| rename.tokenFix(list, event.name_span, event.name, s) else null,
+            .fix = if (suggestion) |s| eventNameFix(list, event.name_span, event.name, s) else null,
         }) catch return;
     }
 }
@@ -1677,6 +1708,110 @@ test "SYN001: message survives appendOwning after source list deinit" {
 
     try testing.expectEqualStrings("SYN001", dst.get(0).rule_id);
     try testing.expect(std.mem.indexOf(u8, dst.get(0).message, "timeout-minute") != null);
+}
+
+test "SYN001: a typo is a safe rename when the target key is absent" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minute: 10
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownKeys },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
+    try testing.expectEqual(diagnostics_mod.FixSafety.safe, outcome.first_safety.?);
+    try testing.expectEqual(@as(usize, 1), outcome.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minutes:") != null);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minute:") == null);
+}
+
+test "SYN001: no autofix when the suggested sibling already exists" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    runs-onn: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownKeys },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), outcome.fix_count);
+    try testing.expectEqualStrings(source, outcome.content);
+}
+
+test "SYN001: a case-only mismatch of a known key is still renamed" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    Timeout-minutes: 10
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownKeys },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
+    try testing.expectEqual(@as(usize, 1), outcome.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minutes:") != null);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "Timeout-minutes:") == null);
+}
+
+test "SYN001: no autofix when a sibling differs only in letter case" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    Timeout-minutes: 10
+        \\    timeout-minute: 5
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownKeys },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), outcome.diagnostic_count);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minute:") != null);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, outcome.content, "timeout-minutes:"));
 }
 
 fn lintYaml(source: []const u8, diags: *DiagnosticList) !void {
@@ -3688,6 +3823,105 @@ test "SYN009: a block scalar event name is reported but never rewritten" {
     try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
     try testing.expectEqual(@as(usize, 0), outcome.edits_applied);
     try testing.expectEqualStrings(source, outcome.content);
+}
+
+test "SYN009: a typo of a non-privileged trigger is a safe rename" {
+    const source =
+        \\on:
+        \\  pull_reqeust:
+        \\    types: [opened]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
+    try testing.expectEqual(diagnostics_mod.FixSafety.safe, outcome.first_safety.?);
+    try testing.expectEqual(@as(usize, 1), outcome.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "pull_request:") != null);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "pull_reqeust:") == null);
+}
+
+test "SYN009: a typo of pull_request_target is unsafe and --fix leaves it" {
+    const source =
+        \\on:
+        \\  pull_request_targt:
+        \\    types: [opened]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const safe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer safe.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), safe.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), safe.fix_count);
+    try testing.expectEqualStrings(source, safe.content);
+
+    const unsafe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        true,
+    );
+    defer unsafe.deinit(testing.allocator);
+    try testing.expectEqual(diagnostics_mod.FixSafety.unsafe, unsafe.first_safety.?);
+    try testing.expectEqual(@as(usize, 1), unsafe.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, unsafe.content, "pull_request_target:") != null);
+    try testing.expect(std.mem.indexOf(u8, unsafe.content, "pull_request_targt:") == null);
+}
+
+test "SYN009: a typo of workflow_run is unsafe" {
+    const source =
+        \\on:
+        \\  workflow_rn:
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const safe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer safe.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), safe.fix_count);
+    try testing.expectEqualStrings(source, safe.content);
+
+    const unsafe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        true,
+    );
+    defer unsafe.deinit(testing.allocator);
+    try testing.expectEqual(diagnostics_mod.FixSafety.unsafe, unsafe.first_safety.?);
+    try testing.expectEqual(@as(usize, 1), unsafe.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, unsafe.content, "workflow_run:") != null);
 }
 
 test "SYN012: branches with branches-ignore is an error" {
