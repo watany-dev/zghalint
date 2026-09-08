@@ -57,6 +57,11 @@ still be renumbered before 1.0.
 
 ### Added
 
+- SYN020 (`empty-workflow`, error): report a workflow file with no content at
+  all — comments and whitespace only, or an empty mapping (#284). Such a file
+  was previously rejected as unlintable (exit code 2); it is now an ordinary
+  diagnostic (exit code 1), so a workflow that was emptied out but never
+  deleted is visible in the report.
 - SEC023 (`use-trusted-publishing`, info): report a publish step that passes a
   long-lived API token where the registry supports OIDC trusted publishing —
   `pypa/gh-action-pypi-publish` with `password:`, `rubygems/release-gem` with

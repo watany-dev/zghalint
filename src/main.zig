@@ -521,6 +521,16 @@ fn lintFile(
         return error.YamlParseError;
     };
 
+    // An empty file cannot be parsed into a `Workflow`, so SYN020 is reported
+    // straight from the YAML document: the file is a finding, not an obstacle
+    // to linting.
+    var empty_diags = zghalint.DiagnosticList.init(allocator);
+    defer empty_diags.deinit();
+    if (zghalint.rules.syntax.lintEmptyWorkflow(yaml_node, &empty_diags)) {
+        appendFiltered(all_diags, &empty_diags, config, file_path);
+        return;
+    }
+
     var workflow_failure: ?zghalint.workflow.parser.Failure = null;
     const workflow = zghalint.workflow.parseWorkflowTracked(arena_alloc, yaml_node, &workflow_failure) catch |err| {
         reportWorkflowParseError(stderr, file_path, err, workflow_failure);

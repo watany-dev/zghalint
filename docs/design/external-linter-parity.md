@@ -221,12 +221,17 @@ bom-prefixed.yml: workflow parse error: InvalidValue
 ファイルの残り半分がどのルールからも見えなくなるため。文書終端の `...` は
 2 つ目のドキュメントではないので、そのまま読み飛ばす。
 
-#### G13 (#284). 中身のないワークフローを指摘しない — 要ルール追加
+#### G13 (#284). 中身のないワークフローを指摘しない — 対応済み
 
 `bench/cases/i-robustness/comments-only.yml`。コメントだけのワークフロー
-ファイルを `InvalidValue` で拒否する。actionlint は `workflow is empty` と
+ファイルを `InvalidValue` で拒否していた。actionlint は `workflow is empty` と
 診断として報告しており、消し忘れのファイルを見つけられる形になっている。
-パースエラーではなく診断として出すのが望ましい。
+
+SYN020 (`empty-workflow`, error) を追加し、ワークフローパーサに渡す前の
+YAML ドキュメントの段階で「中身が無い」ことを報告するようにした。空白と
+コメントだけのファイル、および空のマッピング (`{}`) が対象。終了コードは
+2 (lint 不能) から 1 (指摘あり) になった。ルートがシーケンスやスカラーの
+場合は中身のある型の誤りなので、従来どおりパースエラーとして扱う。
 
 #### G14 (#285). PERM001 がジョブに必要な write 権限まで警告する (FP) — 対応済み
 
@@ -596,7 +601,9 @@ persona 3 列、offline vs online、G16/G17 後の実コーパス) を再実行�
 意図して書いた expect では FN / FP は無い。位置不一致 4 件は以前からある
 (`container-image-no-digest`、credentials 2 件、`secrets-inherit`)。
 実行エラーは G13 の `comments-only.yml` (zghalint exit 2) と、zizmor が
-空ワークフロー / `"10m"` で落ちる 2 ケース。
+空ワークフロー / `"10m"` で落ちる 2 ケース。G13 はその後 SYN020 で解消した
+(§4.1)。この表は解消前の計測なので、`comments-only.yml` は zghalint 側の
+期待ケースに数えられていない。
 
 #### 性能 (`scripts/bench.py --perf --runs 3 --warmup 1`)
 
@@ -733,7 +740,7 @@ user 3 ms + sys 3 ms。
 - [ ] G10 (#281): `needs:` の未定義ジョブと循環依存を検出する
 - [x] G11 (#282): UTF-8 BOM を読み飛ばす
 - [x] G12 (#283): `---` / `...` のドキュメントマーカーを受理する
-- [ ] G13 (#284): 中身のないワークフローを診断として報告する
+- [x] G13 (#284): 中身のないワークフローを診断として報告する (SYN020)
 - [x] G14 (#285): PERM001 がジョブに必要な write 権限を除外する
 - [x] G15 (#286): API トークンでの publish を指摘する (trusted publishing への誘導)
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える

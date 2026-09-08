@@ -56,6 +56,37 @@ fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
     checkEmptySections(step.empty_sections, list);
 }
 
+/// A file with no content at all cannot become a `Workflow`: the parser needs
+/// `on` and `jobs` and gives up, which would drop the whole file as unlintable
+/// (exit code 2). An emptied-out workflow that was never deleted is a finding
+/// of its own, so the CLI runs this on the YAML document before parsing and
+/// reports SYN020 instead. Returns whether the document was empty.
+pub fn lintEmptyWorkflow(root: Node, list: *DiagnosticList) bool {
+    if (!isEmptyDocument(root)) return false;
+    list.append(.{
+        .rule_id = "SYN020",
+        .severity = .@"error",
+        .message = "workflow file is empty",
+        // The document's own span sits wherever the parser stopped, which for
+        // a comments-only file is the line past the last comment. The finding
+        // is about the whole file, so it is anchored at its first line.
+        .span = Span.point(1, 1, 0),
+        .fix_hint = "delete the file, or give it \"on\" and \"jobs\"",
+    }) catch {};
+    return true;
+}
+
+/// A root sequence is not empty in this sense: it has content, just not the
+/// shape a workflow takes, and the parser reports that as a type error.
+fn isEmptyDocument(root: Node) bool {
+    return switch (root) {
+        .null_value => true,
+        .scalar => |s| std.mem.trim(u8, s.value, " \t\r\n").len == 0,
+        .mapping => |m| m.entries.len == 0,
+        .sequence => false,
+    };
+}
+
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const root = wf.yaml_root orelse return;
     walkDuplicateKeys(root, "workflow", null, workflowJobsEntries(root), list);
@@ -1360,6 +1391,16 @@ pub const rules = [_]Rule{
         .severity = .warning,
         .category = .syntax,
         .check_job = &checkMatrixIncludeExclude,
+    },
+    // Reported by `lintEmptyWorkflow` before the workflow parser runs, so
+    // there is no `check_*` to hang it on; the entry exists so the ID is
+    // configurable and documented like every other rule.
+    .{
+        .id = "SYN020",
+        .name = "empty-workflow",
+        .description = "the workflow file has no content at all",
+        .severity = .@"error",
+        .category = .syntax,
     },
 };
 
@@ -5077,4 +5118,70 @@ test "SYN019: a job without a matrix is clean" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn020(source: []const u8) !struct { empty: bool, list: DiagnosticList } {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parser = yaml_parser.Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+    var list = DiagnosticList.init(testing.allocator);
+    return .{ .empty = lintEmptyWorkflow(root, &list), .list = list };
+}
+
+test "SYN020: a comments-only file is reported instead of failing to parse" {
+    var result = try runSyn020(
+        \\# a workflow that was emptied out but never deleted
+        \\# nothing else is left
+        \\
+    );
+    defer result.list.deinit();
+
+    try testing.expect(result.empty);
+    try testing.expectEqual(@as(usize, 1), result.list.len());
+    const diag = result.list.items.items[0];
+    try testing.expectEqualStrings("SYN020", diag.rule_id);
+    try testing.expectEqual(@as(u32, 1), diag.span.start_line);
+}
+
+test "SYN020: a file with only whitespace is empty" {
+    var result = try runSyn020("   \n\n");
+    defer result.list.deinit();
+
+    try testing.expect(result.empty);
+    try testing.expectEqual(@as(usize, 1), result.list.len());
+}
+
+test "SYN020: an empty flow mapping is empty" {
+    var result = try runSyn020("{}\n");
+    defer result.list.deinit();
+
+    try testing.expect(result.empty);
+    try testing.expectEqual(@as(usize, 1), result.list.len());
+}
+
+test "SYN020: a workflow with content is left to the workflow parser" {
+    var result = try runSyn020(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    );
+    defer result.list.deinit();
+
+    try testing.expect(!result.empty);
+    try testing.expectEqual(@as(usize, 0), result.list.len());
+}
+
+test "SYN020: a document whose only key is a comment-out is not empty" {
+    var result = try runSyn020(
+        \\# on: push
+        \\name: leftover
+    );
+    defer result.list.deinit();
+
+    try testing.expect(!result.empty);
+    try testing.expectEqual(@as(usize, 0), result.list.len());
 }
