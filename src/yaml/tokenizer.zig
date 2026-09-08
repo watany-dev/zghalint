@@ -418,8 +418,8 @@ pub const Tokenizer = struct {
     /// True when the `-` at `pos` is a block sequence indicator rather than
     /// the first character of a plain scalar such as `-1` or `--flag`.
     fn isBlockSequenceIndicator(self: *const Tokenizer) bool {
-        const following = if (self.pos + 1 < self.source.len) self.source[self.pos + 1] else return self.flow_depth == 0;
-        if (following == ' ' or following == '\t') return true;
+        if (self.pos + 1 >= self.source.len) return self.flow_depth == 0;
+        if (self.source[self.pos + 1] == ' ') return true;
         return self.flow_depth == 0 and self.isBreakAt(self.pos + 1);
     }
 

@@ -319,25 +319,21 @@ fn reportWorkflowParseError(
     err: anyerror,
     failure: ?zghalint.workflow.parser.Failure,
 ) void {
-    if (failure) |f| {
-        if (f.span) |span| {
-            stderr.print("{s}:{d}:{d}: workflow parse error: {s}: '{s}'\n", .{
-                file_path,
-                span.start_line,
-                span.start_col,
-                @errorName(err),
-                f.path,
-            }) catch {};
-            return;
-        }
-        stderr.print("{s}: workflow parse error: {s}: '{s}'\n", .{
+    const f = failure orelse {
+        stderr.print("{s}: workflow parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+        return;
+    };
+    if (f.span) |span| {
+        stderr.print("{s}:{d}:{d}: workflow parse error: {s}: '{s}'\n", .{
             file_path,
+            span.start_line,
+            span.start_col,
             @errorName(err),
             f.path,
         }) catch {};
         return;
     }
-    stderr.print("{s}: workflow parse error: {s}\n", .{ file_path, @errorName(err) }) catch {};
+    stderr.print("{s}: workflow parse error: {s}: '{s}'\n", .{ file_path, @errorName(err), f.path }) catch {};
 }
 
 /// `appendOwning` is required because `diag_list`'s fix arena dies with the
