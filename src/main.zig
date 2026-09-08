@@ -428,26 +428,17 @@ fn prefetchNetworkData(
 /// 変えない — 既存の 0/1/2 の意味を動かすと利用者の CI を壊すため (#304)。
 fn reportUnreachableRules(stderr: *std.Io.Writer, config: *const Config) void {
     const net_status = zghalint.rules.net_status;
-    var all_buf: [net_status.rule_count][]const u8 = undefined;
-    var enabled_buf: [net_status.rule_count][]const u8 = undefined;
-    const ids = filterEnabledRules(net_status.collectUnavailable(&all_buf), config, &enabled_buf);
-    net_status.writeNote(stderr, ids) catch {};
-}
-
-/// .zghalint.yml で無効にされたルールは元々指摘を出さないので、取得できなかった
-/// ことを伝えても利用者の判断材料にならない。
-fn filterEnabledRules(
-    ids: []const []const u8,
-    config: *const Config,
-    buf: *[zghalint.rules.net_status.rule_count][]const u8,
-) []const []const u8 {
+    var buf: [net_status.rule_count][]const u8 = undefined;
     var count: usize = 0;
-    for (ids) |id| {
-        if (!config.isRuleEnabled(id)) continue;
-        buf[count] = id;
+    for (std.enums.values(net_status.Rule)) |rule| {
+        if (!net_status.isUnavailable(rule)) continue;
+        // .zghalint.yml で無効にされたルールは元々指摘を出さないので、取得
+        // できなかったことを伝えても利用者の判断材料にならない。
+        if (!config.isRuleEnabled(rule.id())) continue;
+        buf[count] = rule.id();
         count += 1;
     }
-    return buf[0..count];
+    net_status.writeNote(stderr, buf[0..count]) catch {};
 }
 
 /// A config that exists but cannot be read or parsed is an error, not a
@@ -883,26 +874,41 @@ test {
     _ = zghalint;
 }
 
-test "filterEnabledRules keeps rules the config did not disable" {
+test "reportUnreachableRules notes marked rules in SC order, skipping disabled ones" {
+    zghalint.rules.net_status.reset();
+    defer zghalint.rules.net_status.reset();
+    zghalint.rules.net_status.markUnavailable(.sc006);
+    zghalint.rules.net_status.markUnavailable(.sc005);
+    zghalint.rules.net_status.markUnavailable(.sc003);
+
     var config = zghalint.config.Config.init(std.testing.allocator);
     defer config.deinit();
     try config.rule_overrides.put("SC005", .{ .severity = null, .enabled = false });
 
-    var buf: [zghalint.rules.net_status.rule_count][]const u8 = undefined;
-    const ids = filterEnabledRules(&.{ "SC003", "SC005", "SC006" }, &config, &buf);
+    var buf: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    reportUnreachableRules(&w, &config);
 
-    try std.testing.expectEqual(@as(usize, 2), ids.len);
-    try std.testing.expectEqualStrings("SC003", ids[0]);
-    try std.testing.expectEqualStrings("SC006", ids[1]);
+    try std.testing.expectEqualStrings(
+        "note: SC003, SC006 skipped (github api unreachable)\n",
+        w.buffered(),
+    );
 }
 
-test "filterEnabledRules drops every id when all are disabled" {
+test "reportUnreachableRules stays silent when every marked rule is disabled" {
+    zghalint.rules.net_status.reset();
+    defer zghalint.rules.net_status.reset();
+    zghalint.rules.net_status.markUnavailable(.sc003);
+
     var config = zghalint.config.Config.init(std.testing.allocator);
     defer config.deinit();
     try config.rule_overrides.put("SC003", .{ .severity = null, .enabled = false });
 
-    var buf: [zghalint.rules.net_status.rule_count][]const u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 0), filterEnabledRules(&.{"SC003"}, &config, &buf).len);
+    var buf: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    reportUnreachableRules(&w, &config);
+
+    try std.testing.expectEqualStrings("", w.buffered());
 }
 
 test "isDependabotFile detects dependabot yml" {
