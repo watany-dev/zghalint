@@ -68,12 +68,17 @@ names, because branching on them — `if: startsWith(github.head_ref, 'release/'
 ### SEC002 taint sources
 
 Besides the fixed `github.event.*` table, two taint sources cannot be decided
-from a step alone and need the whole workflow.
+from a step alone and need the whole workflow. SEC008 is workflow-scoped for the
+same reason and reads the same table, so a value that is injection in a `run:`
+block is injection when it is written to `$GITHUB_ENV` too.
 
-- `inputs.*` / `github.event.inputs.*` — untrusted only when the workflow
-  declares `workflow_dispatch` or `workflow_call`. The values are typed by the
-  dispatching actor or passed by the caller, and neither can be validated on the
-  callee side.
+- The dispatch payloads — `inputs.*` / `github.event.inputs.*` under
+  `workflow_dispatch` or `workflow_call`, and `github.event.client_payload.*`
+  under `repository_dispatch`. The values are typed by the dispatching actor,
+  passed by the caller, or forwarded verbatim by whatever posted the dispatch,
+  and none of them can be validated on the callee side. Each root is untrusted
+  only under the trigger that fills it (#224), and the pairing is the same table
+  SEC021 reads, so the two rules cannot disagree about what a caller controls.
 - `steps.<id>.outputs.*` — untrusted when step `<id>` wrote an untrusted value
   to `$GITHUB_OUTPUT`. Binding the value to `env:` is what makes the *capturing*
   step safe; it does nothing for whoever expands the output, so only the later

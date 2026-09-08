@@ -82,7 +82,11 @@ const composite_step_checks = [_]StepCheck{
     },
     stepCheck(&security.security_rules, "SEC003"),
     stepCheck(&security.security_rules, "SEC006"),
-    stepCheck(&security.security_rules, "SEC008"),
+    // SEC008 is workflow-scoped for the same reason as SEC002.
+    blk: {
+        requireRule(&security.security_rules, "SEC008");
+        break :blk &security.checkStandaloneGithubEnvInjection;
+    },
     stepCheck(&security.security_rules, "SEC014"),
     stepCheck(&security.security_rules, "SEC017"),
     stepCheck(&security.security_rules, "SEC018"),

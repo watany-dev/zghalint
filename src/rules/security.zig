@@ -213,9 +213,10 @@ const whole_event_contexts = [_][]const u8{"github.event"};
 
 /// The `inputs.*` root of a workflow something dispatches or calls: a
 /// `workflow_dispatch` actor types those values, and a `workflow_call` caller
-/// passes them. `github.event.inputs` is the dispatch spelling of the same
-/// values.
-const dispatched_inputs_contexts = [_][]const u8{ "inputs", "github.event.inputs" };
+/// passes them. The payload spellings of the same idea (`github.event.inputs`,
+/// `github.event.client_payload`) live in `dispatch_payload_table`, which is
+/// shared with SEC021.
+const bare_inputs_contexts = [_][]const u8{"inputs"};
 
 /// An `if:` condition is evaluated by the Actions expression engine and yields
 /// a boolean; the value never reaches a shell, so this is not injection. What
@@ -320,15 +321,8 @@ const script_injection_fix_hint = "assign the context to an environment variable
 /// and a `steps.<id>.outputs.*` reference is untrusted only when the step that
 /// wrote it captured an untrusted value.
 fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
-    var prefix: [run_dangerous_contexts.len + dispatched_inputs_contexts.len][]const u8 = undefined;
-    prefix[0..run_dangerous_contexts.len].* = run_dangerous_contexts;
-    var prefix_len: usize = run_dangerous_contexts.len;
-    if (wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) {
-        for (dispatched_inputs_contexts) |ctx| {
-            prefix[prefix_len] = ctx;
-            prefix_len += 1;
-        }
-    }
+    const contexts = runTaintContexts(wf);
+    const prefix = contexts.slice();
 
     for (wf.jobs) |*job| {
         // Steps are visited in source order so a later step sees the taint the
@@ -336,7 +330,7 @@ fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
         var tainted: TaintedSteps = .{};
         for (job.steps) |*step| {
             const table: ContextTable = .{
-                .prefix = prefix[0..prefix_len],
+                .prefix = prefix,
                 .whole = &whole_event_contexts,
                 .tainted_steps = tainted.slice(),
             };
@@ -758,19 +752,28 @@ fn indexOfWriteToVar(s: []const u8, targets: []const []const u8) ?usize {
     return null;
 }
 
-/// `s` is always a `run:` body here, so it uses the same list as SEC002.
-fn hasDangerousContextExpression(s: []const u8) bool {
-    return findExpr(s, isRunDangerousExpr) != null;
+/// SEC008 is workflow-scoped for the same reason as SEC002: what counts as
+/// untrusted depends on the triggers, so a `client_payload` written to
+/// `$GITHUB_ENV` is reported exactly where `repository_dispatch` fills it
+/// (#312).
+fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
+    const contexts = runTaintContexts(wf);
+    const table: ContextTable = .{ .prefix = contexts.slice() };
+    for (wf.jobs) |*job| {
+        for (job.steps) |*step| checkGithubEnvInjection(step, table, list);
+    }
 }
 
-fn isRunDangerousExpr(inner: []const u8) bool {
-    return containsAnyContext(std.mem.trim(u8, inner, " \t\n\r"), .{ .prefix = &run_dangerous_contexts });
+/// SEC008 for the steps of a composite action, which declare no triggers: the
+/// fixed table only.
+pub fn checkStandaloneGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
+    checkGithubEnvInjection(step, .{ .prefix = &run_dangerous_contexts }, list);
 }
 
-fn checkGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
+fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
     const run_body = step.run orelse return;
     const write_offset = indexOfGithubEnvWrite(run_body) orelse return;
-    if (!hasDangerousContextExpression(run_body)) return;
+    if (!hasUntrustedExpr(run_body, table)) return;
     list.append(.{
         .rule_id = "SEC008",
         .severity = .@"error",
@@ -795,9 +798,20 @@ const TriggerContexts = struct {
     contexts: []const []const u8,
 };
 
-const trigger_context_table = [_]TriggerContexts{
+/// The payload roots a dispatching caller fills. SEC002 / SEC008 (taint) and
+/// SEC021 (checkout ref) read the same knowledge, so the table is written once
+/// and both derive from it: a context SEC021 calls attacker-controlled is one
+/// SEC002 must treat as tainted, and the two cannot drift apart (#312).
+const dispatch_payload_table = [_]TriggerContexts{
     .{ .event = .workflow_dispatch, .contexts = &.{"github.event.inputs"} },
     .{ .event = .repository_dispatch, .contexts = &.{"github.event.client_payload"} },
+};
+
+/// Free text an attacker types into an issue, a comment or a discussion. These
+/// contexts are in `run_dangerous_contexts` unconditionally — a `run:` block
+/// expanding them is injection whatever started the run — so only SEC021, which
+/// pairs a context with the trigger that populates it, reads this half.
+const attacker_text_table = [_]TriggerContexts{
     .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number" } },
     // `issue_comment` carries the issue it was left on alongside the comment.
     // `issue.number` is the ChatOps vector: anyone may comment `/test` on any
@@ -806,6 +820,50 @@ const trigger_context_table = [_]TriggerContexts{
     .{ .event = .issue_comment, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number", "github.event.comment.body" } },
     .{ .event = .discussion, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body" } },
     .{ .event = .discussion_comment, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body", "github.event.comment.body" } },
+};
+
+const trigger_context_table = dispatch_payload_table ++ attacker_text_table;
+
+/// The taint table SEC002 and SEC008 use for one workflow: the fixed
+/// `run_dangerous_contexts`, plus the dispatch payload roots the declared
+/// triggers actually fill. Gating on the trigger keeps the #224 rule — never
+/// report a combination that cannot occur — so a `push` workflow reading
+/// `github.event.client_payload` is not flagged for a payload it never carries.
+fn runTaintContexts(wf: *const Workflow) RunTaintContexts {
+    var out: RunTaintContexts = .{};
+    for (run_dangerous_contexts) |context| out.append(context);
+    for (wf.on.events) |event| {
+        for (dispatch_payload_table) |entry| {
+            if (event.event != entry.event) continue;
+            for (entry.contexts) |context| out.append(context);
+        }
+    }
+    // The `inputs.*` shorthand is filled by both ways in, and neither spells it
+    // through `github.event`.
+    if (wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) {
+        for (bare_inputs_contexts) |context| out.append(context);
+    }
+    return out;
+}
+
+const max_run_taint_contexts = blk: {
+    var n: usize = run_dangerous_contexts.len + bare_inputs_contexts.len;
+    for (dispatch_payload_table) |entry| n += entry.contexts.len;
+    break :blk n;
+};
+
+const RunTaintContexts = struct {
+    buf: [max_run_taint_contexts][]const u8 = undefined,
+    len: usize = 0,
+
+    fn append(self: *RunTaintContexts, context: []const u8) void {
+        self.buf[self.len] = context;
+        self.len += 1;
+    }
+
+    fn slice(self: *const RunTaintContexts) []const []const u8 {
+        return self.buf[0..self.len];
+    }
 };
 
 /// Every context in the table, plus the bare `inputs` root.
@@ -2146,7 +2204,7 @@ pub const security_rules = [_]Rule{
         .description = "Untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment injection",
         .severity = .@"error",
         .category = .security,
-        .check_step = &checkGithubEnvInjection,
+        .check_workflow = &checkGithubEnvInjectionWorkflow,
     },
     .{
         .id = "SEC009",
@@ -2529,6 +2587,32 @@ test "SEC002: inputs.* is untrusted on a dispatched or called workflow" {
     try testing.expect(sec002FiresOn(workflow_call_trigger, "./deploy.sh ${{ inputs.target }}"));
     // `github.event.inputs` is the dispatch spelling of the same values.
     try testing.expect(sec002FiresOn(workflow_dispatch_trigger, "./deploy.sh ${{ github.event.inputs.target }}"));
+}
+
+fn sec008FiresOn(on: Trigger, body: []const u8) bool {
+    const steps = [_]Step{.{ .run = body }};
+    var list = runJobOn(on, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC008");
+}
+
+test "SEC002: client_payload is untrusted on a repository_dispatch workflow (#312)" {
+    try testing.expect(sec002FiresOn(repository_dispatch_trigger, "echo \"${{ github.event.client_payload.ref }}\""));
+}
+
+test "SEC002: client_payload without repository_dispatch is not reported (#224)" {
+    try testing.expect(!sec002FiresOn(push_trigger, "echo \"${{ github.event.client_payload.ref }}\""));
+}
+
+test "SEC008: client_payload written to GITHUB_ENV (#312)" {
+    try testing.expect(sec008FiresOn(repository_dispatch_trigger, "echo \"REF=${{ github.event.client_payload.ref }}\" >> $GITHUB_ENV"));
+    try testing.expect(!sec008FiresOn(push_trigger, "echo \"REF=${{ github.event.client_payload.ref }}\" >> $GITHUB_ENV"));
+}
+
+test "SEC008: dispatch inputs written to GITHUB_ENV (#312)" {
+    try testing.expect(sec008FiresOn(workflow_dispatch_trigger, "echo \"REF=${{ inputs.target }}\" >> $GITHUB_ENV"));
+    try testing.expect(sec008FiresOn(workflow_dispatch_trigger, "echo \"REF=${{ github.event.inputs.target }}\" >> $GITHUB_ENV"));
+    try testing.expect(!sec008FiresOn(push_trigger, "echo \"REF=${{ inputs.target }}\" >> $GITHUB_ENV"));
 }
 
 test "SEC002: inputs.* without a trigger that fills it (no false positive)" {
