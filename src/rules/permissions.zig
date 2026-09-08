@@ -508,8 +508,11 @@ test "PERM002: workflow-level permissions decide whether the job warning fires (
     const cases = [_]struct { perms: ?Permissions, warn: bool }{
         .{ .perms = .{ .contents = .read }, .warn = false },
         .{ .perms = .{ .read_all = true }, .warn = false },
+        .{ .perms = .{}, .warn = false },
         .{ .perms = .{ .write_all = true }, .warn = true },
         .{ .perms = .{ .contents = .write }, .warn = true },
+        .{ .perms = .{ .id_token = .write }, .warn = true },
+        .{ .perms = .{ .contents = .read, .packages = .write }, .warn = true },
         .{ .perms = null, .warn = true },
     };
     for (cases) |c| {
