@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-07
+最終更新: 2026-09-08
 
 ## 1. 目的
 
@@ -282,6 +282,80 @@ models, Pages のデプロイ) を書くか、OIDC トークンを発行する (
 SEC019 (secret を `env:` 経由にせず直接使う) が同じステップで発火するものの、
 「そもそもトークンが要らない」ことは伝えていない。#271 の FN 候補 1 の検証結果。
 
+#### G16 (#297). ブロックシーケンスを親キーと同じ桁に書くと読み落とす — 要パーサ修正
+
+```yaml
+steps:
+- name: Greet the author
+  run: echo "${{ github.event.head_commit.message }}"
+```
+
+`-` を親キーと同じ桁に置く形は YAML として正当だが、
+`Parser.parseBlockMapping` はキーの値を「次行以降で **key_indent より深い**
+列に始まるもの」に限っており、同じ桁のシーケンスをそのキーの値として
+取り込まない。
+
+現れ方は 2 通りある。
+
+- `steps:` で起きると値が `null` になり、**そのジョブのステップが 1 つも
+  無かったことになる**。パースは通ってしまうので、ステップ側のルール
+  (SEC002 ほか) が丸ごと沈黙したうえ、SYN003「steps section should not be
+  empty」という誤検出まで出る
+  (`bench/cases/i-robustness/seq-at-steps-column.yml`)。
+- `on.push.branches` で起きると `on` の解析が `InvalidValue` で落ち、
+  ファイルごと lint 不能になる
+  (`bench/cases/i-robustness/seq-at-trigger-column.yml`)。
+
+実コーパス (`bench/corpus/`、228 ファイル) では 28 ファイルがこの書き方を
+含む。actionlint / zizmor はどちらも正しく解析する。
+
+#### G17 (#298). `-` だけの行でシーケンス項目を開けない — 要トークナイザ修正
+
+```yaml
+steps:
+  -
+    name: Greet the author
+    run: echo "${{ github.event.head_commit.message }}"
+```
+
+`Tokenizer` は `c == '-' and self.peekNext() == ' '` でしかシーケンス項目の
+指示子を認めない。行末の `-` は次が改行なので平文スカラー `-` になる。YAML
+では `-` の後は空白でも改行でもよい。
+
+これも現れ方が 2 通りある。1 件目の項目がこの形だと `steps:` の値がスカラー
+`-` になり `InvalidValue` でファイルごと落ちる
+(`bench/cases/i-robustness/bare-dash-sequence-entry.yml`)。2 件目以降だと
+シーケンスの走査がそこで止まり、**残りのステップが黙って消える**。
+
+実コーパスでは 32 ファイルがこの書き方を含む。G16 と合わせると 60/228
+(26%) が影響を受け、うち 36 ファイルは lint 自体ができない。
+
+#### G18 (#299). BP001 が再利用ワークフロー呼び出しジョブに `timeout-minutes` を足す (FP) — 要ルール修正
+
+```yaml
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    secrets: inherit
+```
+
+`checkMissingTimeout` は `uses:` を持つジョブ (reusable workflow の呼び出し)
+を除外していない。GitHub Actions はこの形のジョブに `timeout-minutes` を
+受け付けず、actionlint も `syntax-check` で弾く。警告が誤検出であるだけでなく
+**autofix (safety: safe) が不正なワークフローを書き込む**ので、`--fix` だけで
+壊れる。`bench/cases/d-permissions-secrets/secrets-inherit.yml` ほか、
+`g-reusable/` の caller 4 件で再現する。
+
+#### G19 (#300). SEC015 と SEC018 が同じステップへ `with:` を二重挿入する — 要 fix エンジン修正
+
+`bench/cases/d-permissions-secrets/artipacked-upload.yml` の
+`actions/checkout` には SEC015 と SEC018 が同時に発火し、どちらも
+`with: persist-credentials: false` を挿入する autofix を持つ。
+`--fix-unsafe` は両方を適用するため同じステップに `with:` が 2 つ並び、
+結果は SYN002 (キー重複) を出す不正なワークフローになる。
+
+同じアンカーへの同一挿入は 1 回にまとめる必要がある。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -324,6 +398,63 @@ PERF001 は沈黙しており、現状は整合が取れている。
 PERF001 が正しく沈黙する — つまり「既定でキャッシュする action」の知識は
 PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む。
 
+### 4.5 2026-09-08 のベンチ実行結果
+
+`bench/README.md` の 3 モード (採点 / `--perf` / autofix 交差検証) を通しで
+実行した記録。環境は Linux x86_64 / 4 logical CPU、zghalint は
+`-Doptimize=ReleaseFast`、actionlint 1.7.7、zizmor 1.30.0。
+
+#### 採点 (`scripts/bench.py`)
+
+| tool | recall | precision | 位置一致 | unique-win |
+|---|---|---|---|---|
+| zghalint | 100% (105/105) | 100% | 96% (101/105) | 25 |
+| actionlint | 100% (61/61) | 100% | 93% (57/61) | – |
+| zizmor | 100% (43/43) | 100% | 86% (37/43) | – |
+
+意図して用意したケースでは FN も FP も無い。G16〜G17 の 3 ケースを足した後は
+zghalint だけ recall がその分下がる。
+
+#### 性能 (`scripts/bench.py --perf`)
+
+hyperfine 1.18.0 (10 runs / warmup 3)、最大 RSS は GNU time。
+
+| シナリオ | zghalint | actionlint | zizmor |
+|---|---|---|---|
+| cases (123 ファイル / 2,067 行) | 4.1 ms · 1.9 MiB | 173.0 ms · 14.7 MiB | 106.3 ms · 35.2 MiB |
+| huge (1 ファイル / 10,035 行) | 14.9 ms · 7.5 MiB | 1.145 s · 17.0 MiB | 458.3 ms · 45.2 MiB |
+| many-small (1,000 ファイル / 89,503 行) | 104.7 ms · 7.1 MiB | 5.571 s · 70.2 MiB | 2.213 s · 169.6 MiB |
+
+wall time で 21〜77 倍、最大 RSS で 8〜24 倍の差がある。「高速性」「ゼロ
+アロケーション志向」という技術方針は数字として裏付けられており、当面この面での
+改善課題は無い。`network` シナリオは api.github.com へ到達できない環境のため
+未計測。
+
+#### 実コーパスでの堅牢性 (`scripts/fetch-corpus.py`、33 リポジトリ / 228 ファイル)
+
+`--perf` の many-small が終了コード 2 を返すのを追ったところ、**228 ファイル中
+36 件 (16%) が `workflow parse error` で lint できない**ことが分かった。内訳は
+`InvalidValue` 33 件・`MissingField` 3 件で、原因はすべて G16 / G17 の 2 つに
+帰着する。lint できたファイルにも同じ書き方でステップが黙って落ちているものが
+あり、影響範囲は 60 ファイル (26%) になる。
+
+意図して書いたケース群では recall 100% でも、実ワールドの YAML の書き方には
+追いついていない。ケースの網羅よりこちらの優先度が高い。
+
+#### autofix 交差検証 (issue #269)
+
+bench ケース全件に `--fix` / `--fix-unsafe` をかけ、書き換わった 80 件について
+再実行・冪等性・PyYAML でのパース・actionlint / zizmor の新規指摘を見た。
+
+- 非冪等: 0 件。2 回目の適用でファイルもスコアも変わらない
+- YAML が壊れたもの: 0 件
+- zizmor の新規指摘: 0 件
+- zghalint / actionlint の新規指摘: G18 (5 ケース) と G19 (1 ケース) の 2 件のみ
+
+autofix の枠組み自体は健全で、個別ルールの適用条件と重複挿入の 2 点を直せば
+交差検証はクリーンになる。この検証は使い捨てスクリプトで回した — 常設化は
+issue #269 の残作業。
+
 ## 5. 次アクション
 
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
@@ -342,3 +473,7 @@ PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む�
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [x] G7 (#275): SC001 を `uses: docker://...` に対応させる
 - [x] G8 (#276): SEC022 のフォークガード解析を SEC005 と共有する
+- [x] G16 (#297): 親キーと同じ桁のブロックシーケンスをそのキーの値として読む
+- [x] G17 (#298): 行末の `-` をシーケンス項目の指示子として扱う
+- [x] G18 (#299): BP001 を `uses:` ジョブ (reusable workflow 呼び出し) で沈黙させる
+- [x] G19 (#300): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめる

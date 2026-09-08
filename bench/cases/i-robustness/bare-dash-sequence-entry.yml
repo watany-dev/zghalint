@@ -1,0 +1,15 @@
+# `-` だけの行でシーケンス項目を開き、中身を次行から書く形 (YAML として正当)。
+# bench:expect template-injection@15 actionlint=expression~untrusted
+name: sequence entries opened by a bare dash
+on:
+  push:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      -
+        name: Greet the author
+        run: echo "${{ github.event.head_commit.message }}"

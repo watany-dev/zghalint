@@ -175,7 +175,7 @@ Enforce workflow best practices for maintainability and reliability.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long) |
+| BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
 | BP002 | missing-step-name | info | Step is missing a `name` field |
 | BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or an action declaring a retired `runs.using` runtime (error) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |

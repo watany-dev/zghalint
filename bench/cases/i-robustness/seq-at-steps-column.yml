@@ -1,0 +1,14 @@
+# `steps:` のシーケンスを親キーと同じ桁に置く書き方 (YAML として正当)。
+# bench:expect template-injection@14 actionlint=expression~untrusted
+name: step sequence at the parent key column
+on:
+  push:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Greet the author
+      run: echo "${{ github.event.head_commit.message }}"
