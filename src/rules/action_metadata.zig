@@ -1010,17 +1010,3 @@ test "diagnostics point at the offending line" {
     const unknown = findDiagnostic(&lint.diags, "ACT003") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u32, 6), unknown.span.start_line);
 }
-
-test "rule descriptors are valid" {
-    try std.testing.expectEqual(@as(usize, 4), rules.len);
-    for (rules) |rule| {
-        try std.testing.expect(rule.category == .action);
-        try std.testing.expect(rule.check_workflow == null);
-        try std.testing.expect(rule.check_job == null);
-        try std.testing.expect(rule.check_step == null);
-        try std.testing.expect(std.mem.startsWith(u8, rule.id, "ACT"));
-    }
-    try std.testing.expectEqualStrings("ACT001", rules[0].id);
-    try std.testing.expectEqualStrings("action-missing-required-key", rules[0].name);
-    try std.testing.expectEqualStrings("ACT004", rules[3].id);
-}

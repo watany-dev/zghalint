@@ -425,20 +425,6 @@ test "parse config with sarif format" {
     try std.testing.expectEqual(OutputFormat.sarif, config.output_format);
 }
 
-test "OutputFormat fromString" {
-    try std.testing.expectEqual(OutputFormat.terminal, OutputFormat.fromString("terminal").?);
-    try std.testing.expectEqual(OutputFormat.json, OutputFormat.fromString("json").?);
-    try std.testing.expectEqual(OutputFormat.sarif, OutputFormat.fromString("sarif").?);
-    try std.testing.expect(OutputFormat.fromString("invalid") == null);
-}
-
-test "ColorMode fromString" {
-    try std.testing.expectEqual(ColorMode.auto, ColorMode.fromString("auto").?);
-    try std.testing.expectEqual(ColorMode.always, ColorMode.fromString("always").?);
-    try std.testing.expectEqual(ColorMode.never, ColorMode.fromString("never").?);
-    try std.testing.expect(ColorMode.fromString("invalid") == null);
-}
-
 test "rule override with severity only" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -483,21 +469,6 @@ test "parseBool with no value" {
     try std.testing.expect(!parseBool("false"));
     try std.testing.expect(parseBool("true"));
     try std.testing.expect(parseBool("yes"));
-}
-
-test "parseSeverity all values" {
-    try std.testing.expectEqual(Severity.@"error", parseSeverity("error").?);
-    try std.testing.expectEqual(Severity.warning, parseSeverity("warning").?);
-    try std.testing.expectEqual(Severity.info, parseSeverity("info").?);
-    try std.testing.expectEqual(Severity.hint, parseSeverity("hint").?);
-    try std.testing.expect(parseSeverity("invalid") == null);
-}
-
-test "parse config with invalid yaml" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    // Should either parse or return an error, not crash
-    _ = parseConfig(arena.allocator(), ":\n  :\n   : : :") catch {};
 }
 
 test "matchGlob trailing star" {

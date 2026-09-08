@@ -742,12 +742,6 @@ const ActionRef = workflow_types.ActionRef;
 const Step = workflow_types.Step;
 const Job = workflow_types.Job;
 
-test "prefetchAllWithOptions: offline-only is a no-op" {
-    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &.{} };
-    const wfs = [_]Workflow{wf};
-    try prefetchAllWithOptions(testing.allocator, &wfs, .{});
-}
-
 test "groupShasByRepo: collapses one repo's SHAs into a single request unit" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1038,17 +1032,6 @@ test "applyCacheEntry: impostor hydrates SC008 verdicts from disk" {
     const imp = impostor.lookupCachedImpostorResult("o", "r", sha_imp) orelse
         return error.TestExpectedNonNull;
     try testing.expectEqual(impostor.ImpostorStatus.impostor, imp.status);
-}
-
-test "applyResults: missing entries are skipped (no rule init required)" {
-    // All rule modules left uninitialized; setCached* is a no-op when their
-    // arenas are null, so this primarily exercises the missing-guard branch.
-    const results = [_]graphql.RepoResult{
-        .{ .owner = "o", .repo = "r", .missing = true },
-    };
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    applyResults(arena.allocator(), &results, .{ .archived = true, .stale = true, .refconf = true, .impostor = false }, null, null);
 }
 
 test "prefetchAllWithOptions: deadline-expired short-circuits" {

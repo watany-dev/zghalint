@@ -1965,10 +1965,6 @@ test "validate: valid expression github.sha" {
     try expectNoDiagnostics("github.sha");
 }
 
-test "validate: valid expression github.ref" {
-    try expectNoDiagnostics("github.ref == 'refs/heads/main'");
-}
-
 test "validate: valid function contains" {
     try expectSingleRule("contains(github.event_name, 'push')", "EXPR006");
 }

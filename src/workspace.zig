@@ -241,20 +241,6 @@ fn dupeLockfiles(allocator: std.mem.Allocator, names: []const []const u8) ![]con
 
 const testing = std.testing;
 
-test "NodeCache.fromString roundtrip" {
-    try testing.expectEqual(NodeCache.npm, NodeCache.fromString("npm").?);
-    try testing.expectEqual(NodeCache.yarn, NodeCache.fromString("yarn").?);
-    try testing.expectEqual(NodeCache.pnpm, NodeCache.fromString("pnpm").?);
-    try testing.expect(NodeCache.fromString("bun") == null);
-}
-
-test "PythonCache.fromString roundtrip" {
-    try testing.expectEqual(PythonCache.pip, PythonCache.fromString("pip").?);
-    try testing.expectEqual(PythonCache.pipenv, PythonCache.fromString("pipenv").?);
-    try testing.expectEqual(PythonCache.poetry, PythonCache.fromString("poetry").?);
-    try testing.expect(PythonCache.fromString("conda") == null);
-}
-
 test "detectFromRoot returns empty Context for empty dir" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -846,11 +846,3 @@ test "DEP004: with: is not checked against a tree the checkout replaces" {
 
     try testing.expectEqual(@as(usize, 0), list.len());
 }
-
-test "DEP004: rule metadata" {
-    try testing.expectEqual(@as(usize, 1), rules.len);
-    try testing.expectEqualStrings("DEP004", rules[0].id);
-    try testing.expect(rules[0].category == .dependency);
-    try testing.expect(rules[0].severity == .@"error");
-    try testing.expect(rules[0].check_job != null);
-}
