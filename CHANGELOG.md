@@ -26,6 +26,12 @@ still be renumbered before 1.0.
   with no write scope. `write-all` or any `: write` at workflow level still
   asks each job to narrow the grant (#334).
 
+### Fixed
+
+- HTTP client now honors `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and
+  `SSL_CERT_FILE`, so SC003 / SC004 / SC005 / SC008 no longer skip on every
+  run behind a required proxy (#336).
+
 ### Added
 
 - SC007 (`typosquat-action`): warn when an `actions/*` reference is 1–2 edits

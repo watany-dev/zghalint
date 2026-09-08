@@ -367,7 +367,7 @@ bench 132 件をネットワーク遮断下の通常実行と `--offline` で突
 
 `src/rules/net_status.zig` が「判定できなかったルール」を記録し、実行の
 最後に stderr へ 1 行の注記を出すようにした
-(`note: SC003, SC005 skipped (github api unreachable)`)。記録はルールの
+(`note: SC003, SC005 skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)`)。記録はルールの
 判定地点で行うので、prefetch が失敗しても REST フォールバックが答えを
 出せた場合は注記が出ない。`--offline` / `--quick` は沈黙が意図どおりなので
 注記しない。終了コードは 0/1/2 の意味を変えると利用者の CI を壊すため

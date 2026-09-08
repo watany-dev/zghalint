@@ -11,6 +11,10 @@ var client_storage: std.http.Client = undefined;
 var client_initialized: bool = false;
 var client_mutex: std.Thread.Mutex = .{};
 
+/// Owns the `Proxy` structs `initDefaultProxies` allocates. `Client.deinit`
+/// does not free those, so they live in this arena until we tear down.
+var proxy_arena: std.heap.ArenaAllocator = undefined;
+
 /// `allocator` must remain valid until `deinit()` returns — `std.http.Client`
 /// retains it for connection pool allocations. init/deinit/fetch share a mutex
 /// so the initialization flag and storage are never observed half-built.
@@ -19,6 +23,9 @@ pub fn init(allocator: Allocator) void {
     defer client_mutex.unlock();
     if (client_initialized) return;
     client_storage = .{ .allocator = allocator };
+    proxy_arena = .init(allocator);
+    client_storage.initDefaultProxies(proxy_arena.allocator()) catch {};
+    applyCustomCa(allocator);
     client_initialized = true;
 }
 
@@ -27,7 +34,23 @@ pub fn deinit() void {
     defer client_mutex.unlock();
     if (!client_initialized) return;
     client_storage.deinit();
+    proxy_arena.deinit();
     client_initialized = false;
+}
+
+/// Zig's default CA scan uses hardcoded system paths and ignores
+/// `SSL_CERT_FILE`. A TLS-intercepting proxy needs that file. Loading it
+/// freezes the bundle so the next-request rescan cannot wipe the extra CA.
+fn applyCustomCa(allocator: Allocator) void {
+    const path = std.process.getEnvVarOwned(allocator, "SSL_CERT_FILE") catch return;
+    defer allocator.free(path);
+    if (path.len == 0) return;
+    // Zig's addCertsFromFilePathAbsolute asserts an absolute path; a relative
+    // SSL_CERT_FILE would panic in Debug rather than skip the extra CA.
+    if (!std.fs.path.isAbsolute(path)) return;
+    client_storage.ca_bundle.rescan(allocator) catch {};
+    client_storage.ca_bundle.addCertsFromFilePathAbsolute(allocator, path) catch return;
+    client_storage.next_https_rescan_certs = false;
 }
 
 pub const user_agent: []const u8 = "zghalint/0.1.0";
@@ -228,6 +251,38 @@ test "init is idempotent and deinit resets state" {
     try testing.expect(!client_initialized);
     deinit();
     try testing.expect(!client_initialized);
+}
+
+test "init honors HTTPS_PROXY (#336)" {
+    if (client_initialized) return error.SkipZigTest;
+    var https = try test_support.EnvGuard.set(testing.allocator, "HTTPS_PROXY", "http://127.0.0.1:8080");
+    defer https.deinit();
+    var https_lc = try test_support.EnvGuard.set(testing.allocator, "https_proxy", "http://127.0.0.1:8080");
+    defer https_lc.deinit();
+
+    init(testing.allocator);
+    defer deinit();
+    const proxy = client_storage.https_proxy orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings("127.0.0.1", proxy.host);
+    try testing.expectEqual(@as(u16, 8080), proxy.port);
+}
+
+test "init ignores a missing SSL_CERT_FILE without failing (#336)" {
+    if (client_initialized) return error.SkipZigTest;
+    var env = try test_support.EnvGuard.set(testing.allocator, "SSL_CERT_FILE", "/no/such/ca.pem");
+    defer env.deinit();
+    init(testing.allocator);
+    defer deinit();
+    try testing.expect(client_initialized);
+}
+
+test "init ignores a relative SSL_CERT_FILE without panicking (#336)" {
+    if (client_initialized) return error.SkipZigTest;
+    var env = try test_support.EnvGuard.set(testing.allocator, "SSL_CERT_FILE", "not-absolute.pem");
+    defer env.deinit();
+    init(testing.allocator);
+    defer deinit();
+    try testing.expect(client_initialized);
 }
 
 test "getAuthHeader: returns Bearer <token> when GITHUB_TOKEN set" {
