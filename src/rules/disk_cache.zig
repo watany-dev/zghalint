@@ -164,14 +164,23 @@ fn parseShaEntry(allocator: Allocator, fields: []const std.json.Value) ?ShaEntry
     return .{ .sha = allocator.dupe(u8, sha) catch return null, .resolution = res };
 }
 
+/// The 4th field (the tag's commit oid) is optional: rows written before it
+/// existed simply carry no oid, which reads back as "no SHA-pin fix available"
+/// rather than as a wrong one.
 fn parseNamedEntry(allocator: Allocator, fields: []const std.json.Value) ?NamedEntry {
     if (fields.len < 3) return null;
     const ref = stringField(fields, 0) orelse return null;
     if (!engine.isValidGitRef(ref)) return null;
+    const tag_oid: ?[]const u8 = blk: {
+        const oid = stringField(fields, 3) orelse break :blk null;
+        if (!engine.isValidSha(oid)) break :blk null;
+        break :blk allocator.dupe(u8, oid) catch break :blk null;
+    };
     return .{
         .ref = allocator.dupe(u8, ref) catch return null,
         .is_tag = intFieldAsBool(fields[1]),
         .is_branch = intFieldAsBool(fields[2]),
+        .tag_oid = tag_oid,
     };
 }
 
@@ -279,7 +288,15 @@ pub fn saveToDir(
 
     try js.objectField("named");
     try js.beginArray();
-    for (entry.named) |e| try js.write(.{ e.ref, @intFromBool(e.is_tag), @intFromBool(e.is_branch) });
+    for (entry.named) |e| {
+        // The oid is appended only when known, so a row without one stays
+        // byte-identical to what earlier versions wrote.
+        if (e.tag_oid) |oid| {
+            try js.write(.{ e.ref, @intFromBool(e.is_tag), @intFromBool(e.is_branch), oid });
+        } else {
+            try js.write(.{ e.ref, @intFromBool(e.is_tag), @intFromBool(e.is_branch) });
+        }
+    }
     try js.endArray();
 
     try js.objectField("branches");
@@ -381,7 +398,10 @@ test "saveToDir/loadFromDir round-trips all fields" {
 fn freeLoaded(loaded: CachedRepo) void {
     for (loaded.shas) |s| testing.allocator.free(s.sha);
     testing.allocator.free(loaded.shas);
-    for (loaded.named) |n| testing.allocator.free(n.ref);
+    for (loaded.named) |n| {
+        testing.allocator.free(n.ref);
+        if (n.tag_oid) |oid| testing.allocator.free(oid);
+    }
     testing.allocator.free(loaded.named);
     for (loaded.branches) |b| {
         testing.allocator.free(b.name);
@@ -735,4 +755,79 @@ test "saveToDir: refuses to write through a pre-existing symlink" {
     var buf: [32]u8 = undefined;
     const n = try f.readAll(&buf);
     try testing.expectEqualStrings("SACRED", buf[0..n]);
+}
+
+test "saveToDir/loadFromDir: a named row round-trips its tag oid" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const named = [_]NamedEntry{
+        .{ .ref = "v4", .is_tag = true, .is_branch = false, .tag_oid = "a5ac7e51b41094c92402da3b24376905380afc29" },
+        .{ .ref = "main", .is_tag = false, .is_branch = true },
+    };
+    const entry: CachedRepo = .{
+        .cached_at = std.time.timestamp(),
+        .archived = false,
+        .named = @constCast(&named),
+    };
+
+    try saveToDir(tmp.dir, testing.allocator, "actions", "checkout", entry);
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "actions", "checkout") orelse
+        return error.TestExpectedNonNull;
+    defer freeLoaded(loaded);
+
+    try testing.expectEqual(@as(usize, 2), loaded.named.len);
+    try testing.expectEqualStrings("a5ac7e51b41094c92402da3b24376905380afc29", loaded.named[0].tag_oid.?);
+    // A ref that is not a tag has no oid to remember, and must not invent one.
+    try testing.expect(loaded.named[1].tag_oid == null);
+}
+
+test "loadFromDir: a three-field named row (written before oids existed) reads as no oid" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"cached_at\":{d},\"archived\":false,\"shas\":[],\"named\":[[\"v4\",1,0]]}}",
+        .{std.time.timestamp()},
+    );
+    defer testing.allocator.free(body);
+    try file.writeAll(body);
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer freeLoaded(loaded);
+
+    try testing.expect(loaded.named[0].is_tag);
+    try testing.expect(loaded.named[0].tag_oid == null);
+}
+
+test "loadFromDir: a named row whose oid is not a SHA drops the oid, keeping the row" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const name = try repoFilename(testing.allocator, "o", "r");
+    defer testing.allocator.free(name);
+    const file = try tmp.dir.createFile(name, .{});
+    defer file.close();
+
+    const body = try std.fmt.allocPrint(
+        testing.allocator,
+        "{{\"cached_at\":{d},\"archived\":false,\"shas\":[],\"named\":[[\"v4\",1,0,\"../../etc/passwd\"]]}}",
+        .{std.time.timestamp()},
+    );
+    defer testing.allocator.free(body);
+    try file.writeAll(body);
+
+    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+        return error.TestExpectedNonNull;
+    defer freeLoaded(loaded);
+
+    try testing.expectEqual(@as(usize, 1), loaded.named.len);
+    try testing.expect(loaded.named[0].tag_oid == null);
 }
