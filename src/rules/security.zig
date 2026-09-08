@@ -519,8 +519,36 @@ fn checkWriteAll(list: *DiagnosticList, maybe_perms: ?Permissions, comptime scop
     }) catch return;
 }
 
+/// Triggers that run against the base repository — its secrets, a writable
+/// `GITHUB_TOKEN` — while carrying the fork's `pull_request.head` in the
+/// payload. `pull_request_review` and `pull_request_review_comment` share the
+/// threat model of `pull_request_target`: anyone may post a review on a pull
+/// request, and the job that reacts to it is privileged (#309).
+const privileged_pr_head_events = [_]EventType{
+    .pull_request_target,
+    .pull_request_review,
+    .pull_request_review_comment,
+};
+
+fn hasPrivilegedPRHeadTrigger(wf: *const Workflow) bool {
+    return privilegedPRHeadMessage(wf) != null;
+}
+
+/// The SEC005 message for the first such trigger the workflow declares, or
+/// null when it declares none. The trigger is named in the text so a
+/// `pull_request_review` finding does not read as if it were about
+/// `pull_request_target`.
+fn privilegedPRHeadMessage(wf: *const Workflow) ?[]const u8 {
+    inline for (privileged_pr_head_events) |event| {
+        if (wf.hasEvent(event)) {
+            return "dangerous: " ++ @tagName(event) ++ " workflow checks out PR head, allowing arbitrary code execution from forks";
+        }
+    }
+    return null;
+}
+
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
-    if (!wf.hasEvent(.pull_request_target)) return;
+    const message = privilegedPRHeadMessage(wf) orelse return;
 
     for (wf.jobs) |*job| {
         for (job.steps) |*step| {
@@ -529,9 +557,9 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             list.append(.{
                 .rule_id = "SEC005",
                 .severity = .@"error",
-                .message = "dangerous: pull_request_target workflow checks out PR head, allowing arbitrary code execution from forks",
+                .message = message,
                 .span = withAnchor(step, input.key).whole(),
-                .fix_hint = "avoid checking out PR head in pull_request_target workflows, or use a separate unprivileged workflow",
+                .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
             }) catch return;
         }
     }
@@ -845,7 +873,7 @@ fn untrustedRefContexts(wf: *const Workflow) CheckoutRefContexts {
 /// dropping the whole workflow because `pull_request_target` appears somewhere
 /// in `on:` would silence SEC021 on refs SEC005 never looks at.
 fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
-    return (wf.hasEvent(.pull_request_target) and isPRHeadValue(value)) or
+    return (hasPrivilegedPRHeadTrigger(wf) and isPRHeadValue(value)) or
         (wf.hasEvent(.workflow_run) and isWorkflowRunValue(value));
 }
 
@@ -904,7 +932,7 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
             // both a PR head and a workflow_run ref. SEC005 is the more
             // specific finding, so it owns the step: reporting both puts two
             // diagnostics on one mistake (#224).
-            if (wf.hasEvent(.pull_request_target) and checkoutCodeInput(step, isPRHeadValue) != null) continue;
+            if (hasPrivilegedPRHeadTrigger(wf) and checkoutCodeInput(step, isPRHeadValue) != null) continue;
             list.append(.{
                 .rule_id = "SEC009",
                 .severity = .@"error",
@@ -1833,6 +1861,10 @@ fn hasForkAccessibleTrigger(wf: *const Workflow) bool {
         switch (event.event) {
             .pull_request,
             .pull_request_target,
+            // A review or a review comment is posted by anyone who can see the
+            // pull request, and the run carries the fork's code (#309).
+            .pull_request_review,
+            .pull_request_review_comment,
             .workflow_run,
             .issue_comment,
             => return true,
@@ -2308,6 +2340,8 @@ const pr_target_trigger = test_support.makeTrigger(.pull_request_target);
 const pr_trigger = test_support.makeTrigger(.pull_request);
 const issue_comment_trigger = test_support.makeTrigger(.issue_comment);
 const workflow_run_trigger = test_support.makeTrigger(.workflow_run);
+const pr_review_trigger = test_support.makeTrigger(.pull_request_review);
+const pr_review_comment_trigger = test_support.makeTrigger(.pull_request_review_comment);
 const push_trigger = test_support.makeTrigger(.push);
 const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch);
 const workflow_call_trigger = test_support.makeTrigger(.workflow_call);
@@ -2877,6 +2911,31 @@ test "SEC005: refs/pull/N/head built from the PR number" {
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
     var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: pull_request_review checkout of PR head (#309)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_review_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.indexOf(u8, d.message, "pull_request_review") != null);
+}
+
+test "SEC005: pull_request_review_comment checkout of head_ref (#309)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("ref", "${{ github.head_ref }}") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
+    };
+    var list = runJobOn(pr_review_comment_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
@@ -5654,6 +5713,24 @@ test "SEC020: self-hosted + issue_comment -> fires" {
     defer setRepoVisibility(.unknown);
 
     var list = runJobOn(issue_comment_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + pull_request_review -> fires (#309)" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    var list = runJobOn(pr_review_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC020"));
+}
+
+test "SEC020: self-hosted + pull_request_review_comment -> fires (#309)" {
+    setRepoVisibility(.public);
+    defer setRepoVisibility(.unknown);
+
+    var list = runJobOn(pr_review_comment_trigger, .{ .id = "build", .runs_on = "self-hosted", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC020"));
 }

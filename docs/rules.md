@@ -92,6 +92,12 @@ The root matches only as a whole reference, so server-generated fields such as
 
 ### Refs SEC005 and SEC009 recognize
 
+SEC005 covers the triggers that run with the base repository's privileges while
+carrying the fork's `pull_request.head` in the payload: `pull_request_target`,
+`pull_request_review` and `pull_request_review_comment`. Anyone who can see a
+pull request can post a review on it, so the last two share the
+`pull_request_target` threat model; the finding names the trigger it found.
+
 SEC005 reports a checkout whose `ref` / `repository` names the PR head:
 `github.event.pull_request.head.*`, `github.head_ref`, a literal `refs/pull/`,
 `github.event.pull_request.number` / `github.event.number` used to build one,
@@ -121,7 +127,8 @@ has no such gate: the triggers it owns (`workflow_dispatch`, `issue_comment`,
 ### SEC021 vs. SEC005 / SEC009
 
 All three report the same shape — `actions/checkout` fed a ref the attacker
-picks — split by trigger. SEC005 owns `pull_request_target`, SEC009 owns
+picks — split by trigger. SEC005 owns the privileged PR-head triggers above,
+SEC009 owns
 `workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
 `discussion_comment`.
@@ -178,6 +185,14 @@ a fork inherits the name of the repository it came from, and neither is
 does not parse anchors nothing. Values that name one immutable commit — `head_sha`,
 `head_commit.id` — are never reported. A trust check on the job covers the
 steps inside it.
+
+### Triggers SEC020 treats as fork-accessible
+
+`pull_request`, `pull_request_target`, `pull_request_review`,
+`pull_request_review_comment`, `workflow_run` and `issue_comment`. The two
+review events belong in that list for the same reason as
+`pull_request_target`: anyone who can see the pull request can post a review,
+and the run that reacts to it carries the fork's code onto the runner.
 
 ## Supply Chain Security Rules (SC)
 
