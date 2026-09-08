@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **91 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **92 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -53,6 +53,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
 | SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
+| SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 
 ### SEC015 vs SEC018
 
@@ -225,6 +226,28 @@ steps inside it.
 review events belong in that list for the same reason as
 `pull_request_target`: anyone who can see the pull request can post a review,
 and the run that reacts to it carries the fork's code onto the runner.
+
+### SEC023 が見る publish の形
+
+OIDC (trusted publishing) に対応したレジストリで、長命の API トークンを渡して
+いる step を報告する。トークンが消えれば「リポジトリ secret に置いた鍵が漏れる」
+経路そのものが無くなるため、SEC019（secret を `env:` 経由にする）より一段上の
+対処になる。
+
+| 対象 | 発火条件 |
+|---|---|
+| `pypa/gh-action-pypi-publish` | `with.password` が空でない |
+| `rubygems/release-gem` | `with.setup-trusted-publisher: false`（既定は trusted publishing）|
+| `npm publish` を含む `run:` | 同じ step の `env.NODE_AUTH_TOKEN` が `${{ secrets.* }}` |
+
+いずれも「`id-token: write` を付けて trusted publishing に切り替える」ことを
+`fix_hint` で示す。自動修正は付けない — トークンの削除はレジストリ側の
+publisher 設定を伴うため、ワークフローの書き換えだけでは完結しない。
+
+npm は step 自身の `env:` だけを見る。ジョブやワークフローに束ねた
+`NODE_AUTH_TOKEN` は、どの step が publish するのかを静的に決められないため
+対象外。また `${{ steps.*.outputs.* }}` のように実行時に組み立てた値は、
+既に短命トークンである可能性があるので報告しない。
 
 ## Supply Chain Security Rules (SC)
 
@@ -1005,7 +1028,9 @@ composite action の step は、ワークフローの step と同じ実体なの
 `secrets` context が無いため、ACT005 が代わりに報告する。ネットワークを使うルール
 （SC003-SC006、SC008）はメタデータのリントでは prefetch が走らないため常に無反応に
 なる。BP002（step の `name`）はワークフローのログ表示のための規約で、action 側が
-決めることではない。
+決めることではない。SEC023（trusted publishing）は、composite action が呼び出し
+元から受け取った `inputs.token` を publish に渡すのは正しい書き方であり、OIDC へ
+切り替えるかを決めるのは呼び出し側のワークフローだから対象にしない。
 
 さらに composite 固有の判定として:
 

@@ -1542,6 +1542,121 @@ fn secretRunOccurrences(step: *const Step) env_binding.Occurrences {
     return occs;
 }
 
+/// A registry that supports OIDC trusted publishing, together with the action
+/// that publishes to it and the `with:` input carrying a long-lived API token
+/// instead (SEC023). The input being set means the token exists as a repository
+/// secret at all, which trusted publishing removes rather than protects.
+const TokenPublisher = struct {
+    action: []const u8,
+    input: []const u8,
+    registry: []const u8,
+};
+
+const token_publishers = [_]TokenPublisher{
+    .{ .action = "pypa/gh-action-pypi-publish", .input = "password", .registry = "PyPI" },
+};
+
+fn checkTrustedPublishing(step: *const Step, list: *DiagnosticList) void {
+    if (step.uses) |ref| return checkPublishActionToken(step, ref, list);
+    checkNpmPublishToken(step, list);
+}
+
+fn checkPublishActionToken(step: *const Step, ref: ActionRef, list: *DiagnosticList) void {
+    const with_map = step.with orelse return;
+
+    inline for (token_publishers) |publisher| {
+        if (isAction(ref, publisher.action)) {
+            const input = getWithInput(with_map, publisher.input) orelse return;
+            if (std.mem.trim(u8, input.value, " \t\n\r").len == 0) return;
+            reportTrustedPublishing(
+                list,
+                "publishes to " ++ publisher.registry ++ " with a long-lived API token; this action supports trusted publishing (OIDC)",
+                withAnchor(step, input.key).whole(),
+                "remove '" ++ publisher.input ++ ":' and give the job 'permissions: id-token: write' to publish through trusted publishing",
+            );
+            return;
+        }
+    }
+
+    // `rubygems/release-gem` configures trusted publishing by default, so only
+    // an explicit opt-out means a `GEM_HOST_API_KEY` secret is doing the work.
+    if (isAction(ref, "rubygems/release-gem")) {
+        const input = getWithInput(with_map, "setup-trusted-publisher") orelse return;
+        if (!std.mem.eql(u8, std.mem.trim(u8, input.value, " \t\n\r"), "false")) return;
+        reportTrustedPublishing(
+            list,
+            "publishes to RubyGems with trusted publishing turned off, which falls back to a long-lived API key",
+            withAnchor(step, input.key).whole(),
+            "drop 'setup-trusted-publisher: false' and give the job 'permissions: id-token: write' to publish through trusted publishing",
+        );
+    }
+}
+
+/// `npm publish` authenticates through `NODE_AUTH_TOKEN`, which npm's trusted
+/// publishing replaces with an OIDC exchange. Only a token that comes straight
+/// from a repository secret is reported: a value the workflow computes may
+/// already be short-lived. `env:` is read on the step alone, so a token bound
+/// at job or workflow level is not seen (docs/rules.md).
+fn checkNpmPublishToken(step: *const Step, list: *DiagnosticList) void {
+    const run = step.run orelse return;
+    if (!containsNpmPublish(run)) return;
+    const env_map = step.env orelse return;
+    const value = env_map.get("NODE_AUTH_TOKEN") orelse return;
+    if (!isSecretsExpression(value)) return;
+    reportTrustedPublishing(
+        list,
+        "publishes to npm with a long-lived automation token; npm supports trusted publishing (OIDC)",
+        envAnchor(step, "NODE_AUTH_TOKEN").whole(),
+        "drop NODE_AUTH_TOKEN and give the job 'permissions: id-token: write' so npm publish exchanges an OIDC token",
+    );
+}
+
+fn reportTrustedPublishing(
+    list: *DiagnosticList,
+    message: []const u8,
+    span: spans.Span,
+    fix_hint: []const u8,
+) void {
+    list.append(.{
+        .rule_id = "SEC023",
+        .severity = .info,
+        .message = message,
+        .span = span,
+        .fix_hint = fix_hint,
+    }) catch return;
+}
+
+/// Matches `npm publish`, including flags written between the two words
+/// (`npm --registry=... publish`). A flag whose value is a separate word is not
+/// followed through, since nothing distinguishes that value from a subcommand.
+/// Blanks only: a newline between the two words would be two commands, not one.
+fn containsNpmPublish(s: []const u8) bool {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (!isWordAt(s, i, "npm")) continue;
+
+        var j = i + "npm".len;
+        var saw_separator = false;
+        while (j < s.len) {
+            if (s[j] == ' ' or s[j] == '\t') {
+                saw_separator = true;
+                j += 1;
+                continue;
+            }
+            // A flag between the command and the subcommand, e.g.
+            // `npm --access public publish`.
+            if (saw_separator and s[j] == '-') {
+                while (j < s.len and s[j] != ' ' and s[j] != '\t' and s[j] != '\n') j += 1;
+                saw_separator = false;
+                continue;
+            }
+            break;
+        }
+        if (saw_separator and isWordAt(s, j, "publish")) return true;
+    }
+    return false;
+}
+
 fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
     const has_release_trigger = isReleaseOrDeployTrigger(wf);
 
@@ -2538,6 +2653,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_workflow = &checkSelfHostedRunnerForkTriggeredWorkflow,
+    },
+    .{
+        .id = "SEC023",
+        .name = "use-trusted-publishing",
+        .description = "Package publish steps should use OIDC trusted publishing instead of a long-lived API token",
+        .severity = .info,
+        .category = .security,
+        .check_step = &checkTrustedPublishing,
     },
     .{
         .id = "SC002",
@@ -5669,6 +5792,129 @@ test "SEC019: one diagnostic per step" {
     var list = runStep(.{ .run = "${{ secrets.A }} ${{ secrets.B }}" });
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC019"));
+}
+
+test "SEC023: pypi publish with an API token" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("password", "${{ secrets.PYPI_API_TOKEN }}") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: pypi publish without a token is trusted publishing" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("repository-url", "https://test.pypi.org/legacy/") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: pypi publish with an empty password is not a token" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("password", "  ") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: input name is matched case-insensitively" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("PASSWORD", "${{ secrets.PYPI_API_TOKEN }}") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: release-gem opting out of trusted publishing" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("setup-trusted-publisher", "false") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("rubygems/release-gem@v1"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: release-gem keeping trusted publishing on" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("setup-trusted-publisher", "true") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("rubygems/release-gem@v1"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: npm publish with NODE_AUTH_TOKEN from a secret" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var list = runStep(.{ .run = "npm publish --provenance", .env = env_map });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: npm publish with a flag before the subcommand" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var list = runStep(.{ .run = "npm --registry=https://registry.npmjs.org publish", .env = env_map });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: npm publish without a token stays quiet" {
+    var list = runStep(.{ .run = "npm publish --provenance" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: NODE_AUTH_TOKEN without a publish stays quiet" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var list = runStep(.{ .run = "npm ci", .env = env_map });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: a computed npm token is not reported" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("NODE_AUTH_TOKEN", "${{ steps.mint.outputs.token }}") catch unreachable;
+    var list = runStep(.{ .run = "npm publish", .env = env_map });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: npmpublish is not npm publish" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var list = runStep(.{ .run = "run-npm publishing", .env = env_map });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {

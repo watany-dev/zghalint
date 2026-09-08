@@ -266,7 +266,7 @@ models, Pages のデプロイ) を書くか、OIDC トークンを発行する (
 回帰ガードは `tests/fixtures/e2e/perm001-scope-placement.yml` (ジョブ側は
 出ない) と `perm001-workflow-level-grant.yml` (ワークフロー側は出る)。
 
-#### G15 (#286). API トークンでの publish を指摘しない (trusted publishing 未使用) — 要ルール追加
+#### G15 (#286). API トークンでの publish を指摘しない (trusted publishing 未使用) — 対応済み
 
 `bench/cases/d-permissions-secrets/api-token-instead-of-oidc.yml`。
 
@@ -278,9 +278,32 @@ models, Pages のデプロイ) を書くか、OIDC トークンを発行する (
 
 長命の API トークンを渡す形。同じ action は OIDC (trusted publishing) に対応
 しており、`id-token: write` があればトークン自体が不要になる。zizmor は
-`use-trusted-publishing` として指摘するが、zghalint は該当ルールを持たない。
-SEC019 (secret を `env:` 経由にせず直接使う) が同じステップで発火するものの、
-「そもそもトークンが要らない」ことは伝えていない。#271 の FN 候補 1 の検証結果。
+`use-trusted-publishing` として指摘していた。SEC019 (secret を `env:` 経由に
+せず直接使う) が同じステップで発火するものの、「そもそもトークンが要らない」
+ことは伝えていなかった。#271 の FN 候補 1 の検証結果。
+
+SEC023 (`use-trusted-publishing`, info) を追加した。OIDC 対応レジストリへの
+publish で長命トークンを渡している step を、次の 3 つの形で報告する。
+
+| 対象 | 発火条件 |
+|---|---|
+| `pypa/gh-action-pypi-publish` | `with.password` が空でない |
+| `rubygems/release-gem` | `with.setup-trusted-publisher: false` (既定は trusted publishing) |
+| `npm publish` を含む `run:` | 同じ step の `env.NODE_AUTH_TOKEN` が `${{ secrets.* }}` |
+
+いずれも `fix_hint` で「`id-token: write` を付けて trusted publishing へ
+切り替える」ことを示す。autofix は付けない — トークンを外すにはレジストリ側の
+publisher 設定が要り、ワークフローの書き換えだけでは完結しないため。
+
+npm は step 自身の `env:` だけを見る。ジョブ / ワークフローに束ねた
+`NODE_AUTH_TOKEN` は、どの step が publish するのかを静的に決められない。
+`${{ steps.*.outputs.* }}` のように実行時に組み立てた値は、既に短命トークンで
+ある可能性があるので報告しない。`bench/cases/j-clean/clean-release-publish.yml`
+(`npm publish --provenance` をトークン無しで実行する) は FP にならない。
+
+回帰ガードは `tests/fixtures/e2e/sec023-trusted-publishing.yml` (3 つの形が
+出る) と `sec023-trusted-publishing-clean.yml` (OIDC で publish する形は
+出ない)。
 
 #### G16 (#297). ブロックシーケンスを親キーと同じ桁に書くと読み落とす — 要パーサ修正
 
@@ -606,7 +629,7 @@ zizmor regular が出して zghalint がカバーしていない主なものは�
 | zizmor ident | ファイル数 | 扱い |
 |---|---|---|
 | `cache-poisoning` | 12 | G1。`actions/setup-node` が既定でキャッシュする |
-| `use-trusted-publishing` | 1 | G15 |
+| `use-trusted-publishing` | 1 | G15。SEC023 で対応済み |
 | `dangerous-triggers` | 4 | 意図的。zizmor はトリガ自体、zghalint は危険な checkout |
 | `unpinned-uses` | 36 | 多くは `actions/*@vN` と `actions/reusable-workflows@main`。SEC001 が GitHub 公式を外している |
 | `template-injection` | 28 | 多くは `steps.*.outputs`。SEC002 は汚染源からの 1 hop に限定 |
@@ -710,7 +733,7 @@ user 3 ms + sys 3 ms。
 - [x] G12 (#283): `---` / `...` のドキュメントマーカーを受理する
 - [ ] G13 (#284): 中身のないワークフローを診断として報告する
 - [x] G14 (#285): PERM001 がジョブに必要な write 権限を除外する
-- [ ] G15 (#286): API トークンでの publish を指摘する (trusted publishing への誘導)
+- [x] G15 (#286): API トークンでの publish を指摘する (trusted publishing への誘導)
 - [x] G5 (#273): SEC002 の汚染源に `inputs.*` と `toJSON(github.event)` を加える
 - [x] G6 (#274): SEC020 を `runs-on` の配列形に対応させる
 - [x] G7 (#275): SC001 を `uses: docker://...` に対応させる

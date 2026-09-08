@@ -1,0 +1,28 @@
+# zghalint:forbid SEC023
+name: release
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          repository-url: https://upload.pypi.org/legacy/
+  npm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Publish to npm
+        run: npm publish --provenance
