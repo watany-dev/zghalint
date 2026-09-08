@@ -51,6 +51,14 @@ Detect security vulnerabilities in workflow definitions.
 | SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 
+### SEC015 vs SEC018
+
+SEC015 (artipacked) is a stricter case of SEC018 (checkout persist-credentials):
+the same `actions/checkout` step, plus a later `upload-artifact` in the same
+job. Both recommend `persist-credentials: false`. When SEC015 fires, SEC018 on
+that step is suppressed so the more specific artifact-leakage message is the
+one shown. Disabling SEC015 in `.zghalint.yml` restores SEC018 on those steps.
+
 ### SEC002 / SEC008 vs. SEC006
 
 SEC002 and SEC008 report **injection** — an untrusted value reaches a shell —

@@ -19,6 +19,10 @@ still be renumbered before 1.0.
 
 ### Changed
 
+- When SEC015 (artipacked) fires on a checkout, SEC018 on the same step is
+  suppressed so the more specific artifact-leakage message is the one shown
+  (#335). Disabling SEC015 restores SEC018. The identical-insertion guard in
+  the fix engine (#300) remains as a backstop.
 - BP002 no longer reports `uses:`-only steps. The action name is already the
   GitHub Actions UI label, so requiring `name:` there drowned out higher
   severity findings (#337). Unnamed `run:` steps are unchanged.

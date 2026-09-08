@@ -346,7 +346,7 @@ jobs:
 壊れる。`bench/cases/d-permissions-secrets/secrets-inherit.yml` ほか、
 `g-reusable/` の caller 4 件で再現する。
 
-#### G19 (#300). SEC015 と SEC018 が同じステップへ `with:` を二重挿入する — 要 fix エンジン修正
+#### G19 (#300 / #335). SEC015 と SEC018 が同じステップへ `with:` を二重挿入する — 対応済み
 
 `bench/cases/d-permissions-secrets/artipacked-upload.yml` の
 `actions/checkout` には SEC015 と SEC018 が同時に発火し、どちらも
@@ -354,7 +354,9 @@ jobs:
 `--fix-unsafe` は両方を適用するため同じステップに `with:` が 2 つ並び、
 結果は SYN002 (キー重複) を出す不正なワークフローになる。
 
-同じアンカーへの同一挿入は 1 回にまとめる必要がある。
+同じアンカーへの同一挿入は 1 回にまとめる (#300)。加えて SEC015 が成立する
+step では SEC018 を抑制し、より具体的な artifact 漏洩のメッセージだけを出す
+(#335)。SEC015 を `.zghalint.yml` で無効にすると SEC018 は残る。
 
 #### G20 (#304). ネットワークに到達できないとき SC003〜SC006 が黙って沈黙する — 対応済み
 
@@ -656,7 +658,8 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - [x] G16 (#297): 親キーと同じ桁のブロックシーケンスをそのキーの値として読む
 - [x] G17 (#298): 行末の `-` をシーケンス項目の指示子として扱う
 - [x] G18 (#299): BP001 を `uses:` ジョブ (reusable workflow 呼び出し) で沈黙させる
-- [x] G19 (#300): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめる
+- [x] G19 (#300 / #335): fix エンジンで同一アンカーへの同じ挿入を 1 回にまとめ、
+      SEC015 成立時は SEC018 を抑制する
 - [x] G20 (#304): ネットワーク取得に失敗したルールを stderr の注記で伝える
 - [x] G21 (#305): DEP004 を `actions/checkout` の `path:` が作るディレクトリで沈黙させる
 - [ ] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない

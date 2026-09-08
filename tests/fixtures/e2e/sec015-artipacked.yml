@@ -1,0 +1,22 @@
+# zghalint:expect SEC015
+# zghalint:forbid SEC018
+# Same checkout would also satisfy SEC018; the more specific artipacked
+# message is the one that must remain (#335).
+name: artipacked prefers SEC015
+on: push
+concurrency:
+  group: artipacked-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  leak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Upload
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: workspace
+          path: dist
