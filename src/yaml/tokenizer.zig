@@ -152,7 +152,7 @@ pub const Tokenizer = struct {
             if (c == ',') return self.emitSimple(.flow_entry, 1);
         }
 
-        if (c == ':' and (self.peekNext() == ' ' or self.isBreakAt(self.pos + 1) or self.pos + 1 >= self.source.len)) {
+        if (c == ':' and self.colonStartsMappingValue(self.pos)) {
             return self.emitSimple(.mapping_value, 1);
         }
 
@@ -365,7 +365,7 @@ pub const Tokenizer = struct {
             if (self.flow_depth > 0 and (ch == ',' or ch == '{' or ch == '}' or ch == '[' or ch == ']')) {
                 break;
             }
-            if (ch == ':' and (self.pos + 1 >= self.source.len or self.source[self.pos + 1] == ' ' or self.isBreakAt(self.pos + 1))) {
+            if (ch == ':' and self.colonStartsMappingValue(self.pos)) {
                 break;
             }
             self.advance();
@@ -414,19 +414,28 @@ pub const Tokenizer = struct {
         }
     }
 
+    /// YAML `s-white` is space or tab. A `:` is a mapping indicator only when
+    /// the next character is s-white, a line break, or EOF (`ns-plain-safe`).
+    fn isSWhiteAt(self: *const Tokenizer, i: usize) bool {
+        if (i >= self.source.len) return false;
+        const ch = self.source[i];
+        return ch == ' ' or ch == '\t';
+    }
+
+    /// True when the `:` at `colon_pos` starts a mapping value rather than
+    /// belonging to a plain scalar such as `http://example.com`.
+    fn colonStartsMappingValue(self: *const Tokenizer, colon_pos: usize) bool {
+        const after = colon_pos + 1;
+        if (after >= self.source.len) return true;
+        return self.isSWhiteAt(after) or self.isBreakAt(after);
+    }
+
     /// True when the `-` at `pos` is a block sequence indicator rather than
     /// the first character of a plain scalar such as `-1` or `--flag`.
     fn isBlockSequenceIndicator(self: *const Tokenizer) bool {
         if (self.pos + 1 >= self.source.len) return self.flow_depth == 0;
-        if (self.source[self.pos + 1] == ' ') return true;
+        if (self.isSWhiteAt(self.pos + 1)) return true;
         return self.flow_depth == 0 and self.isBreakAt(self.pos + 1);
-    }
-
-    fn peekNext(self: *Tokenizer) ?u8 {
-        if (self.pos + 1 < self.source.len) {
-            return self.source[self.pos + 1];
-        }
-        return null;
     }
 
     fn matchStr(self: *Tokenizer, str: []const u8) bool {
@@ -688,6 +697,16 @@ test "tokenizer mapping key-value" {
     try std.testing.expectEqualStrings("CI", value.slice(tokenizer.source));
 }
 
+test "tokenizer mapping key-value with tab after colon" {
+    var tokenizer = Tokenizer.init("key:\tvalue");
+    _ = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, tokenizer.next().kind);
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const value = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, value.kind);
+    try std.testing.expectEqualStrings("value", value.slice(tokenizer.source));
+}
+
 test "tokenizer comment" {
     var tokenizer = Tokenizer.init("# this is a comment");
     _ = tokenizer.next();
@@ -713,6 +732,15 @@ test "tokenizer sequence entry" {
     _ = tokenizer.next();
     const dash = tokenizer.next();
     try std.testing.expectEqual(TokenKind.sequence_entry, dash.kind);
+    const item = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.scalar, item.kind);
+    try std.testing.expectEqualStrings("item", item.slice(tokenizer.source));
+}
+
+test "tokenizer sequence entry with tab after dash" {
+    var tokenizer = Tokenizer.init("-\titem");
+    _ = tokenizer.next();
+    try std.testing.expectEqual(TokenKind.sequence_entry, tokenizer.next().kind);
     const item = tokenizer.next();
     try std.testing.expectEqual(TokenKind.scalar, item.kind);
     try std.testing.expectEqualStrings("item", item.slice(tokenizer.source));

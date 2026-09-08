@@ -228,11 +228,18 @@ Detect supply chain risks in action and container image references.
 | SC007 | typosquat-action | warning | Action name is similar to a well-known `actions/*` action (possible typosquat) |
 | SC008 | impostor-commit | warning | SHA-pinned action ref is not reachable from any branch or tag of the upstream repo |
 
+### SC002 compromised-action-sha
+
+SHA matching is case-insensitive (GitHub OIDs are lowercase hex; workflows may
+pin uppercase). Owner and repository names are also compared case-insensitively,
+matching GitHub Actions resolution.
+
 ### SC007 typosquat-action
 
 `uses: actions/chekout@v4` のように、公式 `actions/*` のよく知られたリポジトリ名
 から編集距離 1 または 2 の参照を warning する。完全一致（`actions/checkout`）と、
-`myorg/chekout` のような別 owner の fork は対象外。候補の置き換えは作者の意図を
+`myorg/chekout` のような別 owner の fork は対象外。owner / repo の完全一致判定は
+GitHub と同様に大文字小文字を区別しない。候補の置き換えは作者の意図を
 先取りするため、autofix は付けない。
 
 ### SEC001 / SC006 の SHA ピン止め autofix

@@ -1326,10 +1326,6 @@ fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
     }) catch return;
 }
 
-fn findOverprovisionedSecrets(s: []const u8) ?ExprMatch {
-    return findExpr(s, exprIsWholeSecretsRef);
-}
-
 fn exprIsWholeSecretsRef(expr: []const u8) bool {
     const trimmed = std.mem.trim(u8, expr, " \t\n\r");
     if (trimmed.len == 0) return false;
@@ -1443,10 +1439,6 @@ fn isSecretsExpression(value: []const u8) bool {
     return std.mem.startsWith(u8, inner, "secrets.");
 }
 
-fn findSecretsOutsideEnv(s: []const u8) ?ExprMatch {
-    return findExpr(s, exprIsNonTokenSecretRef);
-}
-
 /// `secrets.GITHUB_TOKEN` is automatically redacted, so it is exempt.
 fn exprIsNonTokenSecretRef(inner: []const u8) bool {
     const trimmed = std.mem.trim(u8, inner, " \t\n\r");
@@ -1486,10 +1478,6 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
             }
         }
     }
-}
-
-fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
-    return findExpr(s, exprHasSecretJsonCall);
 }
 
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
@@ -1693,8 +1681,9 @@ fn checkCompromisedAction(step: *const Step, list: *DiagnosticList) void {
     const ref = action_ref.ref orelse return;
 
     for (compromised_data.compromised_actions) |entry| {
-        if (!std.mem.eql(u8, owner, entry.owner)) continue;
-        if (!std.mem.eql(u8, repo, entry.repo)) continue;
+        // GitHub Actions resolves owner/repo case-insensitively.
+        if (!std.ascii.eqlIgnoreCase(owner, entry.owner)) continue;
+        if (!std.ascii.eqlIgnoreCase(repo, entry.repo)) continue;
 
         var hit = false;
         for (entry.shas) |sha| {
@@ -1738,11 +1727,11 @@ fn checkTyposquatAction(step: *const Step, list: *DiagnosticList) void {
     const repo = action_ref.repo orelse return;
 
     for (trusted_data.trusted_actions) |trusted| {
-        if (std.mem.eql(u8, owner, trusted.owner) and std.mem.eql(u8, repo, trusted.repo)) return;
+        if (std.ascii.eqlIgnoreCase(owner, trusted.owner) and std.ascii.eqlIgnoreCase(repo, trusted.repo)) return;
     }
 
     for (trusted_data.trusted_actions) |trusted| {
-        if (!std.mem.eql(u8, owner, trusted.owner)) continue;
+        if (!std.ascii.eqlIgnoreCase(owner, trusted.owner)) continue;
         const distance = util.levenshteinDistance(repo, trusted.repo);
         if (distance < 1 or distance > 2) continue;
 
@@ -6245,6 +6234,13 @@ test "SC002: uppercase SHA still fires (case-insensitive match)" {
     try testing.expect(hasDiagnostic(&list, "SC002"));
 }
 
+test "SC002: mixed-case owner of compromised SHA still fires" {
+    var list = runStep(.{ .uses = ActionRef.parse("TJ-Actions/changed-files@0e58ed8671d6b60d0890c21b07f8835ace038e67") });
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC002"));
+}
+
 test "SC007: actions/chekout fires warning and suggests checkout" {
     var list = runStep(.{ .uses = ActionRef.parse("actions/chekout@v4") });
     defer list.deinit();
@@ -6267,6 +6263,20 @@ test "SC007: exact actions/checkout does not fire" {
     defer list.deinit();
 
     try testing.expect(!hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: mixed-case owner of exact trusted action does not fire" {
+    var list = runStep(.{ .uses = ActionRef.parse("Actions/checkout@v4") });
+    defer list.deinit();
+
+    try testing.expect(!hasDiagnostic(&list, "SC007"));
+}
+
+test "SC007: mixed-case owner still flags typosquat of trusted repo" {
+    var list = runStep(.{ .uses = ActionRef.parse("Actions/chekout@v4") });
+    defer list.deinit();
+
+    try testing.expect(hasDiagnostic(&list, "SC007"));
 }
 
 test "SC007: myorg/chekout does not fire" {

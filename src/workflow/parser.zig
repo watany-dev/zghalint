@@ -1557,10 +1557,6 @@ fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseErro
     }
 }
 
-fn parseStringArray(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
-    return (try parseStringArrayWithSpans(allocator, node)).values;
-}
-
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
 

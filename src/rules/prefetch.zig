@@ -29,14 +29,6 @@ pub const Options = struct {
     no_cache: bool = false,
 };
 
-/// The tag → commit oid answers this layer collected, re-exported so rules can
-/// reach them through the prefetch API without depending on the orchestrator.
-/// See `sha_pin.zig` for why a miss must never be read as "the tag is absent".
-pub const lookupTagOid = sha_pin.lookupTagOid;
-pub const setCachedTagOid = sha_pin.setCachedTagOid;
-pub const initTagOids = sha_pin.initTagOids;
-pub const deinitTagOids = sha_pin.deinitTagOids;
-
 /// Threaded through the prefetch pipeline so every stage can skip the work
 /// no rule asked for.
 const ActiveRules = struct {
@@ -330,7 +322,7 @@ fn applyCacheEntry(
 
 fn hasImpostorEntry(entry: disk_cache.CachedRepo, sha: []const u8) bool {
     for (entry.impostor) |e| {
-        if (std.mem.eql(u8, e.sha, sha)) return true;
+        if (std.ascii.eqlIgnoreCase(e.sha, sha)) return true;
     }
     return false;
 }

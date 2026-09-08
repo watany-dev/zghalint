@@ -300,7 +300,7 @@ fn parseRepoObject(
         for (repo.sha_refs, 0..) |sha, j| {
             var found = false;
             for (tag_oids) |entry| {
-                if (std.mem.eql(u8, entry.oid, sha)) {
+                if (std.ascii.eqlIgnoreCase(entry.oid, sha)) {
                     found = true;
                     break;
                 }
@@ -468,6 +468,19 @@ test "parseResponse: sha match resolves to has_tag" {
     const results = try parseResponse(arena.allocator(), body, &repos);
     try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
     try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[1].resolution);
+}
+
+test "parseResponse: sha match is case-insensitive" {
+    const body =
+        \\{"data":{"r0":{"isArchived":false,"tagNodes":{"nodes":[{"name":"v1","target":{"oid":"aa"}}]}}}}
+    ;
+    const shas = [_][]const u8{"AA"};
+    const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const results = try parseResponse(arena.allocator(), body, &repos);
+    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
 }
 
 test "parseResponse: annotated tag inner oid matched" {

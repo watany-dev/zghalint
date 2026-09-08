@@ -40,3 +40,19 @@ still be renumbered before 1.0.
   `gh attestation verify` (see the README).
 - Fuzz targets (`zig build fuzz`) for the YAML tokenizer, the YAML parser and
   the `${{ }}` expression parser.
+
+### Changed
+
+- SC002 / SC007: owner and repository names are compared case-insensitively,
+  matching GitHub Actions resolution. A mixed-case clone of a compromised
+  action (`TJ-Actions/changed-files@<sha>`) now flags SC002, and a mixed-case
+  exact trusted name (`Actions/checkout`) is not treated as a different owner
+  for SC007.
+
+### Fixed
+
+- YAML tokenizer: a colon or block `-` followed by a tab is an indicator
+  (`s-white`), so `key:\tvalue` parses as a mapping instead of one scalar.
+- SC005 / SC008: Git SHA comparisons against GitHub OIDs are case-insensitive,
+  so an uppercase hex pin of a tagged commit is not reported as `no_tag` or
+  impostor.

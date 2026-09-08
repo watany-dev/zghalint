@@ -21,8 +21,6 @@ pub const PendingCompare = struct {
     branch_oids: []const graphql.NamedOid,
 };
 
-pub const CompareStatus = rest_fallback.CompareStatus;
-
 pub const RefSweepResult = enum { legit, all_unreachable, unknown };
 
 pub fn classifyImpostorFromGraphql(
@@ -73,7 +71,7 @@ pub fn classifyImpostorFromGraphql(
 
 fn oidIn(refs: []const graphql.NamedOid, target: []const u8) bool {
     for (refs) |r| {
-        if (std.mem.eql(u8, r.oid, target)) return true;
+        if (std.ascii.eqlIgnoreCase(r.oid, target)) return true;
     }
     return false;
 }
@@ -168,6 +166,33 @@ test "classifyImpostorFromGraphql: tag oid match yields legitimate (no pending)"
 
     const sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
     const tag_oids = [_]graphql.NamedOid{.{ .name = "v1", .oid = sha }};
+    const sha_results = [_]graphql.ShaTagResult{.{ .sha = sha, .resolution = .has_tag }};
+    const res = graphql.RepoResult{
+        .owner = "o",
+        .repo = "r",
+        .sha_results = &sha_results,
+        .tag_oids = &tag_oids,
+    };
+
+    var pending = std.ArrayList(PendingCompare){};
+    defer pending.deinit(alloc);
+    classifyImpostorFromGraphql(alloc, res, &pending);
+
+    try testing.expectEqual(@as(usize, 0), pending.items.len);
+    const cached = impostor.lookupCachedImpostorResult("o", "r", sha) orelse return error.TestExpectedNonNull;
+    try testing.expectEqual(impostor.ImpostorStatus.legitimate, cached.status);
+}
+
+test "classifyImpostorFromGraphql: tag oid match is case-insensitive" {
+    impostor.initImpostor(testing.allocator, false);
+    defer impostor.deinitImpostor();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sha = "DEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF";
+    const tag_oids = [_]graphql.NamedOid{.{ .name = "v1", .oid = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" }};
     const sha_results = [_]graphql.ShaTagResult{.{ .sha = sha, .resolution = .has_tag }};
     const res = graphql.RepoResult{
         .owner = "o",

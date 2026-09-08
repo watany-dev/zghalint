@@ -184,7 +184,7 @@ fn markMatches(candidate_sha: []const u8, targets: []const []const u8, out: []Ta
     var newly: usize = 0;
     for (targets, out) |target, *res| {
         if (res.* == .has_tag) continue;
-        if (!std.mem.eql(u8, candidate_sha, target)) continue;
+        if (!std.ascii.eqlIgnoreCase(candidate_sha, target)) continue;
         res.* = .has_tag;
         newly += 1;
     }
@@ -391,6 +391,16 @@ test "matchShaInRefs: lightweight tag match" {
         \\[{"ref":"refs/tags/v1","object":{"sha":"abc","type":"commit"}}]
     ;
     const result = matchShaInRefs(arena.allocator(), body, "abc", "o", "r");
+    try testing.expectEqual(TagResolution.has_tag, result);
+}
+
+test "matchShaInRefs: SHA match is case-insensitive" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[{"ref":"refs/tags/v1","object":{"sha":"abc","type":"commit"}}]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "ABC", "o", "r");
     try testing.expectEqual(TagResolution.has_tag, result);
 }
 
