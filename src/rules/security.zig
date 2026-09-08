@@ -5512,12 +5512,13 @@ test "SEC018: non-checkout action does not trigger" {
     try testing.expect(!hasDiagnostic(&list, "SEC018"));
 }
 
-test "SEC018: both SEC015 and SEC018 fire for same checkout + upload-artifact" {
+test "SEC018: artipacked checkout keeps SEC015 and drops SEC018 (#335)" {
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
+            .uses_value_span = Span.point(4, 15, 80),
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -5527,9 +5528,16 @@ test "SEC018: both SEC015 and SEC018 fire for same checkout + upload-artifact" {
     try testing.expect(hasDiagnostic(&list, "SEC015"));
     try testing.expect(hasDiagnostic(&list, "SEC018"));
     const sec015 = findDiagnostic(&list, "SEC015").?;
-    const sec018 = findDiagnostic(&list, "SEC018").?;
     try testing.expect(sec015.fix.?.safety == .safe);
-    try testing.expect(sec018.fix.?.safety == .unsafe);
+
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    engine.postProcess(testing.allocator, &wf, &list, .{});
+
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+    try testing.expect(!hasDiagnostic(&list, "SEC018"));
 }
 
 test "SEC019: secret in run block" {

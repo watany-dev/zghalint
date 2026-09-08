@@ -57,17 +57,35 @@ pub const Engine = struct {
 const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
 
-/// Both rules visit steps in identical order (engine.run iterates `rules`
-/// outer, `steps` inner), so the K-th SC005 diagnostic in `list` corresponds
-/// to the K-th step that satisfied SC005's emission condition. The same K-th
-/// counter is rebuilt here by re-querying the cached tag resolution +
-/// impostor verdict for each step, then the matching SC005 entries are
-/// struck from the list.
+/// Which overlapping-rule suppressions to apply. The CLI turns a flag off
+/// when the covering rule is disabled, so a `.zghalint.yml` that silences
+/// SC008 or SEC015 still shows the broader finding.
+pub const PostProcessOpts = struct {
+    drop_sc005: bool = true,
+    drop_sec018: bool = true,
+};
+
+/// Drop the broader finding when a stricter one already covers the same step.
 ///
-/// SC008 is structurally a stricter version of SC005 (impostor implies
-/// no_tag), so this hides the SC005 noise without affecting the case
-/// where SC005 fires alone on a no_tag-but-legitimate SHA.
+/// - SC008 vs SC005: impostor implies no_tag. Both rules visit steps in
+///   identical order (engine.run iterates `rules` outer, `steps` inner), so
+///   the K-th SC005 diagnostic corresponds to the K-th step that satisfied
+///   SC005's emission condition. The same K-th counter is rebuilt by
+///   re-querying the cached tag resolution + impostor verdict.
+/// - SEC015 vs SEC018: artipacked (checkout + upload-artifact) is a subset
+///   of persist-credentials, and both recommend the same fix. Prefer the
+///   more specific artifact-leakage message (#335).
 pub fn postProcess(
+    allocator: std.mem.Allocator,
+    workflow: *const Workflow,
+    list: *DiagnosticList,
+    opts: PostProcessOpts,
+) void {
+    if (opts.drop_sc005) dropSc005CoveredByImpostor(allocator, workflow, list);
+    if (opts.drop_sec018) dropSec018CoveredByArtipacked(list);
+}
+
+fn dropSc005CoveredByImpostor(
     allocator: std.mem.Allocator,
     workflow: *const Workflow,
     list: *DiagnosticList,
@@ -122,6 +140,36 @@ pub fn postProcess(
             }
         }
         if (write != read) list.items.items[write] = d;
+        write += 1;
+    }
+    list.items.shrinkRetainingCapacity(write);
+}
+
+fn sameStepSpan(a: diagnostics.Span, b: diagnostics.Span) bool {
+    return a.start_byte == b.start_byte and
+        a.start_line == b.start_line and
+        a.start_col == b.start_col;
+}
+
+fn sec015CoversSpan(items: []const Diagnostic, span: diagnostics.Span) bool {
+    for (items) |d| {
+        if (!std.mem.eql(u8, d.rule_id, "SEC015")) continue;
+        if (sameStepSpan(d.span, span)) return true;
+    }
+    return false;
+}
+
+fn dropSec018CoveredByArtipacked(list: *DiagnosticList) void {
+    const items = list.items.items;
+    const n = items.len;
+    var write: usize = 0;
+    var read: usize = 0;
+    while (read < n) : (read += 1) {
+        const d = items[read];
+        if (std.mem.eql(u8, d.rule_id, "SEC018") and sec015CoversSpan(items[0..n], d.span)) {
+            continue;
+        }
+        if (write != read) items[write] = d;
         write += 1;
     }
     list.items.shrinkRetainingCapacity(write);
@@ -480,7 +528,7 @@ test "postProcess: drops SC005 when same step is impostor" {
         .span = Span.point(1, 1, 0),
     });
 
-    postProcess(std.testing.allocator, &wf, &list);
+    postProcess(std.testing.allocator, &wf, &list, .{});
 
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("SC008", list.get(0).rule_id);
@@ -511,7 +559,7 @@ test "postProcess: keeps SC005 when impostor is legitimate" {
         .span = Span.point(1, 1, 0),
     });
 
-    postProcess(std.testing.allocator, &wf, &list);
+    postProcess(std.testing.allocator, &wf, &list, .{});
 
     // legitimate verdict → SC005 stays (SC008 wouldn't have fired anyway).
     try std.testing.expectEqual(@as(usize, 1), list.len());
@@ -561,7 +609,7 @@ test "postProcess: drops only the matching SC005 entry, not unrelated ones" {
         .span = Span.point(1, 1, 0),
     });
 
-    postProcess(std.testing.allocator, &wf, &list);
+    postProcess(std.testing.allocator, &wf, &list, .{});
 
     try std.testing.expectEqual(@as(usize, 2), list.len());
     try std.testing.expectEqualStrings("SC005", list.get(0).rule_id);
@@ -583,7 +631,60 @@ test "postProcess: no-op when impostor module offline" {
         .span = Span.point(1, 1, 0),
     });
 
-    postProcess(std.testing.allocator, &wf, &list);
+    postProcess(std.testing.allocator, &wf, &list, .{});
 
     try std.testing.expectEqual(@as(usize, 1), list.len());
+}
+
+test "postProcess: drops SEC018 when SEC015 shares the span (#335)" {
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &.{} };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "SEC015",
+        .severity = .warning,
+        .message = "artipacked",
+        .span = Span.point(4, 15, 80),
+    });
+    try list.append(.{
+        .rule_id = "SEC018",
+        .severity = .warning,
+        .message = "persist",
+        .span = Span.point(4, 15, 80),
+    });
+    try list.append(.{
+        .rule_id = "SEC018",
+        .severity = .warning,
+        .message = "other checkout",
+        .span = Span.point(8, 15, 200),
+    });
+
+    postProcess(std.testing.allocator, &wf, &list, .{ .drop_sc005 = false });
+
+    try std.testing.expectEqual(@as(usize, 2), list.len());
+    try std.testing.expectEqualStrings("SEC015", list.get(0).rule_id);
+    try std.testing.expectEqualStrings("SEC018", list.get(1).rule_id);
+    try std.testing.expectEqualStrings("other checkout", list.get(1).message);
+}
+
+test "postProcess: keeps SEC018 when drop_sec018 is false" {
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &.{} };
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "SEC015",
+        .severity = .warning,
+        .message = "artipacked",
+        .span = Span.point(4, 15, 80),
+    });
+    try list.append(.{
+        .rule_id = "SEC018",
+        .severity = .warning,
+        .message = "persist",
+        .span = Span.point(4, 15, 80),
+    });
+
+    postProcess(std.testing.allocator, &wf, &list, .{ .drop_sc005 = false, .drop_sec018 = false });
+
+    try std.testing.expectEqual(@as(usize, 2), list.len());
 }
