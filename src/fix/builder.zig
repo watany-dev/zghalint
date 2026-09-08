@@ -468,7 +468,6 @@ test "renameToken keeps the quotes of a quoted token" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    // Source: 'pusg' at bytes 10..16.
     const edits = renameToken(arena.allocator(), mkSpan(10, 16), "pusg", "push") orelse
         return error.TestExpectedNonNull;
     try testing.expectEqual(@as(usize, 11), edits[0].start_byte);
