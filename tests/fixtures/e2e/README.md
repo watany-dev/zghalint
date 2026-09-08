@@ -58,6 +58,7 @@ non-comment line. A fixture with neither directive fails the test.
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |
+| `dep004-checkout-path.yml` | #305 FP guard: a local action under an `actions/checkout` `path:` only exists on the runner |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
@@ -67,4 +68,6 @@ Network-backed rules (SC003–SC006, SC008) stay offline in tests, so fixtures
 only exercise local analysis.
 
 Fixtures are read at runtime via `std.fs.cwd()` (tests run with
-`cwd = repo root`), so adding a `.yml` file here is enough to add a case.
+`cwd = repo root`), so adding a `.yml` file here is enough to add a case. The
+repository root is also the local-action root for the run, so a `uses: ./x`
+that does not exist here resolves as missing, the same as under the CLI.

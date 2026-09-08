@@ -90,10 +90,18 @@ const composite_step_checks = [_]StepCheck{
     stepCheck(&best_practices.rules, "BP003"),
     stepCheck(&best_practices.rules, "BP008"),
     stepCheck(&uses_rules.rules, "DEP003"),
-    stepCheck(&local_action.rules, "DEP004"),
+    // DEP004 needs the sibling steps (an earlier `actions/checkout` with a
+    // `path:` creates its directory at run time), so it is called from the
+    // loop below with the step list in hand.
     stepCheck(&popular_actions.rules, "DEP005"),
     stepCheck(&popular_actions.rules, "DEP006"),
 };
+
+comptime {
+    // DEP004 is invoked directly rather than through the table above; keep the
+    // same "a renamed or removed rule is a compile error" guarantee.
+    requireRule(&local_action.rules, "DEP004");
+}
 
 /// Contexts a composite action step cannot resolve. They are all valid
 /// elsewhere, so the expression checker accepts them and only this rule knows
@@ -130,6 +138,7 @@ pub fn checkCompositeSteps(root: Mapping, steps_node: Node, list: *DiagnosticLis
 
     for (steps, 0..) |*step, index| {
         for (composite_step_checks) |check| check(step, list);
+        local_action.checkStepAmongSteps(steps, index, list);
         checkShell(step, list);
 
         env.steps = expr_overlay.buildSteps(alloc, steps, index);
