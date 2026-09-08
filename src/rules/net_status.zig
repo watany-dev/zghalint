@@ -42,7 +42,8 @@ pub fn reset() void {
     unavailable = 0;
 }
 
-/// `note: SC003, SC005 skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)` の 1 行を書く。
+/// Names HTTPS_PROXY / SSL_CERT_FILE because those are the usual miss when
+/// GitHub is reachable from a browser but not from this process (#336).
 pub fn writeNote(w: *std.Io.Writer, ids: []const []const u8) !void {
     if (ids.len == 0) return;
     try w.writeAll("note: ");
