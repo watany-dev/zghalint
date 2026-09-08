@@ -1542,20 +1542,6 @@ fn secretRunOccurrences(step: *const Step) env_binding.Occurrences {
     return occs;
 }
 
-/// A registry that supports OIDC trusted publishing, together with the action
-/// that publishes to it and the `with:` input carrying a long-lived API token
-/// instead (SEC023). The input being set means the token exists as a repository
-/// secret at all, which trusted publishing removes rather than protects.
-const TokenPublisher = struct {
-    action: []const u8,
-    input: []const u8,
-    registry: []const u8,
-};
-
-const token_publishers = [_]TokenPublisher{
-    .{ .action = "pypa/gh-action-pypi-publish", .input = "password", .registry = "PyPI" },
-};
-
 fn checkTrustedPublishing(step: *const Step, list: *DiagnosticList) void {
     if (step.uses) |ref| return checkPublishActionToken(step, ref, list);
     checkNpmPublishToken(step, list);
@@ -1564,25 +1550,26 @@ fn checkTrustedPublishing(step: *const Step, list: *DiagnosticList) void {
 fn checkPublishActionToken(step: *const Step, ref: ActionRef, list: *DiagnosticList) void {
     const with_map = step.with orelse return;
 
-    inline for (token_publishers) |publisher| {
-        if (isAction(ref, publisher.action)) {
-            const input = getWithInput(with_map, publisher.input) orelse return;
-            if (std.mem.trim(u8, input.value, " \t\n\r").len == 0) return;
-            reportTrustedPublishing(
-                list,
-                "publishes to " ++ publisher.registry ++ " with a long-lived API token; this action supports trusted publishing (OIDC)",
-                withAnchor(step, input.key).whole(),
-                "remove '" ++ publisher.input ++ ":' and give the job 'permissions: id-token: write' to publish through trusted publishing",
-            );
-            return;
-        }
+    // `password:` being set at all means a long-lived token exists as a
+    // repository secret, which trusted publishing removes rather than protects.
+    if (isAction(ref, "pypa/gh-action-pypi-publish")) {
+        const input = getWithInput(with_map, "password") orelse return;
+        if (std.mem.trim(u8, input.value, " \t\n\r").len == 0) return;
+        if (!publishesToPyPI(with_map)) return;
+        reportTrustedPublishing(
+            list,
+            "publishes to PyPI with a long-lived API token; this action supports trusted publishing (OIDC)",
+            withAnchor(step, input.key).whole(),
+            "remove 'password:' and give the job 'permissions: id-token: write' to publish through trusted publishing",
+        );
+        return;
     }
 
     // `rubygems/release-gem` configures trusted publishing by default, so only
     // an explicit opt-out means a `GEM_HOST_API_KEY` secret is doing the work.
     if (isAction(ref, "rubygems/release-gem")) {
         const input = getWithInput(with_map, "setup-trusted-publisher") orelse return;
-        if (!std.mem.eql(u8, std.mem.trim(u8, input.value, " \t\n\r"), "false")) return;
+        if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, input.value, " \t\n\r"), "false")) return;
         reportTrustedPublishing(
             list,
             "publishes to RubyGems with trusted publishing turned off, which falls back to a long-lived API key",
@@ -1590,6 +1577,16 @@ fn checkPublishActionToken(step: *const Step, ref: ActionRef, list: *DiagnosticL
             "drop 'setup-trusted-publisher: false' and give the job 'permissions: id-token: write' to publish through trusted publishing",
         );
     }
+}
+
+/// Trusted publishing is offered by PyPI and TestPyPI, not by the private
+/// indexes (Artifactory, devpi, ...) the same action can push to via
+/// `repository-url`. Without that input the action defaults to PyPI.
+fn publishesToPyPI(with_map: workflow_types.StringMap) bool {
+    const url = getWithInput(with_map, "repository-url") orelse return true;
+    const trimmed = std.mem.trim(u8, url.value, " \t\n\r");
+    if (trimmed.len == 0) return true;
+    return std.mem.indexOf(u8, trimmed, "pypi.org") != null;
 }
 
 /// `npm publish` authenticates through `NODE_AUTH_TOKEN`, which npm's trusted
@@ -1643,8 +1640,8 @@ fn containsNpmPublish(s: []const u8) bool {
                 j += 1;
                 continue;
             }
-            // A flag between the command and the subcommand, e.g.
-            // `npm --access public publish`.
+            // A self-contained flag between the command and the subcommand,
+            // e.g. `npm --registry=https://registry.npmjs.org publish`.
             if (saw_separator and s[j] == '-') {
                 while (j < s.len and s[j] != ' ' and s[j] != '\t' and s[j] != '\n') j += 1;
                 saw_separator = false;
@@ -5846,6 +5843,44 @@ test "SEC023: release-gem opting out of trusted publishing" {
     var with_map = workflow_types.StringMap.init(testing.allocator);
     defer with_map.deinit();
     with_map.put("setup-trusted-publisher", "false") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("rubygems/release-gem@v1"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: publishing to a private index is not trusted publishing territory" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("password", "${{ secrets.ARTIFACTORY_TOKEN }}") catch unreachable;
+    with_map.put("repository-url", "https://artifactory.example.com/api/pypi/pypi-local") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: publishing to TestPyPI with a token is still reported" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("password", "${{ secrets.TEST_PYPI_API_TOKEN }}") catch unreachable;
+    with_map.put("repository-url", "https://test.pypi.org/legacy/") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: release-gem opt-out is matched case-insensitively" {
+    var with_map = workflow_types.StringMap.init(testing.allocator);
+    defer with_map.deinit();
+    with_map.put("setup-trusted-publisher", "False") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("rubygems/release-gem@v1"),
         .with = with_map,

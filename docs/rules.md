@@ -236,13 +236,17 @@ OIDC (trusted publishing) に対応したレジストリで、長命の API ト�
 
 | 対象 | 発火条件 |
 |---|---|
-| `pypa/gh-action-pypi-publish` | `with.password` が空でない |
+| `pypa/gh-action-pypi-publish` | `with.password` が空でない（`with.repository-url` が PyPI / TestPyPI を指す場合のみ）|
 | `rubygems/release-gem` | `with.setup-trusted-publisher: false`（既定は trusted publishing）|
 | `npm publish` を含む `run:` | 同じ step の `env.NODE_AUTH_TOKEN` が `${{ secrets.* }}` |
 
 いずれも「`id-token: write` を付けて trusted publishing に切り替える」ことを
 `fix_hint` で示す。自動修正は付けない — トークンの削除はレジストリ側の
 publisher 設定を伴うため、ワークフローの書き換えだけでは完結しない。
+
+`pypa/gh-action-pypi-publish` は `repository-url` で任意のインデックスへも
+push できるが、trusted publishing に対応しているのは PyPI と TestPyPI なので、
+社内インデックス（Artifactory / devpi など）を指している場合は報告しない。
 
 npm は step 自身の `env:` だけを見る。ジョブやワークフローに束ねた
 `NODE_AUTH_TOKEN` は、どの step が publish するのかを静的に決められないため

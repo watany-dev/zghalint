@@ -40,9 +40,13 @@ SEC001–SEC022 は使用済み。name は zizmor の ident と揃える。ベ�
 
 | 対象 | 発火条件 |
 |---|---|
-| `pypa/gh-action-pypi-publish` | `with.password` が空でない |
+| `pypa/gh-action-pypi-publish` | `with.password` が空でなく、`with.repository-url` が無いか `pypi.org` を指す |
 | `rubygems/release-gem` | `with.setup-trusted-publisher: false` |
 | `npm publish` を含む `run:` | 同じ step の `env.NODE_AUTH_TOKEN` が `${{ secrets.* }}` |
+
+`repository-url` を見るのは、この action が社内インデックス（Artifactory /
+devpi など）へも push できるからである。trusted publishing に対応しているのは
+PyPI と TestPyPI だけなので、それ以外を指している step には切り替え先が無い。
 
 `rubygems/release-gem` だけ条件が反転しているのは、この action の既定が trusted
 publishing だからである。既定のままの step を報告するのは誤りなので、明示的な
@@ -83,5 +87,5 @@ trusted publishing へ切り替える」ことを示すに留める。
 - G15 が解消し、ベンチの kind マップの `zghalint` が `None` から `SEC023` になる
 - 回帰ガードは `tests/fixtures/e2e/sec023-trusted-publishing.yml`（3 つの形が出る）
   と `sec023-trusted-publishing-clean.yml`（OIDC で publish する形は出ない）
-- 対応レジストリの表は D3 の 3 つで始める。増やす場合は「トークンを渡す入力名」が
-  一意に決まる action に限る — 入力名が分からなければ発火条件を書けない
+- 対象は D3 の 3 つで始める。増やす場合は「トークンを渡す入力名」が一意に決まる
+  action に限る — 入力名が分からなければ発火条件を書けない
