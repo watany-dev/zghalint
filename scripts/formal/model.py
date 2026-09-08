@@ -15,19 +15,16 @@ workflow the specification calls dangerous that no rule reports.
 binary, so nothing is filed on the strength of the model alone.
 
 Usage:
-    python3 scripts/formal/model.py            # human-readable report
-    python3 scripts/formal/model.py --json     # machine-readable, for confirm.py
+    python3 scripts/formal/model.py
 
-Exit status is 0 in both cases: the model is a *finder*, not a CI gate — the
-gaps it reports are tracked as issues (see docs/design/formal-rule-model.md).
+Exit status is always 0: the model is a *finder*, not a CI gate — the gaps
+it reports are tracked as issues (see docs/design/formal-rule-model.md).
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import z3
 
@@ -70,17 +67,14 @@ class Model:
 
     # -- helpers ---------------------------------------------------------------
 
-    def _pred(self, name: str, *sorts):
-        return z3.Function(name, *sorts, z3.BoolSort())
-
-    def _define_unary(self, name: str, domain: list, values: dict, truth) -> z3.FuncDeclRef:
-        fn = self._pred(name, domain[0].sort())
+    def _define_unary(self, name: str, values: dict, truth) -> z3.FuncDeclRef:
+        fn = z3.Function(name, next(iter(values.values())).sort(), z3.BoolSort())
         for key, sym in values.items():
             self.solver.add(fn(sym) == bool(truth(key)))
         return fn
 
     def _define_tc(self, name: str, truth) -> z3.FuncDeclRef:
-        fn = self._pred(name, self.Trigger, self.Ctx)
+        fn = z3.Function(name, self.Trigger, self.Ctx, z3.BoolSort())
         for t, ts in self.t_of.items():
             for c, cs in self.c_of.items():
                 self.solver.add(fn(ts, cs) == bool(truth(t, c)))
@@ -94,25 +88,19 @@ class Model:
 
         self.available = self._define_tc("available", lambda t, c: c in avail[t])
         self.external = self._define_unary(
-            "external", self.ctxs, self.c_of, lambda c: ctx_by_path[c].author == spec.Author.EXTERNAL
+            "external", self.c_of, lambda c: ctx_by_path[c].author == spec.Author.EXTERNAL
         )
         self.dispatcher = self._define_unary(
-            "dispatcher", self.ctxs, self.c_of, lambda c: ctx_by_path[c].author == spec.Author.DISPATCHER
+            "dispatcher", self.c_of, lambda c: ctx_by_path[c].author == spec.Author.DISPATCHER
         )
-        self.ref_shaped = self._define_unary(
-            "ref_shaped", self.ctxs, self.c_of, lambda c: ctx_by_path[c].ref_shaped
-        )
-        self.free_text = self._define_unary(
-            "free_text", self.ctxs, self.c_of, lambda c: ctx_by_path[c].free_text
-        )
-        self.privileged = self._define_unary(
-            "privileged", self.triggers, self.t_of, lambda t: t in spec.PRIVILEGED
-        )
+        self.ref_shaped = self._define_unary("ref_shaped", self.c_of, lambda c: ctx_by_path[c].ref_shaped)
+        self.free_text = self._define_unary("free_text", self.c_of, lambda c: ctx_by_path[c].free_text)
+        self.privileged = self._define_unary("privileged", self.t_of, lambda t: t in spec.PRIVILEGED)
         self.externally_triggerable = self._define_unary(
-            "externally_triggerable", self.triggers, self.t_of, lambda t: t in spec.EXTERNALLY_TRIGGERABLE
+            "externally_triggerable", self.t_of, lambda t: t in spec.EXTERNALLY_TRIGGERABLE
         )
         self.carries_fork_code = self._define_unary(
-            "carries_fork_code", self.triggers, self.t_of, lambda t: t in spec.CARRIES_FORK_CODE
+            "carries_fork_code", self.t_of, lambda t: t in spec.CARRIES_FORK_CODE
         )
 
     # -- implementation --------------------------------------------------------
@@ -154,12 +142,8 @@ class Model:
         self.sec005 = self._define_tc("sec005", sec005)
         self.sec009 = self._define_tc("sec009", sec009)
         self.sec021 = self._define_tc("sec021", sec021)
-        self.sec020 = self._define_unary(
-            "sec020", self.triggers, self.t_of, lambda t: t in im.fork_accessible_triggers
-        )
-        self.followed = self._define_unary(
-            "followed", self.flows, self.f_of, lambda f: f in im.followed_flows
-        )
+        self.sec020 = self._define_unary("sec020", self.t_of, lambda t: t in im.fork_accessible_triggers)
+        self.followed = self._define_unary("followed", self.f_of, lambda f: f in im.followed_flows)
 
     # -- properties ------------------------------------------------------------
 
@@ -283,17 +267,8 @@ def _sort_key(w: Witness) -> tuple:
     return (w.property, w.trigger, w.context, w.flow)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--json", action="store_true", help="emit witnesses as JSON")
-    args = parser.parse_args(argv)
-
+def main() -> int:
     witnesses = sorted(Model(impl.load()).check(), key=_sort_key)
-    if args.json:
-        json.dump([asdict(w) for w in witnesses], sys.stdout, indent=2)
-        sys.stdout.write("\n")
-        return 0
-
     current = None
     for w in witnesses:
         if w.property != current:

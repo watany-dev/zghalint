@@ -15,7 +15,7 @@ rule happens to catch is visible as such.
 
 Usage:
     zig build
-    python3 scripts/formal/confirm.py [--json] [--keep DIR]
+    python3 scripts/formal/confirm.py [--keep DIR]
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import json
 import subprocess
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 import model
@@ -158,7 +158,6 @@ class Outcome:
     confirmed: bool
     #: SEC* rule IDs the binary reported on the file.
     security_rules: list[str]
-    workflow: str
 
 
 def lint(path: Path) -> list[str]:
@@ -180,9 +179,8 @@ def confirm(witnesses: list[model.Witness], keep: Path | None) -> list[Outcome]:
         base = keep or Path(tmp)
         base.mkdir(parents=True, exist_ok=True)
         for i, w in enumerate(witnesses):
-            text = workflow_for(w)
             path = base / f"{i:03}-{w.trigger}-{w.sink}-{w.flow}.yml"
-            path.write_text(text)
+            path.write_text(workflow_for(w))
             rules = lint(path)
             expected = set(w.expected_rule.split("/"))
             outcomes.append(
@@ -190,7 +188,6 @@ def confirm(witnesses: list[model.Witness], keep: Path | None) -> list[Outcome]:
                     witness=w,
                     confirmed=not (expected & set(rules)),
                     security_rules=[r for r in rules if r.startswith("SEC")],
-                    workflow=text,
                 )
             )
     return outcomes
@@ -198,7 +195,6 @@ def confirm(witnesses: list[model.Witness], keep: Path | None) -> list[Outcome]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--json", action="store_true", help="emit outcomes as JSON")
     parser.add_argument("--keep", type=Path, help="directory to keep the generated workflows in")
     args = parser.parse_args(argv)
 
@@ -208,12 +204,6 @@ def main(argv: list[str] | None = None) -> int:
 
     witnesses = sorted(model.Model(impl.load()).check(), key=model._sort_key)
     outcomes = confirm(witnesses, args.keep)
-
-    if args.json:
-        json.dump([asdict(o) for o in outcomes], sys.stdout, indent=2)
-        sys.stdout.write("\n")
-        return 0
-
     current = None
     confirmed = 0
     for o in outcomes:

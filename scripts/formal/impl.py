@@ -1,8 +1,8 @@
 """The implementation side: zghalint's context tables, read out of the source.
 
 ``model.py`` compares ``spec.py`` against *these* relations, so they are
-extracted from ``src/rules/security.zig`` and ``src/workflow/types.zig`` at run
-time rather than copied by hand. A rule change that edits a table changes
+extracted from ``src/rules/security.zig`` at run time rather than copied by
+hand. A rule change that edits a table changes
 the model on the next run; a table the extractor no longer finds is an error,
 not a silent empty set.
 
@@ -21,7 +21,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SECURITY_ZIG = PROJECT_ROOT / "src" / "rules" / "security.zig"
-TYPES_ZIG = PROJECT_ROOT / "src" / "workflow" / "types.zig"
 
 _STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
@@ -57,17 +56,10 @@ def _trigger_table(source: str) -> dict[str, list[str]]:
     return table
 
 
-def _event_type_enum(source: str) -> list[str]:
-    body = _block(source, "pub const EventType = enum {", "pub fn")
-    return re.findall(r"^\s*(\w+),\s*$", body, re.MULTILINE)
-
-
 @dataclass(frozen=True)
 class Impl:
     #: SEC002 (`run:` / github-script) and SEC008 ($GITHUB_ENV): segment-prefix table.
     run_dangerous: list[str]
-    #: SEC002 only: matched as a whole reference (`toJSON(github.event)`).
-    whole_event: list[str]
     #: SEC002 only, and only when `workflow_dispatch` / `workflow_call` is declared.
     dispatched_inputs: list[str]
     #: SEC006: `if:` conditions.
@@ -82,8 +74,6 @@ class Impl:
     trigger_contexts: dict[str, list[str]]
     #: SEC020: triggers a fork can reach.
     fork_accessible_triggers: list[str]
-    #: `EventType` — anything else parses as `.other` and matches no trigger test.
-    event_types: list[str]
     #: Flows SEC002 follows (see spec.FLOWS). Fixed by construction of
     #: `checkScriptInjection`: direct use, and a step output written on the
     #: same line as the tainted expression.
@@ -92,10 +82,8 @@ class Impl:
 
 def load() -> Impl:
     sec = SECURITY_ZIG.read_text()
-    types = TYPES_ZIG.read_text()
     return Impl(
         run_dangerous=_string_table(sec, "run_dangerous_contexts"),
-        whole_event=_string_table(sec, "whole_event_contexts"),
         dispatched_inputs=_string_table(sec, "dispatched_inputs_contexts"),
         condition_dangerous=_string_table(sec, "condition_dangerous_contexts"),
         workflow_run_gate=_string_table(sec, "workflow_run_untrusted_gate_contexts"),
@@ -103,7 +91,6 @@ def load() -> Impl:
         workflow_run_markers=_marker_fn(sec, "isWorkflowRunValue"),
         trigger_contexts=_trigger_table(sec),
         fork_accessible_triggers=_switch_true_arms(sec, "hasForkAccessibleTrigger"),
-        event_types=_event_type_enum(types),
     )
 
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-class Author(str, Enum):
+class Author(Enum):
     EXTERNAL = "external"
     DISPATCHER = "dispatcher"
     COLLABORATOR = "collaborator"

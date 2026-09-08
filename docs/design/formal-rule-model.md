@@ -28,7 +28,7 @@ SEC022（インジェクションと untrusted checkout の系統）。
 ```
 scripts/formal/
 ├── spec.py          仕様側: トリガ / 文脈 / シンク / 伝播経路の有限関係
-├── impl.py          実装側: security.zig / types.zig から表を抽出
+├── impl.py          実装側: security.zig から表を抽出
 ├── model.py         Z3 で Unsafe ∧ ¬Covered の証人を全列挙（性質 P1〜P8）
 ├── confirm.py       各証人を最小ワークフローに落とし実バイナリで確認
 └── requirements.txt z3-solver（固定版）
@@ -39,7 +39,7 @@ scripts/formal/
 ```bash
 zig build
 pip install -r scripts/formal/requirements.txt
-python3 scripts/formal/model.py            # 証人一覧（--json で機械可読）
+python3 scripts/formal/model.py            # 証人一覧
 python3 scripts/formal/confirm.py          # 実バイナリで確認（--keep DIR で生成物保存）
 ```
 
@@ -97,7 +97,6 @@ labels や release は `COLLABORATOR` として載せ、実装がそれらを表
 | `workflow_run_markers` | `isWorkflowRunValue` | SEC009（`workflow_run` 宣言時のみ） |
 | `trigger_contexts` | `trigger_context_table` | SEC021（`workflow_dispatch` 宣言時は bare `inputs` を追加、#219） |
 | `fork_accessible_triggers` | `hasForkAccessibleTrigger` の `=> return true` 腕 | SEC020 |
-| `event_types` | `EventType` 列挙 (`types.zig`) | 未知イベントは `.other` に潰れる |
 | `followed_flows` | 固定値 `direct`, `step_output` | SEC002 が追う伝播（`checkScriptInjection` の構造から） |
 
 照合意味論も写している。文脈表は `pathMatchesPattern`（セグメント前方一致、
