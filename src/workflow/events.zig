@@ -191,6 +191,13 @@ pub fn isKnown(name: []const u8) bool {
     return find(name) != null;
 }
 
+/// Triggers that run with the default branch's secrets. A SYN009 rename
+/// that lands on one of these is not meaning-preserving (#346).
+pub fn isPrivileged(name: []const u8) bool {
+    return std.mem.eql(u8, name, "pull_request_target") or
+        std.mem.eql(u8, name, "workflow_run");
+}
+
 test "isKnown accepts webhook and non-webhook triggers" {
     try std.testing.expect(isKnown("push"));
     try std.testing.expect(isKnown("pull_request"));
@@ -206,6 +213,14 @@ test "isKnown rejects typos and unrelated names" {
     try std.testing.expect(!isKnown("push_tag"));
     try std.testing.expect(!isKnown("Push"));
     try std.testing.expect(!isKnown(""));
+}
+
+test "isPrivileged matches only secrets-bearing triggers" {
+    try std.testing.expect(isPrivileged("pull_request_target"));
+    try std.testing.expect(isPrivileged("workflow_run"));
+    try std.testing.expect(!isPrivileged("pull_request"));
+    try std.testing.expect(!isPrivileged("push"));
+    try std.testing.expect(!isPrivileged("workflow_dispatch"));
 }
 
 test "trigger_names is sorted and free of duplicates" {

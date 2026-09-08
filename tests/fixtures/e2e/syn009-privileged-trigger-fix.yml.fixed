@@ -1,0 +1,17 @@
+# zghalint:expect SYN009@6
+# #346: correcting a typo into pull_request_target is not a safe autofix.
+# `--fix` must leave the name; `--fix-unsafe` may rewrite it.
+name: privileged typo
+on:
+  pull_request_targt:
+    types: [opened]
+permissions:
+  contents: read
+concurrency: g22
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

@@ -6,6 +6,9 @@ pub const UnknownKey = struct {
     section: []const u8,
     span: yaml.Span,
     expected: []const []const u8,
+    /// The mapping the unknown key sits in, so SYN001 can refuse a rename
+    /// onto a sibling that is already present (#347).
+    mapping: yaml.Mapping,
 };
 
 pub const workflow_keys = [_][]const u8{
@@ -168,6 +171,7 @@ pub const UnknownKeyCollector = struct {
                 .section = section,
                 .span = entry.key.span,
                 .expected = allowed,
+                .mapping = m,
             });
         }
     }

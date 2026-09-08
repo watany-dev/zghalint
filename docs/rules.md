@@ -15,7 +15,10 @@ zghalint includes **91 rules** across 11 categories to help you write secure, ef
 キー名・イベント名・識別子のタイプミスを検出するルールは、既知の名前と編集距離
 2 以内で候補が一意に定まるときに `did you mean "..."?` を添える。この候補は
 そのまま safe な autofix でもあり、`--fix` はタイプミスした綴りだけを置き換える
-（引用符は保持する）。候補が定まらない場合は診断のみで、autofix は付かない。
+（引用符は保持する）。例外は SYN009 が `pull_request_target` / `workflow_run`
+を候補にするときで、無効な名前を secrets 付きの特権トリガへ直すのは意味保存では
+ないため `--fix-unsafe` でのみ適用する。候補が定まらない場合は診断のみで、
+autofix は付かない。
 
 対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
@@ -527,6 +530,24 @@ Validate the structural correctness of the workflow definition itself.
 | SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis (`--fix` で重複を削除) |
 | SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
 
+### SYN001 unknown-key
+
+A mapping key that is not in the GitHub Actions schema for its section is
+reported with the keys that section does accept. When a single known key sits
+within edit distance 2, `--fix` renames the typo (`timeout-minute` →
+`timeout-minutes`).
+
+The rename is omitted when that target is already a sibling in the same
+mapping, including when the sibling differs only in letter case: applying it
+would produce SYN002 (#347).
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    runs-onn: ubuntu-latest   # error: unexpected key "runs-onn"; no autofix
+```
+
 ### SYN002 duplicate-key
 
 GitHub Actions resolves mapping keys case-insensitively. A second key that
@@ -625,6 +646,11 @@ on:
 
 A name containing a `${{ }}` expression is skipped, since the literal text says
 nothing about the name GitHub finally sees.
+
+`--fix` rewrites an ordinary typo (`pull_reqeust` → `pull_request`). A
+suggestion of `pull_request_target` or `workflow_run` is `--fix-unsafe` only:
+those triggers run with the default branch's secrets, so turning a name that
+never fired into one of them is not meaning-preserving (#346).
 
 ### SYN010 invalid-activity-type
 
