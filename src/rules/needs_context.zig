@@ -8,11 +8,10 @@
 
 const std = @import("std");
 const engine = @import("engine.zig");
-const expressions = @import("expressions.zig");
 const expr_check = @import("expr_check.zig");
-const spans = @import("spans.zig");
+const expr_scan = @import("expr_scan.zig");
 const util = @import("../util.zig");
-const workflow_types = @import("../workflow/types.zig");
+const rename = @import("rename.zig");
 const yaml = @import("../yaml/types.zig");
 const test_support = @import("../test_support.zig");
 
@@ -21,7 +20,6 @@ const Workflow = engine.Workflow;
 const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml.Span;
-const Anchor = spans.Anchor;
 
 /// The two properties GitHub exposes under `needs.<job>`.
 const needs_properties = [_][]const u8{ "outputs", "result" };
@@ -36,33 +34,14 @@ const NeedsVisitor = struct {
     wf: *const Workflow,
     job: *const Job,
     list: *DiagnosticList,
+    /// Backs the expression parse trees, which never outlive the walk;
+    /// diagnostic messages go to the list's own arena instead.
+    alloc: std.mem.Allocator,
 
-    /// Diagnostic messages are formatted into the list's own allocator, so
-    /// nothing from the parse tree outlives this call and the arena is freed
-    /// here.
-    pub fn onExpression(self: *const NeedsVisitor, expr: []const u8, span: Span) void {
-        // Most expressions never mention `needs`; parsing them would be pure
-        // overhead on a large workflow.
-        if (std.ascii.indexOfIgnoreCase(expr, "needs") == null) return;
-
-        var arena = std.heap.ArenaAllocator.init(self.list.allocator);
-        defer arena.deinit();
-
-        var parser = expressions.ExprParser.init(arena.allocator(), expr);
-        // A malformed expression is EXPR001's to report.
-        const node = parser.parse() catch return;
-        self.walk(&node, span);
-    }
-
-    fn walk(self: *const NeedsVisitor, node: *const expressions.ExprNode, span: Span) void {
-        if (node.kind == .context_access) {
-            self.checkPath(node.value, span);
-            return;
-        }
-        for (node.children) |*child| self.walk(child, span);
-    }
-
-    fn checkPath(self: *const NeedsVisitor, path: []const u8, span: Span) void {
+    /// The hook `expr_scan` calls for every context access it finds. The span
+    /// covers the path alone, which is what lets a rename land on one of its
+    /// segments.
+    pub fn checkPath(self: NeedsVisitor, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = identSegment(iter.next()) orelse return;
         if (!eqlId(root, "needs")) return;
@@ -73,7 +52,7 @@ const NeedsVisitor = struct {
 
         const target = self.findJob(job_id);
         if (!self.isNeeded(job_id)) {
-            self.reportNotNeeded(job_id, target != null, span);
+            self.reportNotNeeded(path, job_id, target != null, span);
             return;
         }
         // A `needs:` entry naming no job is a workflow-level problem, not an
@@ -82,7 +61,7 @@ const NeedsVisitor = struct {
 
         const property = identSegment(iter.next()) orelse return;
         if (!isKnownProperty(property)) {
-            self.reportUnknownProperty(job_id, property, span);
+            self.reportUnknownProperty(path, job_id, property, span);
             return;
         }
         if (!eqlId(property, "outputs")) return;
@@ -94,25 +73,32 @@ const NeedsVisitor = struct {
         for (dep.outputs) |declared| {
             if (eqlId(declared.name, output)) return;
         }
-        self.reportUnknownOutput(dep, output, span);
+        self.reportUnknownOutput(path, dep, output, span);
     }
 
-    fn findJob(self: *const NeedsVisitor, job_id: []const u8) ?*const Job {
+    fn findJob(self: NeedsVisitor, job_id: []const u8) ?*const Job {
         for (self.wf.jobs) |*candidate| {
             if (eqlId(candidate.id, job_id)) return candidate;
         }
         return null;
     }
 
-    fn isNeeded(self: *const NeedsVisitor, job_id: []const u8) bool {
+    fn isNeeded(self: NeedsVisitor, job_id: []const u8) bool {
         for (self.job.needs) |dep| {
             if (eqlId(dep, job_id)) return true;
         }
         return false;
     }
 
-    fn reportNotNeeded(self: *const NeedsVisitor, job_id: []const u8, exists: bool, span: Span) void {
+    fn reportNotNeeded(
+        self: NeedsVisitor,
+        path: []const u8,
+        job_id: []const u8,
+        exists: bool,
+        span: Span,
+    ) void {
         const alloc = self.list.fixAllocator();
+        const nearest = if (exists) null else self.nearestJobId(job_id);
         const message = if (exists)
             std.fmt.allocPrint(
                 alloc,
@@ -123,7 +109,7 @@ const NeedsVisitor = struct {
             std.fmt.allocPrint(
                 alloc,
                 "\"{s}\" is not a job in this workflow{s}",
-                .{ job_id, self.jobIdSuggestion(job_id) },
+                .{ job_id, suggestionSuffix(alloc, nearest) },
             ) catch return;
 
         self.list.append(.{
@@ -135,13 +121,21 @@ const NeedsVisitor = struct {
                 "add the job to this job's `needs:`, or drop the reference"
             else
                 "reference a job defined in this workflow",
+            .fix = if (nearest) |s| rename.pathSegmentFix(self.list, span, path, 1, s) else null,
         }) catch return;
     }
 
-    fn reportUnknownProperty(self: *const NeedsVisitor, job_id: []const u8, property: []const u8, span: Span) void {
+    fn reportUnknownProperty(
+        self: NeedsVisitor,
+        path: []const u8,
+        job_id: []const u8,
+        property: []const u8,
+        span: Span,
+    ) void {
         const alloc = self.list.fixAllocator();
         var suffix_buf: [64]u8 = undefined;
-        const suffix = if (util.didYouMean(property, &needs_properties)) |s|
+        const suggestion = util.didYouMean(property, &needs_properties);
+        const suffix = if (suggestion) |s|
             std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -157,15 +151,23 @@ const NeedsVisitor = struct {
             .message = message,
             .span = span,
             .fix_hint = "`needs.<job>` only has \"outputs\" and \"result\"",
+            .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 2, s) else null,
         }) catch return;
     }
 
-    fn reportUnknownOutput(self: *const NeedsVisitor, dep: *const Job, output: []const u8, span: Span) void {
+    fn reportUnknownOutput(
+        self: NeedsVisitor,
+        path: []const u8,
+        dep: *const Job,
+        output: []const u8,
+        span: Span,
+    ) void {
         const alloc = self.list.fixAllocator();
+        const nearest = self.nearestOutput(dep, output);
         const message = std.fmt.allocPrint(
             alloc,
             "output \"{s}\" is not defined in job \"{s}\"{s}",
-            .{ output, dep.id, self.outputSuggestion(dep, output) },
+            .{ output, dep.id, suggestionSuffix(alloc, nearest) },
         ) catch return;
 
         self.list.append(.{
@@ -174,63 +176,30 @@ const NeedsVisitor = struct {
             .message = message,
             .span = span,
             .fix_hint = "declare the output under the referenced job's `outputs:`",
+            .fix = if (nearest) |s| rename.pathSegmentFix(self.list, span, path, 3, s) else null,
         }) catch return;
     }
 
-    /// Allocated from the diagnostic allocator so the suffix outlives this
-    /// call; allocation failure degrades to no suggestion.
-    fn jobIdSuggestion(self: *const NeedsVisitor, job_id: []const u8) []const u8 {
+    /// The candidate list is allocated from the diagnostic allocator;
+    /// allocation failure degrades to no suggestion.
+    fn nearestJobId(self: NeedsVisitor, job_id: []const u8) ?[]const u8 {
         const alloc = self.list.fixAllocator();
-        const names = alloc.alloc([]const u8, self.wf.jobs.len) catch return "";
+        const names = alloc.alloc([]const u8, self.wf.jobs.len) catch return null;
         for (self.wf.jobs, names) |*candidate, *name| name.* = candidate.id;
-        return suggestionSuffix(alloc, job_id, names);
+        return util.didYouMean(job_id, names);
     }
 
-    fn outputSuggestion(self: *const NeedsVisitor, dep: *const Job, output: []const u8) []const u8 {
+    fn nearestOutput(self: NeedsVisitor, dep: *const Job, output: []const u8) ?[]const u8 {
         const alloc = self.list.fixAllocator();
-        const names = alloc.alloc([]const u8, dep.outputs.len) catch return "";
+        const names = alloc.alloc([]const u8, dep.outputs.len) catch return null;
         for (dep.outputs, names) |declared, *name| name.* = declared.name;
-        return suggestionSuffix(alloc, output, names);
-    }
-
-    fn visitIf(
-        self: *const NeedsVisitor,
-        if_condition: ?[]const u8,
-        meta: ?workflow_types.ScalarValueMeta,
-        fallback: Span,
-    ) void {
-        const if_val = if_condition orelse return;
-        const anchor = Anchor.fromMeta(meta, fallback);
-
-        // `if:` may omit the `${{ }}` wrapper, in which case the whole value
-        // is one expression.
-        if (std.mem.indexOf(u8, if_val, "${{") == null) {
-            const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-            if (trimmed.len == 0) return;
-            const leading = std.mem.indexOfNone(u8, if_val, " \t\n\r") orelse 0;
-            self.onExpression(trimmed, anchor.at(if_val, leading, trimmed.len));
-            return;
-        }
-        expressions.forEachExpression(if_val, anchor, self);
-    }
-
-    fn visitScalarMap(
-        self: *const NeedsVisitor,
-        map: ?workflow_types.StringMap,
-        meta_map: ?workflow_types.ScalarValueMetaMap,
-        fallback: Span,
-    ) void {
-        const values = map orelse return;
-        for (values.keys(), values.values()) |key, value| {
-            const entry_meta = if (meta_map) |m| m.get(key) else null;
-            expressions.forEachExpression(value, Anchor.fromMeta(entry_meta, fallback), self);
-        }
+        return util.didYouMean(output, names);
     }
 };
 
-fn suggestionSuffix(alloc: std.mem.Allocator, name: []const u8, candidates: []const []const u8) []const u8 {
-    const suggestion = util.didYouMean(name, candidates) orelse return "";
-    return std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{suggestion}) catch "";
+fn suggestionSuffix(alloc: std.mem.Allocator, suggestion: ?[]const u8) []const u8 {
+    const near = suggestion orelse return "";
+    return std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{near}) catch "";
 }
 
 fn isKnownProperty(name: []const u8) bool {
@@ -251,23 +220,17 @@ fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
 }
 
 fn checkNeedsContext(wf: *const Workflow, list: *DiagnosticList) void {
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
+    defer arena.deinit();
+
     for (wf.jobs) |*job| {
-        const visitor = NeedsVisitor{ .wf = wf, .job = job, .list = list };
-
-        visitor.visitIf(job.if_condition, job.if_condition_meta, job.span);
-        visitor.visitScalarMap(job.env, job.env_meta, job.span);
-        // Job-level `with:` feeds a reusable workflow call; per-entry spans
-        // are not captured, so the job span anchors them.
-        visitor.visitScalarMap(job.with, null, job.span);
-
-        for (job.steps) |*step| {
-            if (step.run) |run_val| {
-                expressions.forEachExpression(run_val, spans.runAnchor(step), &visitor);
-            }
-            visitor.visitIf(step.if_condition, step.if_condition_meta, step.span);
-            visitor.visitScalarMap(step.with, step.with_meta, step.span);
-            visitor.visitScalarMap(step.env, step.env_meta, step.span);
-        }
+        const visitor = NeedsVisitor{
+            .wf = wf,
+            .job = job,
+            .list = list,
+            .alloc = arena.allocator(),
+        };
+        expr_scan.scanJob(visitor, job);
     }
 }
 
