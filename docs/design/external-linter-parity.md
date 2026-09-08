@@ -401,7 +401,7 @@ E2E ハーネスがローカル action のルートをリポジトリルート�
 した (それまでは `uses: ./x` が常に `.unavailable` になり、`forbid DEP004`
 が空振りしていた)。
 
-#### G22 (#346). SYN009 の `--fix` がタイポを特権トリガへ直す — 要 autofix 修正
+#### G22 (#346). SYN009 の `--fix` がタイポを特権トリガへ直す — 対応済み
 
 `bench/cases/f-syntax-schema/invalid-event-name.yml`。
 `on: pull_request_targt:` は実行されない無効イベントだが、`--fix` が
@@ -411,7 +411,7 @@ zizmor は書き換え後に `dangerous-triggers` を新規に出す。
 `docs/rules.md` は SYN009 の候補置換を safe な autofix と書いてあるが、
 無効な名前を `pull_request_target` / `workflow_run` のような secrets 付き
 トリガへ直すのは意味保存ではない。候補が特権トリガなら `--fix` では触らず、
-`--fix-unsafe` にするか、置換しない。
+`--fix-unsafe` でのみ置換する。
 
 #### G23 (#347). SYN001 の `--fix` が既にあるキーへリネームして SYN002 を作る — 要 autofix 修正
 
@@ -662,7 +662,7 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
       SEC015 成立時は SEC018 を抑制する
 - [x] G20 (#304): ネットワーク取得に失敗したルールを stderr の注記で伝える
 - [x] G21 (#305): DEP004 を `actions/checkout` の `path:` が作るディレクトリで沈黙させる
-- [ ] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
+- [x] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
 - [ ] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
 - [ ] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [ ] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る

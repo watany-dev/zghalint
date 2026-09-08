@@ -713,6 +713,20 @@ fn checkMatrixIncludeExclude(job: *const Job, list: *DiagnosticList) void {
     checkMatrixInclude(matrix, axis_names, list);
 }
 
+/// Privileged triggers (`pull_request_target`, `workflow_run`) run with the
+/// default branch's secrets, so correcting a typo into one of them is unsafe
+/// (#346). Ordinary trigger names stay `safe`.
+fn eventNameFix(
+    list: *DiagnosticList,
+    span: Span,
+    old_name: []const u8,
+    suggestion: []const u8,
+) ?diagnostics_mod.Fix {
+    var fix = rename.tokenFix(list, span, old_name, suggestion) orelse return null;
+    if (workflow_events.isPrivileged(suggestion)) fix.safety = .unsafe;
+    return fix;
+}
+
 fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
     for (wf.on.events) |event| {
@@ -738,7 +752,7 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
             ) catch "unknown Webhook event",
             .span = event.name_span,
             .fix_hint = "use one of the event names GitHub Actions supports under 'on'",
-            .fix = if (suggestion) |s| rename.tokenFix(list, event.name_span, event.name, s) else null,
+            .fix = if (suggestion) |s| eventNameFix(list, event.name_span, event.name, s) else null,
         }) catch return;
     }
 }
@@ -3688,6 +3702,105 @@ test "SYN009: a block scalar event name is reported but never rewritten" {
     try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
     try testing.expectEqual(@as(usize, 0), outcome.edits_applied);
     try testing.expectEqualStrings(source, outcome.content);
+}
+
+test "SYN009: a typo of a non-privileged trigger is a safe rename" {
+    const source =
+        \\on:
+        \\  pull_reqeust:
+        \\    types: [opened]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
+    try testing.expectEqual(diagnostics_mod.FixSafety.safe, outcome.first_safety.?);
+    try testing.expectEqual(@as(usize, 1), outcome.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "pull_request:") != null);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "pull_reqeust:") == null);
+}
+
+test "SYN009: a typo of pull_request_target is unsafe and --fix leaves it" {
+    const source =
+        \\on:
+        \\  pull_request_targt:
+        \\    types: [opened]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const safe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer safe.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), safe.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), safe.fix_count);
+    try testing.expectEqualStrings(source, safe.content);
+
+    const unsafe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        true,
+    );
+    defer unsafe.deinit(testing.allocator);
+    try testing.expectEqual(diagnostics_mod.FixSafety.unsafe, unsafe.first_safety.?);
+    try testing.expectEqual(@as(usize, 1), unsafe.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, unsafe.content, "pull_request_target:") != null);
+    try testing.expect(std.mem.indexOf(u8, unsafe.content, "pull_request_targt:") == null);
+}
+
+test "SYN009: a typo of workflow_run is unsafe" {
+    const source =
+        \\on:
+        \\  workflow_rn:
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const safe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer safe.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), safe.fix_count);
+    try testing.expectEqualStrings(source, safe.content);
+
+    const unsafe = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        true,
+    );
+    defer unsafe.deinit(testing.allocator);
+    try testing.expectEqual(diagnostics_mod.FixSafety.unsafe, unsafe.first_safety.?);
+    try testing.expectEqual(@as(usize, 1), unsafe.edits_applied);
+    try testing.expect(std.mem.indexOf(u8, unsafe.content, "workflow_run:") != null);
 }
 
 test "SYN012: branches with branches-ignore is an error" {
