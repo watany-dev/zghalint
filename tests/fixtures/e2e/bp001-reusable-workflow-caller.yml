@@ -1,0 +1,16 @@
+# BP001 must stay silent on a job that calls a reusable workflow: GitHub
+# Actions rejects `timeout-minutes` there, so both the warning and its
+# autofix would be wrong (#299).
+# zghalint:forbid BP001
+# zghalint:expect SEC010
+name: reusable caller
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  call:
+    uses: ./.github/workflows/reusable.yml
+    secrets: inherit

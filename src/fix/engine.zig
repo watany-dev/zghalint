@@ -111,6 +111,22 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
         var dropped_one = false;
         for (flat) |oe| {
             if (dropped[oe.fix_index]) continue;
+            if (oe.edit.start_byte == oe.edit.end_byte) {
+                // Two rules can reach the same conclusion about the same
+                // anchor (SEC015 and SEC018 both add `persist-credentials:
+                // false` to a checkout step, #300). Applying both writes the
+                // key twice, so an identical insertion is applied once.
+                if (priorInsertionOfSameKey(selected[0..count], oe.edit)) |prior| {
+                    if (std.mem.eql(u8, prior.replacement, oe.edit.replacement)) continue;
+                    // Same key, different body: neither can be trusted, so
+                    // every fix inserting that key here is dropped — the ones
+                    // deduped above included, or a rejected body survives as
+                    // the twin of the one that was dropped.
+                    dropInsertionGroup(flat, oe.edit, dropped);
+                    dropped_one = true;
+                    break;
+                }
+            }
             if (count > 0 and oe.edit.start_byte < last_end) {
                 dropped[oe.fix_index] = true;
                 lost_to[oe.fix_index] = last_fix;
@@ -145,6 +161,48 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
         .edits = try allocator.realloc(selected, count),
         .fixes_skipped = fixes_skipped,
     };
+}
+
+/// The already-selected insertion that would collide with `e`: same anchor and
+/// same first key. Insertions that introduce different keys at one anchor are
+/// not a collision — a job can gain both `timeout-minutes:` and `permissions:`.
+/// `selected` is ascending by `start_byte`, so the scan stops at the anchor.
+fn priorInsertionOfSameKey(selected: []const Edit, e: Edit) ?Edit {
+    const key = firstInsertedKey(e.replacement) orelse return null;
+    var i = selected.len;
+    while (i > 0) {
+        i -= 1;
+        const prior = selected[i];
+        if (prior.start_byte != e.start_byte) return null;
+        if (prior.end_byte != e.end_byte) continue;
+        const prior_key = firstInsertedKey(prior.replacement) orelse continue;
+        if (std.mem.eql(u8, prior_key, key)) return prior;
+    }
+    return null;
+}
+
+/// Drops every fix that inserts `e`'s key at `e`'s anchor. A conflict there is
+/// unresolvable, so no candidate may be applied — leaving one behind would pick
+/// a winner by sweep order.
+fn dropInsertionGroup(flat: []const OwnedEdit, e: Edit, dropped: []bool) void {
+    const key = firstInsertedKey(e.replacement) orelse return;
+    for (flat) |oe| {
+        if (oe.edit.start_byte != e.start_byte or oe.edit.end_byte != e.end_byte) continue;
+        const other_key = firstInsertedKey(oe.edit.replacement) orelse continue;
+        if (std.mem.eql(u8, other_key, key)) dropped[oe.fix_index] = true;
+    }
+}
+
+/// The mapping key an insertion opens with, e.g. `with` for
+/// "\n  with:\n    persist-credentials: false". Null when the text does not
+/// start a `key:` entry.
+fn firstInsertedKey(replacement: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < replacement.len and (replacement[i] == '\n' or replacement[i] == '\r' or replacement[i] == ' ')) : (i += 1) {}
+    const start = i;
+    while (i < replacement.len and replacement[i] != ':' and replacement[i] != '\n' and replacement[i] != '\r') : (i += 1) {}
+    if (i == start or i == replacement.len or replacement[i] != ':') return null;
+    return replacement[start..i];
 }
 
 /// A pure insertion whose replacement opens a new line is meant to land after
@@ -468,6 +526,101 @@ test "two insertions at the same byte both survive, in registry order" {
     try std.testing.expectEqualStrings("A12B", result.content);
     try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
     try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "identical insertions at the same anchor are applied once (#300)" {
+    const allocator = std.testing.allocator;
+    const source = "  uses: actions/checkout@v4\n";
+    const anchor = std.mem.indexOfScalar(u8, source, '\n').?;
+    const with_block = "\n  with:\n    persist-credentials: false";
+    const edits1 = [_]Edit{
+        .{ .start_byte = anchor, .end_byte = anchor, .replacement = with_block },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = anchor, .end_byte = anchor, .replacement = with_block },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "SEC015", .safety = .unsafe, .edits = &edits1 },
+        .{ .description = "SEC018", .safety = .unsafe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(
+        "  uses: actions/checkout@v4\n  with:\n    persist-credentials: false\n",
+        result.content,
+    );
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "insertions of the same key with different bodies drop both fixes" {
+    const allocator = std.testing.allocator;
+    const source = "  uses: actions/setup-node@v4\n";
+    const anchor = std.mem.indexOfScalar(u8, source, '\n').?;
+    const edits1 = [_]Edit{
+        .{ .start_byte = anchor, .end_byte = anchor, .replacement = "\n  with:\n    cache: npm" },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = anchor, .end_byte = anchor, .replacement = "\n  with:\n    cache: yarn" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(source, result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "a conflicting key drops its duplicates too, not just the pair" {
+    const allocator = std.testing.allocator;
+    const source = "  uses: actions/setup-node@v4\n";
+    const anchor = std.mem.indexOfScalar(u8, source, '\n').?;
+    const npm = "\n  with:\n    cache: npm";
+    const edits1 = [_]Edit{.{ .start_byte = anchor, .end_byte = anchor, .replacement = npm }};
+    const edits2 = [_]Edit{.{ .start_byte = anchor, .end_byte = anchor, .replacement = npm }};
+    const edits3 = [_]Edit{
+        .{ .start_byte = anchor, .end_byte = anchor, .replacement = "\n  with:\n    cache: yarn" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "fix1", .safety = .safe, .edits = &edits1 },
+        .{ .description = "fix2", .safety = .safe, .edits = &edits2 },
+        .{ .description = "fix3", .safety = .safe, .edits = &edits3 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(source, result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "insertions of different keys at one anchor both survive" {
+    const allocator = std.testing.allocator;
+    const source = "  build:\n";
+    const anchor: usize = 0;
+    const edits1 = [_]Edit{
+        .{ .start_byte = anchor, .end_byte = anchor, .replacement = "  timeout-minutes: 30\n" },
+    };
+    const edits2 = [_]Edit{
+        .{ .start_byte = anchor, .end_byte = anchor, .replacement = "  permissions:\n    contents: read\n" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "BP001", .safety = .safe, .edits = &edits1 },
+        .{ .description = "PERM", .safety = .safe, .edits = &edits2 },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(
+        "  timeout-minutes: 30\n  permissions:\n    contents: read\n  build:\n",
+        result.content,
+    );
+    try std.testing.expectEqual(@as(usize, 2), result.edits_applied);
 }
 
 test "empty fixes — returns source unchanged" {
