@@ -832,7 +832,7 @@ fn validateFunctionCall(
     }
 
     if (std.mem.eql(u8, name, "contains") and node.children.len == 2) {
-        if (node.children[1].kind == .string_literal) {
+        if (node.children[1].kind == .string_literal and containsHaystackIsString(&node.children[0], env)) {
             const fix = buildContainsEqFix(list, node, expr_base_byte, parent);
             list.append(.{
                 .rule_id = "EXPR006",
@@ -866,6 +866,15 @@ fn validateFunctionCall(
     for (node.children) |*child| {
         validateNode(allocator, child, span, list, expr_base_byte, node, env);
     }
+}
+
+/// `contains(search, item)` is substring matching only when `search` is a
+/// string. An array haystack is membership of a whole element — the documented
+/// way to test labels — so it is not EXPR006 (#333). Unknown types stay quiet:
+/// github.event payloads are unmodelled, and object filters such as
+/// `labels.*.name` type as `any`.
+fn containsHaystackIsString(node: *const ExprNode, env: *const expr_check.TypeEnv) bool {
+    return expr_check.typeOf(node, env).kind == .string;
 }
 
 fn buildContainsEqFix(
@@ -2553,15 +2562,34 @@ test "EXPR006 fix: no fix when first arg is literal" {
     try std.testing.expect(list.get(0).fix == null);
 }
 
-test "EXPR006 fix: no fix when context path contains .* (array access)" {
+test "EXPR006: object filter haystack is array membership, not substring matching (#333)" {
+    try expectNoDiagnostics("contains(github.event.pull_request.labels.*.name, 'cr-tracked')");
+    try expectNoDiagnostics("contains(github.event.commits.*.message, 'wip')");
+}
+
+test "EXPR006: fromJSON array haystack is not substring matching (#333)" {
+    try expectNoDiagnostics("contains(fromJSON('[\"ubuntu\",\"macos\"]'), 'ubuntu')");
+}
+
+test "EXPR006: TypeEnv array haystack is not substring matching (#333)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "contains(github.event.commits.*.message, 'wip')", Span.point(1, 1, 0), &list, 0);
-    try std.testing.expectEqual(@as(usize, 1), list.len());
-    try std.testing.expect(list.get(0).fix == null);
+    const os_ty: expr_type.Type = .{ .kind = .array, .elem = &expr_type.type_string };
+    const matrix_ty: expr_type.Type = .{
+        .kind = .object,
+        .shape = .strict,
+        .props = &.{.{ .name = "os", .ty = &os_ty }},
+    };
+    const env = expr_check.TypeEnv{ .matrix = &matrix_ty };
+    validateExpressionEnv(arena.allocator(), "contains(matrix.os, 'ubuntu')", Span.point(1, 1, 0), &list, 0, &env, .condition);
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "EXPR006: fromJSON string haystack is still substring matching" {
+    try expectSingleRule("contains(fromJSON('\"hello\"'), 'ell')", "EXPR006");
 }
 
 test "EXPR006 fix: no fix when context path contains [ (bracket access)" {
