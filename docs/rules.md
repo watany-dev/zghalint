@@ -198,7 +198,7 @@ fork picks its own branch names, so `if: github.event.workflow_run.head_branch
 == 'main'` is a gate the attacker walks through. SEC022 covers exactly that
 case: `on: workflow_run` only, and only for the attributes the fork authors
 (`head_branch`, `head_commit.message` / `.author` / `.committer`,
-`display_title`). A condition that also verifies the triggering repository —
+`display_title`, `head_repository.description`). A condition that also verifies the triggering repository —
 `github.event.workflow_run.head_repository.full_name == github.repository`, or
 `github.event.workflow_run.event == 'push'` — is sound, and is not reported.
 The condition is parsed, and the anchor only counts where it is

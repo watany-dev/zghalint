@@ -93,14 +93,16 @@ labels や release は `COLLABORATOR` として載せ、実装がそれらを表
 | `Impl` フィールド | 抽出元 | 使うルール |
 |---|---|---|
 | `run_dangerous` | `run_dangerous_contexts` | SEC002, SEC008 |
-| `dispatched_inputs` | `dispatched_inputs_contexts` | SEC002（`workflow_dispatch` / `workflow_call` 宣言時のみ） |
+| `bare_inputs` | `bare_inputs_contexts` | SEC002 / SEC008（`workflow_dispatch` / `workflow_call` 宣言時のみ） |
+| `dispatch_payload` | `dispatch_payload_table` | SEC002 / SEC008 / SEC021。トリガごとに payload 根を持つ |
 | `condition_dangerous` | `condition_dangerous_contexts` | SEC006 |
 | `workflow_run_gate` | `workflow_run_untrusted_gate_contexts` | SEC022 |
-| `pr_head_markers` | `isPRHeadValue` | SEC005（`pull_request_target` 宣言時のみ） |
+| `pr_head_markers` | `isPRHeadValue` | SEC005（`privileged_pr_head_events` 宣言時） |
+| `privileged_pr_head` | `privileged_pr_head_events` | SEC005（`pull_request_target` / `pull_request_review` / `pull_request_review_comment`） |
 | `workflow_run_markers` | `isWorkflowRunValue` | SEC009（`workflow_run` 宣言時のみ） |
-| `trigger_contexts` | `trigger_context_table` | SEC021（`workflow_dispatch` 宣言時は bare `inputs` を追加、#219） |
+| `trigger_contexts` | `dispatch_payload_table` ∪ `attacker_text_table`（実装の `trigger_context_table` と同じ合成） | SEC021（`workflow_dispatch` 宣言時は `bare_inputs` を追加、#219） |
 | `fork_accessible_triggers` | `hasForkAccessibleTrigger` の `=> return true` 腕 | SEC020 |
-| `followed_flows` | 固定値 `direct`, `step_output` | SEC002 が追う伝播（`checkScriptInjection` の構造から） |
+| `followed_flows` | 固定値 `direct`, `step_output`, `env_context`, `job_output` | SEC002 が追う伝播（`checkScriptInjection` の構造から、#314） |
 
 照合意味論も写している。文脈表は `pathMatchesPattern`（セグメント前方一致、
 `*` ワイルドカード、大文字小文字無視）→ `matches_prefix`、
@@ -124,7 +126,7 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
 | P2 GITHUB_ENV injection | 同上、sink = `github_env` | `sec008(t, c)` | SEC008 |
 | P3 condition gate | `available ∧ external ∧ free_text ∧ ¬ref_shaped`、sink = `condition` | `sec006 ∨ sec022` | SEC006 |
 | P4 untrusted checkout | `available ∧ privileged ∧ (external ∨ dispatcher) ∧ ref_shaped`、sink = `checkout_ref` | `sec005 ∨ sec009 ∨ sec021` | SEC005/SEC009/SEC021 |
-| P5 SEC021 ⊆ SEC002 | `sec021(t, c)`、sink = `run` | `sec002(t, c)` | SEC002 |
+| P5 SEC021 ⊆ SEC002 | `sec021(t, c)` ∧ `free_text`、sink = `run` | `sec002(t, c)` | SEC002 |
 | P6 SEC022 ⊆ SEC002 | `sec022(t, c)`、sink = `run` | `sec002(t, c)` | SEC002 |
 | P7 self-hosted fork reach | `carries_fork_code ∧ externally_triggerable`（c は `head.sha` に固定） | `sec020(t)` | SEC020 |
 | P8 taint flow | `issue_comment × comment.body × run`（sec002 が持つ既知の組） | `followed(f)` | SEC002 |
@@ -135,9 +137,11 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
   シェルのメタ文字を含めない。ref 形の文脈は P4 で見る。
 - **P3 は ref 形を除外する。** `head.ref` や labels を `if:` で使う判定は
   #138 で SEC006 から意図的に外した。
-- **P5 / P6 はルール間整合性。** checkout ref を選べる文字列（SEC021）や
+- **P5 / P6 はルール間整合性。** checkout ref を選べる**自由文**（SEC021）や
   `workflow_run` のゲートに使わせない文字列（SEC022）は `run:` に展開すれば
   そのままインジェクションなので、SEC002 が同じ文脈を持たないのは矛盾。
+  番号や SHA は P1 と同じ理由で P5 から外す（SEC021 が ChatOps の
+  `issue.number` を持っても、それを `run:` に書くのはインジェクションではない）。
 - **P7 / P8 は代表元に固定する。** トリガだけ・経路だけの性質なので、
   無関係な変数の組み合わせごとに同じ抜けを何度も報告しない。
 
@@ -163,7 +167,12 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
 - バイナリは生成ファイルのディレクトリを cwd にして起動する。呼び出し元の
   cwd にある `.zghalint.yml` がルールを無効化して結果を歪めないため。
 
-2026-09-08 時点: **69 / 69 の証人が false negative として確認された**。
+2026-09-08 時点: F1〜F7（#308〜#314）を埋めたあと、抽出器を現行の表分割に
+追随させ、モデルの実装像（SEC005 の対象トリガ、P5 の `free_text` 条件、
+SEC002/SEC008 の共有 taint 表）を直した状態で、残る証人は意図的除外の
+**1 件**（`workflow_call` × `inputs.*` の checkout、#219）だけ。
+F1〜F7 に対応していた 69 件はいずれも実バイナリで false negative と確認済みで、
+対応 issue は閉じている。
 
 ---
 
@@ -194,7 +203,9 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
   変わることを確認してから issue を閉じる。
 - **表を増やしたとき**: `impl.py` は抽出するだけなので変更不要。
   抽出パターンが変わったら（表名・関数シグネチャ）`impl.py` を追随させる。
-  抽出失敗は `LookupError` で止まる。
+  抽出失敗は `LookupError` で止まる。CI の lint ジョブと
+  `tests/pbt/test_formal_extractor.py` が `impl.load()` を回すので、
+  表名の変更を抽出器が追えていないと PR で落ちる（z3 は不要）。
 - **仕様を広げるとき**: 新しいトリガ / 文脈 / シンクは `spec.py` にだけ足す。
   実装を見て書かないこと。仕様側が実装を写した瞬間にモデルは何も言わなくなる。
 - **新ルールを対象に加えるとき**: `impl.py` に抽出、`model.py` の

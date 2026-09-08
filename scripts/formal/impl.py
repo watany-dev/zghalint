@@ -56,48 +56,71 @@ def _switch_true_arms(source: str, name: str) -> list[str]:
     return _nonempty(re.findall(r"\.(\w+),", body[body.index("switch") :]), name)
 
 
-def _trigger_table(source: str) -> dict[str, list[str]]:
-    body = _block(source, "const trigger_context_table = [_]TriggerContexts{")
+def _event_type_table(source: str, name: str) -> list[str]:
+    return _nonempty(re.findall(r"\.(\w+)", _block(source, f"const {name} = [_]EventType{{")), name)
+
+
+def _trigger_table(source: str, name: str) -> dict[str, list[str]]:
+    body = _block(source, f"const {name} = [_]TriggerContexts{{")
     entries = re.findall(r"\.event\s*=\s*\.(\w+),\s*\.contexts\s*=\s*&\.\{([^}]*)\}", body)
-    return _nonempty(
-        {event: _STRING.findall(contexts) for event, contexts in entries}, "trigger_context_table"
-    )
+    return _nonempty({event: _STRING.findall(contexts) for event, contexts in entries}, name)
+
+
+def _merge_trigger_tables(*tables: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for table in tables:
+        for event, contexts in table.items():
+            merged.setdefault(event, []).extend(contexts)
+    return merged
 
 
 @dataclass(frozen=True)
 class Impl:
     #: SEC002 (`run:` / github-script) and SEC008 ($GITHUB_ENV): segment-prefix table.
     run_dangerous: list[str]
-    #: SEC002 only, and only when `workflow_dispatch` / `workflow_call` is declared.
-    dispatched_inputs: list[str]
+    #: Bare `inputs.*`, added to the taint table when `workflow_dispatch` /
+    #: `workflow_call` is declared (`runTaintContexts`).
+    bare_inputs: list[str]
+    #: Payload roots a dispatching caller fills, keyed by trigger. Shared by
+    #: SEC002 / SEC008 (`runTaintContexts`) and SEC021 (`trigger_context_table`).
+    dispatch_payload: dict[str, list[str]]
     #: SEC006: `if:` conditions.
     condition_dangerous: list[str]
     #: SEC022: `if:` gates of a `workflow_run` job.
     workflow_run_gate: list[str]
-    #: SEC005 markers (substring), active when `pull_request_target` is declared.
+    #: SEC005 markers (substring), active when a privileged PR-head trigger
+    #: is declared (`privileged_pr_head_events`).
     pr_head_markers: list[str]
+    #: SEC005: triggers that run privileged while carrying `pull_request.head`.
+    privileged_pr_head: list[str]
     #: SEC009 markers (substring), active when `workflow_run` is declared.
     workflow_run_markers: list[str]
     #: SEC021: contexts owned per declared trigger (segment-prefix).
     trigger_contexts: dict[str, list[str]]
     #: SEC020: triggers a fork can reach.
     fork_accessible_triggers: list[str]
-    #: Flows SEC002 follows (see spec.FLOWS). Fixed by construction of
-    #: `checkScriptInjection`: direct use, and a step output written on the
-    #: same line as the tainted expression.
-    followed_flows: list[str] = field(default_factory=lambda: ["direct", "step_output"])
+    #: Flows SEC002 follows (see spec.FLOWS). `checkScriptInjection` walks
+    #: `env:` keys, step outputs, and job outputs as well as the direct use
+    #: (#314).
+    followed_flows: list[str] = field(
+        default_factory=lambda: ["direct", "step_output", "env_context", "job_output"]
+    )
 
 
 def load() -> Impl:
     sec = SECURITY_ZIG.read_text()
+    dispatch_payload = _trigger_table(sec, "dispatch_payload_table")
+    attacker_text = _trigger_table(sec, "attacker_text_table")
     return Impl(
         run_dangerous=_string_table(sec, "run_dangerous_contexts"),
-        dispatched_inputs=_string_table(sec, "dispatched_inputs_contexts"),
+        bare_inputs=_string_table(sec, "bare_inputs_contexts"),
+        dispatch_payload=dispatch_payload,
         condition_dangerous=_string_table(sec, "condition_dangerous_contexts"),
         workflow_run_gate=_string_table(sec, "workflow_run_untrusted_gate_contexts"),
         pr_head_markers=_marker_fn(sec, "isPRHeadValue"),
+        privileged_pr_head=_event_type_table(sec, "privileged_pr_head_events"),
         workflow_run_markers=_marker_fn(sec, "isWorkflowRunValue"),
-        trigger_contexts=_trigger_table(sec),
+        trigger_contexts=_merge_trigger_tables(dispatch_payload, attacker_text),
         fork_accessible_triggers=_switch_true_arms(sec, "hasForkAccessibleTrigger"),
     )
 

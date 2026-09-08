@@ -109,13 +109,16 @@ class Model:
     def _define_impl(self) -> None:
         im = self.im
 
-        def sec002(t: str, c: str) -> bool:
+        def run_taint(t: str, c: str) -> bool:
+            # `runTaintContexts`: the fixed table, plus the dispatch payload
+            # the declared trigger actually fills, plus bare `inputs` when a
+            # dispatch / call can populate it. SEC002 and SEC008 share this
+            # (#312).
             if impl.matches_any_prefix(c, im.run_dangerous):
                 return True
-            return t in DISPATCH_TRIGGERS and impl.matches_any_prefix(c, im.dispatched_inputs)
-
-        def sec008(t: str, c: str) -> bool:
-            return impl.matches_any_prefix(c, im.run_dangerous)
+            if impl.matches_any_prefix(c, im.dispatch_payload.get(t, [])):
+                return True
+            return t in DISPATCH_TRIGGERS and impl.matches_any_prefix(c, im.bare_inputs)
 
         def sec006(t: str, c: str) -> bool:
             return impl.matches_any_prefix(c, im.condition_dangerous)
@@ -124,7 +127,7 @@ class Model:
             return t == "workflow_run" and impl.matches_any_prefix(c, im.workflow_run_gate)
 
         def sec005(t: str, c: str) -> bool:
-            return t == "pull_request_target" and impl.matches_marker(
+            return t in im.privileged_pr_head and impl.matches_marker(
                 spec.checkout_with(c), im.pr_head_markers
             )
 
@@ -136,11 +139,11 @@ class Model:
         def sec021(t: str, c: str) -> bool:
             owned = im.trigger_contexts.get(t, [])
             if t == "workflow_dispatch":
-                owned = owned + ["inputs"]
+                owned = owned + im.bare_inputs
             return impl.matches_any_prefix(c, owned)
 
-        self.sec002 = self._define_tc("sec002", sec002)
-        self.sec008 = self._define_tc("sec008", sec008)
+        self.sec002 = self._define_tc("sec002", run_taint)
+        self.sec008 = self._define_tc("sec008", run_taint)
         self.sec006 = self._define_tc("sec006", sec006)
         self.sec022 = self._define_tc("sec022", sec022)
         self.sec005 = self._define_tc("sec005", sec005)
@@ -207,9 +210,10 @@ class Model:
             (
                 "P5 SEC021 ⊆ SEC002",
                 "SEC002",
-                # Whatever chooses a checkout ref is a string the attacker wrote,
-                # so it is at least as dangerous inside run:.
-                z3.And(self.sec021(t, c), direct, self.sink == S["run"]),
+                # A checkout-ref context that is also free text is injection
+                # inside run:. A number or SHA is not (P1); SEC021 may still
+                # own those for checkout without SEC002 treating them as taint.
+                z3.And(self.sec021(t, c), self.free_text(c), direct, self.sink == S["run"]),
                 self.sec002(t, c),
                 "cross-rule consistency: SEC021 owns the context but SEC002 does not",
             ),
