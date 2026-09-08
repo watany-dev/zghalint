@@ -44,6 +44,10 @@ pub const CallArg = struct {
 pub const ScalarValueMeta = struct {
     value_span: yaml_types.Span,
     style: yaml_types.ScalarStyle,
+    /// Span of the key this value hangs off, when the entry came from a
+    /// mapping. Only set where a rule renames the key itself (DEP004/DEP005);
+    /// a scalar with no mapping entry of its own leaves it null.
+    key_span: ?yaml_types.Span = null,
 };
 
 pub const PermissionLevel = enum {

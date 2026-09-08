@@ -205,6 +205,34 @@ pub fn replaceScalar(
     return oneEdit(alloc, content_start, content_end, new_value);
 }
 
+/// The key-side counterpart of `replaceScalar`: renames a token that a rule has
+/// already reported, such as a mapping key, an event name, or an identifier
+/// inside a `${{ }}` path.
+///
+/// `span` must cover exactly `old_text`, optionally wrapped in one pair of
+/// quotes; only the text itself is replaced, so the quoting survives. Anything
+/// else -- a fallback span standing in for a token span the parser never
+/// captured, or a quoted scalar whose escapes make the source longer than the
+/// value -- yields null instead of an edit landing on unrelated bytes.
+pub fn renameToken(
+    alloc: std.mem.Allocator,
+    span: Span,
+    old_text: []const u8,
+    new_text: []const u8,
+) ?[]const Edit {
+    if (span.end_byte < span.start_byte) return null;
+    const width = span.end_byte - span.start_byte;
+
+    if (width == old_text.len) {
+        return oneEdit(alloc, span.start_byte, span.end_byte, new_text);
+    }
+    // `'push'` / `"push"`: the span covers the quotes, the replacement must not.
+    if (width == old_text.len + 2) {
+        return oneEdit(alloc, span.start_byte + 1, span.end_byte - 1, new_text);
+    }
+    return null;
+}
+
 /// Typical usage is with `MappingEntry.full_span`, which covers the key line
 /// plus its trailing newline, so no blank line is left behind.
 pub fn deleteMappingEntry(alloc: std.mem.Allocator, entry_span: Span) ?[]const Edit {
@@ -411,4 +439,38 @@ test "insertMappingEntryBlock: empty sub_entries returns null" {
         &subs,
         2,
     ) == null);
+}
+
+test "renameToken replaces an unquoted token" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const edits = renameToken(arena.allocator(), mkSpan(10, 14), "pusg", "push") orelse
+        return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 10), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 14), edits[0].end_byte);
+    try testing.expectEqualStrings("push", edits[0].replacement);
+}
+
+test "renameToken keeps the quotes of a quoted token" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Source: 'pusg' at bytes 10..16.
+    const edits = renameToken(arena.allocator(), mkSpan(10, 16), "pusg", "push") orelse
+        return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 11), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 15), edits[0].end_byte);
+    try testing.expectEqualStrings("push", edits[0].replacement);
+}
+
+test "renameToken rejects a span that does not cover the token" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // A step span standing in for a token span the parser never captured.
+    try testing.expect(renameToken(arena.allocator(), mkSpan(0, 120), "pusg", "push") == null);
+    try testing.expect(renameToken(arena.allocator(), mkSpan(10, 10), "pusg", "push") == null);
+    try testing.expect(renameToken(arena.allocator(), mkSpan(14, 10), "pusg", "push") == null);
 }
