@@ -290,6 +290,16 @@ User-visible changes go in [CHANGELOG.md](CHANGELOG.md) under `## [Unreleased]`,
 and a new or changed rule needs its row in [docs/rules.md](docs/rules.md) — a
 test fails the build if the two drift apart.
 
+## Roadmap
+
+zghalint lints GitHub Actions today. v0.2 extends it to Gitea / Forgejo
+Actions (as a GitHub Actions dialect) and GitLab CI, with platform detected
+per file and rule IDs prefixed per platform (for example `GL-SEC001`).
+See [docs/adr/0014-v0.2-multi-ci-platform.md](docs/adr/0014-v0.2-multi-ci-platform.md)
+for the decisions and
+[docs/design/v0.2-multi-ci-roadmap.md](docs/design/v0.2-multi-ci-roadmap.md)
+for the milestones and rule catalog.
+
 ## Security
 
 Do not open a public issue for a vulnerability in zghalint itself — including a
