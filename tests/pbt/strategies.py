@@ -280,25 +280,17 @@ def workflow_with_perm002(draw: st.DrawFn) -> str:
 def workflow_with_perm001_individual_write(draw: st.DrawFn) -> str:
     """Generate a workflow guaranteed to trigger PERM001 with an individual write permission.
 
-    The workflow sets one permission scope to write (excluding id-token, which
-    has a dedicated hint without autofix). Other rules may fire as well.
+    The workflow sets one of the privilege-escalating scopes to write — the
+    ones PERM001 reports wherever they are declared, and the only ones that
+    carry an autofix (#285). Other rules may fire as well.
     """
     scope = draw(
         st.sampled_from(
             [
-                "contents",
-                "pull-requests",
-                "issues",
                 "actions",
-                "packages",
+                "contents",
                 "deployments",
-                "checks",
-                "statuses",
-                "security-events",
-                "attestations",
-                "discussions",
-                "pages",
-                "repository-projects",
+                "packages",
             ]
         )
     )
