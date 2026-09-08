@@ -17,6 +17,12 @@ Nothing released yet. `v0.0.1-rc.1` is the first planned tag; the CLI contract
 (flag names, exit codes, output shapes) is not yet stable, and rule IDs may
 still be renumbered before 1.0.
 
+### Changed
+
+- EXPR006 no longer warns when `contains()` tests array membership (object
+  filters such as `labels.*.name`, `fromJSON` arrays, typed arrays). Those are
+  exact element checks, not substring matching (#333).
+
 ### Added
 
 - GitHub Actions workflow linting across ten categories: security (`SEC*`),
