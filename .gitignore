@@ -7,3 +7,6 @@ coverage/
 __pycache__/
 *.egg-info/
 .hypothesis/
+
+# bench (scripts/fetch-corpus.py の取得結果。再配布しないので manifest だけ残す)
+bench/corpus/

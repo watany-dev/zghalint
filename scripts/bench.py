@@ -11,6 +11,7 @@ tool reports.
     python3 scripts/bench.py -o bench/out.md # ...or into a file
     python3 scripts/bench.py --case a-*      # only matching cases
     python3 scripts/bench.py --json out.json # machine-readable scores too
+    python3 scripts/bench.py --perf          # wall time / RSS instead (bench_perf.py)
 
 A missing external tool is reported as unavailable rather than scored, so the
 harness stays usable with only zghalint installed.
@@ -30,6 +31,8 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import bench_perf
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CASES_DIR = REPO_ROOT / "bench" / "cases"
@@ -1170,11 +1173,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print the neutral kind -> per-tool ID table and exit",
     )
+    perf = parser.add_argument_group("performance (--perf)")
+    perf.add_argument(
+        "--perf",
+        action="store_true",
+        help="measure wall time and peak RSS instead of scoring findings",
+    )
+    perf.add_argument(
+        "--corpus-dir",
+        type=Path,
+        default=bench_perf.DEFAULT_CORPUS_DIR,
+        help="real-world workflows from scripts/fetch-corpus.py",
+    )
+    perf.add_argument("--runs", type=int, default=10, help="measured runs per command")
+    perf.add_argument("--warmup", type=int, default=3, help="unmeasured runs before them")
     args = parser.parse_args(argv)
 
     if args.kinds:
         print(render_kind_table())
         return 0
+
+    if args.perf:
+        return main_perf(args)
 
     if not args.cases_dir.is_dir():
         print(f"no such case directory: {args.cases_dir}", file=sys.stderr)
@@ -1220,6 +1240,35 @@ def main(argv: list[str] | None = None) -> int:
         tool == "zghalint" for r in results for tool, _, _ in r.false_positives
     ):
         return 1
+    return 0
+
+
+def main_perf(args: argparse.Namespace) -> int:
+    if not args.zghalint.is_file():
+        print(
+            f"zghalint binary not found at {args.zghalint}; "
+            "run `zig build -Doptimize=ReleaseFast` first",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.cases_dir.is_dir():
+        print(f"no such case directory: {args.cases_dir}", file=sys.stderr)
+        return 2
+    with tempfile.TemporaryDirectory(prefix="zghalint-perf-") as tmp:
+        report = bench_perf.run_perf(
+            args.zghalint, args.cases_dir, args.corpus_dir, args.runs, args.warmup, Path(tmp)
+        )
+    text = bench_perf.render_markdown(report)
+    if args.out:
+        args.out.write_text(text, encoding="utf-8")
+        print(f"wrote {args.out}")
+    else:
+        print(text)
+    if args.json:
+        args.json.write_text(
+            json.dumps(bench_perf.as_json(report), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
     return 0
 
 

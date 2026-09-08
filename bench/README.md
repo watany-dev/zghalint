@@ -126,6 +126,59 @@ lint できなかった」) も同じ扱いにする。JSON 自体は正常に�
 `--fail-on-fp` を付けると、zghalint が `forbid` に反した時点で非ゼロ終了
 する。CI で誤検出の混入を止める用途。
 
+## 性能計測 (`--perf`)
+
+採点ではなく wall time と最大 RSS を測るモード (issue #268)。実装は
+`scripts/bench_perf.py`。zghalint は `-Doptimize=ReleaseFast` で作った
+バイナリを渡す — Debug ビルドの数字は比較に使えない。
+
+```bash
+zig build -Doptimize=ReleaseFast
+python3 scripts/fetch-corpus.py                     # many-small 用のコーパス
+python3 scripts/bench.py --perf                     # Markdown を stdout へ
+python3 scripts/bench.py --perf -o /tmp/perf.md --json /tmp/perf.json
+python3 scripts/bench.py --perf --runs 3 --warmup 1 # 手元での確認用
+```
+
+| シナリオ | 内容 |
+|---|---|
+| cases | `bench/cases/` のワークフロー全件を 1 回の起動で処理する |
+| huge | 約 10,000 行の合成ワークフロー 1 本 (実行時に生成) |
+| many-small | `bench/corpus/` を 1000 ファイルに敷き詰めて 1 回の起動で処理する |
+| network | cases を対象に、zghalint は `--no-cache` (cold) とディスクキャッシュ (warm)、zizmor は `--offline` とオンラインを比べる |
+
+各コマンドは `hyperfine --warmup 3` (既定; `--runs` / `--warmup` で変更) で
+測り、hyperfine が無ければ同じ回数の in-process ループで代用する。最大 RSS
+は GNU time (`/usr/bin/time -f %M`、Debian/Ubuntu は `apt-get install time`)
+でもう 1 回だけ実行して取る — `time -v` の "Maximum resident set size"。
+Python から直接 `wait4(2)` で読むと Linux が親プロセスの RSS を子に
+計上するため 15 MiB 前後で床打ちされ、zghalint の実値 (数 MiB) が見えない。
+GNU time が無い環境 (macOS の BSD time を含む) では RSS 列は `–` になる。
+zghalint / actionlint / zizmor はすべて `bench/` の採点と同じフラグ
+(`--offline`, `-no-color`, `--offline --no-progress`) で走らせる。
+
+終了コードは表に載せる。zghalint の 2 は「lint できなかったファイルがある」
+の意味で、コーパスには自前パーサが拒否する実ファイルが含まれるため、
+many-small では 2 が出るのが現状の挙動 (堅牢性の観察点)。
+
+network シナリオは `GITHUB_TOKEN` が要る (zghalint は GraphQL 経路でしか
+キャッシュを書かず、zizmor はトークン無しだと黙ってオフラインになる)。
+計測前に zghalint の cold 実行がキャッシュを書き、zizmor のオンライン実行が
+監査を完了することを確かめてから走らせる。トークンが無い、または
+api.github.com へ届かない環境では「計測できなかったシナリオ」として理由つきで
+載せ、接続失敗のコストを取得コストとして報告しない。`bench/corpus/` が空なら
+many-small も同じ扱いになる。
+
+### コーパス (`scripts/fetch-corpus.py`)
+
+`scripts/popular-actions.txt` のリポジトリを `.github/workflows/` だけ
+sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集める。
+上流のライセンスをそのまま持つファイルなので `bench/corpus/` は git 管理外
+にし、代わりに `bench/corpus/manifest.json` に取得元 (リポジトリ・コミット・
+ファイル名) と取得時刻を残す。`--limit N` で manifest の先頭 N 件に絞り、
+`--repo owner/repo` で manifest に無いリポジトリを対象に加える。取得は毎回
+`bench/corpus/` を作り直す。
+
 ## ケースを追加する
 
 1. カテゴリのディレクトリに `.yml` を置く (複数ファイルならディレクトリごと)。
