@@ -318,6 +318,11 @@ Validate the principle of least privilege in workflow permissions.
 | PERM002 | missing-job-permissions | warning | Job with third-party actions lacks explicit permissions |
 | PERM003 | invalid-permissions | error | Unknown permission scope or invalid permission level |
 
+PERM002 stays quiet when the workflow already declares `permissions:` with no
+write scope (`contents: read`, `read-all`, `{}`). The token is already
+minimized for every job. `write-all` or any `: write` at workflow level still
+warns, because those jobs should narrow the grant (#334).
+
 ## Expression Validation Rules (EXPR)
 
 Validate `${{ }}` expression syntax, context access, and function calls.

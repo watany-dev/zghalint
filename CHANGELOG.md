@@ -17,6 +17,12 @@ Nothing released yet. `v0.0.1-rc.1` is the first planned tag; the CLI contract
 (flag names, exit codes, output shapes) is not yet stable, and rule IDs may
 still be renumbered before 1.0.
 
+### Changed
+
+- PERM002 no longer warns when the workflow already declares `permissions:`
+  with no write scope. `write-all` or any `: write` at workflow level still
+  asks each job to narrow the grant (#334).
+
 ### Added
 
 - SC007 (`typosquat-action`): warn when an `actions/*` reference is 1–2 edits
