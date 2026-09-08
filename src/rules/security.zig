@@ -897,11 +897,12 @@ const dispatch_payload_table = [_]TriggerContexts{
 /// expanding them is injection whatever started the run — so only SEC021, which
 /// pairs a context with the trigger that populates it, reads this half.
 const attacker_text_table = [_]TriggerContexts{
-    .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number" } },
+    .{ .event = .issues, .contexts = &.{ "github.event.issue.title", "github.event.issue.body" } },
     // `issue_comment` carries the issue it was left on alongside the comment.
     // `issue.number` is the ChatOps vector: anyone may comment `/test` on any
     // pull request, and `refs/pull/<number>/merge` then names that fork's code
-    // while the job holds the base repository's secrets (#308).
+    // while the job holds the base repository's secrets (#308). `issues` does
+    // not fire on pull requests, so the same number never names a PR there.
     .{ .event = .issue_comment, .contexts = &.{ "github.event.issue.title", "github.event.issue.body", "github.event.issue.number", "github.event.comment.body" } },
     .{ .event = .discussion, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body" } },
     .{ .event = .discussion_comment, .contexts = &.{ "github.event.discussion.title", "github.event.discussion.body", "github.event.comment.body" } },
@@ -1047,10 +1048,14 @@ fn checkStepCheckoutRefs(
         const input = getWithInput(with_map, name) orelse continue;
         if (ownedByNeighbourRule(wf, input.value)) continue;
         if (!containsUntrustedCheckoutContext(input.value, contexts)) continue;
+        const chatops = std.mem.indexOf(u8, input.value, "github.event.issue.number") != null;
         list.append(.{
             .rule_id = "SEC021",
             .severity = .@"error",
-            .message = "actions/checkout resolves its ref/repository from untrusted context, letting the triggering user pick the code that runs",
+            .message = if (chatops)
+                "actions/checkout resolves its ref from the issue number, so the commenting user picks which pull request's code runs"
+            else
+                "actions/checkout resolves its ref/repository from untrusted context, letting the triggering user pick the code that runs",
             .span = withAnchor(step, input.key).whole(),
             .fix_hint = "check out a ref the repository controls, or validate the value against an allowlist before passing it to actions/checkout",
         }) catch return;
@@ -3549,6 +3554,20 @@ test "SEC021: issue_comment checkout ref from issue body" {
 
 test "SEC021: issue_comment ChatOps checkout of refs/pull/<issue.number>/merge (#308)" {
     var list = runCheckoutWith(issue_comment_trigger, "ref", "refs/pull/${{ github.event.issue.number }}/merge");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+    const d = findDiagnostic(&list, "SEC021").?;
+    try testing.expect(std.mem.indexOf(u8, d.message, "commenting user") != null);
+}
+
+test "SEC021: issues does not treat issue.number as a ChatOps ref (#308)" {
+    var list = runCheckoutWith(issues_trigger, "ref", "refs/pull/${{ github.event.issue.number }}/merge");
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: issues still treats issue.body as an untrusted checkout ref" {
+    var list = runCheckoutWith(issues_trigger, "ref", "${{ github.event.issue.body }}");
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC021"));
 }
