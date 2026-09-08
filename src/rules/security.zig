@@ -3525,6 +3525,12 @@ test "SEC021: issues does not treat issue.number as a ChatOps ref (#308)" {
     try testing.expect(!hasDiagnostic(&list, "SEC021"));
 }
 
+test "SEC021: issues still treats issue.body as an untrusted checkout ref" {
+    var list = runCheckoutWith(issues_trigger, "ref", "${{ github.event.issue.body }}");
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
 test "SEC021: discussion_comment checkout ref from comment body" {
     var list = runCheckoutWith(discussion_comment_trigger, "ref", "${{ github.event.comment.body }}");
     defer list.deinit();
