@@ -19,6 +19,8 @@ still be renumbered before 1.0.
 
 ### Added
 
+- SC007 (`typosquat-action`): warn when an `actions/*` reference is 1–2 edits
+  away from a well-known official action such as `actions/checkout`.
 - GitHub Actions workflow linting across ten categories: security (`SEC*`),
   supply chain (`SC*`), performance (`PERF*`), best practices (`BP*`),
   permissions (`PERM*`), expression validation (`EXPR*`), dependencies

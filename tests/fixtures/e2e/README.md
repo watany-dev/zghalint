@@ -42,6 +42,7 @@ otherwise get wrong silently. Fixtures without such a sibling are unaffected.
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
 | `sec002-taint-one-hop.yml` | #314 repro: `env.<KEY>` and `needs.<job>.outputs.*` carry taint one hop |
 | `security-misc.yml` | SEC003 / SEC005 / SEC006 / SEC007 / SEC008 / SC002 |
+| `sc007-typosquat.yml` | #135: `actions/chekout` fires SC007; `myorg/chekout` and exact `actions/checkout` do not |
 | `sec006-condition-scope.yml` | #138 repro: ref/label routing in `if:` must not fire SEC006 |
 | `sec005-pr-target-head-repository.yml` | #218 repro: `pull_request_target` checkout of the PR head repository |
 | `sec021-untrusted-checkout-ref.yml` | #134 repro: checkout ref from an `issue_comment` body |
