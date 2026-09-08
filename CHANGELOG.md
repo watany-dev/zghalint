@@ -23,6 +23,9 @@ still be renumbered before 1.0.
   suppressed so the more specific artifact-leakage message is the one shown
   (#335). Disabling SEC015 restores SEC018. The identical-insertion guard in
   the fix engine (#300) remains as a backstop.
+- EXPR006 no longer warns when `contains()` tests array membership (object
+  filters such as `labels.*.name`, `fromJSON` arrays, typed arrays). Those are
+  exact element checks, not substring matching (#333).
 - PERM002 no longer warns when the workflow already declares `permissions:`
   with no write scope. `write-all` or any `: write` at workflow level still
   asks each job to narrow the grant (#334).

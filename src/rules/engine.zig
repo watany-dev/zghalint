@@ -145,16 +145,12 @@ fn dropSc005CoveredByImpostor(
     list.items.shrinkRetainingCapacity(write);
 }
 
-fn sameStepSpan(a: diagnostics.Span, b: diagnostics.Span) bool {
-    return a.start_byte == b.start_byte and
-        a.start_line == b.start_line and
-        a.start_col == b.start_col;
-}
-
 fn sec015CoversSpan(items: []const Diagnostic, span: diagnostics.Span) bool {
     for (items) |d| {
         if (!std.mem.eql(u8, d.rule_id, "SEC015")) continue;
-        if (sameStepSpan(d.span, span)) return true;
+        if (d.span.start_byte == span.start_byte and
+            d.span.start_line == span.start_line and
+            d.span.start_col == span.start_col) return true;
     }
     return false;
 }
