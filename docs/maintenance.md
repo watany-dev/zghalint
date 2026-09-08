@@ -38,18 +38,40 @@
 
 ### バージョンを上げるとき触る箇所
 
+**真は `build.zig.zon` の `.version` 一箇所。** ビルド時に読めない写しだけを
+併記し、`scripts/check-version-sync.sh` が食い違いを検出する。
+
 | ファイル | 内容 | 検証 |
 |---|---|---|
 | `build.zig.zon` の `.version` | `--version` 出力の元（`build.zig` 経由） | `release.yml` の `verify` がタグと突き合わせる |
-| `action.yml` の `VERSION=${GITHUB_ACTION_REF:-...}` | `GITHUB_ACTION_REF` が取れない場合のフォールバック | 手動 |
-| `README.md` の `uses: watany-dev/zghalint@...` の例 | 利用者向けの記載 | 手動 |
+| `action.yml` の `FALLBACK_VERSION` | ref がリリースタグでない（SHA ピン・移動メジャータグ・ブランチ）ときのダウンロード先 | `ci.yml` の `lint` と `release.yml` の `verify` |
+| `README.md` の `uses: watany-dev/zghalint@v...` の例 | 利用者向けの記載 | `ci.yml` の `lint` と `release.yml` の `verify` |
+
+`ci.yml` は `build.zig.zon` との一致だけを見る（引数なし実行）。`release.yml` は
+そこにタグとの一致とバイナリの `--version` を足す。
+
+### action.yml のバージョン解決
+
+ダウンロード先タグは次の順で決まる。
+
+1. `version` 入力（明示指定）
+2. `GITHUB_ACTION_REF` が `v<major>.<minor>.<patch>` 形式のとき、その ref
+3. `action.yml` の `FALLBACK_VERSION`
+
+2 の形式判定を挟むのは、`@<sha>`（SEC001 が求めるピン方法）・`@v0` のような
+移動メジャータグ・ブランチ ref がそのままダウンロード URL に入ると 404 に
+なるため。これらの ref も「このコミット」は一意に指すので、そのコミットが
+属するリリース（3）へ落とす。
 
 ### 手順
 
 1. `build.zig.zon` の `.version` を新しいバージョンに更新する
-2. `action.yml` のフォールバックと `README.md` の例を同じバージョンへ揃える
+2. `action.yml` の `FALLBACK_VERSION` と `README.md` の例を同じバージョンへ揃え、
+   `./scripts/check-version-sync.sh` で確認する
 3. コミットして `main` へ入れる
-4. `git tag v<version> && git push origin v<version>`
+4. `git tag v<version> && git push origin v<version>` — 3 を入れた時点で
+   `FALLBACK_VERSION` は未公開のリリースを指す。その間に `main` のコミットを
+   SHA ピンした利用者はダウンロードに失敗するので、3 と 4 は続けて行う
 5. `release.yml` の `verify` ジョブが以下を検証する
    - タグ（先頭 `v` を除く）と `build.zig.zon` の `.version` が一致すること
    - ビルドしたバイナリの `--version` 出力がタグと一致すること
