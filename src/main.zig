@@ -779,6 +779,11 @@ pub fn main() !u8 {
     zghalint.rules.impostor.initImpostor(allocator, cli_args.offline);
     defer zghalint.rules.impostor.deinitImpostor();
 
+    // Only a run that can rewrite files has any use for the tag oids, so a
+    // plain lint never pays for the extra lookups.
+    zghalint.rules.sha_pin.initTagOids(allocator, cli_args.offline, cli_args.fix_mode != .off);
+    defer zghalint.rules.sha_pin.deinitTagOids();
+
     zghalint.rules.net_status.reset();
     defer zghalint.rules.net_status.reset();
 
