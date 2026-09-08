@@ -1195,6 +1195,9 @@ def main(argv: list[str] | None = None) -> int:
         help="cross-check --fix / --fix-unsafe rewrites against actionlint and zizmor",
     )
     args = parser.parse_args(argv)
+    # Every tool runs with cwd set to a staged copy, so a relative --zghalint
+    # (`./zig-out/bin/zghalint`) would not resolve from there.
+    args.zghalint = args.zghalint.resolve()
 
     if args.kinds:
         print(render_kind_table())
