@@ -102,6 +102,12 @@ jobs:
           ruff check tests/pbt/ scripts/
           ruff format --check tests/pbt/ scripts/
 
+      # The Z3 model is a finder, not a gate, but the extractor that feeds it
+      # must still parse security.zig. No z3: a renamed table is a LookupError
+      # (#307). The same check lives in tests/pbt/test_formal_extractor.py.
+      - name: Formal extractor still finds the tables
+        run: python3 scripts/formal/impl.py >/dev/null
+
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

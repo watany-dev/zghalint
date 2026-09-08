@@ -14,10 +14,11 @@
   - `github.event.workflow_run.head_branch`
   - `github.event.workflow_run.head_commit.message` / `.author` / `.committer`
   - `github.event.workflow_run.display_title`
+  - `github.event.workflow_run.head_repository.description`
 
 ## 非スコープ
 
-- `head_sha` / `head_commit.id` / `head_commit.timestamp` / `head_repository.*` / `conclusion` などの属性
+- `head_sha` / `head_commit.id` / `head_commit.timestamp` / `head_repository` の同一性フィールド（`full_name` / `id` / `owner`） / `conclusion` などの属性
 - `run:` 内での同コンテキスト利用（SEC002 / SEC008 の担当）
 - checkout の `with.ref`（SEC009 の担当）
 - 別 step / 別 job で行われる検証の追跡
@@ -42,5 +43,5 @@
 
 ## テスト
 
-- inline（`src/rules/security.zig`）: head_branch / head_commit.message / head_commit.author / display_title の発火、`${{ }}` 形と裸の条件、head_repository anchor と `event == 'push'` anchor の抑制（参照が `==` の左右どちらでも）、`!=` / `fork == true` / `event == 'pull_request'` は抑制しない、head_sha / head_commit.id / head_commit.timestamp / conclusion の無報告、非 workflow_run トリガーの無報告、step 条件の発火、job anchor による step 抑制、fix_hint の存在
+- inline（`src/rules/security.zig`）: head_branch / head_commit.message / head_commit.author / display_title / head_repository.description の発火、`${{ }}` 形と裸の条件、head_repository anchor と `event == 'push'` anchor の抑制（参照が `==` の左右どちらでも）、`!=` / `fork == true` / `event == 'pull_request'` は抑制しない、head_sha / head_commit.id / head_commit.timestamp / conclusion の無報告、非 workflow_run トリガーの無報告、step 条件の発火、job anchor による step 抑制、fix_hint の存在
 - E2E: `tests/fixtures/e2e/sec022-workflow-run-branch-gate.yml`（発火 job と検証済み job を 1 ファイルに同居）

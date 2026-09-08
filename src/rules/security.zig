@@ -1139,14 +1139,17 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
 /// runs with the base repository's secrets, so gating it on one of these is a
 /// trust decision made from attacker-authored data: a fork only has to name its
 /// branch `main`, or word its commit message to match, to walk through the gate
-/// (#143). `head_sha` is absent because it names one immutable commit, and the
-/// `head_repository` fields are absent because they are the fix, not the bug.
+/// (#143). `head_sha` is absent because it names one immutable commit. Identity
+/// fields of `head_repository` (`full_name`, `id`, `owner`) are the fix, not
+/// the bug; `description` is free text the fork's owner types, same class as
+/// `display_title` (#313).
 const workflow_run_untrusted_gate_contexts = [_][]const u8{
     "github.event.workflow_run.head_branch",
     "github.event.workflow_run.head_commit.message",
     "github.event.workflow_run.head_commit.author",
     "github.event.workflow_run.head_commit.committer",
     "github.event.workflow_run.display_title",
+    "github.event.workflow_run.head_repository.description",
 };
 
 /// Identity checks that make the gate sound: they name the repository the run
@@ -3865,6 +3868,7 @@ test "SEC022: other fork-authored attributes of the triggering run" {
     try testing.expectEqual(Severity.@"error", sec022JobCondition("contains(github.event.workflow_run.head_commit.message, '[deploy]')"));
     try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.head_commit.author.name == 'release-bot'"));
     try testing.expectEqual(Severity.@"error", sec022JobCondition("github.event.workflow_run.display_title == 'release'"));
+    try testing.expectEqual(Severity.@"error", sec022JobCondition("contains(github.event.workflow_run.head_repository.description, 'trusted')"));
 }
 
 test "SEC022: a gate that verifies the triggering repository is not reported" {

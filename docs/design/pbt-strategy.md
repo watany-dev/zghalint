@@ -33,6 +33,7 @@ PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されてい�
 | `tests/pbt/test_security_detection.py` | 87 | 5 | SEC001/002/003 を必ず検出 | OK |
 | `tests/pbt/test_plain_scalar.py` | 56 | 2 | プレーンスカラーの `run:` / `if:` を取りこぼさない (#131) | OK |
 | `tests/pbt/test_output_consistency.py` | 212 | 11 | JSON/SARIF スキーマ・summary 算術 | OK |
+| `tests/pbt/test_formal_extractor.py` | 43 | 1 | `scripts/formal/impl.py` が `security.zig` の現行の表名をまだ見つけられる（#307。z3 不要） | OK |
 
 **実行設定**: `max_examples=50` (autofix のみ 30), `deadline=None`,
 `HealthCheck.too_slow` 抑制。subprocess 実行のため上限 50 例。
