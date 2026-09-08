@@ -28,6 +28,9 @@ still be renumbered before 1.0.
 
 ### Fixed
 
+- HTTP client now honors `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and
+  `SSL_CERT_FILE`, so SC003 / SC004 / SC005 / SC008 no longer skip on every
+  run behind a required proxy (#336).
 - SEC021 no longer treats `github.event.issue.number` as a ChatOps checkout
   taint under `on: issues`. That event does not fire on pull requests; the
   `refs/pull/<n>/merge` pattern is `issue_comment` only (#308).
