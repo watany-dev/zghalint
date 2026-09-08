@@ -568,6 +568,16 @@ pub const Step = struct {
     uses_value_span: ?yaml_types.Span = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
+    /// Start byte and column of the step mapping's first key. A new `env:`
+    /// block is inserted here, taking over the first key's indentation (AF5).
+    first_key_start_byte: ?usize = null,
+    first_key_col: ?u32 = null,
+    /// End byte of the last entry's value in the `env:` mapping (insertion
+    /// point for new entries), under the same conditions as
+    /// `with_last_entry_end_byte`.
+    env_last_entry_end_byte: ?usize = null,
+    /// Column of the first `env:` key, which appended entries align with.
+    env_key_col: ?u32 = null,
 };
 
 pub const SecretsConfig = union(enum) {

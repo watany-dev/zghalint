@@ -1201,7 +1201,26 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             step.env = parsed.values;
             step.env_meta = parsed.meta;
             step.env_keys = try parseEnvKeys(ctx.allocator, n);
+            switch (n) {
+                .mapping => |env_mapping| {
+                    if (env_mapping.entries.len > 0) {
+                        step.env_key_col = env_mapping.entries[0].key.span.start_col;
+                        const last = env_mapping.entries[env_mapping.entries.len - 1];
+                        // Same conditions as `with_last_entry_end_byte`: only a
+                        // block mapping whose last value is an inline scalar
+                        // ends where its span says it does (#171).
+                        if (last.full_span != null and isInlineScalar(last.value)) {
+                            step.env_last_entry_end_byte = last.value.getSpan().end_byte;
+                        }
+                    }
+                },
+                else => {},
+            }
         }
+    }
+    if (m.entries.len > 0) {
+        step.first_key_start_byte = m.entries[0].key.span.start_byte;
+        step.first_key_col = m.entries[0].key.span.start_col;
     }
     step.empty_sections = try empty.toOwnedSlice(ctx.allocator);
 
@@ -3118,4 +3137,62 @@ test "parseWorkflow still works without a failure sink" {
     defer arena.deinit();
 
     try testing.expectError(error.MissingField, parseWorkflow(arena.allocator(), mkMapping(&.{})));
+}
+
+test "step: first key and env: insertion anchors are captured" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: one
+        \\        env:
+        \\          FOO: bar
+        \\        run: echo hi
+        \\
+    ;
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    const step = wf.jobs[0].steps[0];
+
+    // `name` is the first key of the step mapping, at column 9.
+    try testing.expectEqual(@as(u32, 9), step.first_key_col.?);
+    try testing.expectEqual(std.mem.indexOf(u8, source, "name: one").?, step.first_key_start_byte.?);
+    try testing.expectEqual(@as(u32, 11), step.env_key_col.?);
+    try testing.expectEqual(
+        std.mem.indexOf(u8, source, "FOO: bar").? + "FOO: bar".len,
+        step.env_last_entry_end_byte.?,
+    );
+}
+
+test "step: no env: leaves the append anchors unset" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    const step = wf.jobs[0].steps[0];
+
+    try testing.expect(step.env_key_col == null);
+    try testing.expect(step.env_last_entry_end_byte == null);
+    try testing.expectEqual(@as(u32, 9), step.first_key_col.?);
 }

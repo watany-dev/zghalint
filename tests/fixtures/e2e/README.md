@@ -42,6 +42,8 @@ silently. Fixtures without such a sibling are unaffected.
 | `sec002-run-plain-scalar.yml` | #131 repro: `${{ }}` in an unquoted `run:` |
 | `sec002-run-quoted-scalar.yml` | Same injection in a single-quoted scalar |
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
+| `sec002-env-binding.yml` | #327: `--fix-unsafe` binds the tainted expression to the step's `env:` per shell |
+| `sec019-secret-env-binding.yml` | #327: the same binding for a secret in `run:`, with a `with:`-only step left alone |
 | `sec002-taint-one-hop.yml` | #314 repro: `env.<KEY>` and `needs.<job>.outputs.*` carry taint one hop |
 | `security-misc.yml` | SEC003 / SEC005 / SEC006 / SEC007 / SEC008 / SC002 |
 | `sc007-typosquat.yml` | #135: `actions/chekout` fires SC007; `myorg/chekout` and exact `actions/checkout` do not |

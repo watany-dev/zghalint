@@ -179,6 +179,68 @@ pub fn insertMappingEntryBlock(
     return oneEdit(alloc, pos.byte, pos.byte, buf);
 }
 
+/// The `insertMappingEntryBefore` counterpart of `insertMappingEntryBlock`:
+/// the anchor sits at an already-indented sibling key, whose leading
+/// whitespace becomes this entry's indent and is restored afterwards for the
+/// displaced sibling.
+///
+/// Empty `sub_entries` yields null rather than a `key:` with nothing under it.
+pub fn insertMappingEntryBlockBefore(
+    alloc: std.mem.Allocator,
+    pos: InsertPos,
+    key: []const u8,
+    sub_entries: []const SubEntry,
+    child_indent: u32,
+) ?[]const Edit {
+    if (sub_entries.len == 0) return null;
+
+    const sub_indent: usize = @as(usize, pos.indent) + child_indent;
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(alloc);
+
+    buf.appendSlice(alloc, key) catch return null;
+    buf.appendSlice(alloc, ":\n") catch return null;
+    for (sub_entries) |sub| {
+        buf.appendNTimes(alloc, ' ', sub_indent) catch return null;
+        buf.appendSlice(alloc, sub.key) catch return null;
+        buf.appendSlice(alloc, ": ") catch return null;
+        buf.appendSlice(alloc, sub.value) catch return null;
+        buf.append(alloc, '\n') catch return null;
+    }
+    // Restore the indentation the displaced sibling key had.
+    buf.appendNTimes(alloc, ' ', pos.indent) catch return null;
+
+    const owned = buf.toOwnedSlice(alloc) catch return null;
+    return oneEdit(alloc, pos.byte, pos.byte, owned);
+}
+
+/// The multi-entry form of `appendMappingEntry`: every entry is written as one
+/// `Edit`, because several zero-length insertions at the same byte have no
+/// defined order once `fix/engine.zig` sorts them.
+pub fn appendMappingEntries(
+    alloc: std.mem.Allocator,
+    after_byte: usize,
+    indent: u32,
+    sub_entries: []const SubEntry,
+) ?[]const Edit {
+    if (sub_entries.len == 0) return null;
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(alloc);
+
+    for (sub_entries) |sub| {
+        buf.append(alloc, '\n') catch return null;
+        buf.appendNTimes(alloc, ' ', indent) catch return null;
+        buf.appendSlice(alloc, sub.key) catch return null;
+        buf.appendSlice(alloc, ": ") catch return null;
+        buf.appendSlice(alloc, sub.value) catch return null;
+    }
+
+    const owned = buf.toOwnedSlice(alloc) catch return null;
+    return oneEdit(alloc, after_byte, after_byte, owned);
+}
+
 /// The sequence counterpart of `insertMappingEntryBlock`, anchored the way
 /// `insertMappingEntryBefore` is: at an already-indented sibling key, whose
 /// leading whitespace becomes this entry's indent and is restored afterwards
@@ -538,6 +600,61 @@ test "insertMappingEntryBlock: empty sub_entries returns null" {
         &subs,
         2,
     ) == null);
+}
+
+test "insertMappingEntryBlockBefore: writes the children and restores the sibling indent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const edits = insertMappingEntryBlockBefore(
+        alloc,
+        .{ .byte = 40, .indent = 8 },
+        "env",
+        &.{ .{ .key = "A", .value = "1" }, .{ .key = "B", .value = "2" } },
+        2,
+    ).?;
+
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqual(@as(usize, 40), edits[0].start_byte);
+    try testing.expectEqual(@as(usize, 40), edits[0].end_byte);
+    try testing.expectEqualStrings(
+        "env:\n          A: 1\n          B: 2\n        ",
+        edits[0].replacement,
+    );
+}
+
+test "insertMappingEntryBlockBefore: empty sub_entries returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expect(insertMappingEntryBlockBefore(
+        arena.allocator(),
+        .{ .byte = 0, .indent = 0 },
+        "env",
+        &.{},
+        2,
+    ) == null);
+}
+
+test "appendMappingEntries: every entry lands in one edit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const edits = appendMappingEntries(
+        arena.allocator(),
+        12,
+        10,
+        &.{ .{ .key = "A", .value = "1" }, .{ .key = "B", .value = "2" } },
+    ).?;
+
+    try testing.expectEqual(@as(usize, 1), edits.len);
+    try testing.expectEqualStrings("\n          A: 1\n          B: 2", edits[0].replacement);
+}
+
+test "appendMappingEntries: empty sub_entries returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expect(appendMappingEntries(arena.allocator(), 0, 0, &.{}) == null);
 }
 
 test "insertSequenceItemEntryBefore: aligns the item under the key and restores the sibling indent" {
