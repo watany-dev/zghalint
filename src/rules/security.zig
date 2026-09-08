@@ -1737,40 +1737,30 @@ fn checkTyposquatAction(step: *const Step, list: *DiagnosticList) void {
     const owner = action_ref.owner orelse return;
     const repo = action_ref.repo orelse return;
 
-    var match: ?trusted_data.TrustedAction = null;
-    var match_dist: usize = 0;
+    for (trusted_data.trusted_actions) |trusted| {
+        if (std.mem.eql(u8, owner, trusted.owner) and std.mem.eql(u8, repo, trusted.repo)) return;
+    }
 
     for (trusted_data.trusted_actions) |trusted| {
         if (!std.mem.eql(u8, owner, trusted.owner)) continue;
-        if (std.mem.eql(u8, repo, trusted.repo)) return;
-        if (match != null) continue;
         const distance = util.levenshteinDistance(repo, trusted.repo);
-        if (distance >= 1 and distance <= 2) {
-            match = trusted;
-            match_dist = distance;
-        }
+        if (distance < 1 or distance > 2) continue;
+
+        const message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "'{s}/{s}' looks like a typosquat of '{s}/{s}' (edit distance {d}). did you mean \"{s}\"?",
+            .{ owner, repo, trusted.owner, trusted.repo, distance, trusted.repo },
+        ) catch return;
+
+        list.append(.{
+            .rule_id = "SC007",
+            .severity = .warning,
+            .message = message,
+            .span = spans.usesSpan(step),
+            .fix_hint = "verify this is the intended action",
+        }) catch return;
+        return;
     }
-
-    const trusted = match orelse return;
-    const alloc = list.fixAllocator();
-    const message = std.fmt.allocPrint(
-        alloc,
-        "'{s}/{s}' looks like a typosquat of '{s}/{s}' (edit distance {d}). did you mean \"{s}\"?",
-        .{ owner, repo, trusted.owner, trusted.repo, match_dist, trusted.repo },
-    ) catch return;
-    const hint = std.fmt.allocPrint(
-        alloc,
-        "verify this is the intended action; did you mean {s}/{s}?",
-        .{ trusted.owner, trusted.repo },
-    ) catch "verify this is the intended action";
-
-    list.append(.{
-        .rule_id = "SC007",
-        .severity = .warning,
-        .message = message,
-        .span = spans.usesSpan(step),
-        .fix_hint = hint,
-    }) catch return;
 }
 
 /// Every offending expression is reported separately: a single `run:` block can
