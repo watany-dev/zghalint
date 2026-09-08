@@ -167,7 +167,7 @@ pub const Parser = struct {
         const name = self.current.slice(self.source)[1..];
         self.advance();
 
-        const node = if (self.current.kind == .newline or self.current.kind == .eof) blk: {
+        const node = if (self.current.kind == .newline or self.current.kind == .eof or self.current.kind == .comment) blk: {
             self.skipNewlinesAndComments();
             if (self.current.kind == .eof or self.current.column < min_indent) {
                 break :blk Node{ .null_value = self.spanFromToken(self.current) };
@@ -280,8 +280,11 @@ pub const Parser = struct {
             if (self.current.kind != .mapping_value) break;
             self.advance();
 
-            const value = if (self.current.kind == .newline or self.current.kind == .eof) blk: {
-                self.skipNewlines();
+            // A comment ends the value line just as a newline does:
+            // `key: # note` has no value, so the comment must not let the
+            // next line be read as this key's value.
+            const value = if (self.current.kind == .newline or self.current.kind == .eof or self.current.kind == .comment) blk: {
+                self.skipNewlinesAndComments();
                 if (self.current.kind == .eof) {
                     break :blk Node{ .null_value = self.spanFromToken(self.current) };
                 }
@@ -346,8 +349,8 @@ pub const Parser = struct {
         while (self.current.kind == .sequence_entry and self.current.column == seq_indent) {
             self.advance();
 
-            if (self.current.kind == .newline or self.current.kind == .eof) {
-                self.skipNewlines();
+            if (self.current.kind == .newline or self.current.kind == .eof or self.current.kind == .comment) {
+                self.skipNewlinesAndComments();
                 if (self.current.kind != .eof and self.current.column > seq_indent) {
                     try items.append(self.allocator, try self.parseNode(seq_indent + 1));
                 } else {
@@ -1018,6 +1021,46 @@ test "a run of comments between mapping entries does not end the mapping" {
     const job = root.mapping.entries[0].value.mapping;
 
     try std.testing.expectEqual(@as(usize, 2), job.entries.len);
+}
+
+test "a trailing comment on an empty value does not swallow the next key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // `workflow_dispatch: # comment` has no value; without the comment the
+    // key ends at the newline, and the comment must not make the following
+    // top-level key look like the value instead.
+    const source =
+        \\on:
+        \\  workflow_dispatch: # allow manual runs
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
+    try std.testing.expectEqualStrings("jobs", root.mapping.entries[1].key.value);
+    try std.testing.expect(root.mapping.get("jobs").?.mapping.entries.len == 1);
+}
+
+test "a trailing comment on an empty sequence item does not swallow the next key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\steps:
+        \\  - # nothing here
+        \\name: after
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
+    try std.testing.expectEqualStrings("after", root.mapping.getScalar("name").?);
 }
 
 test "parse resolves an alias to the anchored scalar" {
