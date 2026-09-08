@@ -1,0 +1,41 @@
+# zghalint:expect SEC023@22
+# zghalint:expect SEC023@30
+# zghalint:expect SEC023@41
+name: release
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+  rubygems:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Release gem
+        uses: rubygems/release-gem@612653d273a73bdae1df8453e090060bb4db5f31 # v1.0.0
+        with:
+          setup-trusted-publisher: false
+  npm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Publish to npm
+        run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

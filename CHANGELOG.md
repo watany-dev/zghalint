@@ -57,6 +57,12 @@ still be renumbered before 1.0.
 
 ### Added
 
+- SEC023 (`use-trusted-publishing`, info): report a publish step that passes a
+  long-lived API token where the registry supports OIDC trusted publishing —
+  `pypa/gh-action-pypi-publish` with `password:`, `rubygems/release-gem` with
+  `setup-trusted-publisher: false`, and an `npm publish` whose step `env:` binds
+  `NODE_AUTH_TOKEN` to a secret (#286). No autofix: removing the token also
+  needs a publisher configured on the registry side.
 - SC007 (`typosquat-action`): warn when an `actions/*` reference is 1–2 edits
   away from a well-known official action such as `actions/checkout`.
 - Auto-fixes for rules that previously only carried a hint: BP008 under
