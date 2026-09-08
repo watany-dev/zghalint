@@ -521,8 +521,6 @@ pub const Step = struct {
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
     /// Column of the `uses:` key in source YAML (for autofix indentation).
     uses_key_col: ?u32 = null,
-    /// Start byte of the `uses:` key token in source YAML (insertion point for `name:`).
-    uses_key_start_byte: ?usize = null,
     /// End byte of the `uses:` value in source YAML (insertion point when no `with:` exists).
     uses_value_end_byte: ?usize = null,
     /// Scalar style of the `uses:` value (for autofix replacement quoting).
