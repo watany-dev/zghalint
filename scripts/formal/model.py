@@ -41,7 +41,6 @@ class Witness:
     context: str
     sink: str
     flow: str
-    #: The rule the specification expects to fire.
     expected_rule: str
     note: str = ""
 
@@ -65,8 +64,6 @@ class Model:
         self._define_spec()
         self._define_impl()
 
-    # -- helpers ---------------------------------------------------------------
-
     def _define_unary(self, name: str, values: dict, truth) -> z3.FuncDeclRef:
         fn = z3.Function(name, next(iter(values.values())).sort(), z3.BoolSort())
         for key, sym in values.items():
@@ -79,8 +76,6 @@ class Model:
             for c, cs in self.c_of.items():
                 self.solver.add(fn(ts, cs) == bool(truth(t, c)))
         return fn
-
-    # -- specification ---------------------------------------------------------
 
     def _define_spec(self) -> None:
         ctx_by_path = {c.path: c for c in spec.CONTEXTS}
@@ -102,8 +97,6 @@ class Model:
         self.carries_fork_code = self._define_unary(
             "carries_fork_code", self.t_of, lambda t: t in spec.CARRIES_FORK_CODE
         )
-
-    # -- implementation --------------------------------------------------------
 
     def _define_impl(self) -> None:
         im = self.im
@@ -144,8 +137,6 @@ class Model:
         self.sec021 = self._define_tc("sec021", sec021)
         self.sec020 = self._define_unary("sec020", self.t_of, lambda t: t in im.fork_accessible_triggers)
         self.followed = self._define_unary("followed", self.f_of, lambda f: f in im.followed_flows)
-
-    # -- properties ------------------------------------------------------------
 
     def properties(self) -> list[tuple[str, str, z3.BoolRef, z3.BoolRef, str]]:
         """(name, expected rule, Unsafe, Covered, note) over free variables t, c, f."""

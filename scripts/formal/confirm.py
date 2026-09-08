@@ -103,7 +103,6 @@ def workflow_for(w: model.Witness) -> str:
             "    steps:\n"
             f'      - run: echo "TITLE={expr}" >> "$GITHUB_ENV"\n'
         )
-    # run: sink, one workflow per flow.
     if w.flow == "env_context":
         return head + (
             "  j:\n"
@@ -156,7 +155,6 @@ def workflow_for(w: model.Witness) -> str:
 class Outcome:
     witness: model.Witness
     confirmed: bool
-    #: SEC* rule IDs the binary reported on the file.
     security_rules: list[str]
 
 

@@ -39,9 +39,6 @@ class Context:
     free_text: bool = False
 
 
-# --- Triggers -----------------------------------------------------------------
-
-#: Every trigger the model reasons about. The names are GitHub's.
 TRIGGERS = [
     "push",
     "pull_request",
@@ -101,8 +98,6 @@ CARRIES_FORK_CODE = {
     "workflow_run",
 }
 
-
-# --- Contexts -----------------------------------------------------------------
 
 E, D, C = Author.EXTERNAL, Author.DISPATCHER, Author.COLLABORATOR
 
@@ -214,9 +209,6 @@ CONTEXTS: list[Context] = sorted(
 )
 
 
-# --- Sinks and flows ----------------------------------------------------------
-
-#: Where an untrusted string does damage.
 SINKS = [
     # Interpolated into a shell script → command injection.
     "run",

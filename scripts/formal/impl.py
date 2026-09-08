@@ -2,9 +2,8 @@
 
 ``model.py`` compares ``spec.py`` against *these* relations, so they are
 extracted from ``src/rules/security.zig`` at run time rather than copied by
-hand. A rule change that edits a table changes
-the model on the next run; a table the extractor no longer finds is an error,
-not a silent empty set.
+hand. A rule change that edits a table changes the model on the next run; a
+table the extractor no longer finds is an error, not a silent empty set.
 
 Only the shape of each table is assumed (``const NAME = [_][]const u8{ ... };``
 and friends). The matching semantics — segment-prefix matching for context
@@ -92,9 +91,6 @@ def load() -> Impl:
         trigger_contexts=_trigger_table(sec),
         fork_accessible_triggers=_switch_true_arms(sec, "hasForkAccessibleTrigger"),
     )
-
-
-# --- Matching semantics mirrored from security.zig -----------------------------
 
 
 def matches_prefix(path: str, pattern: str) -> bool:
