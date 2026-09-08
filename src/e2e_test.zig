@@ -25,6 +25,7 @@ const local_action = @import("rules/local_action.zig");
 const action_metadata = @import("rules/action_metadata.zig");
 const rule_engine = @import("rules/engine.zig");
 const diagnostics = @import("diagnostics.zig");
+const fix_engine = @import("fix/engine.zig");
 
 const fixture_dir = "tests/fixtures/e2e";
 const action_fixture_dir = "tests/fixtures/e2e-action";
@@ -112,6 +113,35 @@ fn lintActionSource(
     return list;
 }
 
+/// Expected result of `--fix` for a fixture, held in a sibling `<name>.fixed`
+/// file. Only the safe fixes run, the same set a plain `--fix` applies.
+///
+/// The diagnostic directives pin where a rule fires; this pins what its fix
+/// rewrites, which is the half a wrong byte range would silently get wrong.
+fn checkFixedOutput(
+    alloc: std.mem.Allocator,
+    dir: std.fs.Dir,
+    name: []const u8,
+    source: []const u8,
+    diags: []const diagnostics.Diagnostic,
+) !void {
+    const expected_name = try std.fmt.allocPrint(alloc, "{s}.fixed", .{name});
+    const expected = dir.readFileAlloc(alloc, expected_name, 256 * 1024) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+
+    const fixes = try fix_engine.collectFixes(alloc, diags, false);
+    const result = try fix_engine.applyFixes(alloc, source, fixes);
+
+    if (!std.mem.eql(u8, result.content, expected)) {
+        std.debug.print("fixture '{s}': --fix output does not match {s}\n--- got ---\n{s}\n--- want ---\n{s}\n", .{
+            name, expected_name, result.content, expected,
+        });
+        return error.FixedOutputMismatch;
+    }
+}
+
 fn matches(diag: diagnostics.Diagnostic, exp: Expectation) bool {
     if (!std.mem.eql(u8, diag.rule_id, exp.rule_id)) return false;
     const want_line = exp.line orelse return true;
@@ -175,6 +205,8 @@ fn runFixtures(
                 return error.ForbiddenDiagnosticFired;
             }
         }
+
+        try checkFixedOutput(alloc, dir, entry.name, source, list.items.items);
     }
 }
 

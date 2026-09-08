@@ -15,6 +15,7 @@ const expr_check = @import("expr_check.zig");
 const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
@@ -93,7 +94,7 @@ const Resolver = struct {
         for (self.declared.names) |declared| {
             if (nameEql(declared, name)) return;
         }
-        self.reportUnknownInput(name, span);
+        self.reportUnknownInput(path, name, span);
     }
 
     fn reportUnavailable(self: Resolver, span: Span) void {
@@ -106,9 +107,10 @@ const Resolver = struct {
         }) catch return;
     }
 
-    fn reportUnknownInput(self: Resolver, name: []const u8, span: Span) void {
+    fn reportUnknownInput(self: Resolver, path: []const u8, name: []const u8, span: Span) void {
         const alloc = self.list.fixAllocator();
-        const suffix = if (util.didYouMean(name, self.declared.names)) |s|
+        const suggestion = util.didYouMean(name, self.declared.names);
+        const suffix = if (suggestion) |s|
             std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -124,6 +126,7 @@ const Resolver = struct {
             .message = message,
             .span = span,
             .fix_hint = "declare the input under `workflow_dispatch.inputs:` or `workflow_call.inputs:`",
+            .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 1, s) else null,
         }) catch return;
     }
 };

@@ -6,7 +6,9 @@ const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const workflow_types = @import("../workflow/types.zig");
 const util = @import("../util.zig");
+const rename = @import("rename.zig");
 const test_support = @import("../test_support.zig");
+const diagnostics = @import("../diagnostics.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
@@ -154,7 +156,8 @@ fn reportUnknownArg(
         "unknown {s} \"{s}\" for \"{s}\"",
         .{ kind.noun(), arg.name, uses },
     ) catch return;
-    const hint = if (util.didYouMean(arg.name, declared)) |near|
+    const suggestion = util.didYouMean(arg.name, declared);
+    const hint = if (suggestion) |near|
         std.fmt.allocPrint(alloc, "did you mean `{s}`?", .{near}) catch return
     else
         std.fmt.allocPrint(
@@ -169,6 +172,7 @@ fn reportUnknownArg(
         .message = message,
         .span = arg.name_span,
         .fix_hint = hint,
+        .fix = if (suggestion) |near| rename.tokenFix(list, arg.name_span, arg.name, near) else null,
     }) catch return;
 }
 
@@ -852,6 +856,34 @@ test "RW003: an unknown input is reported with a suggestion" {
     try testing.expectEqualStrings("RW003", diags.get(0).rule_id);
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "verison") != null);
     try testing.expect(std.mem.indexOf(u8, diags.get(0).fix_hint.?, "version") != null);
+}
+
+test "RW003: the suggestion is applied as a rename of the with: key" {
+    called_source = typed_input_workflow;
+    called_workflow.source_override = &calledLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    with:
+        \\      verison: '1.0'
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = checkCallInputs },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.safe, outcome.first_safety.?);
+    try testing.expect(std.mem.indexOf(u8, outcome.content, "version: '1.0'") != null);
 }
 
 test "RW003: an unknown input without a near name falls back to a generic hint" {

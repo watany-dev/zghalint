@@ -1,0 +1,18 @@
+# zghalint:expect ACT005@13 ACT005@16 ACT001@17
+# zghalint:forbid ACT002
+name: Composite with bad steps
+description: Steps whose expressions and shape a composite action cannot satisfy
+inputs:
+  version:
+    description: Toolchain version
+runs:
+  using: composite
+  steps:
+    - name: Unavailable context
+      shell: bash
+      run: echo ${{ matrix.os }}
+    - name: Undeclared input
+      shell: bash
+      run: echo ${{ inputs.version }}
+    - name: Missing shell
+      run: echo hi

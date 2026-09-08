@@ -1,0 +1,6 @@
+# zghalint:expect ACT002@5
+name: Unknown runtime
+description: The runtime name is not one GitHub supports
+runs:
+  using: composite
+  steps: []

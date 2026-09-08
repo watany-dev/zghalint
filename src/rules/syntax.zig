@@ -6,6 +6,9 @@ const workflow_events = @import("../workflow/events.zig");
 const workflow_parser = @import("../workflow/parser.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
+const fix_builder = @import("../fix/builder.zig");
+const diagnostics_mod = @import("../diagnostics.zig");
+const rename = @import("rename.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
@@ -187,6 +190,7 @@ fn checkUnknownKeys(wf: *const Workflow, list: *DiagnosticList) void {
             .severity = .@"error",
             .message = message,
             .span = uk.span,
+            .fix = if (suggestion) |s| rename.tokenFix(list, uk.span, uk.key, s) else null,
         }) catch continue;
     }
 }
@@ -362,6 +366,33 @@ fn checkStepEnvNames(step: *const Step, list: *DiagnosticList) void {
     checkEnvNames(step.env_keys, list);
 }
 
+/// Removes every repeat of `dep` from index `first_repeat` on, so an ID
+/// written three times is down to one after a single `--fix` run. The first
+/// occurrence sits before `first_repeat` and is left alone, which is also why
+/// the deletion can never empty the sequence.
+fn buildDuplicateNeedsFix(
+    job: *const Job,
+    diag_list: *DiagnosticList,
+    dep: []const u8,
+    first_repeat: usize,
+) ?diagnostics_mod.Fix {
+    if (job.needs_deletes.len != job.needs.len) return null;
+
+    const alloc = diag_list.fixAllocator();
+    var indices = std.ArrayList(usize){};
+    for (job.needs[first_repeat..], first_repeat..) |later, i| {
+        if (!std.ascii.eqlIgnoreCase(later, dep)) continue;
+        indices.append(alloc, i) catch return null;
+    }
+
+    const edits = fix_builder.deleteSequenceItems(alloc, job.needs_deletes, indices.items) orelse return null;
+    return .{
+        .description = "remove the duplicated job ID from 'needs'",
+        .safety = .safe,
+        .edits = edits,
+    };
+}
+
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     for (job.needs, 0..) |dep, i| {
         // Job IDs are case-insensitive in GitHub Actions. Report on the second
@@ -379,8 +410,36 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
             .message = "job ID is duplicated in 'needs'",
             .span = if (i < job.needs_spans.len) job.needs_spans[i] else job.span,
             .fix_hint = "remove the repeated job ID from 'needs'",
+            .fix = buildDuplicateNeedsFix(job, diag_list, dep, i),
         }) catch return;
     }
+}
+
+/// Removes every repeat of `value` from index `first_repeat` on. Attaching one
+/// fix that covers them all — rather than one per diagnostic — is what keeps a
+/// value written three times fixable in a single run: `fix.engine` drops a fix
+/// whose edits overlap another's, and in `[a, a, a]` the ranges of the second
+/// and third item do overlap.
+fn buildDuplicateMatrixFix(
+    alloc: std.mem.Allocator,
+    axis: workflow_types.MatrixAxis,
+    value: yaml_types.Node,
+    first_repeat: usize,
+) ?diagnostics_mod.Fix {
+    if (axis.value_deletes.len != axis.values.len) return null;
+
+    var indices = std.ArrayList(usize){};
+    for (axis.values[first_repeat..], first_repeat..) |later, i| {
+        if (!later.eql(value)) continue;
+        indices.append(alloc, i) catch return null;
+    }
+
+    const edits = fix_builder.deleteSequenceItems(alloc, axis.value_deletes, indices.items) orelse return null;
+    return .{
+        .description = "remove the duplicated matrix value",
+        .safety = .safe,
+        .edits = edits,
+    };
 }
 
 /// A repeated matrix value produces no new combination, so the extra entry
@@ -391,6 +450,10 @@ fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
 
     for (matrix.axes) |axis| {
         for (axis.values, 0..) |value, i| {
+            var prior_count: usize = 0;
+            for (axis.values[0..i]) |earlier| {
+                if (earlier.eql(value)) prior_count += 1;
+            }
             for (axis.values[0..i]) |prior| {
                 if (!value.eql(prior)) continue;
 
@@ -403,6 +466,13 @@ fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
                 };
                 const prior_span = prior.getSpan();
 
+                // Only the first repeat carries the fix; it already removes the
+                // ones the later diagnostics point at.
+                const fix: ?diagnostics_mod.Fix = if (prior_count == 1)
+                    buildDuplicateMatrixFix(alloc, axis, value, i)
+                else
+                    null;
+
                 list.append(.{
                     .rule_id = "SYN018",
                     .severity = .warning,
@@ -413,6 +483,7 @@ fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
                     ) catch "duplicate value is found in matrix",
                     .span = value.getSpan(),
                     .fix_hint = "remove the repeated value; it produces no combination the earlier one does not",
+                    .fix = fix,
                 }) catch return;
                 break;
             }
@@ -524,7 +595,8 @@ fn checkMatrixExclude(
 
             const axis = findMatrixAxis(matrix, key) orelse {
                 var suffix_buf: [64]u8 = undefined;
-                const suffix = if (util.didYouMean(key, axis_names)) |s|
+                const suggestion = util.didYouMean(key, axis_names);
+                const suffix = if (suggestion) |s|
                     std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
                 else
                     "";
@@ -539,6 +611,7 @@ fn checkMatrixExclude(
                     ) catch "unknown key in \"exclude\"",
                     .span = kv.key.span,
                     .fix_hint = "name one of the matrix axes, or drop the entry",
+                    .fix = if (suggestion) |s| rename.tokenFix(list, kv.key.span, key, s) else null,
                 }) catch return;
                 continue;
             };
@@ -649,7 +722,8 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
         if (workflow_events.isKnown(event.name)) continue;
 
         var suffix_buf: [64]u8 = undefined;
-        const suffix = if (util.didYouMean(event.name, &workflow_events.trigger_names)) |s|
+        const suggestion = util.didYouMean(event.name, &workflow_events.trigger_names);
+        const suffix = if (suggestion) |s|
             std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
         else
             "";
@@ -664,6 +738,7 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
             ) catch "unknown Webhook event",
             .span = event.name_span,
             .fix_hint = "use one of the event names GitHub Actions supports under 'on'",
+            .fix = if (suggestion) |s| rename.tokenFix(list, event.name_span, event.name, s) else null,
         }) catch return;
     }
 }
@@ -723,10 +798,15 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
             if (found) continue;
 
             var suffix_buf: [64]u8 = undefined;
-            const suffix = if (util.didYouMean(value, known)) |s|
+            const suggestion = util.didYouMean(value, known);
+            const suffix = if (suggestion) |s|
                 std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
             else
                 "";
+            const value_span: ?Span = if (i < event.activity_types.spans.len)
+                event.activity_types.spans[i]
+            else
+                null;
 
             list.append(.{
                 .rule_id = "SYN010",
@@ -736,19 +816,38 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
                     "invalid activity type \"{s}\" for \"{s}\" event{s}",
                     .{ value, event.name, suffix },
                 ) catch "invalid activity type",
-                .span = if (i < event.activity_types.spans.len)
-                    event.activity_types.spans[i]
-                else
-                    event.name_span,
+                .span = value_span orelse event.name_span,
                 .fix_hint = availableHint(
                     alloc,
                     "available types are",
                     known,
                     "use one of the activity types this event defines",
                 ),
+                .fix = if (suggestion) |s|
+                    if (value_span) |vs| rename.tokenFix(list, vs, value, s) else null
+                else
+                    null,
             }) catch return;
         }
     }
+}
+
+/// Dropping the whole `<key>:` entry is what both halves of SYN011 ask for:
+/// the event does not read the key, so nothing is lost but the lines. Unsafe
+/// because a filter that goes away widens what the workflow runs on — the
+/// author more often meant to move it under an event that accepts it.
+fn buildEventKeyFix(
+    alloc: std.mem.Allocator,
+    key: workflow_types.EventConfigKey,
+    description: []const u8,
+) ?diagnostics_mod.Fix {
+    const full_span = key.full_span orelse return null;
+    const edits = fix_builder.deleteMappingEntry(alloc, full_span) orelse return null;
+    return .{
+        .description = description,
+        .safety = .unsafe,
+        .edits = edits,
+    };
 }
 
 fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
@@ -780,6 +879,7 @@ fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
                         spec.filters,
                         "remove this filter; this event accepts no ref or path filters",
                     ),
+                    .fix = buildEventKeyFix(alloc, key, "remove the filter this event does not accept"),
                 }) catch return;
                 continue;
             }
@@ -812,6 +912,13 @@ fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
                     candidates,
                     "remove this key; the event does not read it",
                 ),
+                // A key we know how to spell is renamed rather than removed;
+                // deletion is the fallback when there is no candidate.
+                .fix = if (suggestion) |s|
+                    rename.tokenFix(list, key.span, key.name, s) orelse
+                        buildEventKeyFix(alloc, key, "remove the key this event does not read")
+                else
+                    buildEventKeyFix(alloc, key, "remove the key this event does not read"),
             }) catch return;
         }
     }
@@ -965,7 +1072,8 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
             if (timezones.isKnown(tz)) continue;
 
             var suffix_buf: [96]u8 = undefined;
-            const suffix = if (util.didYouMean(tz, &timezones.timezone_names)) |s|
+            const suggestion = util.didYouMean(tz, &timezones.timezone_names);
+            const suffix = if (suggestion) |s|
                 std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
             else
                 "";
@@ -980,6 +1088,10 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
                 ) catch "invalid timezone in schedule event",
                 .span = entry.timezone_span orelse entry.cron_span,
                 .fix_hint = "use a name from the IANA time zone database, such as \"Asia/Tokyo\" or \"UTC\"",
+                .fix = if (suggestion) |s|
+                    if (entry.timezone_span) |ts| rename.tokenFix(list, ts, tz, s) else null
+                else
+                    null,
             }) catch return;
         }
     }
@@ -2943,6 +3055,82 @@ test "SYN008: distinct job IDs produce no diagnostic" {
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
+test "SYN008: autofix drops the repeated entry from a block needs list" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    needs:
+        \\      - build
+        \\      - test
+        \\      - build
+        \\    steps:
+        \\      - run: make
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDuplicateNeeds }, false);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expect(result.first_safety.? == .safe);
+    try testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    needs:
+        \\      - build
+        \\      - test
+        \\    steps:
+        \\      - run: make
+        \\
+    , result.content);
+}
+
+test "SYN008: autofix drops every repeat, so one run leaves a single entry" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    needs: [build, build, build]
+        \\    steps:
+        \\      - run: make
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDuplicateNeeds }, false);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    needs: [build]
+        \\    steps:
+        \\      - run: make
+        \\
+    , result.content);
+}
+
+test "SYN008: a scalar needs has no entry to remove, so no fix" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  deploy:
+        \\    runs-on: ubuntu-latest
+        \\    needs: build
+        \\    steps:
+        \\      - run: make
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDuplicateNeeds }, true);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
 fn runSyn009(source: []const u8, alloc: std.mem.Allocator, list: *DiagnosticList) !void {
     const wf = try test_support.parseWorkflowSource(alloc, source);
     checkUnknownEvents(&wf, list);
@@ -3235,6 +3423,53 @@ test "SYN011: a filter the event does not offer is reported" {
     );
 }
 
+test "SYN011: autofix removes the filter the event does not accept" {
+    const source =
+        \\on:
+        \\  issues:
+        \\    branches: [main]
+        \\
+    ++ trailer;
+
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .workflow = &checkEventFilters }, true);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expect(result.first_safety.? == .unsafe);
+    try testing.expectEqualStrings("on:\n  issues:\n" ++ trailer, result.content);
+}
+
+test "SYN011: a misspelled key is renamed rather than removed" {
+    const source =
+        \\on:
+        \\  push:
+        \\    brancehs: [main]
+        \\
+    ++ trailer;
+
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .workflow = &checkEventFilters }, false);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expect(result.first_safety.? == .safe);
+    try testing.expectEqualStrings("on:\n  push:\n    branches: [main]\n" ++ trailer, result.content);
+}
+
+test "SYN011: the filter fix is unsafe, so --fix alone leaves it in place" {
+    const source =
+        \\on:
+        \\  issues:
+        \\    branches: [main]
+        \\
+    ++ trailer;
+
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .workflow = &checkEventFilters }, false);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
 test "SYN011: pull_request rejects tags but keeps branches" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -3425,6 +3660,34 @@ test "SYN009: an empty event name is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings("unknown Webhook event \"\"", diags.get(0).message);
+}
+
+test "SYN009: a block scalar event name is reported but never rewritten" {
+    // `on: >` drops the indicator and the newline from the value, so the span is
+    // two bytes wider than the name -- the same shape as a quoted scalar. Only
+    // the byte check in `fix/engine.zig` tells them apart.
+    const source =
+        \\on: >
+        \\ pusg
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const outcome = try test_support.lintAndFix(
+        testing.allocator,
+        source,
+        .{ .workflow = &checkUnknownEvents },
+        false,
+    );
+    defer outcome.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), outcome.edits_applied);
+    try testing.expectEqualStrings(source, outcome.content);
 }
 
 test "SYN012: branches with branches-ignore is an error" {
@@ -4034,6 +4297,124 @@ test "SYN018: duplicate scalar values in matrix axes are reported" {
     try testing.expect(std.mem.indexOf(u8, first.message, "matrix \"os\"") != null);
     try testing.expectEqual(@as(u32, 6), first.span.start_line);
     try testing.expectEqual(@as(u32, 7), diags.get(1).span.start_line);
+}
+
+test "SYN018: autofix drops the duplicated value from a flow axis" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, ubuntu-latest, macos-latest]
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDuplicateMatrixValues }, false);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expect(result.first_safety.? == .safe);
+    try testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, macos-latest]
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , result.content);
+}
+
+test "SYN018: autofix drops the duplicated value line from a block axis" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        node:
+        \\          - 18
+        \\          - 20
+        \\          - 18
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDuplicateMatrixValues }, false);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        node:
+        \\          - 18
+        \\          - 20
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , result.content);
+}
+
+test "SYN018: autofix drops every repeat, so one run leaves a single value" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest, ubuntu-latest, ubuntu-latest]
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDuplicateMatrixValues }, false);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 2), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , result.content);
+}
+
+test "SYN018: a matrix from an expression has no value ranges, so no fix" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: ${{ fromJSON(inputs.os) }}
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkDuplicateMatrixValues }, true);
+    defer testing.allocator.free(result.content);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
 }
 
 test "SYN018: distinct values produce no diagnostic" {
