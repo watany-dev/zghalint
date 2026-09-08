@@ -1,0 +1,16 @@
+# zghalint:expect SYN001 SEC007
+# zghalint:forbid SYN002
+# #348: SYN001 renames prmissions and SEC007 would insert permissions:;
+# --fix-unsafe must not apply both.
+name: unknown top-level key
+on: push
+concurrency: g24
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build
+        run: make build

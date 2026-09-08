@@ -422,7 +422,7 @@ zizmor は書き換え後に `dangerous-triggers` を新規に出す。
 リネーム先の兄弟キーが既にあれば autofix を付けない。大文字小文字だけが違う
 兄弟も SYN002 と同じく衝突とみなす。
 
-#### G24 (#348). SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作る — 要 fix エンジン修正
+#### G24 (#348). SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作る — 対応済み
 
 `bench/cases/f-syntax-schema/unknown-key-top-level.yml`。`prmissions:` は
 SYN001 が `permissions` へリネームし、SEC007 はトップレベルに `permissions:` が
@@ -430,6 +430,9 @@ SYN001 が `permissions` へリネームし、SEC007 はトップレベルに `p
 `--fix-unsafe` は両方を適用して SYN002 になる。G19 と同じ「同一ファイルへ
 同じキーを二経路で足す」問題で、リネーム先と挿入キーの衝突を fix エンジンが
 見ていない。
+
+fix エンジンは、同一マッピングでリネームが作るキーと挿入が作るキーが一致
+したら挿入を落とす。リネームは既存のブロックを残すので残す。
 
 #### G25 (#349). `*-dependabot.yml` を Dependabot 設定と誤認してワークフロー検査をしない — 要 CLI 修正
 
@@ -634,7 +637,7 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - 非冪等: 0
 - YAML が壊れたもの: 0
 - コメント欠落: 0
-- 問題あり 5 適用 = G22 (#346) / G23 (#347) / G24 (#348)
+- 問題あり 5 適用 = G22 (#346) / G23 (#347) / G24 (#348)（いずれも対応済み）
 
 常設ハーネスは `python3 scripts/bench.py --fix`。
 
@@ -665,5 +668,5 @@ auditor の `secrets-outside-env` は SEC019 が regular 相当を既に持つ�
 - [x] G21 (#305): DEP004 を `actions/checkout` の `path:` が作るディレクトリで沈黙させる
 - [x] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
 - [x] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
-- [ ] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
+- [x] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [ ] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
