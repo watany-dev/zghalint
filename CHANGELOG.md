@@ -39,6 +39,10 @@ still be renumbered before 1.0.
 
 - SC007 (`typosquat-action`): warn when an `actions/*` reference is 1–2 edits
   away from a well-known official action such as `actions/checkout`.
+- Auto-fixes for rules that previously only carried a hint: BP008 under
+  `--fix`, and ACT001 / RW001 / SEC002 / SEC008 / SEC019 under `--fix-unsafe`.
+  The `SEC*` ones bind the offending `${{ ... }}` to the step's `env:` and read
+  it back as a shell variable (#322).
 - GitHub Actions workflow linting across ten categories: security (`SEC*`),
   supply chain (`SC*`), performance (`PERF*`), best practices (`BP*`),
   permissions (`PERM*`), expression validation (`EXPR*`), dependencies
