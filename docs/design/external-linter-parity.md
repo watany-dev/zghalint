@@ -434,7 +434,7 @@ SYN001 が `permissions` へリネームし、SEC007 はトップレベルに `p
 fix エンジンは、同一マッピングでリネームが作るキーと挿入が作るキーが一致
 したら挿入を落とす。リネームは既存のブロックを残すので残す。
 
-#### G25 (#349). `*-dependabot.yml` を Dependabot 設定と誤認してワークフロー検査をしない — 要 CLI 修正
+#### G25 (#349). `*-dependabot.yml` を Dependabot 設定と誤認してワークフロー検査をしない — 対応済み
 
 `src/main.zig` の `isDependabotFile` はパスが `dependabot.yml` /
 `dependabot.yaml` で終わるかだけを見る。実コーパスの
@@ -445,9 +445,11 @@ fix エンジンは、同一マッピングでリネームが作るキーと挿�
 同じ中身を `automerge.yml` にリネームすると SEC014 / BP001 / SEC007 が
 普通に出る。
 
-判定はベース名がちょうど `dependabot.yml` / `dependabot.yaml` であること
-（または `.github/dependabot.yml` という位置）に限るべきで、
-`*-dependabot.yml` のワークフローを黙って捨ててはいけない。
+判定をベース名がちょうど `dependabot.yml` / `dependabot.yaml` のときだけに
+限った。`isActionMetadataFile` が既に持っていた「`.github/workflows/` の下は
+名前によらずワークフロー」という例外も共通ヘルパ `isDocumentFileNamed` に
+まとめ、両者で同じ判定にした。回帰ケースは
+`bench/cases/b-trigger-checkout/automerge-dependabot.yml`。
 
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
@@ -613,7 +615,7 @@ zizmor regular が出して zghalint がカバーしていない主なものは�
 | `self-repository` | 50 | `uses: ./` に対し `$/.` 構文を勧める。採用しない |
 | `adhoc-packages` | 2 | `npm install --global` 等。新監査。未採用 |
 | `misfeature` | 1 | `shell: cmd`。未採用 |
-| `bot-conditions` | 1 | G25 (#349)。中身は SEC014 対象だがファイル名で捨てている |
+| `bot-conditions` | 1 | G25 (#349) で解消。ファイル名判定を直し SEC014 が出るようになった |
 
 #### persona 差分 (zizmor regular / pedantic / auditor)
 
@@ -725,4 +727,4 @@ user 3 ms + sys 3 ms。
 - [x] G22 (#346): SYN009 の `--fix` がタイポを `pull_request_target` へ直さない
 - [x] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
 - [x] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
-- [ ] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
+- [x] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る

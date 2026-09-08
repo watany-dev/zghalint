@@ -230,17 +230,26 @@ fn collectDefaultActionFiles(
     }
 }
 
+/// Matches on the file name, not a suffix: `automerge-dependabot.yml` is an
+/// ordinary workflow (see #349), and sending it to the Dependabot parser turned
+/// a workflow full of findings into a silent `No issues found.`
 fn isDependabotFile(path: []const u8) bool {
-    return std.mem.endsWith(u8, path, "dependabot.yml") or
-        std.mem.endsWith(u8, path, "dependabot.yaml");
+    return isDocumentFileNamed(path, "dependabot.yml", "dependabot.yaml");
 }
 
 /// Matches on the file name, not a suffix: `my-action.yml` is a workflow-shaped
-/// file name, not action metadata. A file under `.github/workflows/` is a
-/// workflow whatever it is called, so `action.yml` there keeps its own rules.
+/// file name, not action metadata.
 fn isActionMetadataFile(path: []const u8) bool {
+    return isDocumentFileNamed(path, "action.yml", "action.yaml");
+}
+
+/// True when `path`'s base name is exactly one of the two given names and the
+/// file does not sit under `.github/workflows/`. A file in the workflows
+/// directory is a workflow whatever it is called, so `workflows/action.yml` and
+/// `workflows/dependabot.yml` keep the workflow rules.
+fn isDocumentFileNamed(path: []const u8, yml: []const u8, yaml: []const u8) bool {
     const base = std.fs.path.basename(path);
-    if (!std.mem.eql(u8, base, "action.yml") and !std.mem.eql(u8, base, "action.yaml")) return false;
+    if (!std.mem.eql(u8, base, yml) and !std.mem.eql(u8, base, yaml)) return false;
 
     const dir = std.fs.path.dirname(path) orelse return true;
     return !std.mem.eql(u8, std.fs.path.basename(dir), "workflows");
@@ -917,12 +926,17 @@ test "reportUnreachableRules stays silent when every marked rule is disabled" {
     try std.testing.expectEqualStrings("", w.buffered());
 }
 
-test "isDependabotFile detects dependabot yml" {
+test "isDependabotFile matches the file name only" {
     try std.testing.expect(isDependabotFile(".github/dependabot.yml"));
     try std.testing.expect(isDependabotFile(".github/dependabot.yaml"));
     try std.testing.expect(isDependabotFile("some/path/dependabot.yml"));
+    try std.testing.expect(isDependabotFile("dependabot.yml"));
     try std.testing.expect(!isDependabotFile(".github/workflows/ci.yml"));
     try std.testing.expect(!isDependabotFile("dependabot.txt"));
+    // #349: an ordinary workflow whose name merely ends in `dependabot.yml`.
+    try std.testing.expect(!isDependabotFile("automerge-dependabot.yml"));
+    try std.testing.expect(!isDependabotFile(".github/workflows/automerge-dependabot.yaml"));
+    try std.testing.expect(!isDependabotFile(".github/workflows/dependabot.yml"));
 }
 
 test "isActionMetadataFile matches the file name only" {
@@ -939,6 +953,7 @@ test "documentLintFn routes non-workflow files" {
     try std.testing.expect(documentLintFn(".github/actions/build/action.yml") != null);
     try std.testing.expect(documentLintFn(".github/workflows/ci.yml") == null);
     try std.testing.expect(documentLintFn(".github/workflows/action.yml") == null);
+    try std.testing.expect(documentLintFn(".github/workflows/automerge-dependabot.yml") == null);
 }
 
 test "hasErrors detects error severity" {
