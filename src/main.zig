@@ -230,9 +230,7 @@ fn collectDefaultActionFiles(
     }
 }
 
-/// Matches on the file name, not a suffix: `automerge-dependabot.yml` is an
-/// ordinary workflow (see #349), and sending it to the Dependabot parser turned
-/// a workflow full of findings into a silent `No issues found.`
+/// `automerge-dependabot.yml` is an ordinary workflow, not Dependabot config (#349).
 fn isDependabotFile(path: []const u8) bool {
     return isDocumentFileNamed(path, "dependabot.yml", "dependabot.yaml");
 }
@@ -243,10 +241,8 @@ fn isActionMetadataFile(path: []const u8) bool {
     return isDocumentFileNamed(path, "action.yml", "action.yaml");
 }
 
-/// True when `path`'s base name is exactly one of the two given names and the
-/// file does not sit under `.github/workflows/`. A file in the workflows
-/// directory is a workflow whatever it is called, so `workflows/action.yml` and
-/// `workflows/dependabot.yml` keep the workflow rules.
+/// A file under `.github/workflows/` is a workflow whatever it is called, so
+/// `workflows/action.yml` and `workflows/dependabot.yml` keep the workflow rules.
 fn isDocumentFileNamed(path: []const u8, yml: []const u8, yaml: []const u8) bool {
     const base = std.fs.path.basename(path);
     if (!std.mem.eql(u8, base, yml) and !std.mem.eql(u8, base, yaml)) return false;
