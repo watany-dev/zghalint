@@ -424,8 +424,8 @@ fn prefetchNetworkData(
     ) catch return;
 }
 
-/// 取得に失敗したネットワークルールを stderr の注記 1 行にする。終了コードは
-/// 変えない — 既存の 0/1/2 の意味を動かすと利用者の CI を壊すため (#304)。
+/// 注記を出すだけで終了コードは変えない — 既存の 0/1/2 の意味を動かすと
+/// 利用者の CI を壊すため (#304)。
 fn reportUnreachableRules(stderr: *std.Io.Writer, config: *const Config) void {
     const net_status = zghalint.rules.net_status;
     var buf: [net_status.rule_count][]const u8 = undefined;

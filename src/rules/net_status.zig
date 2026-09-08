@@ -43,7 +43,6 @@ pub fn reset() void {
 }
 
 /// `note: SC003, SC005 skipped (github api unreachable)` の 1 行を書く。
-/// 終了コードは変えない — 既存の 0/1/2 の意味を動かすと CI を壊すため。
 pub fn writeNote(w: *std.Io.Writer, ids: []const []const u8) !void {
     if (ids.len == 0) return;
     try w.writeAll("note: ");

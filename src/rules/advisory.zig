@@ -595,8 +595,7 @@ fn runWithAdvisories(advisories: []const Advisory, uses_ref: ?[]const u8) Diagno
     return list;
 }
 
-/// アドバイザリを 1 件も読めなかった状態を作る。`fetched` を立てるので
-/// `ensureLoaded` はディスクにもネットワークにも触れない。
+/// `fetched` を立てるので `ensureLoaded` はディスクにもネットワークにも触れない。
 fn runWithoutAdvisories(offline: bool, uses_ref: ?[]const u8) DiagnosticList {
     const prev_cache = advisory_cache;
     const prev_offline = is_offline;
