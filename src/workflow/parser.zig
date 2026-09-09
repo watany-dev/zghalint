@@ -1240,7 +1240,11 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
         try recordEmpty(&empty, ctx.allocator, "with", with_node);
-        if (!isEmptyContainer(with_node)) {
+        // `with: 4` is a type error SYN004 reports, not a reason to give up on
+        // the whole file (fuzz).
+        if (!isEmptyContainer(with_node) and
+            type_validation.checkMapping(with_node, "with", ctx.type_mismatches, ctx.allocator))
+        {
             const parsed_with = try parseStringMapWithMeta(ctx.allocator, with_node);
             step.with = parsed_with.values;
             step.with_meta = parsed_with.meta;
@@ -1267,7 +1271,9 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     if (m.get("env")) |n| {
         try recordEmpty(&empty, ctx.allocator, "env", n);
-        if (!isEmptyContainer(n)) {
+        if (!isEmptyContainer(n) and
+            type_validation.checkMapping(n, "env", ctx.type_mismatches, ctx.allocator))
+        {
             const parsed = try parseStringMapWithMeta(ctx.allocator, n);
             step.env = parsed.values;
             step.env_meta = parsed.meta;
@@ -3161,6 +3167,21 @@ test "an empty needs: leaves the workflow parseable (fuzz)" {
 
     try testing.expectEqual(@as(usize, 1), wf.jobs.len);
     try testing.expectEqual(@as(usize, 0), wf.jobs[0].needs.len);
+}
+
+test "a step with: that is not a mapping is a type mismatch, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  d:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with: 4\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].steps.len);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("with", wf.type_mismatches[0].field);
+    try testing.expectEqualStrings("mapping", wf.type_mismatches[0].expected);
 }
 
 test "a needs: list with an unreadable entry keeps the readable ones (fuzz)" {
