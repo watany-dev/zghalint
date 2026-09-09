@@ -1146,6 +1146,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                 step.uses_value_end_byte = s.span.end_byte;
                 step.uses_value_style = s.style;
                 step.uses_value_ends_line = s.ends_line;
+                step.uses_line_comment = s.line_comment;
             },
             else => {},
         }
@@ -3211,4 +3212,29 @@ test "step: no env: leaves the append anchors unset" {
     try testing.expect(step.env_key_col == null);
     try testing.expect(step.env_last_entry_end_byte == null);
     try testing.expectEqual(@as(u32, 9), step.first_key_col.?);
+}
+
+test "parseWorkflow carries the pin comment on a step's uses" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@11bd719 # v4.2.2
+        \\      - uses: actions/setup-node@8f4b7f8
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    const steps = wf.jobs[0].steps;
+    try testing.expectEqualStrings("v4.2.2", steps[0].uses_line_comment.?);
+    try testing.expect(steps[1].uses_line_comment == null);
 }

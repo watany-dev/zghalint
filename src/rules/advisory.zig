@@ -81,27 +81,52 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
         return;
     };
 
+    // A SHA pin hides its version, so the version is taken from the `# v1.2.3`
+    // comment next to it. SEC001 asks for SHA pins in the first place, so
+    // warning on every pinned use of an action that once had an advisory
+    // punishes users who already updated past it (#372).
+    const commented_version = versionFromComment(step.uses_line_comment);
+
     for (advisories) |adv| {
         if (!slugMatches(adv.action_slug, owner, repo)) continue;
 
-        if (action_ref.ref) |ref| {
-            if (!action_ref.is_pinned) {
-                if (adv.vulnerable_range) |range| {
-                    if (!isVersionVulnerable(ref, range)) continue;
-                }
+        const version: ?[]const u8 = if (action_ref.is_pinned)
+            commented_version
+        else
+            action_ref.ref;
+
+        if (version) |v| {
+            if (adv.vulnerable_range) |range| {
+                if (!isVersionVulnerable(v, range)) continue;
             }
-            // SHA ref: can't determine version, always warn if action has advisory
         }
+
+        // The version could not be established, so the advisory may or may not
+        // apply: report it as info rather than asserting a vulnerability.
+        const undetermined = action_ref.is_pinned and commented_version == null;
 
         list.append(.{
             .rule_id = "SC003",
-            .severity = .warning,
+            .severity = if (undetermined) .info else .warning,
             .message = adv.diagnostic_message,
             .span = spans.usesSpan(step),
-            .fix_hint = adv.diagnostic_hint,
+            .fix_hint = if (undetermined) undetermined_hint else adv.diagnostic_hint,
         }) catch return;
         return; // One diagnostic per step
     }
+}
+
+const undetermined_hint = "the SHA pin hides the version; add a '# v<x.y.z>' comment on the uses: line so the advisory range can be checked";
+
+/// The version a `# v1.2.3` pin comment stands for. Pinning tools write the
+/// tag alone, sometimes followed by other text (`# v1.2.3 (2024-01-01)`), so
+/// only the first word is considered, and only when it parses as a version.
+fn versionFromComment(comment: ?[]const u8) ?[]const u8 {
+    const text = comment orelse return null;
+    const end = std.mem.indexOfAny(u8, text, " \t") orelse text.len;
+    const word = text[0..end];
+    if (parseSemver(word) == null) return null;
+    return word;
 }
 
 const cache_subdir = "zghalint";
@@ -572,8 +597,16 @@ const unbounded_advisories = [_]Advisory{blk: {
     break :blk a;
 }};
 
-/// Module state is saved and restored so tests stay independent of each other.
 fn runWithAdvisories(advisories: []const Advisory, uses_ref: ?[]const u8) DiagnosticList {
+    return runWithAdvisoriesCommented(advisories, uses_ref, null);
+}
+
+/// Module state is saved and restored so tests stay independent of each other.
+fn runWithAdvisoriesCommented(
+    advisories: []const Advisory,
+    uses_ref: ?[]const u8,
+    uses_comment: ?[]const u8,
+) DiagnosticList {
     const prev_cache = advisory_cache;
     const prev_offline = is_offline;
     const prev_fetched = fetched;
@@ -589,6 +622,7 @@ fn runWithAdvisories(advisories: []const Advisory, uses_ref: ?[]const u8) Diagno
     const step = Step{
         .uses = if (uses_ref) |r| ActionRef.parse(r) else null,
         .run = if (uses_ref == null) "echo hello" else null,
+        .uses_line_comment = uses_comment,
     };
     var list = DiagnosticList.init(testing.allocator);
     checkKnownVulnerableAction(&step, &list);
@@ -735,11 +769,66 @@ test "SC003: patched version not flagged" {
     try testing.expectEqual(@as(usize, 0), list.len());
 }
 
-test "SC003: SHA ref with vulnerable action still warns" {
+test "SC003: SHA ref without a version comment reports info, not warning" {
     var list = runWithAdvisories(&mock_advisories, "evil/action@a5ac7e51b41094c92402da3b24376905380afc29");
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expectEqualStrings("SC003", list.get(0).rule_id);
+    try testing.expectEqual(diagnostics.Severity.info, list.get(0).severity);
+    try testing.expectEqualStrings(undetermined_hint, list.get(0).fix_hint.?);
+}
+
+test "SC003: SHA ref whose comment names a patched version is not flagged" {
+    var list = runWithAdvisoriesCommented(
+        &mock_advisories,
+        "evil/action@a5ac7e51b41094c92402da3b24376905380afc29",
+        "v1.0.0",
+    );
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "SC003: SHA ref whose comment names a vulnerable version warns" {
+    var list = runWithAdvisoriesCommented(
+        &mock_advisories,
+        "evil/action@a5ac7e51b41094c92402da3b24376905380afc29",
+        "v0.9.0",
+    );
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(diagnostics.Severity.warning, list.get(0).severity);
+    try testing.expectEqualStrings(mock_advisories[0].diagnostic_hint, list.get(0).fix_hint.?);
+}
+
+test "SC003: a comment that is not a version leaves the version undetermined" {
+    var list = runWithAdvisoriesCommented(
+        &mock_advisories,
+        "evil/action@a5ac7e51b41094c92402da3b24376905380afc29",
+        "pinned by renovate",
+    );
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(diagnostics.Severity.info, list.get(0).severity);
+}
+
+test "SC003: an unbounded advisory flags a SHA pin whatever the comment says" {
+    var list = runWithAdvisoriesCommented(
+        &unbounded_advisories,
+        "evil/action@a5ac7e51b41094c92402da3b24376905380afc29",
+        "v99.0.0",
+    );
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(diagnostics.Severity.warning, list.get(0).severity);
+}
+
+test "versionFromComment: takes the first word only when it parses" {
+    try testing.expectEqualStrings("v1.2.3", versionFromComment("v1.2.3").?);
+    try testing.expectEqualStrings("v1.2.3", versionFromComment("v1.2.3 (2024-01-01)").?);
+    try testing.expectEqualStrings("1.2.3", versionFromComment("1.2.3").?);
+    try testing.expect(versionFromComment(null) == null);
+    try testing.expect(versionFromComment("") == null);
+    try testing.expect(versionFromComment("renovate: pinned") == null);
 }
 
 test "SC003: local action skipped" {
