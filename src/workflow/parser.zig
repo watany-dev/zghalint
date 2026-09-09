@@ -878,9 +878,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     // A job id with nothing under it is an unfinished workflow, and one holding
     // a scalar is a type error SYN004 reports. Failing the parse over either
     // made every other diagnostic in the file disappear (fuzz).
-    if (node == .null_value) return types.Job{ .id = id, .id_span = id_span };
-    if (!type_validation.checkMapping(node, "job", ctx.type_mismatches, ctx.allocator)) {
-        return types.Job{ .id = id, .id_span = id_span };
+    // The id is the only span such a job has, and a rule reporting it needs a
+    // real line: a default span put BP001 at line 0 (fuzz).
+    if (node == .null_value or !type_validation.checkMapping(node, "job", ctx.type_mismatches, ctx.allocator)) {
+        return types.Job{ .id = id, .id_span = id_span, .span = id_span };
     }
     const m = node.mapping;
 
@@ -3524,6 +3525,8 @@ test "a job id with nothing under it does not fail the parse (fuzz)" {
     try testing.expectEqual(@as(usize, 1), wf.jobs.len);
     try testing.expectEqual(@as(usize, 0), wf.jobs[0].steps.len);
     try testing.expectEqual(@as(usize, 0), wf.type_mismatches.len);
+    // Rules report the job at this span, and line 0 is not a place in a file.
+    try testing.expectEqual(@as(u32, 3), wf.jobs[0].span.start_line);
 }
 
 test "parseWorkflowTracked reports the line of an invalid trigger" {
