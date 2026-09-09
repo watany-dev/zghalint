@@ -245,6 +245,31 @@ sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集�
 `--repo owner/repo` で manifest に無いリポジトリを対象に加える。取得は毎回
 `bench/corpus/` を作り直す。
 
+## 起動・アロケーション・メモリ利用率 (`--alloc`)
+
+wall time と RSS だけでは「起動が重いのか、ファイルごとの alloc が重いのか」
+が分からない。`--alloc` は zghalint 単独でその内訳を取る。
+
+```bash
+zig build -Doptimize=ReleaseFast -Dalloc-stats
+python3 scripts/bench.py --alloc
+python3 scripts/bench.py --alloc --runs 3 --warmup 1
+```
+
+`-Dalloc-stats` はプロセス allocator を CountingAllocator で包み、stderr に
+`alloc-stats: {...}` を 1 行出す。このバイナリの wall time は `--perf` の
+比較対象に使わない (ラッパのコストが乗る)。
+
+| シナリオ | 内容 |
+|---|---|
+| version | `--version`。プロセス起動の下限 |
+| tiny | 約 15 行のワークフロー 1 本。version との差が 1 ファイルの lint |
+| cases / huge / many-small | `--perf` と同じファイル集合 |
+
+表は wall / RSS、alloc 回数とサイズ階級、フェーズ別 (read / yaml / workflow /
+rules / copy)、`strace -c` の上位 syscall。peak heap / RSS はライブなヒープが
+プロセス RSS の何割かを示す — 残りはバイナリとアロケータのキャッシュ。
+
 ## baseline との比較 (`scripts/bench_gate.py`)
 
 `bench/baseline.json` は前回記録した zghalint のケース別スコア。gate は

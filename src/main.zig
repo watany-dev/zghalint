@@ -5,7 +5,10 @@ const Config = zghalint.Config;
 const OutputFormat = zghalint.OutputFormat;
 const ColorMode = zghalint.ColorMode;
 
-const version = @import("build_options").version;
+const build_options = @import("build_options");
+const version = build_options.version;
+const alloc_stats_on = build_options.alloc_stats;
+const alloc_stats = zghalint.alloc_stats;
 
 const FixMode = enum {
     off,
@@ -369,9 +372,11 @@ fn lintDocumentFile(
     stderr: *std.Io.Writer,
     lint_fn: *const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void,
 ) !void {
+    statsEnter(.lint_read);
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
 
+    statsEnter(.lint_yaml);
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -383,11 +388,13 @@ fn lintDocumentFile(
         return error.YamlParseError;
     };
 
+    statsEnter(.lint_rules);
     var diag_list = zghalint.DiagnosticList.init(allocator);
     defer diag_list.deinit();
 
     lint_fn(yaml_node, &diag_list);
 
+    statsEnter(.lint_copy);
     appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
@@ -507,9 +514,11 @@ fn lintFile(
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
 ) !void {
+    statsEnter(.lint_read);
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
 
+    statsEnter(.lint_yaml);
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -526,10 +535,12 @@ fn lintFile(
     var empty_diags = zghalint.DiagnosticList.init(allocator);
     defer empty_diags.deinit();
     if (zghalint.rules.syntax.lintEmptyWorkflow(yaml_node, &empty_diags)) {
+        statsEnter(.lint_copy);
         appendFiltered(all_diags, &empty_diags, config, file_path);
         return;
     }
 
+    statsEnter(.lint_workflow);
     var workflow_failure: ?zghalint.workflow.parser.Failure = null;
     const workflow = zghalint.workflow.parseWorkflowTracked(arena_alloc, yaml_node, &workflow_failure) catch |err| {
         reportWorkflowParseError(stderr, file_path, err, workflow_failure);
@@ -538,6 +549,7 @@ fn lintFile(
 
     zghalint.rules.security.setRepoVisibility(config.repo_visibility);
 
+    statsEnter(.lint_rules);
     const engine = zghalint.rules.Engine.init(&all_rules);
     var diag_list = engine.run(allocator, &workflow);
     defer diag_list.deinit();
@@ -551,6 +563,7 @@ fn lintFile(
         .drop_sec018 = config.isRuleEnabled("SEC015"),
     });
 
+    statsEnter(.lint_copy);
     appendFiltered(all_diags, &diag_list, config, file_path);
 }
 
@@ -680,14 +693,25 @@ fn initWorkspaceContext(
     zghalint.workspace.set(ctx);
 }
 
+fn statsEnter(phase: alloc_stats.Phase) void {
+    if (comptime !alloc_stats_on) return;
+    alloc_stats.enter(phase);
+}
+
 pub fn main() !u8 {
     // 多ファイル実行では DebugAllocator が空になったスラブごとに munmap を返し、
     // syscall 時間の大半が mmap/munmap に消える (#294)。smp_allocator はスラブを
     // スレッドローカルに保持して返さない。リーク検出が効くビルドでは従来どおり。
-    const allocator, const is_debug_allocator = switch (builtin.mode) {
+    const parent, const is_debug_allocator = switch (builtin.mode) {
         .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
         .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
     };
+    var counting: alloc_stats.CountingAllocator = undefined;
+    if (comptime alloc_stats_on) {
+        counting = alloc_stats.CountingAllocator.init(parent);
+        alloc_stats.attach(&counting);
+    }
+    const allocator: std.mem.Allocator = if (comptime alloc_stats_on) counting.allocator() else parent;
     defer if (is_debug_allocator) {
         _ = debug_allocator.deinit();
     };
@@ -699,11 +723,13 @@ pub fn main() !u8 {
     var stdout_bw = std.fs.File.stdout().writer(&stdout_buf);
     const stdout = &stdout_bw.interface;
 
-    var stderr_buf: [1024]u8 = undefined;
+    var stderr_buf: [if (alloc_stats_on) 4096 else 1024]u8 = undefined;
     var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
     const stderr = &stderr_bw.interface;
     defer stderr.flush() catch {};
+    defer if (comptime alloc_stats_on) alloc_stats.dump(stderr);
 
+    statsEnter(.args);
     var cli_args = parseArgs(allocator, stderr) catch return 2;
     defer cli_args.deinit();
 
@@ -719,6 +745,7 @@ pub fn main() !u8 {
         return 0;
     }
 
+    statsEnter(.config);
     var config = loadConfig(allocator, cli_args.config_path, stderr) catch return 2;
     defer config.deinit();
 
@@ -755,6 +782,7 @@ pub fn main() !u8 {
     // Resolve the repository root (the RW rules read a called workflow
     // relative to it) and probe it for lockfiles so PERF001 can emit concrete
     // `cache: <manager>` fixes for setup-node / setup-python / setup-go.
+    statsEnter(.workspace);
     var workspace_arena = std.heap.ArenaAllocator.init(allocator);
     defer workspace_arena.deinit();
     const workspace_root = resolveWorkspaceRoot(workspace_arena.allocator(), files);
@@ -768,6 +796,7 @@ pub fn main() !u8 {
     defer zghalint.workspace.clear();
     defer zghalint.rules.local_action.deinit();
 
+    statsEnter(.caches);
     // RUNNER002 cannot enumerate a self-hosted fleet, so the user's own labels
     // come from `runner.labels` in .zghalint.yml.
     zghalint.rules.runner.setAllowedLabels(config.runner_labels.items);
@@ -816,6 +845,7 @@ pub fn main() !u8 {
     var had_fatal = false;
     var unlinted_count: usize = 0;
 
+    statsEnter(.lint_read);
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
@@ -860,6 +890,7 @@ pub fn main() !u8 {
     // Errors go out before the report so a CI log shows the cause first.
     stderr.flush() catch {};
 
+    statsEnter(.output);
     all_diags.sort();
 
     const use_color = switch (config.color_mode) {

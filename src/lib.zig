@@ -57,6 +57,7 @@ pub const OutputFormat = config.OutputFormat;
 pub const ColorMode = config.ColorMode;
 
 pub const util = @import("util.zig");
+pub const alloc_stats = @import("alloc_stats.zig");
 pub const workspace = @import("workspace.zig");
 
 test {

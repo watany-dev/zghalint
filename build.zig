@@ -9,6 +9,12 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
+    const alloc_stats = b.option(
+        bool,
+        "alloc-stats",
+        "Wrap the CLI allocator and print an alloc-stats JSON line on stderr",
+    ) orelse false;
+    build_options.addOption(bool, "alloc_stats", alloc_stats);
 
     // Strip debug info from Release-mode distribution binaries.
     // Debug keeps symbols for local development; tests retain debug info for stack traces / kcov.

@@ -35,6 +35,7 @@ python3 scripts/bench_gate.py --json /tmp/bench.json --update  # baseline を更
 python3 scripts/bench.py --fix                       # autofix の交差検証
 sudo scripts/install-perf-rivals.sh                  # `--perf` の rival
 zig build -Doptimize=ReleaseFast && python3 scripts/bench.py --perf  # 性能
+zig build -Doptimize=ReleaseFast -Dalloc-stats && python3 scripts/bench.py --alloc  # 起動/alloc/RSS
 ```
 
 形式とケースの足し方は `bench/README.md`、結果の扱いは

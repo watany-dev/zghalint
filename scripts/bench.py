@@ -12,6 +12,7 @@ tool reports.
     python3 scripts/bench.py --case a-*      # only matching cases
     python3 scripts/bench.py --json out.json # machine-readable scores too
     python3 scripts/bench.py --perf          # wall time / RSS instead (bench_perf.py)
+    python3 scripts/bench.py --alloc         # startup / allocations / RSS (bench_alloc.py)
     python3 scripts/bench.py --fix          # autofix cross-check (bench_fix.py)
 
 A missing external tool is reported as unavailable rather than scored, so the
@@ -36,6 +37,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import bench_alloc
 import bench_fix
 import bench_perf
 
@@ -1231,6 +1233,11 @@ def main(argv: list[str] | None = None) -> int:
     perf.add_argument("--runs", type=int, default=10, help="measured runs per command")
     perf.add_argument("--warmup", type=int, default=3, help="unmeasured runs before them")
     parser.add_argument(
+        "--alloc",
+        action="store_true",
+        help="measure startup, allocations, and RSS instead of scoring findings",
+    )
+    parser.add_argument(
         "--fix",
         action="store_true",
         help="cross-check --fix / --fix-unsafe rewrites against actionlint and zizmor",
@@ -1247,9 +1254,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.perf and args.fix:
         print("use --perf or --fix, not both", file=sys.stderr)
         return 2
+    if args.alloc and (args.perf or args.fix):
+        print("use --alloc on its own, not with --perf or --fix", file=sys.stderr)
+        return 2
 
     if args.perf:
         return main_perf(args)
+
+    if args.alloc:
+        return main_alloc(args)
 
     if args.fix:
         return main_fix(args)
@@ -1325,6 +1338,35 @@ def main_perf(args: argparse.Namespace) -> int:
     if args.json:
         args.json.write_text(
             json.dumps(bench_perf.as_json(report), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    return 0
+
+
+def main_alloc(args: argparse.Namespace) -> int:
+    if not args.zghalint.is_file():
+        print(
+            f"zghalint binary not found at {args.zghalint}; "
+            "run `zig build -Doptimize=ReleaseFast -Dalloc-stats` first",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.cases_dir.is_dir():
+        print(f"no such case directory: {args.cases_dir}", file=sys.stderr)
+        return 2
+    with tempfile.TemporaryDirectory(prefix="zghalint-alloc-") as tmp:
+        report = bench_alloc.run_alloc(
+            args.zghalint, args.cases_dir, args.corpus_dir, args.runs, args.warmup, Path(tmp)
+        )
+    text = bench_alloc.render_markdown(report)
+    if args.out:
+        args.out.write_text(text, encoding="utf-8")
+        print(f"wrote {args.out}")
+    else:
+        print(text)
+    if args.json:
+        args.json.write_text(
+            json.dumps(bench_alloc.as_json(report), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
     return 0
