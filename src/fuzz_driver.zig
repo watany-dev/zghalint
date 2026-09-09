@@ -9,7 +9,8 @@
 //! reproduced with `zig build fuzz-driver -- --seed <n> --iterations 1`.
 //!
 //! Usage:
-//!   zig build fuzz-driver -- [--iterations N] [--seed S] [--jobs J] [--quiet]
+//!   zig build fuzz-driver -- [--iterations N] [--seed S] [--quiet]
+//!   zig build fuzz-driver -- --file PATH
 
 const std = @import("std");
 
@@ -125,7 +126,7 @@ const Mutator = struct {
     rng: std.Random,
     corpus: []const []const u8,
 
-    fn pick(self: Mutator, comptime T: type, slice: []const T) T {
+    fn pick(self: Mutator, slice: []const []const u8) []const u8 {
         return slice[self.rng.uintLessThan(usize, slice.len)];
     }
 
@@ -142,11 +143,11 @@ const Mutator = struct {
             return buf.toOwnedSlice(alloc);
         }
 
-        const base = self.pick([]const u8, self.corpus);
+        const base = self.pick(self.corpus);
         try buf.appendSlice(alloc, base);
 
         if (self.rng.boolean()) {
-            const other = self.pick([]const u8, self.corpus);
+            const other = self.pick(self.corpus);
             const cut = self.rng.uintAtMost(usize, buf.items.len);
             const take = self.rng.uintAtMost(usize, other.len);
             try buf.replaceRange(alloc, cut, buf.items.len - cut, other[0..take]);
@@ -164,7 +165,7 @@ const Mutator = struct {
         switch (self.rng.uintLessThan(u8, 10)) {
             // Insert a dictionary token at a random byte.
             0, 1, 2 => {
-                const token = self.pick([]const u8, dictionary);
+                const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
             },
             // Overwrite a byte.
@@ -204,7 +205,7 @@ const Mutator = struct {
             // Repeat a byte run: deep nesting, long scalars, unclosed quotes.
             7 => {
                 const count = 1 + self.rng.uintLessThan(usize, 64);
-                const token = self.pick([]const u8, dictionary);
+                const token = self.pick(dictionary);
                 const at = self.rng.uintAtMost(usize, len);
                 for (0..count) |_| try buf.insertSlice(alloc, at, token);
             },
@@ -325,7 +326,7 @@ fn checkFixLoop(
     original: []const u8,
     include_unsafe: bool,
 ) !void {
-    var current = try alloc.dupe(u8, original);
+    var current: []const u8 = original;
     var first_parsed: ?bool = null;
 
     for (0..max_rounds) |round| {
@@ -343,7 +344,7 @@ fn checkFixLoop(
         const applied = try fix_engine.applyFixes(alloc, current, fixes);
         if (applied.content.len > original.len * 4 + 4096) return Violation.FixGrewUnboundedly;
         if (std.mem.eql(u8, applied.content, current)) return;
-        current = @constCast(applied.content);
+        current = applied.content;
     }
     return Violation.FixDidNotConverge;
 }
