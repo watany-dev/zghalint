@@ -1,0 +1,907 @@
+{
+  "cases": {
+    "a-script-injection/dispatch-inputs.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/env-bound-safe.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "a-script-injection/format-wrapped.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/github-script-input.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/issue-comment-body-in-run.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "a-script-injection/pr-target-title.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/run-block-folded.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/run-block-literal.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/run-double-quoted.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/run-line-continuation.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/run-plain-scalar.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/run-single-quoted.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/shell-pwsh.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/shell-python.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/step-output-indirect.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/tojson-event.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "a-script-injection/workflow-call-inputs.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/automerge-dependabot.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/bot-condition-actor.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/discussion-comment-ref.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/label-name-if-safe.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "b-trigger-checkout/pr-target-guarded.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "b-trigger-checkout/pr-target-head-sha-checkout.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/pr-target-repository-field.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/self-hosted-fork-trigger.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/triggering-actor-condition.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/unsound-contains-ref.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/workflow-dispatch-ref.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/workflow-run-branch-gate.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/workflow-run-head-sha-checkout.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "b-trigger-checkout/workflow-run-repository-gate.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "c-supply-chain/branch-ref.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "c-supply-chain/compromised-sha.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "c-supply-chain/container-image-digest.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "c-supply-chain/container-image-no-digest.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "c-supply-chain/dependabot-insecure-execution.dependabot.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "c-supply-chain/dependabot-no-cooldown.dependabot.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "c-supply-chain/docker-uses-no-digest.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "c-supply-chain/full-sha-pinned.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "c-supply-chain/impostor-commit.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "c-supply-chain/known-vulnerable-action.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "c-supply-chain/sha-comment-mismatch.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "c-supply-chain/short-sha.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "c-supply-chain/unpinned-third-party-action.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "c-supply-chain/uses-obfuscated.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/api-token-instead-of-oidc.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/artipacked-upload.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/container-credentials-plaintext.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "d-permissions-secrets/github-env-injection.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/insecure-commands.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/job-widens-permissions.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/missing-top-level-permissions.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/oidc-id-token-safe.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "d-permissions-secrets/secret-in-run.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/secrets-inherit.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "d-permissions-secrets/service-credentials-plaintext.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "d-permissions-secrets/tojson-secrets.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/write-all-permissions.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/comparison-type-mismatch.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/env-undefined.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "e-expression/format-placeholder-count.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/fromjson-invalid-literal.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/function-call-property-access.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "e-expression/hashfiles-in-runs-on.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/if-mixes-text-and-expression.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/matrix-interpolation-pedantic.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "e-expression/matrix-key-undeclared.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/matrix-without-strategy.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/needs-job-not-in-needs.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/needs-output-undefined.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/safe-complex-expression.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "e-expression/startswith-object-argument.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/steps-forward-reference.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/success-in-run-block.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/duplicate-key-case-insensitive.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/exclusive-branch-filters.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/invalid-activity-type.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/invalid-event-name.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/invalid-filter-glob.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/invalid-id-and-env-name.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "f-syntax-schema/matrix-include-exclude-mismatch.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/needs-cycle.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "f-syntax-schema/needs-unknown-job.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "f-syntax-schema/runs-on-label-conflict.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/runs-on-typo.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/schedule-cron-invalid.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "f-syntax-schema/schedule-invalid-timezone.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/shell-and-timeout-types.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "f-syntax-schema/unknown-key-job-and-step.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "f-syntax-schema/unknown-key-top-level.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/workflow-dispatch-input-mismatch.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "g-reusable/checkout-path-local-action": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "g-reusable/composite-invalid-using.action.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "g-reusable/composite-retired-runtime.action.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "g-reusable/composite-run-injection.action.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "g-reusable/local-action-inputs": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "g-reusable/missing-required-input": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "g-reusable/undeclared-secret": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "g-reusable/undefined-output": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "g-reusable/unknown-input-and-type": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "h-practices/cache-in-release-workflow.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/deprecated-action-version.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/deprecated-runner-image.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/fail-fast-disabled.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/missing-timeout-and-concurrency.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
+    "h-practices/redundant-checkout.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/set-output-workflow-command.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/setup-node-without-cache.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/setup-with-default-cache.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "i-robustness/bare-dash-sequence-entry.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/bom-prefixed.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/comments-only.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/crlf-and-tab-indent.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/deeply-nested-expressions.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "i-robustness/flow-style-collections.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/multi-document.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/on-as-yaml11-boolean.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/seq-at-steps-column.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/seq-at-trigger-column.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "i-robustness/yaml-anchors-and-merge-keys.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "j-clean/clean-ci-matrix.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/clean-codeql-scan.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/clean-release-publish.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/pinned-and-scoped.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/safe-env-indirection.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/safe-label-comparison.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/safe-matrix-exclusion.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/safe-numeric-context.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/safe-untrusted-in-with.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    }
+  }
+}
