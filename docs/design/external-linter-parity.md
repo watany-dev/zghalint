@@ -75,7 +75,7 @@ shellcheck が一度も走っていないという状態だった。
 
 ### 4.1 zghalint が拾えていないもの (gap)
 
-#### G1. SEC016 が「暗黙にキャッシュする setup 系 action」を認識しない  — 要ルール改善
+#### G1. SEC016 が「暗黙にキャッシュする setup 系 action」を認識しない  — 対応済み
 
 `release.yml` の `mlugg/setup-zig` に対し zizmor は `cache-poisoning` (high) を
 2 件出したが、zghalint の SEC016 は 0 件だった (`use-cache: false` を外した状態で確認済み)。
@@ -99,6 +99,16 @@ SEC016 の現行実装 (`src/rules/security.zig`) は
 実運用のワークフロー群を三者比較したところ、同じ形 (setup-uv の
 `enable-cache` 省略、setup-node の `package-manager-cache` 省略) が
 publish ジョブで複数出た。G33 の tag-push 判定とは別経路。
+
+対応: `cache_setup_actions` を「action 名 + キャッシュ入力名 + 既定で
+有効か」の表にし、既定で有効な action は入力の省略そのものを指摘するように
+した (`astral-sh/setup-uv` の `enable-cache`、`mlugg/setup-zig` の
+`use-cache`)。入力があるときは値を opt-out として読み、`false` のときだけ
+沈黙する。これに伴い、opt-in 側 (`cache: false` など) の明示的な無効化も
+指摘しなくなった。`actions/setup-node` の `package-manager-cache` は
+`cache:` を指定して初めてキャッシュが働くという本リポジトリの前提
+(PERF001、`bench/cases/h-practices/setup-node-without-cache.yml`) と
+矛盾するため、opt-in のまま据え置いた。
 
 #### G2. `action.yml` (composite action) を解析できない — 対応済み
 
@@ -709,6 +719,15 @@ PERF001 は沈黙しており、現状は整合が取れている。
 PERF001 が正しく沈黙する — つまり「既定でキャッシュする action」の知識は
 PERF001 側にはある。G1 はその知識を SEC016 と共有すれば済む。
 
+G1 の対応で、ベンチのケースには現れない衝突が残ることが分かった。SEC016 が
+「`enable-cache: false` にせよ」と言う一方、PERF001 の
+`astral-sh/setup-uv` は `enable-cache: false` そのものを指摘するため、
+リリースジョブがどちらも満たせない。取り下げるのはこの一件だけで、SEC016 の
+スコープ判定 (`isCachePoisoningScope`) に入るジョブでは PERF001 の
+`.uv_independent` (= `enable-cache: false` への指摘) を出さない。キャッシュが
+単に無いだけの他の指摘はリリースジョブでもそのまま出る。トリガを見る必要が
+あるため PERF001 はワークフロー単位の検査になっている。
+
 ### 4.5 2026-09-08 のベンチ実行結果
 
 `bench/README.md` の 3 モード (採点 / `--perf` / autofix 交差検証) を通しで
@@ -987,9 +1006,8 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 
 ## 5. 次アクション
 
-- [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
-      (PERF001 が持っている知識を共有する。入力名は `cache` /
-      `enable-cache` / `package-manager-cache` / `use-cache`)
+- [x] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
+      (入力名は action ごとに `cache` / `enable-cache` / `use-cache`)
 - [x] G2: composite action (`action.yml`) の解析サポート
 - [x] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
 - [x] G9 (#280): 関数呼び出しの結果へのプロパティ / インデックスアクセスを式パーサに
