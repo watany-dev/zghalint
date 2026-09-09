@@ -758,3 +758,4 @@ user 3 ms + sys 3 ms。
 - [x] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
 - [x] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [x] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
+- [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる

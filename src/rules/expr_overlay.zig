@@ -112,11 +112,27 @@ fn isMetaAxis(name: []const u8) bool {
     return std.mem.eql(u8, name, "include") or std.mem.eql(u8, name, "exclude");
 }
 
-/// Null when the job has no usable `strategy.matrix`, including the dynamic
-/// form (`matrix: ${{ fromJSON(...) }}`) whose keys are unknowable here.
+/// True when the job's matrix keys cannot all be read from the source: the
+/// whole `matrix:` may be an expression, or just its `include:`, whose entries
+/// each add keys. `exclude:` only narrows existing axes, so an expression
+/// there hides no key.
+pub fn hasUnknowableKeys(job: *const Job) bool {
+    const strategy = job.strategy orelse return false;
+    if (!strategy.matrix_key_present) return false;
+    const matrix = strategy.matrix orelse return true;
+
+    for (matrix.axes) |axis| {
+        if (std.mem.eql(u8, axis.name, "include") and axis.dynamic) return true;
+    }
+    return false;
+}
+
+/// Null when the job has no usable `strategy.matrix`, or when its keys are
+/// only known at run time — a guessed key set would misreport `matrix.*`.
 pub fn buildMatrix(alloc: std.mem.Allocator, job: *const Job) ?TypeRef {
     const strategy = job.strategy orelse return null;
     if (!strategy.matrix_key_present) return null;
+    if (hasUnknowableKeys(job)) return null;
     const matrix = strategy.matrix orelse return null;
 
     var props = PropList{ .alloc = alloc };
@@ -378,9 +394,18 @@ test "overlay: a job without a usable matrix gets none" {
         \\      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
         \\    steps:
         \\      - run: echo hi
+        \\  dynamic_include:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+        \\    steps:
+        \\      - run: echo hi
     );
     try testing.expectEqual(@as(?TypeRef, null), buildMatrix(alloc, &wf.jobs[0]));
     try testing.expectEqual(@as(?TypeRef, null), buildMatrix(alloc, &wf.jobs[1]));
+    try testing.expectEqual(@as(?TypeRef, null), buildMatrix(alloc, &wf.jobs[2]));
 }
 
 test "overlay: needs carries the target job's outputs" {

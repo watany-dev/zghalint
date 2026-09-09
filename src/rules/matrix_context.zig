@@ -11,6 +11,7 @@
 const std = @import("std");
 const engine = @import("engine.zig");
 const expr_check = @import("expr_check.zig");
+const expr_overlay = @import("expr_overlay.zig");
 const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
@@ -152,11 +153,9 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // A dynamic matrix has a `matrix:` key but no readable axes: its keys are
-    // unknowable here, so the job is skipped entirely rather than guessed at.
-    if (job.strategy) |strategy| {
-        if (strategy.matrix_key_present and strategy.matrix == null) return;
-    }
+    // A dynamic matrix carries keys that only exist at run time, so the job is
+    // skipped entirely rather than guessed at.
+    if (expr_overlay.hasUnknowableKeys(job)) return;
 
     expr_scan.scanJob(Resolver{
         .keys = collectKeys(job, alloc),
@@ -295,6 +294,38 @@ test "EXPR011: a dynamic matrix silences the rule" {
         \\      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
         \\    steps:
         \\      - run: echo "${{ matrix.anything }}"
+    );
+}
+
+test "EXPR011: a dynamic include silences the rule for the whole job" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+        \\    steps:
+        \\      - run: echo "${{ matrix.runner }}"
+    );
+}
+
+test "EXPR011: a dynamic exclude leaves the declared keys checkable" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        exclude: ${{ fromJSON(needs.setup.outputs.skip) }}
+        \\    steps:
+        \\      - run: echo "${{ matrix.arch }}"
+    ,
+        "\"arch\" is not defined in the matrix of this job",
     );
 }
 
