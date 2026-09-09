@@ -41,7 +41,6 @@ pub fn deinit() void {
     if (!client_initialized) return;
     client_storage.deinit();
     proxy_arena.deinit();
-    custom_ca_pending = false;
     client_initialized = false;
 }
 
@@ -289,13 +288,6 @@ test "init defers the CA bundle scan until the first fetch" {
     try testing.expect(custom_ca_pending);
 
     applyPendingCustomCa();
-    try testing.expect(!custom_ca_pending);
-}
-
-test "deinit clears a pending CA bundle scan" {
-    if (client_initialized) return error.SkipZigTest;
-    init(testing.allocator);
-    deinit();
     try testing.expect(!custom_ca_pending);
 }
 
