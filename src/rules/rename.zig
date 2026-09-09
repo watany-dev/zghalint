@@ -54,17 +54,15 @@ pub fn pathSegmentFix(
     new_segment: []const u8,
 ) ?Fix {
     const segment = segmentSpan(path_span, path, segment_index) orelse return null;
-    // The replacement is written back into an expression, so it has to survive
-    // being lexed as a path segment. A candidate carrying anything else -- a
-    // step id such as `a>b` -- would be read back as a shorter path plus a
-    // remainder, the same diagnostic would fire again with a fresh candidate,
-    // and every `--fix` round would grow the expression (#369).
+    // A candidate that is not a path identifier -- a step id such as `a>b` --
+    // is re-lexed as a shorter path plus a remainder, so the same diagnostic
+    // fires again with a fresh candidate and every `--fix` round grows the
+    // expression (#369).
     if (!isPathIdentifier(new_segment)) return null;
     return tokenFix(list, segment.span, segment.text, new_segment);
 }
 
-/// The identifier grammar an expression path segment accepts: a leading letter
-/// or underscore, then letters, digits, `_` or `-`.
+/// GitHub's grammar for a property name in a `${{ }}` path.
 fn isPathIdentifier(name: []const u8) bool {
     if (name.len == 0) return false;
     if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;

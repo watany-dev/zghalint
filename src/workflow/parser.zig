@@ -79,11 +79,10 @@ fn isInlineScalar(node: Node) bool {
     };
 }
 
-/// True when the mapping written under `key` is a block mapping on its own
-/// lines. `with: fetch-depth: 0` parses to a mapping here too, but its entries
-/// sit on the key's line; a fix that appends an entry below is not read back as
-/// part of the mapping, so the same fix fires again on every `--fix` round
-/// (#370). Such a mapping offers no append point at all.
+/// `with: fetch-depth: 0` parses to a mapping here too, but its entries sit on
+/// the key's line: a fix that appends an entry below is not read back as part
+/// of the mapping, so the same fix fires again on every `--fix` round (#370).
+/// Such a mapping offers no append point at all.
 fn isOwnLineBlockMapping(parent: Mapping, key: []const u8, body: Mapping) bool {
     if (body.entries.len == 0) return false;
     const key_span = parent.getKeySpan(key) orelse return false;
