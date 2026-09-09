@@ -749,6 +749,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "h-practices/cache-on-tag-push.yml": {
+      "detected": 0,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
     "h-practices/deprecated-action-version.yml": {
       "detected": 1,
       "expected": 1,
@@ -803,6 +810,13 @@
       "expected": 1,
       "line_expected": 1,
       "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/setup-uv-default-cache-in-release.yml": {
+      "detected": 0,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
       "violations": 0
     },
     "h-practices/setup-with-default-cache.yml": {
