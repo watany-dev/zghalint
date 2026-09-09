@@ -151,7 +151,7 @@ const ExprIter = struct {
 /// between candidates and checking the two bytes after each is much cheaper.
 fn findExprOpen(s: []const u8, start: usize) ?usize {
     var pos = start;
-    while (std.mem.indexOfScalarPos(u8, s, pos, '$')) |i| : (pos = i + 1) {
+    while (std.mem.findScalarPos(u8, s, pos, '$')) |i| : (pos = i + 1) {
         if (std.mem.startsWith(u8, s[i..], "${{")) return i;
     }
     return null;
@@ -159,7 +159,7 @@ fn findExprOpen(s: []const u8, start: usize) ?usize {
 
 fn findExprClose(s: []const u8, start: usize) ?usize {
     var pos = start;
-    while (std.mem.indexOfScalarPos(u8, s, pos, '}')) |i| : (pos = i + 1) {
+    while (std.mem.findScalarPos(u8, s, pos, '}')) |i| : (pos = i + 1) {
         if (i + 1 < s.len and s[i + 1] == '}') return i;
     }
     return null;
@@ -574,7 +574,7 @@ fn stepTaintsItsOutputs(step: *const Step, table: ContextTable) bool {
 /// checked.
 fn referencesShellVar(line: []const u8, name: []const u8) bool {
     var i: usize = 0;
-    while (std.mem.indexOfScalarPos(u8, line, i, '$')) |dollar| : (i = dollar + 1) {
+    while (std.mem.findScalarPos(u8, line, i, '$')) |dollar| : (i = dollar + 1) {
         var j = dollar + 1;
         const braced = j < line.len and line[j] == '{';
         if (braced) j += 1;
@@ -611,7 +611,7 @@ fn checkScriptInputInjection(step: *const Step, table: ContextTable, list: *Diag
 /// Match `owner/repo` against a marketplace action reference. A nested path is a
 /// different action, and GitHub resolves owner/repo case-insensitively.
 fn isAction(ref: ActionRef, comptime owner_repo: []const u8) bool {
-    const slash = comptime std.mem.indexOfScalar(u8, owner_repo, '/').?;
+    const slash = comptime std.mem.findScalar(u8, owner_repo, '/').?;
     const owner = ref.owner orelse return false;
     const repo = ref.repo orelse return false;
     return ref.path == null and
@@ -651,14 +651,14 @@ fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
 const secret_prefix_heads = blk: {
     var heads: []const u8 = &.{};
     for (secret_prefixes) |prefix| {
-        if (std.mem.indexOfScalar(u8, heads, prefix[0]) == null) heads = heads ++ [_]u8{prefix[0]};
+        if (std.mem.findScalar(u8, heads, prefix[0]) == null) heads = heads ++ [_]u8{prefix[0]};
     }
     break :blk heads;
 };
 
 fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     var pos: usize = 0;
-    while (std.mem.indexOfAnyPos(u8, s, pos, secret_prefix_heads)) |offset| : (pos = offset + 1) {
+    while (std.mem.findAnyPos(u8, s, pos, secret_prefix_heads)) |offset| : (pos = offset + 1) {
         for (secret_prefixes) |prefix| {
             if (!std.mem.startsWith(u8, s[offset..], prefix)) continue;
             list.append(.{
@@ -797,7 +797,7 @@ fn isWorkflowRunValue(value: []const u8) bool {
 /// not line up with segment boundaries.
 fn containsAnyMarker(value: []const u8, markers: []const []const u8) bool {
     for (markers) |marker| {
-        if (std.mem.indexOf(u8, value, marker) != null) return true;
+        if (std.mem.find(u8, value, marker) != null) return true;
     }
     return false;
 }
@@ -826,7 +826,7 @@ fn checkConditionForDangerousContext(cond: []const u8, anchor: Anchor, list: *Di
 /// Only the explicit form carries per-expression offsets, so a bare condition
 /// is anchored to the whole value.
 fn reportConditionContexts(cond: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList) void {
-    const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
+    const has_expr = std.mem.find(u8, cond, "${{") != null;
     if (has_expr) {
         checkContextsInString(cond, anchor, contexts, rule_id, severity, message, fix_hint, list, null);
         return;
@@ -1156,7 +1156,7 @@ fn checkStepCheckoutRefs(
         const input = getWithInput(with_map, name) orelse continue;
         if (ownedByNeighbourRule(wf, input.value)) continue;
         if (!containsUntrustedCheckoutContext(input.value, contexts)) continue;
-        const chatops = std.mem.indexOf(u8, input.value, "github.event.issue.number") != null;
+        const chatops = std.mem.find(u8, input.value, "github.event.issue.number") != null;
         list.append(.{
             .rule_id = "SEC021",
             .severity = .@"error",
@@ -1395,7 +1395,7 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
     // name in one is the base repository's. The compared literal is what makes
     // it an anchor, and a fork-reachable event makes it none.
     if (!asserts_equal or other.kind != .string_literal) return false;
-    return std.mem.indexOf(u8, other.value, "pull_request") == null;
+    return std.mem.find(u8, other.value, "pull_request") == null;
 }
 
 /// Anchors are matched segment for segment, unlike the untrusted-context table
@@ -1461,9 +1461,9 @@ fn hasJsonCallArg(expr: []const u8, comptime pred: fn ([]const u8) bool) bool {
     for (json_funcs) |func_name| {
         var i: usize = 0;
         while (std.ascii.indexOfIgnoreCasePos(expr, i, func_name)) |hit| : (i = hit + 1) {
-            const paren = std.mem.indexOfNonePos(u8, expr, hit + func_name.len, " \t") orelse continue;
+            const paren = std.mem.findNonePos(u8, expr, hit + func_name.len, " \t") orelse continue;
             if (expr[paren] != '(') continue;
-            const arg = std.mem.indexOfNonePos(u8, expr, paren + 1, " \t") orelse continue;
+            const arg = std.mem.findNonePos(u8, expr, paren + 1, " \t") orelse continue;
             if (pred(expr[arg..])) return true;
         }
     }
@@ -1480,7 +1480,7 @@ fn isWholeSecretsArg(arg: []const u8) bool {
     const rest = afterSecrets(arg) orelse return false;
     if (rest.len == 0 or rest[0] == ')') return true;
     if (rest[0] != ' ' and rest[0] != '\t') return false;
-    const tail = std.mem.trimLeft(u8, rest, " \t");
+    const tail = std.mem.trimStart(u8, rest, " \t");
     return tail.len > 0 and tail[0] == ')';
 }
 
@@ -1658,7 +1658,7 @@ fn publishesToPyPI(with_map: workflow_types.StringMap) bool {
     const url = getWithInput(with_map, "repository-url") orelse return true;
     const trimmed = std.mem.trim(u8, url.value, " \t\n\r");
     if (trimmed.len == 0) return true;
-    return std.mem.indexOf(u8, trimmed, "pypi.org") != null;
+    return std.mem.find(u8, trimmed, "pypi.org") != null;
 }
 
 /// A registry CLI authenticates through one env var, which the registry's
@@ -1861,7 +1861,7 @@ fn checkBotConditionJob(job: *const Job, list: *DiagnosticList) void {
 }
 
 fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *DiagnosticList) void {
-    const has_expr = std.mem.indexOf(u8, cond, "${{") != null;
+    const has_expr = std.mem.find(u8, cond, "${{") != null;
 
     if (has_expr) {
         checkBotActorInString(cond, anchor, list);
@@ -1896,7 +1896,7 @@ fn isActorBotExpr(inner: []const u8) bool {
 fn containsActorBotCheck(expr: []const u8) bool {
     if (!containsAnyContext(expr, .{ .prefix = &actor_contexts })) return false;
 
-    return std.mem.indexOf(u8, expr, "[bot]") != null;
+    return std.mem.find(u8, expr, "[bot]") != null;
 }
 
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
@@ -2247,7 +2247,7 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
         if (expr[i] == '[') {
             // Any index access is treated as a wildcard: the index may itself be
             // an expression, and every element is equally untrusted.
-            const close = std.mem.indexOfScalarPos(u8, expr, i + 1, ']') orelse break;
+            const close = std.mem.findScalarPos(u8, expr, i + 1, ']') orelse break;
             path.append(wildcard_segment);
             i = close + 1;
             continue;
@@ -2291,7 +2291,7 @@ fn isIdentStart(c: u8) bool {
 }
 
 fn isImagePinned(image: []const u8) bool {
-    return std.mem.indexOf(u8, image, "@sha256:") != null;
+    return std.mem.find(u8, image, "@sha256:") != null;
 }
 
 /// `uses: docker://<image>[:<tag>]` runs a container image straight from a
@@ -2410,7 +2410,7 @@ fn hasForkAccessibleTrigger(wf: *const Workflow) bool {
 fn usesSelfHostedRunner(job: *const Job) bool {
     var labels = runner.runsOnLabels(job);
     while (labels.next()) |label| {
-        if (std.mem.indexOf(u8, label.value, "self-hosted") != null) return true;
+        if (std.mem.find(u8, label.value, "self-hosted") != null) return true;
     }
     return false;
 }
@@ -2478,7 +2478,7 @@ fn startsAnyWordAt(s: []const u8, i: usize, words: []const []const u8) bool {
 }
 
 fn skipBlanks(s: []const u8, i: usize) usize {
-    return std.mem.indexOfNonePos(u8, s, i, " \t\n") orelse s.len;
+    return std.mem.findNonePos(u8, s, i, " \t\n") orelse s.len;
 }
 
 fn identRunLen(s: []const u8) usize {
@@ -2548,7 +2548,7 @@ fn containsEvalVarExpansion(s: []const u8) bool {
 /// executing.
 fn containsDownloaderProcessSubstitution(s: []const u8) bool {
     var i: usize = 0;
-    while (std.mem.indexOfPos(u8, s, i, "<(")) |open| {
+    while (std.mem.findPos(u8, s, i, "<(")) |open| {
         i = open + 2;
         if (!precededByExecTarget(s, open)) continue;
         const close = matchingParen(s, open + 1) orelse continue;
@@ -2579,7 +2579,7 @@ fn precededByExecTarget(s: []const u8, open: usize) bool {
         }
         if (std.mem.eql(u8, token, ".")) return true;
 
-        const name = if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash|
+        const name = if (std.mem.findScalarLast(u8, token, '/')) |slash|
             token[slash + 1 ..]
         else
             token;
@@ -2653,7 +2653,7 @@ fn isAllUppercase(s: []const u8) bool {
 /// follows is an argument rather than a command. An even run of backslashes is
 /// an escaped backslash and does not continue the line.
 fn endsWithLineContinuation(line: []const u8) bool {
-    const backslashes = line.len - std.mem.trimRight(u8, line, "\\").len;
+    const backslashes = line.len - std.mem.trimEnd(u8, line, "\\").len;
     return backslashes % 2 == 1;
 }
 
@@ -2663,12 +2663,12 @@ fn containsVarAsCommand(s: []const u8) bool {
     while (lines.next()) |raw| {
         // Only `\r` is trimmed: a blank after the backslash cancels the
         // continuation in a real shell, so it must not be trimmed away.
-        const line = std.mem.trimRight(u8, raw, "\r");
+        const line = std.mem.trimEnd(u8, raw, "\r");
         const is_continuation = continued;
         continued = endsWithLineContinuation(line);
         if (is_continuation) continue;
 
-        const start = std.mem.indexOfNone(u8, line, " \t") orelse continue;
+        const start = std.mem.findNone(u8, line, " \t") orelse continue;
         const rest = line[start..];
         if (rest.len < 2 or rest[0] != '$') continue;
         // `${{ }}` is a GitHub expression and `$(...)` a command substitution.
@@ -2689,7 +2689,7 @@ fn containsVarAsCommand(s: []const u8) bool {
         // bash). `$CMD == ...` is still a command with `==` as an argument.
         const token_end: usize = if (braced) 3 + name.len else 1 + name.len;
         if (token_end < rest.len) {
-            const after = std.mem.indexOfNone(u8, rest[token_end..], " \t") orelse {
+            const after = std.mem.findNone(u8, rest[token_end..], " \t") orelse {
                 return true;
             };
             const eq = token_end + after;
@@ -3027,8 +3027,8 @@ fn makeSec017EnvMeta(
     style: yaml.ScalarStyle,
     span: Span,
 ) !ScalarValueMetaMap {
-    var meta = ScalarValueMetaMap.init(allocator);
-    try meta.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", .{
+    var meta: ScalarValueMetaMap = .empty;
+    try meta.put(allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", .{
         .value_span = span,
         .style = style,
     });
@@ -3112,9 +3112,9 @@ test "SEC002: element access under a container context" {
 }
 
 fn sec002UsesFires(uses: []const u8, with_key: []const u8, with_value: []const u8, env: ?workflow_types.StringMap) bool {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    with.put(with_key, with_value) catch unreachable;
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, with_key, with_value) catch unreachable;
     const steps = [_]Step{
         .{ .uses = ActionRef.parse(uses), .with = with, .env = env },
     };
@@ -3141,9 +3141,9 @@ test "SEC002: script input is not checked outside github-script" {
 }
 
 test "SEC002: github-script script input via env (no false positive)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    env.put("TITLE", "${{ github.event.issue.title }}") catch unreachable;
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}") catch unreachable;
     try testing.expect(!sec002UsesFires("actions/github-script@v7", "script", "const title = process.env.TITLE;", env));
 }
 
@@ -3161,9 +3161,9 @@ test "SEC002: trusted contexts in run block (no false positive)" {
 }
 
 test "SEC002: untrusted input passed through env is not reported" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    try env.put("BRANCH", "${{ github.event.pull_request.head.ref }}");
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    try env.put(testing.allocator, "BRANCH", "${{ github.event.pull_request.head.ref }}");
     try testing.expect(!sec002Fires("echo \"Branch $BRANCH\"", env));
 }
 
@@ -3182,9 +3182,9 @@ test "SEC002: inputs.* is untrusted on a dispatched or called workflow" {
 }
 
 test "SEC002: env.<KEY> bound to an untrusted value is untrusted (#314)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "BODY", "${{ github.event.comment.body }}") catch unreachable;
     const steps = [_]Step{.{ .env = env, .run = "echo \"${{ env.BODY }}\"" }};
     var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
@@ -3192,9 +3192,9 @@ test "SEC002: env.<KEY> bound to an untrusted value is untrusted (#314)" {
 }
 
 test "SEC002: reading the same env entry as $KEY stays quiet (#314)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "BODY", "${{ github.event.comment.body }}") catch unreachable;
     const steps = [_]Step{.{ .env = env, .run = "echo \"$BODY\"" }};
     var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
@@ -3202,9 +3202,9 @@ test "SEC002: reading the same env entry as $KEY stays quiet (#314)" {
 }
 
 test "SEC002: env.<KEY> bound to a trusted value stays quiet (#314)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    env.put("SHA", "${{ github.sha }}") catch unreachable;
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "SHA", "${{ github.sha }}") catch unreachable;
     const steps = [_]Step{.{ .env = env, .run = "echo \"${{ env.SHA }}\"" }};
     var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
@@ -3212,9 +3212,9 @@ test "SEC002: env.<KEY> bound to a trusted value stays quiet (#314)" {
 }
 
 test "SEC002: a workflow-level env entry taints every job (#314)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    env.put("BODY", "${{ github.event.issue.title }}") catch unreachable;
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "BODY", "${{ github.event.issue.title }}") catch unreachable;
     const steps = [_]Step{.{ .run = "echo \"${{ env.BODY }}\"" }};
     const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
     var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = env, .permissions = Permissions{} });
@@ -3238,9 +3238,9 @@ fn sec002JobOutputList(output_value: []const u8, consumer_run: []const u8, env: 
 }
 
 test "SEC002: taint crosses the job boundary through outputs (#314)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    env.put("BODY", "${{ github.event.comment.body }}") catch unreachable;
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "BODY", "${{ github.event.comment.body }}") catch unreachable;
 
     var list = sec002JobOutputList("${{ steps.s.outputs.body }}", "echo \"${{ needs.a.outputs.body }}\"", env);
     defer list.deinit();
@@ -3248,9 +3248,9 @@ test "SEC002: taint crosses the job boundary through outputs (#314)" {
 }
 
 test "SEC002: an untainted job output leaves the consumer quiet (#314)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    env.put("BODY", "${{ github.sha }}") catch unreachable;
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "BODY", "${{ github.sha }}") catch unreachable;
 
     var list = sec002JobOutputList("${{ steps.s.outputs.body }}", "echo \"${{ needs.a.outputs.body }}\"", env);
     defer list.deinit();
@@ -3306,9 +3306,9 @@ fn sec002StepOutputList(capture: Step) DiagnosticList {
 }
 
 test "SEC002: untrusted value re-expanded from a step output" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TITLE", "${{ github.event.issue.title }}");
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    try env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}");
 
     var list = sec002StepOutputList(.{
         .id = "capture",
@@ -3331,9 +3331,9 @@ test "SEC002: output of a step that captured nothing untrusted (no false positiv
 }
 
 test "SEC002: untrusted step that writes no output does not taint (no false positive)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TITLE", "${{ github.event.issue.title }}");
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    try env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}");
 
     var list = sec002StepOutputList(.{
         .id = "capture",
@@ -3345,9 +3345,9 @@ test "SEC002: untrusted step that writes no output does not taint (no false posi
 }
 
 test "SEC002: an untrusted value the writing line never reads (no false positive)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TITLE", "${{ github.event.issue.title }}");
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    try env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}");
 
     var list = sec002StepOutputList(.{
         .id = "capture",
@@ -3380,9 +3380,9 @@ test "referencesShellVar matches a whole name only" {
 }
 
 test "SEC002: a step only sees the taint of the steps before it (no false positive)" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    defer env.deinit();
-    try env.put("TITLE", "${{ github.event.issue.title }}");
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    try env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}");
 
     const steps = [_]Step{
         .{ .run = "echo ${{ steps.capture.outputs.title }}" },
@@ -3492,18 +3492,18 @@ test "SEC003: AWS key in run block" {
 }
 
 test "SEC003: Slack token in with" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("slack-token", "xoxb-1234-5678-abcdef") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "slack-token", "xoxb-1234-5678-abcdef") catch unreachable;
+    defer with.deinit(testing.allocator);
     var list = runStep(.{ .uses = ActionRef.parse("some/action@v1"), .with = with });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
 }
 
 test "SEC003: Stripe key in env" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    env.put("STRIPE_KEY", "sk-live_abcdef123456") catch unreachable;
-    defer env.deinit();
+    var env: workflow_types.StringMap = .empty;
+    env.put(testing.allocator, "STRIPE_KEY", "sk-live_abcdef123456") catch unreachable;
+    defer env.deinit(testing.allocator);
     var list = runStep(.{ .run = "echo test", .env = env });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
@@ -3650,9 +3650,9 @@ test "SEC004: no fix when value_span is null" {
 }
 
 test "SEC005: PR target with checkout of head" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3662,9 +3662,9 @@ test "SEC005: PR target with checkout of head" {
 }
 
 test "SEC005: PR target with checkout of head ref" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.head_ref }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.head_ref }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3674,9 +3674,9 @@ test "SEC005: PR target with checkout of head ref" {
 }
 
 test "SEC005: refs/pull/N/head built from the PR number" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "refs/pull/${{ github.event.pull_request.number }}/head") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "refs/pull/${{ github.event.pull_request.number }}/head") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3686,22 +3686,22 @@ test "SEC005: refs/pull/N/head built from the PR number" {
 }
 
 test "SEC005: pull_request_review checkout of PR head (#309)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
     var list = runJobOn(pr_review_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     const d = findDiagnostic(&list, "SEC005").?;
-    try testing.expect(std.mem.indexOf(u8, d.message, "pull_request_review") != null);
+    try testing.expect(std.mem.find(u8, d.message, "pull_request_review") != null);
 }
 
 test "SEC005: pull_request_review_comment checkout of head_ref (#309)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.head_ref }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.head_ref }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3711,9 +3711,9 @@ test "SEC005: pull_request_review_comment checkout of head_ref (#309)" {
 }
 
 test "SEC005: PR target checkout of merge_commit_sha (#310)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.pull_request.merge_commit_sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.merge_commit_sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3735,14 +3735,14 @@ fn sec005GuardedList(job_if: ?[]const u8, step_if: ?[]const u8, with: workflow_t
 }
 
 fn sec005HeadShaWith() workflow_types.StringMap {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
     return with;
 }
 
 test "SEC005: job gated on the head repository (no false positive)" {
     var with = sec005HeadShaWith();
-    defer with.deinit();
+    defer with.deinit(testing.allocator);
 
     var list = sec005GuardedList("github.event.pull_request.head.repo.full_name == github.repository", null, with);
     defer list.deinit();
@@ -3751,7 +3751,7 @@ test "SEC005: job gated on the head repository (no false positive)" {
 
 test "SEC005: job gated on the fork flag (no false positive)" {
     var with = sec005HeadShaWith();
-    defer with.deinit();
+    defer with.deinit(testing.allocator);
 
     var list = sec005GuardedList("github.event.pull_request.head.repo.fork == false", null, with);
     defer list.deinit();
@@ -3760,7 +3760,7 @@ test "SEC005: job gated on the fork flag (no false positive)" {
 
 test "SEC005: job gated on a negated fork flag (no false positive)" {
     var with = sec005HeadShaWith();
-    defer with.deinit();
+    defer with.deinit(testing.allocator);
 
     var list = sec005GuardedList("!github.event.pull_request.head.repo.fork", null, with);
     defer list.deinit();
@@ -3769,7 +3769,7 @@ test "SEC005: job gated on a negated fork flag (no false positive)" {
 
 test "SEC005: step gated on the head repository (no false positive)" {
     var with = sec005HeadShaWith();
-    defer with.deinit();
+    defer with.deinit(testing.allocator);
 
     var list = sec005GuardedList(null, "github.event.pull_request.head.repo.full_name == github.repository", with);
     defer list.deinit();
@@ -3778,7 +3778,7 @@ test "SEC005: step gated on the head repository (no false positive)" {
 
 test "SEC005: gate that selects fork PRs instead of excluding them" {
     var with = sec005HeadShaWith();
-    defer with.deinit();
+    defer with.deinit(testing.allocator);
 
     var list = sec005GuardedList("github.event.pull_request.head.repo.fork == true", null, with);
     defer list.deinit();
@@ -3787,7 +3787,7 @@ test "SEC005: gate that selects fork PRs instead of excluding them" {
 
 test "SEC005: gate a fork can walk around with ||" {
     var with = sec005HeadShaWith();
-    defer with.deinit();
+    defer with.deinit(testing.allocator);
 
     var list = sec005GuardedList(
         "github.event.pull_request.head.repo.fork == false || github.event.pull_request.user.login == 'dependabot[bot]'",
@@ -3800,7 +3800,7 @@ test "SEC005: gate a fork can walk around with ||" {
 
 test "SEC005: gate that compares two attributes of the same head (no anchor)" {
     var with = sec005HeadShaWith();
-    defer with.deinit();
+    defer with.deinit(testing.allocator);
 
     var list = sec005GuardedList(
         "github.event.pull_request.head.repo.full_name == github.event.pull_request.head.label",
@@ -3812,9 +3812,9 @@ test "SEC005: gate that compares two attributes of the same head (no anchor)" {
 }
 
 test "SEC009: workflow_run job gated on the head repository (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3829,9 +3829,9 @@ test "SEC009: workflow_run job gated on the head repository (no false positive)"
 }
 
 test "SEC005: PR target checkout of the base ref (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.pull_request.base.sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.base.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3859,18 +3859,18 @@ test "SEC005: PR target checkout without ref (no false positive)" {
 }
 
 test "SEC005: non-PR-target with checkout (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     var list = runStep(.{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
 
 test "SEC009: workflow_run with checkout of workflow_run head_sha" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3887,9 +3887,9 @@ test "SEC009: workflow_run with checkout of workflow_run head_sha" {
 }
 
 test "SEC009: workflow_run with checkout of workflow_run head_branch" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.workflow_run.head_branch }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_branch }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3899,9 +3899,9 @@ test "SEC009: workflow_run with checkout of workflow_run head_branch" {
 }
 
 test "SEC009: workflow_run checkout of a triggering PR head ref (#311)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.workflow_run.pull_requests[0].head.ref }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.pull_requests[0].head.ref }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -3929,9 +3929,9 @@ test "SEC009: workflow_run checkout without ref (no false positive)" {
 }
 
 test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -4014,9 +4014,9 @@ fn expectNoRepeat(contexts: []const []const u8) !void {
 }
 
 fn runCheckoutWith(on: Trigger, key: []const u8, value: []const u8) DiagnosticList {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    with.put(key, value) catch unreachable;
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, key, value) catch unreachable;
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -4050,7 +4050,7 @@ test "SEC021: issue_comment ChatOps checkout of refs/pull/<issue.number>/merge (
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC021"));
     const d = findDiagnostic(&list, "SEC021").?;
-    try testing.expect(std.mem.indexOf(u8, d.message, "commenting user") != null);
+    try testing.expect(std.mem.find(u8, d.message, "commenting user") != null);
 }
 
 test "SEC021: issues does not treat issue.number as a ChatOps ref (#308)" {
@@ -4078,10 +4078,10 @@ test "SEC021: repository_dispatch checkout repository from client_payload" {
 }
 
 test "SEC021: checkout ref and repository in one step report once" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    with.put("ref", "${{ github.event.inputs.target }}") catch unreachable;
-    with.put("repository", "${{ github.event.inputs.repo }}") catch unreachable;
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "ref", "${{ github.event.inputs.target }}") catch unreachable;
+    with.put(testing.allocator, "repository", "${{ github.event.inputs.repo }}") catch unreachable;
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -4121,9 +4121,9 @@ test "SEC021: reusable workflow inputs shorthand is out of scope (no false posit
 }
 
 test "SEC021: non-checkout step (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    with.put("ref", "${{ github.event.inputs.target }}") catch unreachable;
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "ref", "${{ github.event.inputs.target }}") catch unreachable;
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("some/other-action@v1"), .with = with },
     };
@@ -4177,10 +4177,10 @@ test "SEC021: issues does not borrow the comment body context (#224)" {
 }
 
 test "SEC009: defers to SEC005 when one checkout names both refs (#224)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    with.put("ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
-    with.put("repository", "${{ github.event.pull_request.head.repo.full_name }}") catch unreachable;
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    with.put(testing.allocator, "repository", "${{ github.event.pull_request.head.repo.full_name }}") catch unreachable;
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -4223,10 +4223,10 @@ test "SEC005: PR target checkout of a fixed repository (no false positive)" {
 }
 
 test "SEC005: head repository and head ref in one step report once (#218)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    with.put("ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
-    with.put("repository", "${{ github.event.pull_request.head.repo.full_name }}") catch unreachable;
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    with.put(testing.allocator, "repository", "${{ github.event.pull_request.head.repo.full_name }}") catch unreachable;
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
     };
@@ -4512,7 +4512,7 @@ test "SEC007: autofix generated on single-line on:" {
     try testing.expectEqual(@as(usize, 1), fix.edits.len);
     try testing.expectEqualStrings("permissions: {contents: read}\n", fix.edits[0].replacement);
     try testing.expectEqual(fix.edits[0].start_byte, fix.edits[0].end_byte);
-    const on_line_end = (std.mem.indexOf(u8, source, "on: push\n") orelse unreachable) + "on: push\n".len;
+    const on_line_end = (std.mem.find(u8, source, "on: push\n") orelse unreachable) + "on: push\n".len;
     try testing.expectEqual(on_line_end, fix.edits[0].start_byte);
 }
 
@@ -4541,7 +4541,7 @@ test "SEC007: autofix on multi-line on: block inserts after last child" {
 
     const diag = list.get(0);
     const fix = diag.fix orelse return error.TestUnexpectedResult;
-    const jobs_pos = std.mem.indexOf(u8, source, "jobs:") orelse unreachable;
+    const jobs_pos = std.mem.find(u8, source, "jobs:") orelse unreachable;
     try testing.expectEqual(jobs_pos, fix.edits[0].start_byte);
     try testing.expectEqualStrings("permissions: {contents: read}\n", fix.edits[0].replacement);
 }
@@ -4613,9 +4613,9 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
-    const perm_pos = std.mem.indexOf(u8, result.content, "permissions: {contents: read}") orelse return error.TestUnexpectedResult;
-    const on_pos = std.mem.indexOf(u8, result.content, "on: push") orelse unreachable;
-    const jobs_pos = std.mem.indexOf(u8, result.content, "jobs:") orelse unreachable;
+    const perm_pos = std.mem.find(u8, result.content, "permissions: {contents: read}") orelse return error.TestUnexpectedResult;
+    const on_pos = std.mem.find(u8, result.content, "on: push") orelse unreachable;
+    const jobs_pos = std.mem.find(u8, result.content, "jobs:") orelse unreachable;
     try testing.expect(on_pos < perm_pos);
     try testing.expect(perm_pos < jobs_pos);
 }
@@ -4764,9 +4764,9 @@ test "SEC010: secrets inherit in reusable workflow call" {
 }
 
 test "SEC010: explicit secrets (no false positive)" {
-    var secrets_map = workflow_types.StringMap.init(testing.allocator);
-    secrets_map.put("deploy_key", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
-    defer secrets_map.deinit();
+    var secrets_map: workflow_types.StringMap = .empty;
+    secrets_map.put(testing.allocator, "deploy_key", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
+    defer secrets_map.deinit(testing.allocator);
     var list = runJob(.{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .secrets = SecretsConfig{ .map = secrets_map }, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
@@ -4797,18 +4797,18 @@ test "SEC012: fromJSON(secrets.CONFIG) in run block" {
 }
 
 test "SEC012: toJSON(secrets) in with value" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("data", "${{ toJSON(secrets) }}") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "data", "${{ toJSON(secrets) }}") catch unreachable;
+    defer with.deinit(testing.allocator);
     var list = runStep(.{ .uses = ActionRef.parse("some/action@v1"), .with = with });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
 }
 
 test "SEC012: toJSON(secrets) in env value" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    env.put("ALL_SECRETS", "${{ toJSON(secrets) }}") catch unreachable;
-    defer env.deinit();
+    var env: workflow_types.StringMap = .empty;
+    env.put(testing.allocator, "ALL_SECRETS", "${{ toJSON(secrets) }}") catch unreachable;
+    defer env.deinit(testing.allocator);
     var list = runStep(.{ .run = "echo debug", .env = env });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC012"));
@@ -4833,10 +4833,10 @@ test "SEC012: secrets reference without toJSON (no false positive)" {
 }
 
 test "SEC012: only one diagnostic per step" {
-    var env = workflow_types.StringMap.init(testing.allocator);
-    env.put("A", "${{ toJSON(secrets) }}") catch unreachable;
-    env.put("B", "${{ toJSON(secrets.X) }}") catch unreachable;
-    defer env.deinit();
+    var env: workflow_types.StringMap = .empty;
+    env.put(testing.allocator, "A", "${{ toJSON(secrets) }}") catch unreachable;
+    env.put(testing.allocator, "B", "${{ toJSON(secrets.X) }}") catch unreachable;
+    defer env.deinit(testing.allocator);
     var list = runStep(.{ .run = "echo ${{ toJSON(secrets) }}", .env = env });
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC012"));
@@ -4947,9 +4947,9 @@ test "containsActorBotCheck rejects bot without actor" {
 }
 
 test "clean workflow passes all security rules" {
-    var checkout_with = workflow_types.StringMap.init(testing.allocator);
-    checkout_with.put("persist-credentials", "false") catch unreachable;
-    defer checkout_with.deinit();
+    var checkout_with: workflow_types.StringMap = .empty;
+    checkout_with.put(testing.allocator, "persist-credentials", "false") catch unreachable;
+    defer checkout_with.deinit(testing.allocator);
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29"),
@@ -4980,9 +4980,9 @@ test "SEC016: release trigger + actions/cache" {
 }
 
 test "SEC016: release trigger + setup-node with cache" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("cache", "npm") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "cache", "npm") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/setup-node@v4"), .with = with },
     };
@@ -5009,9 +5009,9 @@ test "SEC016: tag push + actions/cache in a job with no deploy keyword" {
 }
 
 test "SEC016: tag push + setup action caching by default" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("cache", "pip") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "cache", "pip") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/setup-python@v5"), .with = with },
     };
@@ -5109,9 +5109,9 @@ test "SEC016: setup-uv in release caches without any input" {
 }
 
 test "SEC016: setup-uv with enable-cache false (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("enable-cache", "false") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "enable-cache", "false") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("astral-sh/setup-uv@v6"), .with = with },
     };
@@ -5138,9 +5138,9 @@ test "SEC016: setup-zig on a tag push caches without any input" {
 }
 
 test "SEC016: setup-zig with use-cache false (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("use-cache", "False") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "use-cache", "False") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("mlugg/setup-zig@v2"), .with = with },
     };
@@ -5154,9 +5154,9 @@ test "SEC016: setup-zig with use-cache false (no false positive)" {
 }
 
 test "SEC016: opt-in setup action with cache disabled (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("cache", "false") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "cache", "false") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/setup-go@v5"), .with = with },
     };
@@ -5471,18 +5471,18 @@ test "SEC011: fromJSON(secrets) in run block" {
 }
 
 test "SEC011: bare secrets in with value" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("data", "${{ secrets }}") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "data", "${{ secrets }}") catch unreachable;
     var list = runStep(.{ .with = with_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
 }
 
 test "SEC011: bare secrets in env value" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ALL_SECRETS", "${{ secrets }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ALL_SECRETS", "${{ secrets }}") catch unreachable;
     var list = runStep(.{ .env = env_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC011"));
@@ -5513,9 +5513,9 @@ test "SEC011: toJSON(github) is allowed" {
 }
 
 test "SEC011: one diagnostic per step" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ALL", "${{ toJSON(secrets) }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ALL", "${{ toJSON(secrets) }}") catch unreachable;
     var list = runStep(.{ .run = "echo ${{ secrets }}", .env = env_map });
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC011"));
@@ -5552,9 +5552,9 @@ test "SEC015: checkout + upload-artifact triggers rule" {
 }
 
 test "SEC015: checkout with other with: keys (no persist-credentials) + upload-artifact" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("fetch-depth", "0") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "fetch-depth", "0") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
@@ -5565,9 +5565,9 @@ test "SEC015: checkout with other with: keys (no persist-credentials) + upload-a
 }
 
 test "SEC015: persist-credentials: true is vulnerable" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("persist-credentials", "true") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "persist-credentials", "true") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
@@ -5600,9 +5600,9 @@ test "SEC015: multiple checkout steps emit one diagnostic per checkout" {
 }
 
 test "SEC015: checkout + persist-credentials: false (no false positive)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("persist-credentials", "false") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "persist-credentials", "false") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
@@ -5711,8 +5711,8 @@ test "SEC015: fix is safe and attached when span info present" {
             try testing.expect(fix.edits.len == 1);
             try testing.expectEqual(@as(usize, 50), fix.edits[0].start_byte);
             try testing.expectEqual(@as(usize, 50), fix.edits[0].end_byte);
-            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") != null);
-            try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
+            try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "with:") != null);
+            try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
             found_fix = true;
             break;
         }
@@ -5721,9 +5721,9 @@ test "SEC015: fix is safe and attached when span info present" {
 }
 
 test "SEC015: fix inserts into existing with: block" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("fetch-depth", "0") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "fetch-depth", "0") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
@@ -5740,14 +5740,14 @@ test "SEC015: fix inserts into existing with: block" {
     const d = findDiagnostic(&list, "SEC015").?;
     const fix = d.fix.?;
     try testing.expectEqual(@as(usize, 80), fix.edits[0].start_byte);
-    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") == null);
-    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
+    try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "with:") == null);
+    try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
 }
 
 test "SEC015: no fix when the with: anchor is unavailable (#171)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("fetch-depth", "0") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "fetch-depth", "0") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
@@ -5803,9 +5803,9 @@ test "SEC015: applyFixes leaves a flow with: untouched under plain --fix (#171)"
 }
 
 test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    with.put("persist-credentials", "true") catch unreachable;
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "persist-credentials", "true") catch unreachable;
+    defer with.deinit(testing.allocator);
     const steps = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
@@ -5849,21 +5849,21 @@ test "classifyPersistCredentials helper" {
     const step_no_with = Step{};
     try testing.expectEqual(PersistCredentialsState.not_set, classifyPersistCredentials(&step_no_with));
 
-    var with1 = workflow_types.StringMap.init(testing.allocator);
-    with1.put("fetch-depth", "0") catch unreachable;
-    defer with1.deinit();
+    var with1: workflow_types.StringMap = .empty;
+    with1.put(testing.allocator, "fetch-depth", "0") catch unreachable;
+    defer with1.deinit(testing.allocator);
     const step_no_pc = Step{ .with = with1 };
     try testing.expectEqual(PersistCredentialsState.not_set, classifyPersistCredentials(&step_no_pc));
 
-    var with2 = workflow_types.StringMap.init(testing.allocator);
-    with2.put("persist-credentials", "false") catch unreachable;
-    defer with2.deinit();
+    var with2: workflow_types.StringMap = .empty;
+    with2.put(testing.allocator, "persist-credentials", "false") catch unreachable;
+    defer with2.deinit(testing.allocator);
     const step_false = Step{ .with = with2 };
     try testing.expectEqual(PersistCredentialsState.explicit_false, classifyPersistCredentials(&step_false));
 
-    var with3 = workflow_types.StringMap.init(testing.allocator);
-    with3.put("persist-credentials", "true") catch unreachable;
-    defer with3.deinit();
+    var with3: workflow_types.StringMap = .empty;
+    with3.put(testing.allocator, "persist-credentials", "true") catch unreachable;
+    defer with3.deinit(testing.allocator);
     const step_true = Step{ .with = with3 };
     try testing.expectEqual(PersistCredentialsState.explicit_true, classifyPersistCredentials(&step_true));
 }
@@ -5910,8 +5910,8 @@ test "SEC015: integration - YAML parse to fix apply" {
             const result = try fix_engine.applyFixes(testing.allocator, source, &fixes);
             defer result.deinit(testing.allocator);
 
-            try testing.expect(std.mem.indexOf(u8, result.content, "persist-credentials: false") != null);
-            try testing.expect(std.mem.indexOf(u8, result.content, "with:\n") != null);
+            try testing.expect(std.mem.find(u8, result.content, "persist-credentials: false") != null);
+            try testing.expect(std.mem.find(u8, result.content, "with:\n") != null);
             try testing.expectEqual(@as(usize, 1), result.edits_applied);
 
             fix_found = true;
@@ -5964,9 +5964,9 @@ test "SEC018: with == null triggers with unsafe fix" {
 }
 
 test "SEC018: with exists without persist-credentials triggers with fix" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    with_map.put("fetch-depth", "0") catch unreachable;
-    defer with_map.deinit();
+    var with_map: workflow_types.StringMap = .empty;
+    with_map.put(testing.allocator, "fetch-depth", "0") catch unreachable;
+    defer with_map.deinit(testing.allocator);
     var list = runStep(.{
         .uses = ActionRef.parse("actions/checkout@v4"),
         .with = with_map,
@@ -5983,9 +5983,9 @@ test "SEC018: with exists without persist-credentials triggers with fix" {
 }
 
 test "SEC018: no fix when the with: anchor is unavailable (#171)" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    with_map.put("fetch-depth", "0") catch unreachable;
-    defer with_map.deinit();
+    var with_map: workflow_types.StringMap = .empty;
+    with_map.put(testing.allocator, "fetch-depth", "0") catch unreachable;
+    defer with_map.deinit(testing.allocator);
     var list = runStep(.{
         .uses = ActionRef.parse("actions/checkout@v4"),
         .with = with_map,
@@ -6034,9 +6034,9 @@ test "SEC018: applyFixes leaves a flow with: untouched (#171)" {
 }
 
 test "SEC018: persist-credentials: true triggers without fix" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    with_map.put("persist-credentials", "true") catch unreachable;
-    defer with_map.deinit();
+    var with_map: workflow_types.StringMap = .empty;
+    with_map.put(testing.allocator, "persist-credentials", "true") catch unreachable;
+    defer with_map.deinit(testing.allocator);
     var list = runStep(.{
         .uses = ActionRef.parse("actions/checkout@v4"),
         .with = with_map,
@@ -6049,13 +6049,13 @@ test "SEC018: persist-credentials: true triggers without fix" {
     try testing.expect(hasDiagnostic(&list, "SEC018"));
     const diag = findDiagnostic(&list, "SEC018").?;
     try testing.expect(diag.fix == null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "explicitly set to true") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "explicitly set to true") != null);
 }
 
 test "SEC018: persist-credentials: false does not trigger" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    with_map.put("persist-credentials", "false") catch unreachable;
-    defer with_map.deinit();
+    var with_map: workflow_types.StringMap = .empty;
+    with_map.put(testing.allocator, "persist-credentials", "false") catch unreachable;
+    defer with_map.deinit(testing.allocator);
     var list = runStep(.{
         .uses = ActionRef.parse("actions/checkout@v4"),
         .with = with_map,
@@ -6081,14 +6081,14 @@ test "SEC018: autofix replacement contains with: block when with == null" {
     try testing.expectEqual(@as(usize, 1), fix.edits.len);
     try testing.expectEqual(@as(usize, 50), fix.edits[0].start_byte);
     try testing.expectEqual(@as(usize, 50), fix.edits[0].end_byte);
-    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") != null);
-    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
+    try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "with:") != null);
+    try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
 }
 
 test "SEC018: autofix appends entry when with already exists" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    with_map.put("fetch-depth", "0") catch unreachable;
-    defer with_map.deinit();
+    var with_map: workflow_types.StringMap = .empty;
+    with_map.put(testing.allocator, "fetch-depth", "0") catch unreachable;
+    defer with_map.deinit(testing.allocator);
     var list = runStep(.{
         .uses = ActionRef.parse("actions/checkout@v4"),
         .with = with_map,
@@ -6101,16 +6101,16 @@ test "SEC018: autofix appends entry when with already exists" {
     const diag = findDiagnostic(&list, "SEC018").?;
     const fix = diag.fix.?;
     try testing.expectEqual(@as(usize, 80), fix.edits[0].start_byte);
-    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "with:") == null);
-    try testing.expect(std.mem.indexOf(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
+    try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "with:") == null);
+    try testing.expect(std.mem.find(u8, fix.edits[0].replacement, "persist-credentials: false") != null);
 }
 
 test "SEC018: YAML-boolean capitalization variants are classified correctly" {
     const eng = engine.Engine.init(&security_rules);
 
-    var with_false_caps = workflow_types.StringMap.init(testing.allocator);
-    with_false_caps.put("persist-credentials", "False") catch unreachable;
-    defer with_false_caps.deinit();
+    var with_false_caps: workflow_types.StringMap = .empty;
+    with_false_caps.put(testing.allocator, "persist-credentials", "False") catch unreachable;
+    defer with_false_caps.deinit(testing.allocator);
     const steps_false = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with_false_caps },
     };
@@ -6120,9 +6120,9 @@ test "SEC018: YAML-boolean capitalization variants are classified correctly" {
     defer list_false.deinit();
     try testing.expect(!hasDiagnostic(&list_false, "SEC018"));
 
-    var with_true_caps = workflow_types.StringMap.init(testing.allocator);
-    with_true_caps.put("persist-credentials", "TRUE") catch unreachable;
-    defer with_true_caps.deinit();
+    var with_true_caps: workflow_types.StringMap = .empty;
+    with_true_caps.put(testing.allocator, "persist-credentials", "TRUE") catch unreachable;
+    defer with_true_caps.deinit(testing.allocator);
     const steps_true = [_]Step{
         .{
             .uses = ActionRef.parse("actions/checkout@v4"),
@@ -6139,7 +6139,7 @@ test "SEC018: YAML-boolean capitalization variants are classified correctly" {
     try testing.expect(hasDiagnostic(&list_true, "SEC018"));
     const diag = findDiagnostic(&list_true, "SEC018").?;
     try testing.expect(diag.fix == null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "explicitly set to true") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "explicitly set to true") != null);
 }
 
 test "SEC018: non-checkout action does not trigger" {
@@ -6196,27 +6196,27 @@ test "SEC019: secret in run block" {
 }
 
 test "SEC019: secret in with value" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("token", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "token", "${{ secrets.DEPLOY_KEY }}") catch unreachable;
     var list = runStep(.{ .with = with_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: secret in env value is allowed" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("MY_TOKEN", "${{ secrets.MY_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "MY_TOKEN", "${{ secrets.MY_TOKEN }}") catch unreachable;
     var list = runStep(.{ .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC019"));
 }
 
 test "SEC019: GITHUB_TOKEN in with is allowed" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("token", "${{ secrets.GITHUB_TOKEN }}") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "token", "${{ secrets.GITHUB_TOKEN }}") catch unreachable;
     var list = runStep(.{ .with = with_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC019"));
@@ -6247,9 +6247,9 @@ test "SEC019: one diagnostic per step" {
 }
 
 test "SEC023: pypi publish with an API token" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("password", "${{ secrets.PYPI_API_TOKEN }}") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "password", "${{ secrets.PYPI_API_TOKEN }}") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc"),
         .with = with_map,
@@ -6259,9 +6259,9 @@ test "SEC023: pypi publish with an API token" {
 }
 
 test "SEC023: pypi publish without a token is trusted publishing" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("repository-url", "https://test.pypi.org/legacy/") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "repository-url", "https://test.pypi.org/legacy/") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc"),
         .with = with_map,
@@ -6271,9 +6271,9 @@ test "SEC023: pypi publish without a token is trusted publishing" {
 }
 
 test "SEC023: pypi publish with an empty password is not a token" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("password", "  ") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "password", "  ") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
         .with = with_map,
@@ -6283,9 +6283,9 @@ test "SEC023: pypi publish with an empty password is not a token" {
 }
 
 test "SEC023: input name is matched case-insensitively" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("PASSWORD", "${{ secrets.PYPI_API_TOKEN }}") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "PASSWORD", "${{ secrets.PYPI_API_TOKEN }}") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
         .with = with_map,
@@ -6295,9 +6295,9 @@ test "SEC023: input name is matched case-insensitively" {
 }
 
 test "SEC023: release-gem opting out of trusted publishing" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("setup-trusted-publisher", "false") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "setup-trusted-publisher", "false") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("rubygems/release-gem@v1"),
         .with = with_map,
@@ -6307,10 +6307,10 @@ test "SEC023: release-gem opting out of trusted publishing" {
 }
 
 test "SEC023: publishing to a private index is not trusted publishing territory" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("password", "${{ secrets.ARTIFACTORY_TOKEN }}") catch unreachable;
-    with_map.put("repository-url", "https://artifactory.example.com/api/pypi/pypi-local") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "password", "${{ secrets.ARTIFACTORY_TOKEN }}") catch unreachable;
+    with_map.put(testing.allocator, "repository-url", "https://artifactory.example.com/api/pypi/pypi-local") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
         .with = with_map,
@@ -6320,10 +6320,10 @@ test "SEC023: publishing to a private index is not trusted publishing territory"
 }
 
 test "SEC023: publishing to TestPyPI with a token is still reported" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("password", "${{ secrets.TEST_PYPI_API_TOKEN }}") catch unreachable;
-    with_map.put("repository-url", "https://test.pypi.org/legacy/") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "password", "${{ secrets.TEST_PYPI_API_TOKEN }}") catch unreachable;
+    with_map.put(testing.allocator, "repository-url", "https://test.pypi.org/legacy/") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("pypa/gh-action-pypi-publish@v1.12.4"),
         .with = with_map,
@@ -6333,9 +6333,9 @@ test "SEC023: publishing to TestPyPI with a token is still reported" {
 }
 
 test "SEC023: release-gem opt-out is matched case-insensitively" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("setup-trusted-publisher", "False") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "setup-trusted-publisher", "False") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("rubygems/release-gem@v1"),
         .with = with_map,
@@ -6345,9 +6345,9 @@ test "SEC023: release-gem opt-out is matched case-insensitively" {
 }
 
 test "SEC023: release-gem keeping trusted publishing on" {
-    var with_map = workflow_types.StringMap.init(testing.allocator);
-    defer with_map.deinit();
-    with_map.put("setup-trusted-publisher", "true") catch unreachable;
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "setup-trusted-publisher", "true") catch unreachable;
     var list = runStep(.{
         .uses = ActionRef.parse("rubygems/release-gem@v1"),
         .with = with_map,
@@ -6357,18 +6357,18 @@ test "SEC023: release-gem keeping trusted publishing on" {
 }
 
 test "SEC023: npm publish with NODE_AUTH_TOKEN from a secret" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
     var list = runStep(.{ .run = "npm publish --provenance", .env = env_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC023: npm publish with a flag before the subcommand" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
     var list = runStep(.{ .run = "npm --registry=https://registry.npmjs.org publish", .env = env_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC023"));
@@ -6381,45 +6381,45 @@ test "SEC023: npm publish without a token stays quiet" {
 }
 
 test "SEC023: NODE_AUTH_TOKEN without a publish stays quiet" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
     var list = runStep(.{ .run = "npm ci", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC023: a computed npm token is not reported" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("NODE_AUTH_TOKEN", "${{ steps.mint.outputs.token }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "NODE_AUTH_TOKEN", "${{ steps.mint.outputs.token }}") catch unreachable;
     var list = runStep(.{ .run = "npm publish", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC023: npmpublish is not npm publish" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "NODE_AUTH_TOKEN", "${{ secrets.NPM_TOKEN }}") catch unreachable;
     var list = runStep(.{ .run = "run-npm publishing", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC023: cargo publish with CARGO_REGISTRY_TOKEN from a secret" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
     var list = runStep(.{ .run = "cargo publish --locked", .env = env_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC023: cargo publish behind a flag before the subcommand" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
     var list = runStep(.{ .run = "cargo --locked publish", .env = env_map });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC023"));
@@ -6432,27 +6432,27 @@ test "SEC023: cargo publish without a token stays quiet" {
 }
 
 test "SEC023: a trusted-publishing cargo token is not reported" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("CARGO_REGISTRY_TOKEN", "${{ steps.auth.outputs.token }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "CARGO_REGISTRY_TOKEN", "${{ steps.auth.outputs.token }}") catch unreachable;
     var list = runStep(.{ .run = "cargo publish --locked", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC023: CARGO_REGISTRY_TOKEN without a publish stays quiet" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
     var list = runStep(.{ .run = "cargo build --release", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC023"));
 }
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     var env_meta = try makeSec017EnvMeta(testing.allocator, .plain, Span{
         .start_line = 1,
         .start_col = 1,
@@ -6461,7 +6461,7 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
         .start_byte = 10,
         .end_byte = 14,
     });
-    defer env_meta.deinit();
+    defer env_meta.deinit(testing.allocator);
     var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
@@ -6475,9 +6475,9 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
 }
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     var env_meta = try makeSec017EnvMeta(testing.allocator, .plain, Span{
         .start_line = 1,
         .start_col = 1,
@@ -6486,7 +6486,7 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
         .start_byte = 20,
         .end_byte = 24,
     });
-    defer env_meta.deinit();
+    defer env_meta.deinit(testing.allocator);
     var list = runJob(.{ .id = "build", .env = env_map, .env_meta = env_meta, .permissions = Permissions{} });
     defer list.deinit();
     const diag = findDiagnostic(&list, "SEC017") orelse return error.TestUnexpectedResult;
@@ -6496,9 +6496,9 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in job env" {
 }
 
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     var env_meta = try makeSec017EnvMeta(testing.allocator, .plain, Span{
         .start_line = 1,
         .start_col = 1,
@@ -6507,7 +6507,7 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
         .start_byte = 30,
         .end_byte = 34,
     });
-    defer env_meta.deinit();
+    defer env_meta.deinit(testing.allocator);
     const wf = Workflow{
         .name = "CI",
         .on = empty_trigger,
@@ -6525,9 +6525,9 @@ test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in workflow env" {
 }
 
 test "SEC017: fallback without env metadata keeps diagnostic" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     var list = runStep(.{ .run = "echo test", .env = env_map });
     defer list.deinit();
 
@@ -6537,9 +6537,9 @@ test "SEC017: fallback without env metadata keeps diagnostic" {
 }
 
 test "SEC017: fix preserves single quoted style" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     var env_meta = try makeSec017EnvMeta(testing.allocator, .single_quoted, Span{
         .start_line = 1,
         .start_col = 1,
@@ -6548,7 +6548,7 @@ test "SEC017: fix preserves single quoted style" {
         .start_byte = 40,
         .end_byte = 46,
     });
-    defer env_meta.deinit();
+    defer env_meta.deinit(testing.allocator);
     var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
 
@@ -6560,9 +6560,9 @@ test "SEC017: fix preserves single quoted style" {
 }
 
 test "SEC017: fix preserves double quoted style" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     var env_meta = try makeSec017EnvMeta(testing.allocator, .double_quoted, Span{
         .start_line = 1,
         .start_col = 1,
@@ -6571,7 +6571,7 @@ test "SEC017: fix preserves double quoted style" {
         .start_byte = 50,
         .end_byte = 56,
     });
-    defer env_meta.deinit();
+    defer env_meta.deinit(testing.allocator);
     var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
 
@@ -6583,9 +6583,9 @@ test "SEC017: fix preserves double quoted style" {
 }
 
 test "SEC017: literal style gets diagnostic without fix" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "true") catch unreachable;
     var env_meta = try makeSec017EnvMeta(testing.allocator, .literal, Span{
         .start_line = 1,
         .start_col = 1,
@@ -6594,7 +6594,7 @@ test "SEC017: literal style gets diagnostic without fix" {
         .start_byte = 60,
         .end_byte = 70,
     });
-    defer env_meta.deinit();
+    defer env_meta.deinit(testing.allocator);
     var list = runStep(.{ .run = "echo test", .env = env_map, .env_meta = env_meta });
     defer list.deinit();
 
@@ -6604,18 +6604,18 @@ test "SEC017: literal style gets diagnostic without fix" {
 }
 
 test "SEC017: value is false (no false positive)" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("ACTIONS_ALLOW_UNSECURE_COMMANDS", "false") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "ACTIONS_ALLOW_UNSECURE_COMMANDS", "false") catch unreachable;
     var list = runStep(.{ .run = "echo test", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
 }
 
 test "SEC017: key absent (no false positive)" {
-    var env_map = workflow_types.StringMap.init(testing.allocator);
-    defer env_map.deinit();
-    env_map.put("SOME_OTHER_VAR", "true") catch unreachable;
+    var env_map: workflow_types.StringMap = .empty;
+    defer env_map.deinit(testing.allocator);
+    env_map.put(testing.allocator, "SOME_OTHER_VAR", "true") catch unreachable;
     var list = runStep(.{ .run = "echo test", .env = env_map });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC017"));
@@ -6652,7 +6652,7 @@ test "SEC017: integration applies fix to workflow env" {
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: false") != null);
+    try testing.expect(std.mem.find(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: false") != null);
 }
 
 test "SEC017: integration applies fix to job env and preserves single quote/comment" {
@@ -6686,7 +6686,7 @@ test "SEC017: integration applies fix to job env and preserves single quote/comm
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: 'false' # deprecated") != null);
+    try testing.expect(std.mem.find(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: 'false' # deprecated") != null);
 }
 
 test "SEC017: integration applies fix to step env and preserves double quote/comment" {
@@ -6720,7 +6720,7 @@ test "SEC017: integration applies fix to step env and preserves double quote/com
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: \"false\" # deprecated") != null);
+    try testing.expect(std.mem.find(u8, result.content, "ACTIONS_ALLOW_UNSECURE_COMMANDS: \"false\" # deprecated") != null);
 }
 
 test "BP007: base64 -d piped to bash" {
@@ -7241,7 +7241,7 @@ test "SC007: actions/chekout fires warning and suggests checkout" {
     try testing.expect(hasDiagnostic(&list, "SC007"));
     const diag = findDiagnostic(&list, "SC007").?;
     try testing.expectEqual(Severity.warning, diag.severity);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"checkout\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"checkout\"") != null);
 }
 
 test "SC007: actions/setup-nodes fires" {
@@ -7377,7 +7377,7 @@ test "SEC001: --fix pins the tag to the commit it resolves to, keeping the versi
 
     try testing.expectEqual(@as(usize, 1), result.fix_count);
     try testing.expectEqual(diagnostics.FixSafety.safe, result.first_safety.?);
-    try testing.expect(std.mem.indexOf(u8, result.content, "uses: actions/checkout@" ++ sec001_pin_oid ++ " # v4") != null);
+    try testing.expect(std.mem.find(u8, result.content, "uses: actions/checkout@" ++ sec001_pin_oid ++ " # v4") != null);
 }
 
 test "SEC001: a quoted uses: value is pinned inside the quotes, with the comment outside" {
@@ -7398,7 +7398,7 @@ test "SEC001: a quoted uses: value is pinned inside the quotes, with the comment
     const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkUnpinnedAction }, false);
     defer result.deinit(testing.allocator);
 
-    try testing.expect(std.mem.indexOf(u8, result.content, "uses: \"actions/checkout@" ++ sec001_pin_oid ++ "\" # v4") != null);
+    try testing.expect(std.mem.find(u8, result.content, "uses: \"actions/checkout@" ++ sec001_pin_oid ++ "\" # v4") != null);
 }
 
 test "SEC001: without a known commit the diagnostic stands alone (--offline)" {
@@ -7576,8 +7576,8 @@ test "SEC002: a name colliding with an existing env: key is suffixed" {
     const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
     defer result.deinit(testing.allocator);
 
-    try testing.expect(std.mem.indexOf(u8, result.content, "ISSUE_TITLE_2: ${{ github.event.issue.title }}") != null);
-    try testing.expect(std.mem.indexOf(u8, result.content, "echo \"$ISSUE_TITLE_2\"") != null);
+    try testing.expect(std.mem.find(u8, result.content, "ISSUE_TITLE_2: ${{ github.event.issue.title }}") != null);
+    try testing.expect(std.mem.find(u8, result.content, "echo \"$ISSUE_TITLE_2\"") != null);
 }
 
 test "SEC002: a shell the workflow does not pin down gets no fix" {
@@ -7618,7 +7618,7 @@ test "SEC002: the job's defaults decide the shell when the step has none" {
     const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
     defer result.deinit(testing.allocator);
 
-    try testing.expect(std.mem.indexOf(u8, result.content, "echo \"$env:ISSUE_TITLE\"") != null);
+    try testing.expect(std.mem.find(u8, result.content, "echo \"$env:ISSUE_TITLE\"") != null);
 }
 
 test "SEC002: an expression inside single quotes gets no fix" {

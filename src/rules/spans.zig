@@ -164,7 +164,7 @@ test "Anchor.at on a block scalar resolves the matching content line" {
         .end_byte = 50 + 6 + value.len,
     };
     const a = Anchor.fromMeta(.{ .value_span = token, .style = .literal }, Span.point(1, 1, 0));
-    const offset = std.mem.indexOf(u8, value, "two").?;
+    const offset = std.mem.find(u8, value, "two").?;
     const s = a.at(value, offset, 3);
     try std.testing.expectEqual(@as(u32, 8), s.start_line);
     try std.testing.expectEqual(@as(u32, 8), s.start_col);

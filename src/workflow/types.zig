@@ -19,8 +19,8 @@ pub fn hasEmptySection(sections: []const EmptySection, name: []const u8) bool {
     return false;
 }
 
-pub const StringMap = std.StringArrayHashMap([]const u8);
-pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
+pub const StringMap = std.array_hash_map.String([]const u8);
+pub const ScalarValueMetaMap = std.array_hash_map.String(ScalarValueMeta);
 
 /// A single key of an `env:` mapping, kept alongside `env` so that name
 /// validation (SYN007) sees every key — including duplicates and keys whose
@@ -475,7 +475,7 @@ pub const ActionRef = struct {
         var result = ActionRef{ .raw = raw };
         var remaining = raw;
 
-        if (std.mem.indexOf(u8, remaining, "@")) |at_idx| {
+        if (std.mem.find(u8, remaining, "@")) |at_idx| {
             result.ref = remaining[at_idx + 1 ..];
             remaining = remaining[0..at_idx];
 
@@ -484,11 +484,11 @@ pub const ActionRef = struct {
             }
         }
 
-        if (std.mem.indexOf(u8, remaining, "/")) |first_slash| {
+        if (std.mem.find(u8, remaining, "/")) |first_slash| {
             result.owner = remaining[0..first_slash];
             const after_owner = remaining[first_slash + 1 ..];
 
-            if (std.mem.indexOf(u8, after_owner, "/")) |second_slash| {
+            if (std.mem.find(u8, after_owner, "/")) |second_slash| {
                 result.repo = after_owner[0..second_slash];
                 result.path = after_owner[second_slash + 1 ..];
             } else {

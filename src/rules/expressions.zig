@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const test_support = @import("../test_support.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
@@ -428,7 +429,7 @@ pub const ExprParser = struct {
         self.advance();
         try self.enter();
         defer self.leave();
-        var args = std.ArrayList(ExprNode){};
+        var args = std.ArrayList(ExprNode).empty;
 
         if (self.current.kind != .close_paren) {
             const first_arg = try self.parseOr();
@@ -514,7 +515,7 @@ pub const ExprParser = struct {
     }
 
     fn parseContextAccess(self: *ExprParser, first: []const u8, first_start: usize) ParseError!ExprNode {
-        var parts = std.ArrayList(u8){};
+        var parts = std.ArrayList(u8).empty;
         parts.appendSlice(self.allocator, first) catch return ParseError.OutOfMemory;
         var last_end: usize = first_start + first.len;
 
@@ -704,7 +705,7 @@ fn validateContextAccess(
         .unknown_property => |info| .{
             "EXPR003",
             .warning,
-            if (std.mem.indexOfAny(u8, info.receiver_path, ".[") == null)
+            if (std.mem.findAny(u8, info.receiver_path, ".[") == null)
                 std.fmt.allocPrint(allocator, "unknown {s} context property: '{s}'", .{ info.receiver_path, info.name }) catch "unknown context property"
             else
                 std.fmt.allocPrint(allocator, "unknown property '{s}' on '{s}'", .{ info.name, info.receiver_path }) catch "unknown context property",
@@ -892,12 +893,12 @@ fn buildContainsEqFix(
     if (ctx.kind != .context_access) return null;
     if (lit.kind != .string_literal) return null;
 
-    if (std.mem.indexOf(u8, ctx.value, ".*") != null) return null;
-    if (std.mem.indexOfScalar(u8, ctx.value, '[') != null) return null;
+    if (std.mem.find(u8, ctx.value, ".*") != null) return null;
+    if (std.mem.findScalar(u8, ctx.value, '[') != null) return null;
 
     if (lit.value.len >= 2) {
         const interior = lit.value[1 .. lit.value.len - 1];
-        if (std.mem.indexOfScalar(u8, interior, '\'') != null) return null;
+        if (std.mem.findScalar(u8, interior, '\'') != null) return null;
     }
 
     const is_negated = blk: {
@@ -1014,8 +1015,8 @@ fn buildExpr007Fix(
     if (lhs.kind != .context_access) return null;
     if (rhs.kind != bare.kind) return null;
 
-    if (std.mem.indexOf(u8, lhs.value, ".*") != null) return null;
-    if (std.mem.indexOfScalar(u8, lhs.value, '[') != null) return null;
+    if (std.mem.find(u8, lhs.value, ".*") != null) return null;
+    if (std.mem.findScalar(u8, lhs.value, '[') != null) return null;
 
     if (bare.kind == .string_literal) {
         if (!literalInteriorIsClean(bare.value)) return null;
@@ -1040,7 +1041,7 @@ fn buildExpr007Fix(
 fn literalInteriorIsClean(lit_value: []const u8) bool {
     if (lit_value.len < 2) return true;
     const interior = lit_value[1 .. lit_value.len - 1];
-    return std.mem.indexOfScalar(u8, interior, '\'') == null;
+    return std.mem.findScalar(u8, interior, '\'') == null;
 }
 
 fn decodeExprStringLiteral(allocator: std.mem.Allocator, lit: []const u8) ?[]const u8 {
@@ -1203,10 +1204,10 @@ pub fn findAndValidateExpressionsEnv(
     while (pos + 2 < text.len) {
         if (text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{') {
             const expr_start = pos + 3;
-            if (std.mem.indexOf(u8, text[expr_start..], "}}")) |end_offset| {
+            if (std.mem.find(u8, text[expr_start..], "}}")) |end_offset| {
                 const expr_content = text[expr_start .. expr_start + end_offset];
                 const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
-                const leading_trim = std.mem.indexOfNone(u8, expr_content, " \t\n\r") orelse 0;
+                const leading_trim = std.mem.findNone(u8, expr_content, " \t\n\r") orelse 0;
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
                 const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
                 validateExpressionEnv(allocator, trimmed, expr_span, list, expr_base_byte, env, use);
@@ -1238,7 +1239,7 @@ pub fn forEachExpression(text: []const u8, anchor: Anchor, visitor: anytype) voi
             continue;
         }
         const expr_start = pos + 3;
-        const end_offset = std.mem.indexOf(u8, text[expr_start..], "}}") orelse return;
+        const end_offset = std.mem.find(u8, text[expr_start..], "}}") orelse return;
         const expr_content = text[expr_start .. expr_start + end_offset];
         const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
         if (trimmed.len != 0) {
@@ -1268,7 +1269,7 @@ const IfConditionShape = enum {
 
 fn classifyIfConditionShape(if_val: []const u8) IfConditionShape {
     const trimmed = std.mem.trim(u8, if_val, " \t\n\r");
-    if (std.mem.indexOf(u8, trimmed, "${{") == null) return .bare_expression;
+    if (std.mem.find(u8, trimmed, "${{") == null) return .bare_expression;
     if (isSingleWrappedExpression(trimmed)) return .single_wrapped_expression;
     return .mixed_expression_string;
 }
@@ -1277,7 +1278,7 @@ fn singleWrappedExpressionInner(s: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, s, " \t\n\r");
     if (!std.mem.startsWith(u8, trimmed, "${{")) return null;
     const after_open = trimmed[3..];
-    const close = std.mem.indexOf(u8, after_open, "}}") orelse return null;
+    const close = std.mem.find(u8, after_open, "}}") orelse return null;
     if (std.mem.trim(u8, after_open[close + 2 ..], " \t\n\r").len != 0) return null;
     const inner = std.mem.trim(u8, after_open[0..close], " \t\n\r");
     if (inner.len == 0) return null;
@@ -1344,7 +1345,7 @@ fn findIfExprBlocks(allocator: std.mem.Allocator, if_val: []const u8) ?[]const I
             continue;
         }
         const inner_start = pos + 3;
-        const close_rel = std.mem.indexOf(u8, if_val[inner_start..], "}}") orelse return null;
+        const close_rel = std.mem.find(u8, if_val[inner_start..], "}}") orelse return null;
         const inner_end = inner_start + close_rel;
         const close_end = inner_end + 2;
         const inner = std.mem.trim(u8, if_val[inner_start..inner_end], " \t\n\r");
@@ -2932,7 +2933,7 @@ test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" 
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
 
-    var fix_list = std.ArrayList(Fix){};
+    var fix_list = std.ArrayList(Fix).empty;
     defer fix_list.deinit(std.testing.allocator);
     for (diags.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
@@ -2945,8 +2946,8 @@ test "EXPR006 autofix: applied end-to-end on bare (double-quoted) `if:` scalar" 
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "if: \"github.ref == 'main'\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
+    try std.testing.expect(std.mem.find(u8, result.content, "if: \"github.ref == 'main'\"") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "contains(") == null);
 }
 
 test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`" {
@@ -2973,7 +2974,7 @@ test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
 
-    var fix_list = std.ArrayList(Fix){};
+    var fix_list = std.ArrayList(Fix).empty;
     defer fix_list.deinit(std.testing.allocator);
     for (diags.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
@@ -2985,8 +2986,8 @@ test "EXPR006 autofix: applied end-to-end on `${{ }}` inside double-quoted `if:`
     const result = try fix_engine.applyFixes(std.testing.allocator, source, fix_list.items);
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "${{ github.event_name == 'push' }}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
+    try std.testing.expect(std.mem.find(u8, result.content, "${{ github.event_name == 'push' }}") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "contains(") == null);
 }
 
 test "EXPR006 autofix: --fix (safe only) does not apply EXPR006 fixes" {
@@ -3052,7 +3053,7 @@ test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
 
-    var fix_list = std.ArrayList(Fix){};
+    var fix_list = std.ArrayList(Fix).empty;
     defer fix_list.deinit(std.testing.allocator);
     for (diags.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR006")) {
@@ -3069,8 +3070,8 @@ test "EXPR006 autofix V2: rewrites !contains(ctx, 'lit') to ctx != 'lit' end-to-
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "if: \"github.ref != 'release'\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "contains(") == null);
+    try std.testing.expect(std.mem.find(u8, result.content, "if: \"github.ref != 'release'\"") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "contains(") == null);
 }
 
 test "EXPR006 fix: suppressed when expr_base_byte is null" {
@@ -3206,7 +3207,7 @@ test "EXPR007 fix: rewrites bare string right of ||" {
     try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
     const edit = fix.edits[0];
     // The replacement covers the bare literal exactly, including its quotes.
-    try std.testing.expectEqual(@as(usize, std.mem.indexOf(u8, src, "'pull_request'").?), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, std.mem.find(u8, src, "'pull_request'").?), edit.start_byte);
     try std.testing.expectEqual(@as(usize, src.len), edit.end_byte);
     try std.testing.expectEqualStrings("github.event_name == 'pull_request'", edit.replacement);
 }
@@ -3249,7 +3250,7 @@ test "EXPR007 fix: honors expr_base_byte offset" {
     const base: usize = 100;
     validateCondition(arena.allocator(), src, &list, base);
     const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
-    const lit_offset = std.mem.indexOf(u8, src, "'pull_request'").?;
+    const lit_offset = std.mem.find(u8, src, "'pull_request'").?;
     try std.testing.expectEqual(@as(usize, base + lit_offset), fix.edits[0].start_byte);
     try std.testing.expectEqual(@as(usize, base + src.len), fix.edits[0].end_byte);
 }
@@ -3353,7 +3354,7 @@ test "EXPR007 fix: rewrites bare number right of ||" {
     try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
     try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
     const edit = fix.edits[0];
-    try std.testing.expectEqual(@as(usize, std.mem.lastIndexOf(u8, src, "2").?), edit.start_byte);
+    try std.testing.expectEqual(@as(usize, std.mem.findLast(u8, src, "2").?), edit.start_byte);
     try std.testing.expectEqual(@as(usize, src.len), edit.end_byte);
     try std.testing.expectEqualStrings("github.run_attempt == 2", edit.replacement);
 }
@@ -3444,7 +3445,7 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
     var diags = DiagnosticList.init(alloc);
     checkJob(&wf.jobs[0], &diags);
 
-    var fix_list = std.ArrayList(Fix){};
+    var fix_list = std.ArrayList(Fix).empty;
     defer fix_list.deinit(std.testing.allocator);
     for (diags.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
@@ -3457,7 +3458,7 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(
+    try std.testing.expect(std.mem.find(
         u8,
         result.content,
         "if: github.event_name == 'push' || github.event_name == 'pull_request'",
@@ -3465,7 +3466,7 @@ test "EXPR007 autofix: applied end-to-end on bare `if:` scalar" {
 }
 
 test "EXPR007 autofix: fixture harness applies expected fix for bare number literal" {
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
     const input_path = "tests/fixtures/expr007-bare-number/input.yml";
     const expected_path = "tests/fixtures/expr007-bare-number/expected.yml";
 
@@ -3473,8 +3474,8 @@ test "EXPR007 autofix: fixture harness applies expected fix for bare number lite
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const input = cwd.readFileAlloc(alloc, input_path, 64 * 1024) catch return error.TestExpectedFixture;
-    const expected = cwd.readFileAlloc(alloc, expected_path, 64 * 1024) catch return error.TestExpectedFixture;
+    const input = cwd.readFileAlloc(runtime.io(), input_path, alloc, .limited(64 * 1024)) catch return error.TestExpectedFixture;
+    const expected = cwd.readFileAlloc(runtime.io(), expected_path, alloc, .limited(64 * 1024)) catch return error.TestExpectedFixture;
 
     const result = try test_support.lintAndFix(std.testing.allocator, input, .{ .job = &checkJob }, true);
     defer result.deinit(std.testing.allocator);

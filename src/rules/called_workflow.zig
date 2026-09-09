@@ -11,6 +11,7 @@
 //! into, so a cycle cannot loop.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const workspace = @import("../workspace.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const workflow_parser = @import("../workflow/parser.zig");
@@ -37,10 +38,10 @@ pub fn localPath(uses: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, uses, "./")) return null;
     const rel = uses[2..];
     if (rel.len == 0) return null;
-    if (std.mem.indexOf(u8, rel, "..") != null) return null;
+    if (std.mem.find(u8, rel, "..") != null) return null;
     // A local call carries no `@ref` (DEP003); one here would make the path
     // name a file that does not exist.
-    if (std.mem.indexOfScalar(u8, rel, '@') != null) return null;
+    if (std.mem.findScalar(u8, rel, '@') != null) return null;
     return rel;
 }
 
@@ -48,16 +49,17 @@ fn readSource(arena: std.mem.Allocator, rel_path: []const u8) ?[]const u8 {
     if (source_override) |lookup| return lookup(rel_path);
 
     const root = workspace.repoRoot() orelse return null;
-    const full = std.fs.path.join(arena, &.{ root, rel_path }) catch return null;
+    const full = std.Io.Dir.path.join(arena, &.{ root, rel_path }) catch return null;
 
     // stat before open: opening a FIFO for reading blocks until a writer
     // appears, so the kind check cannot come after openFile.
-    const stat = std.fs.cwd().statFile(full) catch return null;
+    const stat = std.Io.Dir.cwd().statFile(runtime.io(), full, .{}) catch return null;
     if (stat.kind != .file) return null;
 
-    const file = std.fs.cwd().openFile(full, .{}) catch return null;
-    defer file.close();
-    return file.readToEndAlloc(arena, max_file_bytes) catch null;
+    const file = std.Io.Dir.cwd().openFile(runtime.io(), full, .{}) catch return null;
+    defer file.close(runtime.io());
+    var file_reader = file.reader(runtime.io(), &.{});
+    return file_reader.interface.allocRemaining(arena, .limited(max_file_bytes)) catch null;
 }
 
 /// Returns the called workflow's `workflow_call` interface, or null when the

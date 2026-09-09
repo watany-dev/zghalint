@@ -52,12 +52,10 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the zghalint linter");
     run_step.dependOn(&run_cmd.step);
 
-    // Tests link libc so env-mutating helpers (setenv/unsetenv) are resolved.
     const lib_test_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
     });
     addRepoFiles(b, lib_test_mod);
     const lib_unit_tests = b.addTest(.{ .root_module = lib_test_mod });
@@ -77,10 +75,7 @@ pub fn build(b: *std.Build) void {
     // the latter is stripped in Release modes, and a stripped import next to an
     // unstripped root makes LLVM reject the mixed debug info ("local variable
     // requires a valid scope") when the tests are built with -Doptimize=ReleaseFast.
-    //
-    // link_libc is required because the imported library includes tests that
-    // call setenv/unsetenv via @extern; those symbols must resolve when the
-    // CLI test binaries are linked.
+
     const test_imports: []const std.Build.Module.Import = &.{
         .{ .name = "zghalint", .module = lib_test_mod },
         .{ .name = "build_options", .module = build_options.createModule() },
@@ -91,7 +86,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .link_libc = true,
             .imports = test_imports,
         }),
     });
@@ -105,7 +99,6 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/fuzz_test.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
     });
     const fuzz_tests = b.addTest(.{
         .root_module = fuzz_mod,
@@ -122,13 +115,11 @@ pub fn build(b: *std.Build) void {
     fuzz_step.dependOn(&run_fuzz_tests.step);
 
     // Long fuzzing campaigns (100k+ inputs) run through a plain executable:
-    // `zig build fuzz --fuzz` is unusable on Zig 0.15.2, and the driver owns
-    // its own corpus, mutator and properties.
+    // the driver owns its corpus, mutator and properties for reproducible runs.
     const fuzz_driver_mod = b.createModule(.{
         .root_source_file = b.path("src/fuzz_driver.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
     });
     addRepoFiles(b, fuzz_driver_mod);
     const fuzz_driver = b.addExecutable(.{
@@ -147,7 +138,6 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .link_libc = true,
             .imports = test_imports,
         }),
         .use_llvm = true,

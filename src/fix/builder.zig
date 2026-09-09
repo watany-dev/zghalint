@@ -196,7 +196,7 @@ pub fn insertMappingEntryBlockBefore(
 
     const sub_indent: usize = @as(usize, pos.indent) + child_indent;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
 
     buf.appendSlice(alloc, key) catch return null;
@@ -226,7 +226,7 @@ pub fn appendMappingEntries(
 ) ?[]const Edit {
     if (sub_entries.len == 0) return null;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
 
     for (sub_entries) |sub| {
@@ -259,7 +259,7 @@ pub fn insertSequenceItemEntryBefore(
 
     const item_indent: usize = @as(usize, pos.indent) + child_indent;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
 
     buf.appendSlice(alloc, key) catch return null;

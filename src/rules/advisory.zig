@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
 const yaml = @import("../yaml/types.zig");
@@ -131,10 +132,10 @@ const undetermined_hint = "the SHA pin hides the version; add a '# v<x.y.z>' com
 /// 4.5.2. An incomplete version is left undetermined instead.
 fn versionFromComment(comment: ?[]const u8) ?[]const u8 {
     const text = comment orelse return null;
-    const end = std.mem.indexOfAny(u8, text, " \t") orelse text.len;
+    const end = std.mem.findAny(u8, text, " \t") orelse text.len;
     const word = text[0..end];
     if (parseSemver(word) == null) return null;
-    const core_end = std.mem.indexOfAny(u8, word, "-+") orelse word.len;
+    const core_end = std.mem.findAny(u8, word, "-+") orelse word.len;
     if (std.mem.count(u8, word[0..core_end], ".") != 2) return null;
     return word;
 }
@@ -142,18 +143,18 @@ fn versionFromComment(comment: ?[]const u8) ?[]const u8 {
 const cache_subdir = "zghalint";
 const cache_filename = "advisories-v2.tsv";
 
-fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
+fn getCacheDir(allocator: Allocator) ?std.Io.Dir {
     return cache_dir.open(allocator, cache_subdir);
 }
 
-fn isCacheFresh(dir: std.fs.Dir) bool {
-    const stat = dir.statFile(cache_filename) catch return false;
-    const now = std.time.timestamp();
-    const mtime: i64 = @intCast(@divTrunc(stat.mtime, std.time.ns_per_s));
+fn isCacheFresh(dir: std.Io.Dir) bool {
+    const stat = dir.statFile(runtime.io(), cache_filename, .{}) catch return false;
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
+    const mtime: i64 = stat.mtime.toSeconds();
     return (now - mtime) < cache_max_age_s;
 }
 
-fn writeCacheFile(dir: std.fs.Dir, data: []const u8) void {
+fn writeCacheFile(dir: std.Io.Dir, data: []const u8) void {
     // Best-effort: a cache that cannot be written is simply not warm.
     cache_dir.writeFileAtomic(dir, cache_filename, data) catch {};
 }
@@ -192,7 +193,7 @@ fn serializeAdvisories(allocator: Allocator, advisories: []const Advisory) ![]co
 }
 
 fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Advisory {
-    var result = std.ArrayList(Advisory){};
+    var result = std.ArrayList(Advisory).empty;
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |line| {
         if (line.len == 0) continue;
@@ -218,14 +219,15 @@ fn deserializeAdvisories(allocator: Allocator, data: []const u8) ![]const Adviso
     return result.toOwnedSlice(allocator) catch return error.OutOfMemory;
 }
 
-fn readCacheFile(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
-    const file = dir.openFile(cache_filename, .{}) catch return error.CacheMiss;
-    defer file.close();
-    const body = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return error.CacheMiss;
+fn readCacheFile(allocator: Allocator, dir: std.Io.Dir) ![]const Advisory {
+    const file = dir.openFile(runtime.io(), cache_filename, .{}) catch return error.CacheMiss;
+    defer file.close(runtime.io());
+    var file_reader = file.reader(runtime.io(), &.{});
+    const body = file_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024)) catch return error.CacheMiss;
     return deserializeAdvisories(allocator, body);
 }
 
-fn loadFromDiskCache(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
+fn loadFromDiskCache(allocator: Allocator, dir: std.Io.Dir) ![]const Advisory {
     if (!isCacheFresh(dir)) return error.CacheStale;
     return readCacheFile(allocator, dir);
 }
@@ -234,7 +236,7 @@ fn loadFromDiskCache(allocator: Allocator, dir: std.fs.Dir) ![]const Advisory {
 /// reopening it per attempt doubled the startup syscalls of a stale-cache run.
 fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
     var dir_opt = getCacheDir(allocator);
-    defer if (dir_opt) |*d| d.close();
+    defer if (dir_opt) |*d| d.close(runtime.io());
 
     if (dir_opt) |dir| {
         if (loadFromDiskCache(allocator, dir)) |advisories| return advisories else |_| {}
@@ -264,7 +266,7 @@ fn fetchAndParse(allocator: Allocator) ![]const Advisory {
         if (getCacheDir(allocator)) |dir_val| {
             var dir_mut = dir_val;
             writeCacheFile(dir_mut, serialized);
-            dir_mut.close();
+            dir_mut.close(runtime.io());
         }
     } else |_| {}
 
@@ -279,7 +281,7 @@ fn parseAdvisories(allocator: Allocator, body: []const u8) ![]const Advisory {
         else => return error.UnexpectedFormat,
     };
 
-    var result = std.ArrayList(Advisory){};
+    var result = std.ArrayList(Advisory).empty;
 
     for (items) |item| {
         const obj = json_util.asObject(item) orelse continue;
@@ -329,7 +331,7 @@ fn getJsonStringFromObj(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 }
 
 fn slugMatches(advisory_slug: []const u8, owner: []const u8, repo: []const u8) bool {
-    const slash_pos = std.mem.indexOfScalar(u8, advisory_slug, '/') orelse return false;
+    const slash_pos = std.mem.findScalar(u8, advisory_slug, '/') orelse return false;
     const adv_owner = advisory_slug[0..slash_pos];
     const adv_repo = advisory_slug[slash_pos + 1 ..];
     return std.mem.eql(u8, adv_owner, owner) and std.mem.eql(u8, adv_repo, repo);
@@ -377,7 +379,7 @@ const Constraint = struct {
 };
 
 fn parseConstraint(s: []const u8) ?Constraint {
-    var rest = std.mem.trimLeft(u8, s, " ");
+    var rest = std.mem.trimStart(u8, s, " ");
 
     var op: Operator = undefined;
     if (std.mem.startsWith(u8, rest, "<=")) {
@@ -396,7 +398,7 @@ fn parseConstraint(s: []const u8) ?Constraint {
         return null;
     }
 
-    rest = std.mem.trimLeft(u8, rest, " ");
+    rest = std.mem.trimStart(u8, rest, " ");
     const ver = parseSemver(rest) orelse return null;
     return .{ .op = op, .version = ver };
 }
@@ -904,7 +906,7 @@ test "SC003: lazy fetch with deadline exceeded produces no diagnostics" {
         advisory_arena = prev_arena;
     }
 
-    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer engine.clearNetworkDeadline();
 
     const step = Step{ .uses = ActionRef.parse("evil/action@v0.9.0") };

@@ -35,7 +35,7 @@ const self_repo_prefix = "$/";
 
 pub fn actionProblem(raw: []const u8) ?Problem {
     // A `uses:` built from an expression is only known at run time.
-    if (std.mem.indexOf(u8, raw, "${{") != null) return null;
+    if (std.mem.find(u8, raw, "${{") != null) return null;
 
     if (raw.len == 0) return .{
         .message = "`uses:` is empty",
@@ -43,7 +43,7 @@ pub fn actionProblem(raw: []const u8) ?Problem {
     };
 
     if (isLocalPath(raw)) {
-        if (std.mem.indexOfScalar(u8, raw, '@') != null) return .{
+        if (std.mem.findScalar(u8, raw, '@') != null) return .{
             .message = "local action reference must not carry a `@ref`; it always runs from the repository the workflow came from",
             .hint = drop_ref_hint,
         };
@@ -84,7 +84,7 @@ pub fn actionProblem(raw: []const u8) ?Problem {
 }
 
 pub fn reusableWorkflowProblem(raw: []const u8) ?Problem {
-    if (std.mem.indexOf(u8, raw, "${{") != null) return null;
+    if (std.mem.find(u8, raw, "${{") != null) return null;
 
     if (raw.len == 0) return .{
         .message = "`uses:` is empty",
@@ -92,7 +92,7 @@ pub fn reusableWorkflowProblem(raw: []const u8) ?Problem {
     };
 
     if (isLocalPath(raw)) {
-        if (std.mem.indexOfScalar(u8, raw, '@') != null) return .{
+        if (std.mem.findScalar(u8, raw, '@') != null) return .{
             .message = "local reusable workflow call must not carry a `@ref`; it always runs from the repository the workflow came from",
             .hint = drop_ref_hint,
         };
@@ -134,7 +134,7 @@ pub fn reusableWorkflowProblem(raw: []const u8) ?Problem {
 /// The ref defects both forms share. Only the accepted formats differ, so the
 /// caller passes its own format hint.
 fn refProblem(raw: []const u8, formats: []const u8) ?Problem {
-    const at = std.mem.indexOfScalar(u8, raw, '@') orelse return .{
+    const at = std.mem.findScalar(u8, raw, '@') orelse return .{
         .message = "`uses:` has no `@ref`; the version is required",
         .hint = add_ref_hint,
     };
@@ -143,7 +143,7 @@ fn refProblem(raw: []const u8, formats: []const u8) ?Problem {
         .message = "`uses:` has an empty `@ref`",
         .hint = add_ref_hint,
     };
-    if (std.mem.indexOfScalar(u8, ref, '@') != null) return .{
+    if (std.mem.findScalar(u8, ref, '@') != null) return .{
         .message = "`uses:` contains more than one `@`",
         .hint = formats,
     };
@@ -153,7 +153,7 @@ fn refProblem(raw: []const u8, formats: []const u8) ?Problem {
 /// The `{path}` half of `{path}@{ref}`. Only valid once `refProblem` passed,
 /// which is what guarantees the `@`.
 fn pathBeforeRef(raw: []const u8) []const u8 {
-    return raw[0..std.mem.indexOfScalar(u8, raw, '@').?];
+    return raw[0..std.mem.findScalar(u8, raw, '@').?];
 }
 
 /// `../` is matched here so it gets the "relative to the repository root"
@@ -209,9 +209,9 @@ fn isNameSegment(segment: []const u8) bool {
 fn isWorkflowFilePath(path: []const u8) bool {
     if (!std.mem.startsWith(u8, path, workflows_prefix)) return false;
     const file = path[workflows_prefix.len..];
-    if (std.mem.indexOfScalar(u8, file, '/') != null) return false;
+    if (std.mem.findScalar(u8, file, '/') != null) return false;
 
-    const ext = std.fs.path.extension(file);
+    const ext = std.Io.Dir.path.extension(file);
     if (!std.mem.eql(u8, ext, ".yml") and !std.mem.eql(u8, ext, ".yaml")) return false;
     return file.len != ext.len;
 }
@@ -299,7 +299,7 @@ test "DEP003: well-formed action references are accepted" {
 
 test "DEP003: action reference without a ref is reported" {
     const problem = try expectActionProblem("actions/checkout");
-    try testing.expect(std.mem.indexOf(u8, problem.message, "@ref") != null);
+    try testing.expect(std.mem.find(u8, problem.message, "@ref") != null);
     try testing.expectEqualStrings(add_ref_hint, problem.hint);
 }
 
@@ -366,7 +366,7 @@ test "DEP003: empty owner or repo segment is reported" {
 
 test "DEP003: missing owner is reported" {
     const problem = try expectActionProblem("checkout@v4");
-    try testing.expect(std.mem.indexOf(u8, problem.message, "owner") != null);
+    try testing.expect(std.mem.find(u8, problem.message, "owner") != null);
 }
 
 test "DEP003: dot-prefixed owner is not a repository reference" {

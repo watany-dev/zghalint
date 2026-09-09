@@ -283,7 +283,7 @@ fn reportInputTypeMismatch(input: workflow_types.InputDef, arg: CallArg, list: *
     // A non-scalar value, and one built by an expression, are both opaque:
     // neither can be compared against the declared type without evaluating it.
     const value = arg.value orelse return;
-    if (std.mem.indexOf(u8, value, "${{") != null) return;
+    if (std.mem.find(u8, value, "${{") != null) return;
     if (input_type.matchesScalar(value)) return;
 
     const alloc = list.fixAllocator();
@@ -669,7 +669,7 @@ test "RW001: required with default is reported" {
     checkWorkflowCallInputs(&wf, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "required") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "required") != null);
 }
 
 var called_source: []const u8 = "";
@@ -725,7 +725,7 @@ test "RW002: a missing required input is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings("RW002", diags.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "version") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "version") != null);
 }
 
 test "RW002: a passed required input is accepted" {
@@ -883,8 +883,8 @@ test "RW003: an unknown input is reported with a suggestion" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings("RW003", diags.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "verison") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).fix_hint.?, "version") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "verison") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).fix_hint.?, "version") != null);
 }
 
 test "RW003: the suggestion is applied as a rename of the with: key" {
@@ -912,7 +912,7 @@ test "RW003: the suggestion is applied as a rename of the with: key" {
 
     try testing.expectEqual(@as(usize, 1), outcome.fix_count);
     try testing.expectEqual(diagnostics.FixSafety.safe, outcome.first_safety.?);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "version: '1.0'") != null);
+    try testing.expect(std.mem.find(u8, outcome.content, "version: '1.0'") != null);
 }
 
 test "RW003: an unknown input without a near name falls back to a generic hint" {
@@ -937,7 +937,7 @@ test "RW003: an unknown input without a near name falls back to a generic hint" 
     try runCallInputValueCheck(arena.allocator(), source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).fix_hint.?, "did you mean") == null);
+    try testing.expect(std.mem.find(u8, diags.get(0).fix_hint.?, "did you mean") == null);
 }
 
 test "RW003: a value that does not match the declared type is reported" {
@@ -963,8 +963,8 @@ test "RW003: a value that does not match the declared type is reported" {
     try runCallInputValueCheck(arena.allocator(), source, &diags);
 
     try testing.expectEqual(@as(usize, 2), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "number") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "boolean") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "number") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "boolean") != null);
 }
 
 test "RW003: matching values and expressions are accepted" {
@@ -1122,8 +1122,8 @@ test "RW004: a missing required secret and an unknown secret are reported" {
 
     try testing.expectEqual(@as(usize, 2), diags.len());
     try testing.expectEqualStrings("RW004", diags.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "npm_token") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "aws_key") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "npm_token") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "aws_key") != null);
 }
 
 test "RW004: a call passing every required secret is accepted" {
@@ -1193,7 +1193,7 @@ test "RW004: an absent secrets key still reports a missing required secret" {
     try runCallSecretCheck(arena.allocator(), source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "npm_token") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "npm_token") != null);
 }
 
 test "RW004: a called workflow declaring no secrets is not checked" {
@@ -1278,7 +1278,7 @@ test "RW004: a near-miss secret name carries a suggestion" {
     try runCallSecretCheck(arena.allocator(), source, &diags);
 
     try testing.expectEqual(@as(usize, 2), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).fix_hint.?, "npm_token") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).fix_hint.?, "npm_token") != null);
 }
 
 fn runCallOutputCheck(arena: std.mem.Allocator, source: []const u8, list: *DiagnosticList) !void {
@@ -1298,7 +1298,7 @@ fn expectOutputDiagnostics(source: []const u8, expected: []const []const u8) !vo
         const diag = diags.get(i);
         try testing.expectEqualStrings("RW005", diag.rule_id);
         try testing.expectEqual(engine.Severity.@"error", diag.severity);
-        if (std.mem.indexOf(u8, diag.message, needle) == null) {
+        if (std.mem.find(u8, diag.message, needle) == null) {
             std.debug.print("message '{s}' does not contain '{s}'\n", .{ diag.message, needle });
             return error.UnexpectedMessage;
         }
@@ -1571,5 +1571,5 @@ test "RW001: a quoted default infers string, not the literal it looks like" {
     );
     defer result.deinit(testing.allocator);
 
-    try testing.expect(std.mem.indexOf(u8, result.content, "type: string") != null);
+    try testing.expect(std.mem.find(u8, result.content, "type: string") != null);
 }

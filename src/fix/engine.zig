@@ -10,7 +10,7 @@ pub fn collectFixes(
     diags: []const Diagnostic,
     include_unsafe: bool,
 ) ![]const Fix {
-    var list = std.ArrayList(Fix){};
+    var list = std.ArrayList(Fix).empty;
     defer list.deinit(allocator);
 
     for (diags) |d| {
@@ -234,7 +234,7 @@ fn lineIndent(source: []const u8, byte: usize) u32 {
 fn renamedMappingKey(source: []const u8, e: Edit) ?[]const u8 {
     if (e.start_byte == e.end_byte) return null;
     if (e.replacement.len == 0) return null;
-    if (std.mem.indexOfAny(u8, e.replacement, ":\n\r \t") != null) return null;
+    if (std.mem.findAny(u8, e.replacement, ":\n\r \t") != null) return null;
     var i = e.end_byte;
     if (i < source.len and (source[i] == '\'' or source[i] == '"')) i += 1;
     if (i < source.len and source[i] == ':') return e.replacement;
@@ -651,7 +651,7 @@ test "two insertions at the same byte both survive, in registry order" {
 test "identical insertions at the same anchor are applied once (#300)" {
     const allocator = std.testing.allocator;
     const source = "  uses: actions/checkout@v4\n";
-    const anchor = std.mem.indexOfScalar(u8, source, '\n').?;
+    const anchor = std.mem.findScalar(u8, source, '\n').?;
     const with_block = "\n  with:\n    persist-credentials: false";
     const edits1 = [_]Edit{
         .{ .start_byte = anchor, .end_byte = anchor, .replacement = with_block },
@@ -677,7 +677,7 @@ test "identical insertions at the same anchor are applied once (#300)" {
 test "insertions of the same key with different bodies drop both fixes" {
     const allocator = std.testing.allocator;
     const source = "  uses: actions/setup-node@v4\n";
-    const anchor = std.mem.indexOfScalar(u8, source, '\n').?;
+    const anchor = std.mem.findScalar(u8, source, '\n').?;
     const edits1 = [_]Edit{
         .{ .start_byte = anchor, .end_byte = anchor, .replacement = "\n  with:\n    cache: npm" },
     };
@@ -699,7 +699,7 @@ test "insertions of the same key with different bodies drop both fixes" {
 test "a conflicting key drops its duplicates too, not just the pair" {
     const allocator = std.testing.allocator;
     const source = "  uses: actions/setup-node@v4\n";
-    const anchor = std.mem.indexOfScalar(u8, source, '\n').?;
+    const anchor = std.mem.findScalar(u8, source, '\n').?;
     const npm = "\n  with:\n    cache: npm";
     const edits1 = [_]Edit{.{ .start_byte = anchor, .end_byte = anchor, .replacement = npm }};
     const edits2 = [_]Edit{.{ .start_byte = anchor, .end_byte = anchor, .replacement = npm }};
@@ -754,7 +754,7 @@ test "a rename onto a key drops an insertion of the same key (#348)" {
         \\    runs-on: ubuntu-latest
         \\
     ;
-    const key = std.mem.indexOf(u8, source, "prmissions").?;
+    const key = std.mem.find(u8, source, "prmissions").?;
     const rename = [_]Edit{
         .{ .start_byte = key, .end_byte = key + "prmissions".len, .replacement = "permissions" },
     };
@@ -792,8 +792,8 @@ test "a job-level rename does not drop a workflow-level insertion of the same ke
         \\    runs-on: ubuntu-latest
         \\
     ;
-    const key = std.mem.indexOf(u8, source, "permssions").?;
-    const insert_at = std.mem.indexOf(u8, source, "jobs:").?;
+    const key = std.mem.find(u8, source, "permssions").?;
+    const insert_at = std.mem.find(u8, source, "jobs:").?;
     const rename = [_]Edit{
         .{ .start_byte = key, .end_byte = key + "permssions".len, .replacement = "permissions" },
     };
@@ -831,8 +831,8 @@ test "a value rename does not drop an insertion of a matching key name" {
         \\    runs-on: ubuntu-latest
         \\
     ;
-    const value = std.mem.indexOf(u8, source, "opend").?;
-    const insert_at = std.mem.indexOf(u8, source, "jobs:").?;
+    const value = std.mem.find(u8, source, "opend").?;
+    const insert_at = std.mem.find(u8, source, "jobs:").?;
     const rename = [_]Edit{
         .{ .start_byte = value, .end_byte = value + "opend".len, .replacement = "opened" },
     };
@@ -1020,7 +1020,7 @@ test "edit at exact source end (end_byte == source.len) is valid" {
 test "applyFixes: newline insertion after a value skips the trailing comment" {
     const allocator = std.testing.allocator;
     const source = "uses: actions/checkout@abc # v4.2.2\nrun: x";
-    const value_end = std.mem.indexOf(u8, source, " # v4").?;
+    const value_end = std.mem.find(u8, source, " # v4").?;
     const edits = [_]Edit{.{ .start_byte = value_end, .end_byte = value_end, .replacement = "\nwith:\n  persist-credentials: false" }};
     const fixes = [_]Fix{.{ .description = "t", .safety = .safe, .edits = &edits }};
 
@@ -1035,7 +1035,7 @@ test "applyFixes: newline insertion after a value skips the trailing comment" {
 test "applyFixes: newline insertion keeps CRLF line ending after the comment" {
     const allocator = std.testing.allocator;
     const source = "uses: a@b # v1\r\nrun: x";
-    const value_end = std.mem.indexOf(u8, source, " # v1").?;
+    const value_end = std.mem.find(u8, source, " # v1").?;
     const edits = [_]Edit{.{ .start_byte = value_end, .end_byte = value_end, .replacement = "\nwith: {}" }};
     const fixes = [_]Fix{.{ .description = "t", .safety = .safe, .edits = &edits }};
 

@@ -198,7 +198,7 @@ fn expectMessage(source: []const u8, needle: []const u8) !void {
 
     try diagnose(arena.allocator(), source, &list);
     for (list.items.items) |diag| {
-        if (std.mem.indexOf(u8, diag.message, needle) != null) {
+        if (std.mem.find(u8, diag.message, needle) != null) {
             try testing.expectEqualStrings("EXPR013", diag.rule_id);
             return;
         }

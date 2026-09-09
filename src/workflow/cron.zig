@@ -220,7 +220,7 @@ fn addPart(
     max: u8,
     names: ?[]const []const u8,
 ) Schedule.ParseError!void {
-    const slash = std.mem.indexOfScalar(u8, part, '/');
+    const slash = std.mem.findScalar(u8, part, '/');
     const step_str = if (slash) |idx| part[idx + 1 ..] else null;
     const base = if (slash) |idx| part[0..idx] else part;
 
@@ -236,7 +236,7 @@ fn addPart(
         return;
     }
 
-    const dash = std.mem.indexOfScalar(u8, base, '-');
+    const dash = std.mem.findScalar(u8, base, '-');
     if (dash) |idx| {
         const start = try parseToken(base[0..idx], min, max, names);
         const end = try parseToken(base[idx + 1 ..], min, max, names);
