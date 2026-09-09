@@ -740,9 +740,38 @@ pub const Parser = struct {
     fn blockEntryFullSpan(self: *Parser, key: Scalar, value: Node) ?Span {
         const line_start = self.lineStartByte(key.span.start_byte);
 
+        // The span has to remove the entry and nothing else, so it starts at
+        // the line start -- which is only the entry's own if nothing but
+        // indentation and sequence indicators precedes the key.
+        // `b: strategy: fail-fast: false` puts three keys on one line, and
+        // removing the innermost as a line took the job with it (fuzz).
+        if (std.mem.indexOfNone(u8, self.source[line_start..key.span.start_byte], " \t-") != null) {
+            return null;
+        }
+
+        const end_byte = self.entryEndByteInclusive(key, value) orelse return null;
+
         // A scalar value sits on the key's own line, so its end line / column
         // follow the value itself. Every other shape keeps the key line as the
-        // end anchor and differs only in where the entry's bytes stop.
+        // end anchor.
+        if (value == .scalar) {
+            const newlines: u32 = @intCast(std.mem.count(u8, self.source[line_start..end_byte], "\n"));
+            return .{
+                .start_line = key.span.start_line,
+                .start_col = 1,
+                .end_line = key.span.start_line + newlines,
+                .end_col = @as(u32, @intCast(end_byte - self.lineStartByte(end_byte) + 1)),
+                .start_byte = line_start,
+                .end_byte = end_byte,
+            };
+        }
+        return keyLineSpan(key, line_start, end_byte);
+    }
+
+    /// Where an entry's text stops, trailing newline included. This is the
+    /// entry's extent alone: whether the entry starts its own line, and so
+    /// whether it can be removed as one, is `blockEntryFullSpan`'s question.
+    fn entryEndByteInclusive(self: *Parser, key: Scalar, value: Node) ?usize {
         if (value == .scalar) {
             const scalar = value.scalar;
             // A block scalar that took content ends at the start of the line
@@ -762,16 +791,7 @@ pub const Parser = struct {
                 }
                 if (end_byte < self.source.len) end_byte += 1;
             }
-
-            const newlines: u32 = @intCast(std.mem.count(u8, self.source[line_start..end_byte], "\n"));
-            return .{
-                .start_line = key.span.start_line,
-                .start_col = 1,
-                .end_line = key.span.start_line + newlines,
-                .end_col = @as(u32, @intCast(end_byte - self.lineStartByte(end_byte) + 1)),
-                .start_byte = line_start,
-                .end_byte = end_byte,
-            };
+            return end_byte;
         }
 
         // An empty or null value has no body: end at the key's own line. The
@@ -789,7 +809,7 @@ pub const Parser = struct {
         // so the nested end can land before the key. The entry still owns at
         // least its own line.
         const end = @max(key_line_end, nested);
-        return keyLineSpan(key, line_start, self.extendOverIndentedTail(end, key.span.start_col));
+        return self.extendOverIndentedTail(end, key.span.start_col);
     }
 
     /// Lines the parser dropped still belong to the entry when they are
@@ -826,8 +846,10 @@ pub const Parser = struct {
                 self.scanLineEndInclusive(m.span.end_byte)
             else blk: {
                 const last = m.entries[m.entries.len - 1];
-                const last_full = self.blockEntryFullSpan(last.key, last.value) orelse return null;
-                break :blk last_full.end_byte;
+                // The entry's extent, not its removability: an inner key that
+                // shares a line still ends where its value ends, and the outer
+                // entry that owns the line is removable all the same (fuzz).
+                break :blk self.entryEndByteInclusive(last.key, last.value) orelse return null;
             },
             .sequence => |seq| if (seq.items.len == 0)
                 self.scanLineEndInclusive(seq.span.end_byte)
@@ -1335,6 +1357,20 @@ test "a trailing comment on an empty value does not swallow the next key" {
     try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
     try std.testing.expectEqualStrings("jobs", root.mapping.entries[1].key.value);
     try std.testing.expect(root.mapping.get("jobs").?.mapping.entries.len == 1);
+}
+
+test "an entry sharing its line with an outer key has no removable span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "jobs:\n b: strategy: fail-fast: false\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const doc = try parser.parse();
+    const job = doc.mapping.entries[0].value.mapping.entries[0];
+    const strategy = job.value.mapping.entries[0];
+    // Removing `fail-fast` as a line would take `b:` and `strategy:` with it.
+    try std.testing.expect(strategy.value.mapping.entries[0].full_span == null);
+    // A key that does start its own line keeps its span.
+    try std.testing.expect(doc.mapping.entries[0].full_span != null);
 }
 
 test "an empty block scalar entry ends at its own line (fuzz)" {
