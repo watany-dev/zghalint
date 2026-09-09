@@ -451,6 +451,13 @@ pub const ActionRef = struct {
             return .{ .raw = raw, .is_local = true, .path = raw };
         }
 
+        // `$/{path}` names the repository the workflow came from, at the commit
+        // the run started from. There is no `@ref` to pin and no remote
+        // repository to look up, so it is local like `./{path}`.
+        if (std.mem.startsWith(u8, raw, "$/")) {
+            return .{ .raw = raw, .is_local = true, .path = raw };
+        }
+
         if (std.mem.startsWith(u8, raw, "docker://")) {
             return .{ .raw = raw, .is_docker = true };
         }
@@ -768,6 +775,13 @@ test "ActionRef.parse relative parent action" {
     const ref = ActionRef.parse("../other-action");
     try std.testing.expect(ref.is_local);
     try std.testing.expectEqualStrings("../other-action", ref.path.?);
+}
+
+test "ActionRef.parse self-repository action" {
+    const ref = ActionRef.parse("$/.github/actions/setup");
+    try std.testing.expect(ref.is_local);
+    try std.testing.expectEqualStrings("$/.github/actions/setup", ref.path.?);
+    try std.testing.expect(ref.owner == null);
 }
 
 test "ActionRef.parse docker action" {

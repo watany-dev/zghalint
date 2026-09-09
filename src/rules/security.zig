@@ -1723,8 +1723,22 @@ fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
     return findExpr(s, exprHasSecretJsonCall);
 }
 
+/// A workflow that publishes artifacts. Besides `on: release`, a push filtered
+/// to tags is the other common shape: `v*` tags are what a release is cut from,
+/// so every job in such a workflow handles release material. A push filtered to
+/// branches only is ordinary CI and stays out of scope.
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
-    return wf.hasEvent(.release);
+    if (wf.hasEvent(.release)) return true;
+    return hasTagFilteredPush(wf);
+}
+
+fn hasTagFilteredPush(wf: *const Workflow) bool {
+    for (wf.on.events) |event| {
+        if (event.event != .push) continue;
+        const filter = event.filter orelse continue;
+        if (filter.spans.tags != null or filter.spans.tags_ignore != null) return true;
+    }
+    return false;
 }
 
 fn isDeployJob(job: *const Job) bool {
@@ -2819,6 +2833,15 @@ const workflow_run_trigger = test_support.makeTrigger(.workflow_run);
 const pr_review_trigger = test_support.makeTrigger(.pull_request_review);
 const pr_review_comment_trigger = test_support.makeTrigger(.pull_request_review_comment);
 const push_trigger = test_support.makeTrigger(.push);
+/// `on: push` narrowed to tags, i.e. the shape a tag-cut release uses.
+const tag_push_trigger = Trigger{ .events = &[_]EventConfig{.{
+    .event = .push,
+    .filter = .{ .spans = .{ .tags = test_support.dummySpan(0, 0) } },
+}} };
+const branch_push_trigger = Trigger{ .events = &[_]EventConfig{.{
+    .event = .push,
+    .filter = .{ .spans = .{ .branches = test_support.dummySpan(0, 0) } },
+}} };
 const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch);
 const workflow_call_trigger = test_support.makeTrigger(.workflow_call);
 
@@ -4819,6 +4842,48 @@ test "SEC016: release trigger + setup-node with cache" {
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: tag push + actions/cache in a job with no deploy keyword" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: tag push + setup action caching by default" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("cache", "pip") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-python@v5"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: branch-only push with cache (no false positive)" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = branch_push_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
 }
 
 test "SEC016: deploy job name + actions/cache" {

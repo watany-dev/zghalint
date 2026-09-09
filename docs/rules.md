@@ -55,6 +55,15 @@ Detect security vulnerabilities in workflow definitions.
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 
+### SEC016 の対象
+
+成果物を公開するワークフローだけを対象にする。`on: release` を持つもの、
+`on.push` が `tags:` / `tags-ignore:` で絞られているもの（タグを切って出す
+リリース）は、ジョブ名によらずワークフロー全体が対象になる。それ以外の
+ワークフローでは、ジョブ id / 表示名に `deploy` / `release` / `publish` /
+`prod` を含むジョブだけを見る。`on: push` がブランチだけで絞られている通常の
+CI は対象外。
+
 ### SEC015 vs SEC018
 
 SEC015 (artipacked) is a stricter case of SEC018 (checkout persist-credentials):
@@ -432,12 +441,18 @@ action / reusable workflow references.
 
 - `{owner}/{repo}@{ref}` / `{owner}/{repo}/{path}@{ref}` — `@ref` は必須
 - `./{path}` — ローカルアクション（`@ref` を付けられない）
+- `$/{path}` — ワークフロー自身のリポジトリの実行中コミット（`@ref` を付けられない）
 - `docker://{image}`
 
 ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
 
 - `{owner}/{repo}/.github/workflows/{file}.yml@{ref}`
 - `./.github/workflows/{file}.yml` — `@ref` を付けられない
+- `$/.github/workflows/{file}.yml` — `@ref` を付けられない
+
+`$/` はチェックアウトを必要としない自己参照で、github.com でのみ使える
+（GitHub Enterprise Server は非対応）。`$` 単体や `$//` のように後続のパスが
+無い形は形式不正として報告する。
 
 `uses:` の値が `${{ }}` を含む場合は実行時にしか決まらないため報告しない。
 

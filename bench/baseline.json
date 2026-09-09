@@ -719,7 +719,7 @@
       "expected": 0,
       "line_expected": 0,
       "line_matched": 0,
-      "violations": 1
+      "violations": 0
     },
     "g-reusable/undeclared-secret": {
       "detected": 2,
@@ -750,10 +750,10 @@
       "violations": 0
     },
     "h-practices/cache-on-tag-push.yml": {
-      "detected": 0,
+      "detected": 1,
       "expected": 1,
       "line_expected": 1,
-      "line_matched": 0,
+      "line_matched": 1,
       "violations": 0
     },
     "h-practices/deprecated-action-version.yml": {
@@ -831,7 +831,7 @@
       "expected": 0,
       "line_expected": 0,
       "line_matched": 0,
-      "violations": 1
+      "violations": 0
     },
     "i-robustness/bare-dash-sequence-entry.yml": {
       "detected": 1,
