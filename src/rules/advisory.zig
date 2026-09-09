@@ -102,8 +102,10 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
         }
 
         // The version could not be established, so the advisory may or may not
-        // apply: report it as info rather than asserting a vulnerability.
-        const undetermined = action_ref.is_pinned and commented_version == null;
+        // apply: report it as info rather than asserting a vulnerability. An
+        // advisory without a range covers every version, so no version needs
+        // establishing and it stays a warning.
+        const undetermined = action_ref.is_pinned and commented_version == null and adv.vulnerable_range != null;
 
         list.append(.{
             .rule_id = "SC003",
@@ -820,6 +822,14 @@ test "SC003: an unbounded advisory flags a SHA pin whatever the comment says" {
     defer list.deinit();
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expectEqual(diagnostics.Severity.warning, list.get(0).severity);
+}
+
+test "SC003: an unbounded advisory warns on a SHA pin with no comment at all" {
+    var list = runWithAdvisories(&unbounded_advisories, "evil/action@a5ac7e51b41094c92402da3b24376905380afc29");
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(diagnostics.Severity.warning, list.get(0).severity);
+    try testing.expectEqualStrings(unbounded_advisories[0].diagnostic_hint, list.get(0).fix_hint.?);
 }
 
 test "versionFromComment: takes the first word only when it parses" {

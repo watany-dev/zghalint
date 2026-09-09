@@ -214,20 +214,19 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          PRERELEASE_FLAG=""
-          PRERELEASE_BOOL=false
+          PRERELEASE=false
           case "$TAG" in
-            *-rc.*) PRERELEASE_FLAG="--prerelease"; PRERELEASE_BOOL=true ;;
+            *-rc.*) PRERELEASE=true ;;
           esac
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --prerelease="$PRERELEASE_BOOL"
+            gh release edit "$TAG" --title "$TAG" --prerelease="$PRERELEASE"
             gh release upload "$TAG" artifacts/* --clobber
           else
             gh release create "$TAG" \
               --title "$TAG" \
               --generate-notes \
-              $PRERELEASE_FLAG \
+              --prerelease="$PRERELEASE" \
               artifacts/*
           fi
 
