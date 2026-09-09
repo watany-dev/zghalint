@@ -95,6 +95,10 @@ pub const Scalar = struct {
     /// collection (`{uses: a@v4}`) the `#` would swallow the closing brace.
     /// Defaults to false so a synthesized scalar is never assumed safe.
     ends_line: bool = false,
+    /// Text of the `#` comment that follows the scalar on its line, without
+    /// the `#` and surrounding blanks. Null when the line carries no comment.
+    /// SC003 reads the `# v1.2.3` convention next to a SHA-pinned `uses:`.
+    line_comment: ?[]const u8 = null,
 };
 
 /// What one sequence item costs the source text, so an autofix can take it

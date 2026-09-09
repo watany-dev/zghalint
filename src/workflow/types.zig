@@ -585,6 +585,10 @@ pub const Step = struct {
     run_meta: ?ScalarValueMeta = null,
     /// Span of the `uses:` scalar value (for SEC001 and the SC00x family).
     uses_value_span: ?yaml_types.Span = null,
+    /// Text of the comment trailing the `uses:` value, `#` stripped. A SHA
+    /// pin hides the version it stands for, so SC003 reads the `# v1.2.3`
+    /// convention that SEC001's autofix (and every pinning tool) writes.
+    uses_line_comment: ?[]const u8 = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
     /// Start byte and column of the step mapping's first key. A new `env:`
