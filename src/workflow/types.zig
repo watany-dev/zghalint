@@ -559,6 +559,10 @@ pub const Step = struct {
     shell: ?[]const u8 = null,
     /// Span of the `shell:` scalar value (for BP004 diagnostics).
     shell_value_span: ?yaml_types.Span = null,
+    /// True when a `shell:` key is present, even with a value BP004 cannot
+    /// read (`shell:` holding a mapping leaves `shell` null). Without the
+    /// distinction `--fix` appended `shell: bash` again every round (fuzz).
+    shell_key_present: bool = false,
     with: ?StringMap = null,
     /// Value spans and styles of the `with:` entries (for diagnostics that
     /// scan a `with:` value, e.g. SEC003/SEC005/SEC011).

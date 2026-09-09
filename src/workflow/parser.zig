@@ -1188,6 +1188,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     step.run = m.getScalar("run");
     if (m.get("shell")) |n| {
+        step.shell_key_present = true;
         switch (n) {
             .scalar => |s| {
                 step.shell = s.value;

@@ -477,7 +477,7 @@ fn checkShell(wf: *const Workflow, diag_list: *DiagnosticList) void {
                 const span = step.shell_value_span orelse step.span;
                 checkShellName(shell, span, diag_list);
                 checkShellAvailability(shell, span, os, diag_list);
-            } else if (step.run != null and os == .windows and job.defaults == null and wf.defaults == null) {
+            } else if (!step.shell_key_present and step.run != null and os == .windows and job.defaults == null and wf.defaults == null) {
                 reportMissingShell(step, diag_list);
             }
         }
@@ -1275,6 +1275,23 @@ test "BP004: no warning when shell is specified" {
         .runs_on = "windows-latest",
         .steps = &.{
             Step{ .name = "Build", .run = "make build", .shell = "bash" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: no warning when shell is present but unreadable (fuzz)" {
+    // `shell:` holding a mapping leaves `shell` null. Reporting a missing
+    // shell here made `--fix` append `shell: bash` again every round.
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "windows-latest",
+        .steps = &.{
+            Step{ .name = "Build", .run = "make build", .shell_key_present = true },
         },
     }};
     const wf = shellTestWorkflow(&jobs);
