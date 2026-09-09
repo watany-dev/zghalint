@@ -312,6 +312,34 @@ fn snapInsertionToLineEnd(e: Edit, source: []const u8) Edit {
     return snapped;
 }
 
+/// How many of the leading (highest-byte) edits are appended at the very end of
+/// a file that has no final newline, when the earliest of them would otherwise
+/// continue the last line: `on: []` plus an inserted `permissions:` becomes
+/// `on: []permissions: ...`, where the new key is not a key at all, so the rule
+/// inserts it again every round (fuzz). Zero when no newline is owed.
+///
+/// `edits` is sorted descending by position, so these are exactly its first `n`
+/// entries and the newline belongs in front of the `n`-th.
+fn trailingInsertRun(edits: []const Edit, source: []const u8) usize {
+    if (source.len == 0) return 0;
+    if (source[source.len - 1] == '\n' or source[source.len - 1] == '\r') return 0;
+
+    var n: usize = 0;
+    while (n < edits.len) : (n += 1) {
+        const e = edits[n];
+        if (e.start_byte != source.len or e.end_byte != source.len) break;
+    }
+    if (n == 0) return 0;
+
+    const first_in_source_order = edits[n - 1].replacement;
+    if (first_in_source_order.len == 0) return 0;
+    if (first_in_source_order[0] == '\n' or first_in_source_order[0] == '\r') return 0;
+    // Only a whole line owes a newline in front of it. A replacement that does
+    // not close its own line is a token meant to continue the last one.
+    if (first_in_source_order[first_in_source_order.len - 1] != '\n') return 0;
+    return n;
+}
+
 /// Invalid edits are dropped by `flattenAndSort` to avoid arithmetic underflow or
 /// out-of-bounds reads in `applyFixes`.
 fn isValidEdit(e: Edit, source: []const u8) bool {
@@ -341,10 +369,12 @@ pub fn applyFixes(
         };
     }
 
+    var trailing_run = trailingInsertRun(edits, source);
     var result_len: usize = source.len;
     for (edits) |e| {
         result_len = result_len - (e.end_byte - e.start_byte) + e.replacement.len;
     }
+    if (trailing_run > 0) result_len += 1;
 
     var result = try allocator.alloc(u8, result_len);
     var src_pos: usize = source.len;
@@ -357,6 +387,14 @@ pub fn applyFixes(
 
         dst_pos -= e.replacement.len;
         @memcpy(result[dst_pos..][0..e.replacement.len], e.replacement);
+
+        if (trailing_run > 0) {
+            trailing_run -= 1;
+            if (trailing_run == 0) {
+                dst_pos -= 1;
+                result[dst_pos] = '\n';
+            }
+        }
 
         src_pos = e.start_byte;
     }
@@ -448,6 +486,21 @@ test "insertion edit (start_byte == end_byte)" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("name: CI\ntimeout-minutes: 30", result.content);
+}
+
+test "a block entry appended to a file with no final newline opens its own line (fuzz)" {
+    const allocator = std.testing.allocator;
+    const source = "on: []";
+    const edits = [_]Edit{
+        .{ .start_byte = 6, .end_byte = 6, .replacement = "permissions: {contents: read}\n" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "add permissions", .safety = .unsafe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("on: []\npermissions: {contents: read}\n", result.content);
 }
 
 test "deletion edit (empty replacement)" {
