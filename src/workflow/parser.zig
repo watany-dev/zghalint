@@ -855,13 +855,14 @@ fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.E
 }
 
 fn parseJobs(ctx: *ParseContext, node: Node) ParseError![]const types.Job {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => {
-            ctx.note("jobs", node.getSpan());
-            return error.InvalidValue;
-        },
-    };
+    // A `jobs:` holding a scalar is a type error SYN004 reports. Failing the
+    // parse over it threw away every other diagnostic in the file, and an
+    // inserted `permissions:` line was enough to turn a linted file into an
+    // unlintable one (fuzz).
+    if (!type_validation.checkMapping(node, "jobs", ctx.type_mismatches, ctx.allocator)) {
+        return &.{};
+    }
+    const m = node.mapping;
 
     const jobs = try ctx.allocator.alloc(types.Job, m.entries.len);
     for (m.entries, 0..) |entry, i| {
@@ -2776,6 +2777,22 @@ test "a credentials: holding a scalar does not fail the parse (fuzz)" {
     try testing.expect(wf.jobs[0].container.?.credentials == null);
     try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
     try testing.expectEqualStrings("credentials", wf.type_mismatches[0].field);
+}
+
+test "a jobs: holding a scalar does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Inserting a `permissions:` line above it changed which `jobs:` the parse
+    // reached, and the one it landed on carried a scalar. Failing there made a
+    // file that had linted a pass earlier unlintable.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on:\n  x:\njobs: }\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 0), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("jobs", wf.type_mismatches[0].field);
 }
 
 test "a strategy: holding a scalar does not fail the parse (fuzz)" {
