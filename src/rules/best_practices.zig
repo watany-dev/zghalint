@@ -92,6 +92,7 @@ fn buildDeprecatedActionFix(
     step: *const Step,
     old_version: []const u8,
     new_version: []const u8,
+    safety: FixSafety,
 ) ?Fix {
     const end_byte = step.uses_value_end_byte orelse return null;
     const style = step.uses_value_style orelse return null;
@@ -124,7 +125,7 @@ fn buildDeprecatedActionFix(
 
     return .{
         .description = "Upgrade deprecated action version",
-        .safety = .safe,
+        .safety = safety,
         .edits = edits,
     };
 }
@@ -159,7 +160,10 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
         }
     }
 
-    const replacement = replacementVersion(action_ref) orelse return;
+    const replacement = replacementVersion(action_ref) orelse {
+        reportBehindCurrentMajor(step, action_ref, version, diag_list);
+        return;
+    };
     var diag = Diagnostic{
         .rule_id = "BP003",
         .severity = .warning,
@@ -167,8 +171,68 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
         .span = step.span,
         .fix_hint = "Upgrade to a newer version.",
     };
-    diag.fix = buildDeprecatedActionFix(diag_list, step, version, replacement);
+    diag.fix = buildDeprecatedActionFix(diag_list, step, version, replacement, .safe);
     diag_list.append(diag) catch return;
+}
+
+/// BP003's third half (#358): the reference names a major older than the newest
+/// one the metadata table knows for that action.
+///
+/// The table carries every major it has read, which for most third-party
+/// actions is only the current one — so an old major of such an action matches
+/// no entry, its `using` is unknown, and neither the retired-runtime half nor
+/// the curated version table above says anything about it. Comparing against
+/// the newest known major needs no extra data and covers exactly that hole.
+///
+/// An action the curated table names is left to it: `deprecated_actions` states
+/// the oldest major still considered acceptable (`actions/checkout@v4` is fine
+/// even though the table knows v5), and contradicting that here would turn a
+/// curated verdict into a nag. Severity and fix safety are argued in
+/// `docs/adr/0015-bp003-behind-current-major.md`.
+fn reportBehindCurrentMajor(
+    step: *const Step,
+    action_ref: ActionRef,
+    version: []const u8,
+    diag_list: *DiagnosticList,
+) void {
+    if (isCuratedAction(action_ref)) return;
+
+    const major = popular_actions.majorFromRef(version) orelse return;
+    const newest = popular_actions.latestMajor(action_ref) orelse return;
+    if (major >= newest) return;
+
+    const alloc = diag_list.fixAllocator();
+    const replacement = std.fmt.allocPrint(alloc, "v{d}", .{newest}) catch return;
+    const message = std.fmt.allocPrint(
+        alloc,
+        "action \"{s}\" is behind its current major \"{s}\"",
+        .{ action_ref.raw, replacement },
+    ) catch return;
+    const hint = std.fmt.allocPrint(
+        alloc,
+        "upgrade to \"{s}\", or keep the pin deliberately",
+        .{replacement},
+    ) catch return;
+
+    diag_list.append(.{
+        .rule_id = "BP003",
+        .severity = .info,
+        .message = message,
+        .span = spans.usesSpan(step),
+        .fix_hint = hint,
+        .fix = buildDeprecatedActionFix(diag_list, step, version, replacement, .unsafe),
+    }) catch return;
+}
+
+fn isCuratedAction(action_ref: ActionRef) bool {
+    const action_name = util.actionBaseName(action_ref.raw);
+    for (deprecated_actions) |dep| {
+        // Owner and repo are case-insensitive on GitHub, and `latestMajor`
+        // matches them that way; comparing exactly here would let
+        // `ACTIONS/CHECKOUT@v4` slip past the curated table's verdict.
+        if (std.ascii.eqlIgnoreCase(action_name, dep.action)) return true;
+    }
+    return false;
 }
 
 /// The action itself has to move off the runtime, but the caller can often get
@@ -201,7 +265,7 @@ fn reportRetiredRemoteRuntime(
             "upgrade to \"{s}\"",
             .{replacement},
         ) catch diag.fix_hint;
-        diag.fix = buildDeprecatedActionFix(diag_list, step, action_ref.ref.?, replacement);
+        diag.fix = buildDeprecatedActionFix(diag_list, step, action_ref.ref.?, replacement, .safe);
     }
 
     diag_list.append(diag) catch return;
@@ -929,6 +993,60 @@ test "BP003: an action outside the table is only judged by the version table" {
     defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP003: a third-party action older than its current major is reported (#358)" {
+    // The table knows only `softprops/action-gh-release@v2`, so v1 matches no
+    // entry: the runtime half is silent and the curated table has no row.
+    const step = Step{ .uses = ActionRef.parse("softprops/action-gh-release@v1") };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const d = diags.get(0);
+    try std.testing.expectEqualStrings("BP003", d.rule_id);
+    try std.testing.expect(d.severity == .info);
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "v2") != null);
+}
+
+test "BP003: the behind-major fix rewrites the major and is unsafe" {
+    // "softprops/action-gh-release@v1" ends at byte 30, "v1" occupies 28..30.
+    const step = Step{
+        .uses = ActionRef.parse("softprops/action-gh-release@v1"),
+        .uses_value_end_byte = 30,
+        .uses_value_style = .plain,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+    try std.testing.expect(fix.safety == .unsafe);
+    try std.testing.expectEqualStrings("v2", fix.edits[0].replacement);
+}
+
+test "BP003: what the behind-major half stays silent about" {
+    for ([_][]const u8{
+        // The current major, and one newer than the table has caught up with.
+        "softprops/action-gh-release@v2",
+        "softprops/action-gh-release@v9",
+        // The curated table holds `actions/checkout@v5` but still accepts v4,
+        // in either spelling of the case-insensitive owner and repo.
+        "actions/checkout@v4",
+        "ACTIONS/CHECKOUT@v4",
+        // Refs that name no version at all.
+        "softprops/action-gh-release@main",
+        "softprops/action-gh-release@v1-beta",
+        "softprops/action-gh-release@11bd71901bbe5b1630ceea73d27597364c9af683",
+    }) |raw| {
+        const step = Step{ .uses = ActionRef.parse(raw) };
+        var diags = DiagnosticList.init(std.testing.allocator);
+        defer diags.deinit();
+        checkDeprecatedAction(&step, &diags);
+        try std.testing.expectEqual(@as(usize, 0), diags.len());
+    }
 }
 
 test "BP003: a local action is never matched against the version table" {
