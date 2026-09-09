@@ -484,7 +484,7 @@ pub const Parser = struct {
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const owned_entries = try self.applyMergeKeys(parsed_entries);
-        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span, .close_byte = close_byte } };
+        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span, .close_byte = close_byte, .flow = true } };
     }
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
@@ -531,6 +531,7 @@ pub const Parser = struct {
             .span = start_span,
             .item_deletes = owned_deletes,
             .close_byte = close_byte,
+            .flow = true,
         } };
     }
 
@@ -838,8 +839,14 @@ pub const Parser = struct {
         const nested = switch (value) {
             .scalar => unreachable,
             .null_value => key_line_end,
-            .mapping => |m| if (m.entries.len == 0) self.flowCloseLineEnd(m.close_byte, key_line_end) else (self.nodeEndByteInclusive(value) orelse return null),
-            .sequence => |seq| if (seq.items.len == 0) self.flowCloseLineEnd(seq.close_byte, key_line_end) else (self.nodeEndByteInclusive(value) orelse return null),
+            .mapping => |m| if (m.entries.len == 0)
+                (self.flowCloseLineEnd(m.flow, m.close_byte, key_line_end) orelse return null)
+            else
+                (self.nodeEndByteInclusive(value) orelse return null),
+            .sequence => |seq| if (seq.items.len == 0)
+                (self.flowCloseLineEnd(seq.flow, seq.close_byte, key_line_end) orelse return null)
+            else
+                (self.nodeEndByteInclusive(value) orelse return null),
         };
 
         // A merge key or an alias puts an entry's text elsewhere in the file,
@@ -852,8 +859,11 @@ pub const Parser = struct {
     /// The end of the line holding a flow collection's closing bracket. A flow
     /// collection written across lines closes below its last item, so an
     /// insertion anchored on the item's line lands inside the brackets (fuzz).
-    fn flowCloseLineEnd(self: *Parser, close_byte: ?usize, fallback: usize) usize {
-        const close = close_byte orelse return fallback;
+    /// A flow collection that never closes runs to the end of the file, so it
+    /// leaves no boundary to anchor on at all: `on: [` took the `permissions:`
+    /// line written after it as one of its items (fuzz).
+    fn flowCloseLineEnd(self: *Parser, flow: bool, close_byte: ?usize, fallback: usize) ?usize {
+        const close = close_byte orelse return if (flow) null else fallback;
         if (close > self.source.len) return fallback;
         return @max(fallback, self.scanLineEndInclusive(close));
     }
@@ -966,20 +976,20 @@ pub const Parser = struct {
     fn nodeEndByteInclusive(self: *Parser, node: Node) ?usize {
         return switch (node) {
             .mapping => |m| if (m.entries.len == 0)
-                self.flowCloseLineEnd(m.close_byte, self.scanLineEndInclusive(m.span.end_byte))
+                self.flowCloseLineEnd(m.flow, m.close_byte, self.scanLineEndInclusive(m.span.end_byte))
             else blk: {
                 const last = m.entries[m.entries.len - 1];
                 // The entry's extent, not its removability: an inner key that
                 // shares a line still ends where its value ends, and the outer
                 // entry that owns the line is removable all the same (fuzz).
                 const last_end = self.entryEndByteInclusive(last.key, last.value) orelse return null;
-                break :blk self.flowCloseLineEnd(m.close_byte, last_end);
+                break :blk self.flowCloseLineEnd(m.flow, m.close_byte, last_end);
             },
             .sequence => |seq| if (seq.items.len == 0)
-                self.flowCloseLineEnd(seq.close_byte, self.scanLineEndInclusive(seq.span.end_byte))
+                self.flowCloseLineEnd(seq.flow, seq.close_byte, self.scanLineEndInclusive(seq.span.end_byte))
             else blk: {
                 const last_end = self.nodeEndByteInclusive(seq.items[seq.items.len - 1]) orelse return null;
-                break :blk self.flowCloseLineEnd(seq.close_byte, last_end);
+                break :blk self.flowCloseLineEnd(seq.flow, seq.close_byte, last_end);
             },
             // A block scalar's span already ends at the start of the line that
             // closes it; scanning on would swallow the next sibling.
@@ -1529,6 +1539,24 @@ test "a quote inside a plain scalar does not stretch the entry (fuzz)" {
     const doc = try parser.parse();
     const on_span = doc.mapping.entries[0].full_span.?;
     try std.testing.expect(on_span.end_byte <= std.mem.indexOf(u8, source, "jobs:").?);
+}
+
+test "an unclosed flow sequence leaves the entry no end (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `on: [` runs to the end of the file, so anything written after it becomes
+    // one of its items: `--fix` appended a `permissions:` line and the sequence
+    // swallowed it.
+    var parser = Parser.init(alloc, "jobs:\non: [\n");
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[1].full_span == null);
+
+    // A closed one still ends where its `]` does.
+    var closed = Parser.init(alloc, "jobs:\non: []\n");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 13), closed_doc.mapping.entries[1].full_span.?.end_byte);
 }
 
 test "a stray flow-mapping start does not drop the keys below it (fuzz)" {
