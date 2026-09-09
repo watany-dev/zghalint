@@ -629,9 +629,6 @@ pub const Parser = struct {
         }
     }
 
-    /// Drop whatever still sits on the line `value` ended on, so the next
-    /// sibling key is read from the line below instead of being taken for the
-    /// end of the mapping.
     /// The next key of a block mapping whose keys sit at `key_indent`, leaving
     /// the `:` after it current. Every line that cannot start a key is junk to
     /// skip over: text left on the line the entry ended on (`on: []l`), a line
@@ -668,6 +665,9 @@ pub const Parser = struct {
         };
     }
 
+    /// Drop whatever still sits on the line `value` ended on, so the next
+    /// sibling key is read from the line below instead of being taken for the
+    /// end of the mapping.
     fn skipTrailingLineTokens(self: *Parser) void {
         while (self.current.kind != .newline and
             self.current.kind != .comment and
