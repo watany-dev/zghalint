@@ -176,7 +176,18 @@ pub const Parser = struct {
         }
 
         if (self.current.kind == .mapping_value) {
+            const colon = self.current;
             self.advance();
+            if (self.current.kind == .newline or self.current.kind == .eof or self.current.kind == .comment) {
+                self.skipNewlinesAndComments();
+                // A `:` with nothing after it on its line has no value. Reading
+                // on regardless took the next line whatever its indent, so
+                // `on: a: :` swallowed the `jobs:` written below it and the file
+                // lost its jobs section (fuzz).
+                if (self.current.kind == .eof or self.current.column < min_indent) {
+                    return Node{ .null_value = self.spanFromToken(colon) };
+                }
+            }
             return self.parseNode(min_indent);
         }
 
@@ -1539,6 +1550,25 @@ test "a quote inside a plain scalar does not stretch the entry (fuzz)" {
     const doc = try parser.parse();
     const on_span = doc.mapping.entries[0].full_span.?;
     try std.testing.expect(on_span.end_byte <= std.mem.indexOf(u8, source, "jobs:").?);
+}
+
+test "a colon ending its line takes no value from the line below (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `on: a: :` ends on a `:` with nothing after it. Reading on regardless
+    // swallowed the `jobs:` below it, so removing an unrelated line above was
+    // enough to lose the jobs section.
+    var parser = Parser.init(alloc, "on: a: :\njobs:\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 2), doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("jobs", doc.mapping.entries[1].key.value);
+
+    // A line indented past the colon is still its value.
+    var nested = Parser.init(alloc, "on: a: :\n     b: 1\njobs:\n");
+    const nested_doc = try nested.parse();
+    try std.testing.expectEqual(@as(usize, 2), nested_doc.mapping.entries.len);
 }
 
 test "an unclosed flow sequence leaves the entry no end (fuzz)" {

@@ -875,10 +875,14 @@ fn parseJobs(ctx: *ParseContext, node: Node) ParseError![]const types.Job {
 }
 
 fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) ParseError!types.Job {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
+    // A job id with nothing under it is an unfinished workflow, and one holding
+    // a scalar is a type error SYN004 reports. Failing the parse over either
+    // made every other diagnostic in the file disappear (fuzz).
+    if (node == .null_value) return types.Job{ .id = id, .id_span = id_span };
+    if (!type_validation.checkMapping(node, "job", ctx.type_mismatches, ctx.allocator)) {
+        return types.Job{ .id = id, .id_span = id_span };
+    }
+    const m = node.mapping;
 
     var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
@@ -3437,9 +3441,9 @@ test "a job body flush with its id does not count as own-line (fuzz)" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // `e{up: :` leaves `d:` at the job id's own column, where the mapping still
-    // reads as the job's body but an insertion aligned to it becomes a job.
-    var yp = yaml_parser_mod.Parser.init(alloc, "on:\njobs:\n  e{up: :\n  d: ");
+    // `e{up: runs-on: x` puts the body on the job id's line, where an insertion
+    // aligned to the body's column would land mid-line.
+    var yp = yaml_parser_mod.Parser.init(alloc, "on:\njobs:\n  e{up: runs-on: x\n");
     const wf = try parseWorkflow(alloc, try yp.parse());
 
     try testing.expectEqual(@as(usize, 1), wf.jobs.len);
@@ -3493,15 +3497,33 @@ test "parseWorkflowTracked reports the line of an invalid step" {
     try testing.expectEqual(@as(u32, 8), failure.span.?.start_line);
 }
 
-test "parseWorkflowTracked reports the line of an invalid job" {
+test "a job holding a scalar is a type mismatch, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
+    const alloc = arena.allocator();
 
-    const failure = try parseFailure(arena.allocator(), "name: t\non: push\njobs:\n  build: oops\n");
+    var yp = yaml_parser_mod.Parser.init(alloc, "name: t\non: push\njobs:\n  build: oops\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
 
-    try testing.expectEqualStrings("jobs.build", failure.path);
-    try testing.expectEqual(@as(u32, 4), failure.span.?.start_line);
-    try testing.expectEqual(@as(u32, 3), failure.span.?.start_col);
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqualStrings("build", wf.jobs[0].id);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("job", wf.type_mismatches[0].field);
+}
+
+test "a job id with nothing under it does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  a:\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].steps.len);
+    try testing.expectEqual(@as(usize, 0), wf.type_mismatches.len);
 }
 
 test "parseWorkflowTracked reports the line of an invalid trigger" {
