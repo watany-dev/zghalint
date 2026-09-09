@@ -347,7 +347,16 @@ pub const Parser = struct {
 
             if (self.current.kind == .eof) break;
             if (self.current.column < key_indent) break;
-            if (self.current.column > key_indent) break;
+            // A line indented past the key, reached only after the entry's own
+            // value was fully parsed, belongs to no node: `on: []` followed by
+            // ` l` is orphan text. Ending the mapping there dropped every key
+            // written below it, so the file went unlintable from that line on
+            // (fuzz). Skip the line and look for the next sibling instead.
+            while (self.current.kind != .eof and self.current.column > key_indent) {
+                self.skipLine();
+            }
+            if (self.current.kind == .eof) break;
+            if (self.current.column < key_indent) break;
             if (self.current.column < min_indent) break;
 
             if (self.current.kind == .scalar) {
@@ -637,6 +646,14 @@ pub const Parser = struct {
             if (self.current.line != self.last_start_line) break;
             self.advance();
         }
+    }
+
+    /// Consume the rest of the current line, then the trivia after it.
+    fn skipLine(self: *Parser) void {
+        while (self.current.kind != .newline and self.current.kind != .eof) {
+            self.advance();
+        }
+        self.skipNewlinesAndComments();
     }
 
     fn skipNewlinesAndComments(self: *Parser) void {
@@ -1320,6 +1337,23 @@ test "junk after a flow collection does not end the mapping (fuzz)" {
 
     const source =
         \\on: []l
+        \\permissions: {contents: read}
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
+    try std.testing.expect(root.mapping.get("permissions") != null);
+}
+
+test "an orphan indented line does not end the mapping (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: []
+        \\ l
         \\permissions: {contents: read}
         \\
     ;
