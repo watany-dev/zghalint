@@ -54,8 +54,6 @@ fn isCheckable(need: []const u8) bool {
     return true;
 }
 
-// SYN021 — `needs:` names a job the workflow does not define.
-
 fn checkUndefinedNeeds(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         for (job.needs, 0..) |need, i| {
@@ -99,9 +97,6 @@ fn reportUndefined(
 /// `deploy` to its own ID would trade the SYN021 error for a SYN022 self-cycle.
 /// An empty entry has no typo to correct either, and every short job ID would
 /// sit within edit distance of it.
-///
-/// The candidate list is allocated from the diagnostic allocator; allocation
-/// failure degrades to no suggestion.
 fn nearestJobId(
     wf: *const Workflow,
     job: *const Job,
@@ -119,8 +114,6 @@ fn nearestJobId(
     }
     return util.didYouMean(need, names[0..n]);
 }
-
-// SYN022 — the job graph contains a cycle.
 
 const Color = enum { white, gray, black };
 
