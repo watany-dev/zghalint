@@ -122,12 +122,20 @@ const undetermined_hint = "the SHA pin hides the version; add a '# v<x.y.z>' com
 
 /// The version a `# v1.2.3` pin comment stands for. Pinning tools write the
 /// tag alone, sometimes followed by other text (`# v1.2.3 (2024-01-01)`), so
-/// only the first word is considered, and only when it parses as a version.
+/// only the first word is considered.
+///
+/// All three components are required. `parseSemver` reads `v4` as 4.0.0, and
+/// a major-only tag stands for whatever patch it happened to point at, so
+/// comparing it against an advisory range answers a question the comment did
+/// not ask: `# v4` against `>= 4.5.0` would clear a pin that may well be
+/// 4.5.2. An incomplete version is left undetermined instead.
 fn versionFromComment(comment: ?[]const u8) ?[]const u8 {
     const text = comment orelse return null;
     const end = std.mem.indexOfAny(u8, text, " \t") orelse text.len;
     const word = text[0..end];
     if (parseSemver(word) == null) return null;
+    const core_end = std.mem.indexOfAny(u8, word, "-+") orelse word.len;
+    if (std.mem.count(u8, word[0..core_end], ".") != 2) return null;
     return word;
 }
 
@@ -839,6 +847,20 @@ test "versionFromComment: takes the first word only when it parses" {
     try testing.expect(versionFromComment(null) == null);
     try testing.expect(versionFromComment("") == null);
     try testing.expect(versionFromComment("renovate: pinned") == null);
+    try testing.expect(versionFromComment("v4") == null);
+    try testing.expect(versionFromComment("v4.2") == null);
+    try testing.expectEqualStrings("v1.2.3-rc.1", versionFromComment("v1.2.3-rc.1").?);
+}
+
+test "SC003: a major-only pin comment leaves the version undetermined" {
+    var list = runWithAdvisoriesCommented(
+        &mock_advisories,
+        "evil/action@a5ac7e51b41094c92402da3b24376905380afc29",
+        "v1",
+    );
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(diagnostics.Severity.info, list.get(0).severity);
 }
 
 test "SC003: local action skipped" {

@@ -157,8 +157,15 @@ fn matchShasInRefs(
     var deref_failed = false;
     for (annotated_shas[0..annotated_count]) |tag_sha| {
         if (unresolved == 0) break;
-        const commit_sha = dereferenceAnnotatedTag(allocator, owner, repo, tag_sha) catch {
-            deref_failed = true;
+        const commit_sha = dereferenceAnnotatedTag(allocator, owner, repo, tag_sha) catch |err| {
+            // A tag object that parsed but points at something other than a
+            // commit is an answer, not a lost request: it simply matches no
+            // commit SHA. Counting it as a failure would silence SC005 for
+            // the whole repository and blame the network for it.
+            switch (err) {
+                error.UnexpectedFormat, error.MissingField => {},
+                else => deref_failed = true,
+            }
             continue;
         };
         defer allocator.free(commit_sha);

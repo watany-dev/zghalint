@@ -643,6 +643,10 @@ pub const Parser = struct {
     /// blanks stripped. Only a comment separated from the token by a blank is
     /// one: `a#b` is a single plain scalar in YAML, not a value and a comment.
     fn tokenLineComment(self: *Parser, token: Token) ?[]const u8 {
+        // A block scalar ends at the start of the line that closes it, so what
+        // follows `end` is a separate line whose comment belongs to no scalar.
+        if (std.mem.indexOfScalar(u8, token.slice(self.source), '\n') != null) return null;
+
         var i = token.end;
         if (i >= self.source.len) return null;
         if (self.source[i] != ' ' and self.source[i] != '\t') return null;
@@ -652,7 +656,8 @@ pub const Parser = struct {
         const start = i + 1;
         var end = start;
         while (end < self.source.len and self.source[end] != '\n' and self.source[end] != '\r') : (end += 1) {}
-        return std.mem.trim(u8, self.source[start..end], " \t");
+        const text = std.mem.trim(u8, self.source[start..end], " \t");
+        return if (text.len == 0) null else text;
     }
 
     fn scalarFromToken(self: *Parser, token: Token) Scalar {
@@ -1878,4 +1883,22 @@ test "trailing comment on a scalar is captured without the '#'" {
     // A `#` not preceded by a blank starts no comment in YAML, so nothing is
     // reported for it even though the tokenizer ends the scalar there.
     try std.testing.expect(node.mapping.get("hash").?.scalar.line_comment == null);
+}
+
+test "a block scalar takes no comment from the line that closes it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\folded: >-
+        \\    owner/action@abc1234
+        \\# v1.0.0
+        \\empty: value #
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+
+    try std.testing.expect(node.mapping.get("folded").?.scalar.line_comment == null);
+    // A `#` with nothing after it is no more a comment than a missing one.
+    try std.testing.expect(node.mapping.get("empty").?.scalar.line_comment == null);
 }
