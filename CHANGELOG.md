@@ -48,6 +48,11 @@ still be renumbered before 1.0.
 
 ### Fixed
 
+- An empty `permissions:` or `concurrency:` no longer aborts the workflow parse
+  and silences every diagnostic in the file. Both sections now report SYN003
+  and parsing continues, so a `--fix` rename that produces one of them (for
+  example `ermissons:` to `permissions:`) keeps the file lintable (#364).
+  `permissions: {}` stays the meaningful deny-all form and is not reported.
 - A workflow whose `on:` block repeats an event no longer writes past the taint
   table's fixed buffer. YAML duplicate keys parse, so three
   `workflow_dispatch:` keys appended the same contexts three times: a panic in

@@ -450,6 +450,7 @@ fn buildPushConcurrencyFix(list: *DiagnosticList, wf: *const Workflow) ?Fix {
 }
 
 pub fn checkPushConcurrency(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    if (workflow_types.hasEmptySection(wf.empty_sections, "concurrency")) return;
     if (wf.hasEvent(.push) and wf.concurrency == null) {
         diag_list.append(.{
             .rule_id = "BP005",
