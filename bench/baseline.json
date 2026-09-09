@@ -491,10 +491,10 @@
       "violations": 0
     },
     "e-expression/matrix-object-property-undeclared.yml": {
-      "detected": 0,
+      "detected": 1,
       "expected": 1,
       "line_expected": 1,
-      "line_matched": 0,
+      "line_matched": 1,
       "violations": 0
     },
     "e-expression/matrix-without-strategy.yml": {

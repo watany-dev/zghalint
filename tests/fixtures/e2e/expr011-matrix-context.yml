@@ -1,4 +1,4 @@
-# zghalint:expect EXPR011@16 EXPR011@19 EXPR011@29
+# zghalint:expect EXPR011@16 EXPR011@19 EXPR011@29 EXPR011@52
 name: matrix context
 on:
   workflow_dispatch:
@@ -37,3 +37,18 @@ jobs:
     steps:
       - name: Keys are unknowable
         run: echo "${{ matrix.anything }}"
+  object_axis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        platform:
+          - target: x86_64-unknown-linux-gnu
+            arch: x64
+    steps:
+      - name: Undefined property of an object axis
+        run: echo "${{ matrix.platform.image }}"
+      - name: Declared property
+        run: echo "${{ matrix.platform.arch }}"
