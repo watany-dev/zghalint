@@ -439,10 +439,8 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "zizmor": None,
         "actionlint": None,
     },
-    #: No zghalint rule flags a workflow file with no content at all; the
-    #: case records the gap against actionlint's `workflow is empty`.
     "empty-workflow": {
-        "zghalint": None,
+        "zghalint": ["SYN020"],
         "zizmor": None,
         "actionlint": ["syntax-check~empty"],
     },

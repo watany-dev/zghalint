@@ -556,6 +556,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN017 | workflow-dispatch-inputs | error | `workflow_dispatch` input declares an invalid `type`, misuses `options`, or has a `default` that does not fit |
 | SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis (`--fix` で重複を削除) |
 | SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
+| SYN020 | empty-workflow | error | ワークフローファイルに中身が無い（コメントと空白だけ、または空のマッピング） |
 
 ### SYN001 unknown-key
 
@@ -968,6 +969,24 @@ axis built from an expression (`os: ${{ fromJSON(...) }}`) carries no values to
 compare against, so the value check is skipped for it. Plain `1.10` and `1.1`,
 or `True` and `true`, are the same YAML value and do not count as a mismatch;
 quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
+
+### SYN020 empty-workflow
+
+中身の無いワークフローファイル — コメントと空白だけ、または `{}` — を報告する。
+消し忘れたファイルは GitHub 側でも実行されないため、指摘されなければ気付けない。
+
+```yaml
+# 使わなくなったので中身を消した。ファイルは残っている
+# error[SYN020]: workflow file is empty
+```
+
+ワークフローパーサは `on` と `jobs` を必要とするため、この状態のファイルは
+パースに失敗する。以前はそれを「lint できないファイル」として扱い終了コード 2
+を返していたが、今は YAML ドキュメントの段階で SYN020 として報告するので、
+他の指摘と同じ扱い（終了コード 1）になる。
+
+中身のあるルート（シーケンス、あるいは `null` のような値を持つスカラー）は
+「空」ではなく型の誤りなので、このルールではなくパースエラーとして報告される。
 
 ## Action Metadata Rules (ACT)
 
