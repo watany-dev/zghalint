@@ -58,6 +58,10 @@ pub const Parser = struct {
     /// past the next sibling's first token), so this is the only anchor that
     /// still marks where the node's own text stopped.
     last_end: usize,
+    /// Line the last content token *started* on. A block scalar starts and ends
+    /// on different lines, so this deliberately marks the start: trailing junk
+    /// is only ever recognised on a single-line value.
+    last_start_line: u32,
     /// How many anchor definitions the parse has consumed. A sequence whose
     /// items define anchors cannot be edited by byte range: an alias far away
     /// in the file still expands to the text being removed.
@@ -88,6 +92,7 @@ pub const Parser = struct {
             .alias_budget = max_alias_expansion_nodes,
             .failure = null,
             .last_end = 0,
+            .last_start_line = 0,
             .anchors_seen = 0,
             .comments_seen = 0,
         };
@@ -333,6 +338,11 @@ pub const Parser = struct {
                 .full_span = self.blockEntryFullSpan(key_scalar, value),
             });
 
+            // Text left over on the line the entry ended on is junk: `on: []l`
+            // leaves `l` behind. Ending the mapping there dropped every key
+            // written below it, so the whole rest of the file went unlintable
+            // and an inserted top-level key stayed invisible (fuzz).
+            self.skipTrailingLineTokens();
             self.skipNewlinesAndComments();
 
             if (self.current.kind == .eof) break;
@@ -600,14 +610,31 @@ pub const Parser = struct {
             .anchor => {
                 self.anchors_seen += 1;
                 self.last_end = self.current.end;
+                self.last_start_line = self.current.line;
             },
-            else => self.last_end = self.current.end,
+            else => {
+                self.last_end = self.current.end;
+                self.last_start_line = self.current.line;
+            },
         }
         self.current = self.tokenizer.next();
     }
 
     fn skipNewlines(self: *Parser) void {
         while (self.current.kind == .newline) {
+            self.advance();
+        }
+    }
+
+    /// Drop whatever still sits on the line `value` ended on, so the next
+    /// sibling key is read from the line below instead of being taken for the
+    /// end of the mapping.
+    fn skipTrailingLineTokens(self: *Parser) void {
+        while (self.current.kind != .newline and
+            self.current.kind != .comment and
+            self.current.kind != .eof)
+        {
+            if (self.current.line != self.last_start_line) break;
             self.advance();
         }
     }
@@ -1285,6 +1312,22 @@ test "a trailing comment on an empty value does not swallow the next key" {
     try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
     try std.testing.expectEqualStrings("jobs", root.mapping.entries[1].key.value);
     try std.testing.expect(root.mapping.get("jobs").?.mapping.entries.len == 1);
+}
+
+test "junk after a flow collection does not end the mapping (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: []l
+        \\permissions: {contents: read}
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
+    try std.testing.expect(root.mapping.get("permissions") != null);
 }
 
 test "a trailing comment on an empty sequence item does not swallow the next key" {
