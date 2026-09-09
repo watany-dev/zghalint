@@ -1540,9 +1540,9 @@ fn parseSecretsConfig(allocator: std.mem.Allocator, node: Node) ParseError!types
 }
 
 fn parseCredentials(
+    allocator: std.mem.Allocator,
     node: Node,
     mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
-    allocator: std.mem.Allocator,
 ) ParseError!?types.Credentials {
     // A `credentials:` written with nothing under it carries no username and no
     // password, and one holding a scalar is a type error SYN004 reports.
@@ -1570,7 +1570,7 @@ fn parseContainer(
             return .{
                 .image = m.getScalar("image"),
                 .credentials = if (m.get("credentials")) |n|
-                    try parseCredentials(n, mismatches, allocator)
+                    try parseCredentials(allocator, n, mismatches)
                 else
                     null,
                 .env_keys = if (m.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
@@ -1598,7 +1598,7 @@ fn parseServices(
                     .name = entry.key.value,
                     .image = vm.getScalar("image"),
                     .credentials = if (vm.get("credentials")) |n|
-                        try parseCredentials(n, mismatches, allocator)
+                        try parseCredentials(allocator, n, mismatches)
                     else
                         null,
                     .env_keys = if (vm.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
@@ -2769,6 +2769,7 @@ test "a credentials: holding a scalar does not fail the parse (fuzz)" {
     );
     const wf = try parseWorkflow(alloc, try parser.parse());
     try testing.expect(wf.jobs[0].container.?.credentials == null);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
     try testing.expectEqualStrings("credentials", wf.type_mismatches[0].field);
 }
 
