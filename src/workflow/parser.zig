@@ -1534,9 +1534,13 @@ fn parseSecretsConfig(allocator: std.mem.Allocator, node: Node) ParseError!types
     }
 }
 
-fn parseCredentials(node: Node) ParseError!types.Credentials {
+fn parseCredentials(node: Node) ParseError!?types.Credentials {
     const m = switch (node) {
         .mapping => |m| m,
+        // A `credentials:` written with nothing under it carries no username
+        // and no password. Rejecting it failed the whole workflow parse over
+        // one blank section, so every other rule went unreported (fuzz).
+        .null_value => return null,
         else => return error.InvalidValue,
     };
     return .{
@@ -2633,6 +2637,21 @@ test "parseJob with container as scalar" {
     const job = try parseJob(&ctx, "build", mkSpan(), mkMapping(&entries));
     try testing.expectEqualStrings("node:14", job.container.?.image.?);
     try testing.expect(job.container.?.credentials == null);
+}
+
+test "an empty container credentials: does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    container:\n      image: node:20\n      credentials:\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqualStrings("node:20", wf.jobs[0].container.?.image.?);
+    try testing.expect(wf.jobs[0].container.?.credentials == null);
 }
 
 test "parseJob with container credentials" {
