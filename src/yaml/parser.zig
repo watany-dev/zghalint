@@ -904,6 +904,8 @@ pub const Parser = struct {
     /// apostrophe inside a plain scalar (`don't`) is just a character.
     fn scanQuoteState(line: []const u8, state: ?u8) ?u8 {
         var open = state;
+        // A line begins a token; after that only a structural character does.
+        var at_token_start = true;
         var i: usize = 0;
         while (i < line.len) : (i += 1) {
             const c = line[i];
@@ -921,20 +923,29 @@ pub const Parser = struct {
                     if (backslashes % 2 == 1) continue;
                 }
                 open = null;
+                at_token_start = false;
                 continue;
             }
             const prev: u8 = if (i == 0) ' ' else line[i - 1];
             // A comment holds no scalar, so nothing in it opens one.
             if (c == '#' and (i == 0 or prev == ' ' or prev == '\t')) break;
-            if (c != '\'' and c != '"') continue;
-            switch (prev) {
-                // A closing bracket ends the flow collection, so what follows
-                // it starts a token of its own: the tokenizer reads `[]'` as a
-                // sequence and then a quoted scalar running to the next quote
-                // (fuzz).
-                ' ', '\t', ':', ',', '[', '{', '-', ']', '}' => open = c,
-                else => {},
+            if (c == ' ' or c == '\t') continue;
+            if ((c == '\'' or c == '"') and at_token_start) {
+                open = c;
+                continue;
             }
+            // Whitespace alone does not start a token: in `) "x` the quote sits
+            // inside the plain scalar that `)` began, and the tokenizer reads
+            // the whole line as one scalar. Treating it as an opening quote
+            // stretched the entry over the rest of the file, and `--fix`
+            // deleted every key in between (fuzz).
+            const next: u8 = if (i + 1 < line.len) line[i + 1] else ' ';
+            const separates = next == ' ' or next == '\t' or next == '\n' or next == '\r';
+            at_token_start = switch (c) {
+                ',', '[', '{', ']', '}' => true,
+                ':', '-', '?' => separates,
+                else => false,
+            };
         }
         return open;
     }
@@ -1494,6 +1505,21 @@ test "a quoted scalar closing on an escaped quote is still open (fuzz)" {
     var closed = Parser.init(alloc, "on: \"push\\\\\"\n");
     const closed_doc = try closed.parse();
     try std.testing.expect(closed_doc.mapping.entries[0].full_span != null);
+}
+
+test "a quote inside a plain scalar does not stretch the entry (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `) "` is one plain scalar, so the `"` opens nothing. Reading it as an
+    // open quote ran the `on:` entry to the closing `"` seven lines down, and
+    // removing the entry as an empty section took `jobs:` with it.
+    const source = "on:\n workflow_call:\n  ) \":\njobs:\n j:\n    steps:\n    - run: \"x\"\n";
+    var parser = Parser.init(alloc, source);
+    const doc = try parser.parse();
+    const on_span = doc.mapping.entries[0].full_span.?;
+    try std.testing.expect(on_span.end_byte <= std.mem.indexOf(u8, source, "jobs:").?);
 }
 
 test "an entry ends past a quote opened after a closing bracket (fuzz)" {
