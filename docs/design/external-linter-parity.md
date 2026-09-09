@@ -517,6 +517,65 @@ installation が持つ全スコープを継承する。zizmor は `github-app` �
 したところで 3 件出た。`permission-issues: write` のようにスコープを書いた
 呼び出しは zizmor も黙るので、入力の有無で切れる。
 
+#### G30 (#382). オブジェクト軸の未定義プロパティを EXPR011 が見ない — 要ルール改善
+
+`bench/cases/e-expression/matrix-object-property-undeclared.yml`。
+
+```yaml
+strategy:
+  matrix:
+    platform:
+      - target: x86_64-unknown-linux-gnu
+        arch: x64
+steps:
+  - run: echo "${{ matrix.platform.image }}"
+```
+
+EXPR011 は `matrix.<key>` の第 1 セグメントだけを軸名 / `include:` のキーと
+照合し、一致したら残りのパスを見ない。軸値がマッピングでも、どのセルにも
+無いプロパティへのアクセスは沈黙する。actionlint はオブジェクト型
+`{arch: string; target: string}` に対して `property "image" is not defined`
+を出す。スカラー軸の未定義キーは既存の `matrix-key-undeclared.yml` で取れている。
+
+実運用のワークフロー群を三者比較したところで、軸オブジェクトに無いキーを
+参照する `run:` / `with:` が複数ジョブで出た。セルによってキーが違う場合は
+和集合を宣言済みとみなし、値が式のセルはその軸では沈黙する。
+
+#### G31 (#383). DEP003 が `$/` の自己参照 `uses:` を形式不正にする — 要ルール修正
+
+`bench/cases/g-reusable/self-repository-prefix.yml`。
+
+```yaml
+jobs:
+  call:
+    uses: $/.github/workflows/reusable.yml
+```
+
+`$/.github/workflows/{file}` (ジョブ) と `$/{path}` (ステップ) は、ワークフロー
+自身のリポジトリの実行中コミットを指す自己参照で、`./` と同様に `@ref` を
+付けてはいけない。DEP003 は `$/` をリモート参照の `{owner}` として読み、
+`@ref` が無いので error にする。zizmor は指摘しない。actionlint 1.7.7 も
+形式不正とするが、github.com では正規の構文である。
+
+§4.3 の `self-repository` (zizmor が `./` を `$/` へ書き換えろと勧める指摘)
+は引き続き採用しない。こちらは既に書かれた `$/` を誤って弾く誤検出。
+
+#### G32 (#384). RUNNER002 が `ubuntu-slim` を未知ラベルにする — 要データ更新
+
+`bench/cases/h-practices/ubuntu-slim-runner.yml`。
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-slim
+```
+
+`ubuntu-slim` は GitHub-hosted の 1 vCPU Linux ランナーの公式ラベル。
+`known_labels` に無いため、`ubuntu-` で始まる未知ラベルとして RUNNER002 が
+error を出す。actionlint 1.7.7 も未知とするが、指摘は誤り。`macos-15-intel`
+は `macos-15` の接尾辞として受理される一方、`ubuntu-slim` はどの現行ラベルの
+接尾辞にもならない。表を足すときは現行の公式ラベル一覧と突き合わせる。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -792,7 +851,7 @@ python3 scripts/bench.py --fix
 新規ケースの FN は失敗させない。gate の「新規ケース」表と行列の FN 表に載る
 ので、そこから次の手順で gap にする。
 
-1. FN を §4.1 の次の空き番号 (G26 以降) として起票し、この文書に節を足す。
+1. FN を §4.1 の次の空き番号 (G33 以降) として起票し、この文書に節を足す。
    表題は `#### G<n> (#<issue>). <要約> — 要ルール追加` の形にそろえる。
 2. ルールを実装したら見出しを「対応済み」に変え、§5 のチェックボックスを埋める。
 3. 対応するケースを `tests/fixtures/e2e/` へ昇格させる。bench のケースは
@@ -872,3 +931,6 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
 - [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する
+- [ ] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
+- [ ] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
+- [ ] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める

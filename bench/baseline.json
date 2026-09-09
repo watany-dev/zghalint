@@ -490,6 +490,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "e-expression/matrix-object-property-undeclared.yml": {
+      "detected": 0,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
     "e-expression/matrix-without-strategy.yml": {
       "detected": 1,
       "expected": 1,
@@ -707,6 +714,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "g-reusable/self-repository-prefix.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 1
+    },
     "g-reusable/undeclared-secret": {
       "detected": 2,
       "expected": 2,
@@ -797,6 +811,13 @@
       "line_expected": 0,
       "line_matched": 0,
       "violations": 0
+    },
+    "h-practices/ubuntu-slim-runner.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 1
     },
     "i-robustness/bare-dash-sequence-entry.yml": {
       "detected": 1,
