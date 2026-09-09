@@ -2833,7 +2833,6 @@ const workflow_run_trigger = test_support.makeTrigger(.workflow_run);
 const pr_review_trigger = test_support.makeTrigger(.pull_request_review);
 const pr_review_comment_trigger = test_support.makeTrigger(.pull_request_review_comment);
 const push_trigger = test_support.makeTrigger(.push);
-/// `on: push` narrowed to tags, i.e. the shape a tag-cut release uses.
 const tag_push_trigger = Trigger{ .events = &[_]EventConfig{.{
     .event = .push,
     .filter = .{ .spans = .{ .tags = test_support.dummySpan(0, 0) } },

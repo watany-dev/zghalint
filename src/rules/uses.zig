@@ -156,8 +156,6 @@ fn pathBeforeRef(raw: []const u8) []const u8 {
     return raw[0..std.mem.indexOfScalar(u8, raw, '@').?];
 }
 
-/// A reference that stays inside the repository the workflow came from: `./`
-/// resolves against the checkout, `$/` against the commit the run started from.
 /// `../` is matched here so it gets the "relative to the repository root"
 /// verdict instead of being read as an `{owner}/{repo}` pair.
 fn isLocalPath(raw: []const u8) bool {
@@ -166,11 +164,9 @@ fn isLocalPath(raw: []const u8) bool {
         std.mem.startsWith(u8, raw, self_repo_prefix);
 }
 
-/// The path a local reference points at, or null when the prefix is not one of
-/// the accepted ones. `./` alone is the repository root, but `$/` alone names
-/// nothing, so an empty `$/` path is rejected along with `$//`. A `..` segment
-/// leaves the repository the reference promised to stay in, whichever prefix
-/// carries it.
+/// `./` alone is the repository root, but `$/` alone names nothing, so an empty
+/// `$/` path is rejected along with `$//`. A `..` segment leaves the repository
+/// the reference promised to stay in, whichever prefix carries it.
 fn localPath(raw: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, raw, self_repo_prefix)) {
         const path = raw[self_repo_prefix.len..];
