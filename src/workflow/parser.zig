@@ -1657,19 +1657,25 @@ const ParsedStringArray = struct {
 
 fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseError!ParsedStringArray {
     switch (node) {
+        // An entry that is not a scalar is not a string zghalint can read, but
+        // the list around it still is: `needs: [\n` parses as a sequence
+        // holding one empty item, and rejecting it used to make the whole file
+        // unlintable (fuzz).
         .sequence => |seq| {
             const values = try allocator.alloc([]const u8, seq.items.len);
             const spans = try allocator.alloc(yaml.Span, seq.items.len);
-            for (seq.items, 0..) |item, i| {
+            var len: usize = 0;
+            for (seq.items) |item| {
                 switch (item) {
                     .scalar => |s| {
-                        values[i] = s.value;
-                        spans[i] = s.span;
+                        values[len] = s.value;
+                        spans[len] = s.span;
+                        len += 1;
                     },
-                    else => return error.InvalidValue,
+                    else => {},
                 }
             }
-            return .{ .values = values, .spans = spans };
+            return .{ .values = values[0..len], .spans = spans[0..len] };
         },
         .scalar => |s| {
             const values = try allocator.alloc([]const u8, 1);
@@ -1678,6 +1684,9 @@ fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseErro
             spans[0] = s.span;
             return .{ .values = values, .spans = spans };
         },
+        // `needs:` left empty is a list of nothing, not a broken workflow.
+        // Rejecting it used to make the whole file unlintable (fuzz).
+        .null_value => return .{ .values = &.{}, .spans = &.{} },
         else => return error.InvalidValue,
     }
 }
@@ -3139,6 +3148,35 @@ test "a CRLF workflow parses like its LF twin" {
     try testing.expectEqualStrings("build", wf.jobs[0].id);
     try testing.expectEqualStrings("ubuntu-latest", wf.jobs[0].runs_on.?);
     try testing.expectEqualStrings("actions/checkout@v4", wf.jobs[0].steps[0].uses.?.raw);
+}
+
+test "an empty needs: leaves the workflow parseable (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  d:\n    needs:\n    runs-on: ubuntu-latest\n    steps: []\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].needs.len);
+}
+
+test "a needs: list with an unreadable entry keeps the readable ones (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // An unterminated flow sequence holds one empty item; `build` is still a
+    // dependency, and the rest of the workflow is still lintable.
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  d:\n    needs:\n      - build\n      -\n    runs-on: ubuntu-latest\n    steps: []\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].needs.len);
+    try testing.expectEqualStrings("build", wf.jobs[0].needs[0]);
 }
 
 test "a job body flush with its id does not count as own-line (fuzz)" {
