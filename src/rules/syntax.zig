@@ -1779,6 +1779,67 @@ test "SYN001: secrets: inherit is still renamed (fuzz)" {
     try testing.expect(diags.get(0).fix != null);
 }
 
+test "SYN001: no rename onto permissions: holding a sequence (fuzz)" {
+    // `permissions:` takes a scalar or a mapping; a sequence makes the workflow
+    // parser give up on the file, so the rename would cost every other finding.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permisions:
+        \\      - contents
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: no rename onto container: holding a sequence (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    containr:
+        \\      - node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: container: holding a scalar is still renamed (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    containr: node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix != null);
+}
+
 test "SYN001: no rename onto a mapping key holding a sequence (fuzz)" {
     const source =
         \\on:

@@ -564,10 +564,18 @@ pub const Step = struct {
     /// distinction `--fix` appended `shell: bash` again every round (fuzz).
     shell_key_present: bool = false,
     with: ?StringMap = null,
+    /// True when a `with:` key is present, whatever it holds. An empty section
+    /// and a mistyped one (`with: 4`) both leave `with` null while the key is
+    /// still in source, so inserting a fresh `with:` block would give the step
+    /// two of them (fuzz).
+    with_key_present: bool = false,
     /// Value spans and styles of the `with:` entries (for diagnostics that
     /// scan a `with:` value, e.g. SEC003/SEC005/SEC011).
     with_meta: ?ScalarValueMetaMap = null,
     env: ?StringMap = null,
+    /// True when an `env:` key is present, whatever it holds. See
+    /// `with_key_present`.
+    env_key_present: bool = false,
     env_meta: ?ScalarValueMetaMap = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},

@@ -110,9 +110,10 @@ fn buildCacheFix(
             ) orelse continue;
             edits.appendSlice(alloc, appended) catch continue;
         } else {
-            // `with: {}` / `with:` parses to a null `with` while the key is still
-            // in source; inserting another `with:` block would duplicate it (#171).
-            if (util.hasEmptySection(step.empty_sections, "with")) continue;
+            // `with: {}`, `with:` and `with: 4` parse to a null `with` while the
+            // key is still in source; inserting another `with:` block would
+            // duplicate it (#171, fuzz).
+            if (step.with_key_present) continue;
             const anchor = step.uses_value_end_byte orelse continue;
             const inserted = fix_builder.insertWithEntry(alloc, anchor, col, "cache", cache_value) orelse continue;
             edits.appendSlice(alloc, inserted) catch continue;

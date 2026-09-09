@@ -1265,6 +1265,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     var empty = std.ArrayList(types.EmptySection){};
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
+        step.with_key_present = true;
         try recordEmpty(&empty, ctx.allocator, "with", with_node);
         // `with: 4` is a type error SYN004 reports, not a reason to give up on
         // the whole file (fuzz).
@@ -1296,6 +1297,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         }
     }
     if (m.get("env")) |n| {
+        step.env_key_present = true;
         try recordEmpty(&empty, ctx.allocator, "env", n);
         if (!isEmptyContainer(n) and
             type_validation.checkMapping(n, "env", ctx.type_mismatches, ctx.allocator))
@@ -2698,6 +2700,26 @@ test "a mapping where a string list belongs does not fail the parse (fuzz)" {
     var parser = yaml_parser_mod.Parser.init(alloc, "on:\n push:\n  branches: l:\njobs:\n");
     const wf = try parseWorkflow(alloc, try parser.parse());
     try testing.expectEqual(@as(usize, 0), wf.on.events[0].filter.?.branches.values.len);
+}
+
+test "a mistyped with:/env: still counts as a key in source (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `with: 4` is a type mismatch, not a mapping, so `with` stays null. A fix
+    // reading that as "no `with:` in source" would insert a second one.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: a/b@v1\n        with: 4\n        env: 4\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    const step = wf.jobs[0].steps[0];
+    try testing.expect(step.with == null);
+    try testing.expect(step.with_key_present);
+    try testing.expect(step.env == null);
+    try testing.expect(step.env_key_present);
 }
 
 test "a service with nothing under it does not fail the parse (fuzz)" {

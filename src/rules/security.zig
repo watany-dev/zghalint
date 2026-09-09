@@ -1908,9 +1908,10 @@ fn buildPersistCredentialsFalseFix(
     const has_persist = if (step.with) |w| w.get("persist-credentials") != null else false;
     if (has_persist) return null;
 
-    // `with: {}` / `with:` parses to a null `with` while the key is still in
-    // source, so inserting a `with:` block would leave the step with two (#171).
-    if (step.with == null and util.hasEmptySection(step.empty_sections, "with")) return null;
+    // `with: {}`, `with:` and `with: 4` all parse to a null `with` while the key
+    // is still in source, so inserting a `with:` block would leave the step with
+    // two (#171, fuzz).
+    if (step.with == null and step.with_key_present) return null;
 
     // uses_key_col is 1-based; parent aligns at col - 1 spaces, child at col + 1.
     // An existing `with:` sets the indent instead: its keys need not sit on the
@@ -5788,6 +5789,7 @@ test "SEC015: no fix when with: is present but empty (#171)" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .empty_sections = &empty,
+            .with_key_present = true,
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -6024,6 +6026,7 @@ test "SEC018: no fix when with: is present but empty (#171)" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .empty_sections = &empty,
+        .with_key_present = true,
     });
     defer list.deinit();
 

@@ -137,6 +137,9 @@ const mapping_only_keys = [_][]const u8{
     "outputs",  "services", "strategy", "with",
 };
 
+/// Keys whose value is a scalar or a mapping, and nothing else.
+const scalar_or_mapping_keys = [_][]const u8{ "container", "permissions" };
+
 /// True when renaming a key to `key` would leave `value` in a place the workflow
 /// parser rejects. An empty value is never rejected: the section is reported as
 /// empty, but the file still parses.
@@ -171,6 +174,11 @@ pub fn rejectsValue(key: []const u8, value: yaml.Node) bool {
             } else false,
             else => true,
         };
+    }
+    // `permissions:` and `container:` take a scalar or a mapping and give up on
+    // the file over anything else (fuzz).
+    if (isAllowedKey(key, &scalar_or_mapping_keys)) {
+        return value != .mapping and value != .scalar;
     }
     if (isAllowedKey(key, &mapping_only_keys)) return value != .mapping;
     return false;

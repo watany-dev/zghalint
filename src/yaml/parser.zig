@@ -713,18 +713,31 @@ pub const Parser = struct {
         return if (text.len == 0) null else text;
     }
 
+    /// True when a quoted token never met its closing quote and so ran to the
+    /// end of the file. The last byte alone does not answer it: in `"a\"` the
+    /// trailing quote is escaped, and the scalar is still open.
+    fn quotedIsUnterminated(raw: []const u8) bool {
+        if (raw.len < 2) return true;
+        if (raw[raw.len - 1] != raw[0]) return true;
+        if (raw[0] != '"') return false;
+        var backslashes: usize = 0;
+        var i = raw.len - 1;
+        while (i > 1 and raw[i - 1] == '\\') : (i -= 1) backslashes += 1;
+        return backslashes % 2 == 1;
+    }
+
     fn scalarFromToken(self: *Parser, token: Token) Scalar {
         const raw = token.slice(self.source);
         const ends_line = self.tokenEndsLine(token);
         const line_comment = self.tokenLineComment(token);
-        if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
+        if (raw.len >= 1 and (raw[0] == '\'' or raw[0] == '"')) {
             return .{
-                .value = raw[1 .. raw.len - 1],
+                .value = if (raw.len >= 2) raw[1 .. raw.len - 1] else "",
                 .style = if (raw[0] == '\'') .single_quoted else .double_quoted,
                 .span = self.spanFromToken(token),
                 .ends_line = ends_line,
                 .line_comment = line_comment,
-                .unterminated = raw[raw.len - 1] != raw[0],
+                .unterminated = quotedIsUnterminated(raw),
             };
         }
         if (raw.len >= 1 and (raw[0] == '|' or raw[0] == '>')) {
@@ -1442,6 +1455,23 @@ test "an entry sharing its line with an outer key has no removable span (fuzz)" 
     try std.testing.expect(strategy.value.mapping.entries[0].full_span == null);
     // A key that does start its own line keeps its span.
     try std.testing.expect(doc.mapping.entries[0].full_span != null);
+}
+
+test "a quoted scalar closing on an escaped quote is still open (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The final `"` is escaped, so the scalar runs to the end of the file and
+    // the entry has no boundary after it.
+    var parser = Parser.init(alloc, "on: \"push\\\"");
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[0].full_span == null);
+
+    // A backslash of its own is escaped in turn, so this one does close.
+    var closed = Parser.init(alloc, "on: \"push\\\\\"\n");
+    const closed_doc = try closed.parse();
+    try std.testing.expect(closed_doc.mapping.entries[0].full_span != null);
 }
 
 test "an entry whose quoted scalar never closes has no span (fuzz)" {
