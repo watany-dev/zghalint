@@ -165,6 +165,10 @@ GitHub Actions ワークフローファイルを静的解析し、セキュリ�
 
 作業完了時は `wrapup` スキル（レビュー2本 → 取り込み → コメント掃除）を通す。
 
+`doghooding` は指定した OSS の実 CI を三者比較にかけ、zghalint 側の穴を
+匿名化した最小ケースと issue にするドッグフーディング用。対象の実名は
+成果物に残さない。
+
 `ponytail-review`（差分の過剰設計レビュー）と `ponytail-audit`（リポジトリ全体の
 監査）は [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (MIT)
 から vendoring したもの。
