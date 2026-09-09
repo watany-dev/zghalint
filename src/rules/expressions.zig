@@ -582,8 +582,8 @@ pub fn validateExpression(
 
 /// What GitHub does with the value of a `${{ }}`: splice it into a string
 /// (`run:` / `env:` / `with:`) or evaluate it as a condition (`if:`). Only the
-/// former renders the value, so only it can report an EXPR018 interpolation
-/// finding (#162).
+/// former renders the value, so only it reports EXPR018 (#162); only the
+/// latter has a condition to be unsound, so only it reports EXPR007 (#360).
 pub const ExprUse = enum { interpolation, condition };
 
 /// As `validateExpression`, but resolving context roots against `env` first,
@@ -616,8 +616,9 @@ pub fn validateExpressionEnv(
         return;
     };
     validateNode(allocator, &node, base_span, list, expr_base_byte, null, env);
-    if (use == .interpolation) {
-        checkInterpolatedValue(allocator, &node, base_span, list, env);
+    switch (use) {
+        .interpolation => checkInterpolatedValue(allocator, &node, base_span, list, env),
+        .condition => checkConditionSpine(allocator, &node, base_span, list, expr_base_byte),
     }
 }
 
@@ -671,7 +672,6 @@ fn validateNode(
         .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent, env),
         .binary_op, .unary_op, .property_access, .index_access => {
             if (node.kind == .binary_op) {
-                checkUnsoundCondition(allocator, node, span, list, expr_base_byte);
                 checkComparison(allocator, node, span, list, env);
             }
             for (node.children) |*child| {
@@ -923,6 +923,30 @@ fn buildContainsEqFix(
     };
 }
 
+/// EXPR007, condition half: the `||` / `&&` chain the runner evaluates as the
+/// condition itself, plus what a leading `!` negates. The same operators
+/// anywhere else produce a value — `inputs.x || 'stable'` is a default and
+/// `cond && 'a' || 'b'` a ternary — where a bare literal is the point (#360).
+fn checkConditionSpine(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: ?usize,
+) void {
+    switch (node.kind) {
+        .unary_op => if (!std.mem.eql(u8, node.value, "!")) return,
+        .binary_op => {
+            if (!std.mem.eql(u8, node.value, "||") and !std.mem.eql(u8, node.value, "&&")) return;
+            checkUnsoundCondition(allocator, node, span, list, expr_base_byte);
+        },
+        else => return,
+    }
+    for (node.children) |*child| {
+        checkConditionSpine(allocator, child, span, list, expr_base_byte);
+    }
+}
+
 fn checkUnsoundCondition(
     allocator: std.mem.Allocator,
     node: *const ExprNode,
@@ -930,13 +954,11 @@ fn checkUnsoundCondition(
     list: *DiagnosticList,
     expr_base_byte: ?usize,
 ) void {
-    if (!std.mem.eql(u8, node.value, "||") and !std.mem.eql(u8, node.value, "&&")) return;
-
     for (node.children) |*child| {
         if (child.kind == .string_literal or child.kind == .number_literal) {
             const msg = std.fmt.allocPrint(
                 allocator,
-                "unsound condition: bare literal {s} as operand of '{s}' is always truthy",
+                "unsound condition: bare literal {s} as operand of '{s}' is not compared with anything",
                 .{ child.value, node.value },
             ) catch "unsound condition: bare literal in logical operator";
             const fix = buildExpr007Fix(list, node, child, expr_base_byte);
@@ -1568,6 +1590,42 @@ pub const sub_rule_ids = [_][]const u8{
     "EXPR017",
     "EXPR018",
 };
+
+/// EXPR007 only fires where GitHub evaluates the expression as a condition,
+/// so its tests go through `.condition` instead of `validateExpression`'s
+/// interpolation (#360).
+fn validateCondition(
+    allocator: std.mem.Allocator,
+    expr: []const u8,
+    list: *DiagnosticList,
+    expr_base_byte: ?usize,
+) void {
+    validateExpressionEnv(allocator, expr, Span.point(1, 1, 0), list, expr_base_byte, &expr_check.TypeEnv.empty, .condition);
+}
+
+fn expectSingleConditionRule(expr: []const u8, rule_id: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateCondition(arena.allocator(), expr, &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expectEqualStrings(rule_id, list.get(0).rule_id);
+}
+
+fn expectNoConditionDiagnostics(expr: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    validateCondition(arena.allocator(), expr, &list, 0);
+    if (list.len() != 0) {
+        std.debug.print("unexpected diagnostic for '{s}': {s}\n", .{ expr, list.get(0).message });
+        return error.UnexpectedDiagnostic;
+    }
+}
 
 fn expectNoDiagnostics(expr: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2624,18 +2682,18 @@ test "validate EXPR007: bare string literal right of ||" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.event_name == 'push' || 'pull_request'", &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
     try std.testing.expectEqual(Severity.warning, list.get(0).severity);
 }
 
 test "validate EXPR007: bare string literal right of &&" {
-    try expectSingleRule("github.event_name != 'push' && 'pull_request'", "EXPR007");
+    try expectSingleConditionRule("github.event_name != 'push' && 'pull_request'", "EXPR007");
 }
 
 test "validate EXPR007: bare string literal left of ||" {
-    try expectSingleRule("'push' || github.event_name == 'pull_request'", "EXPR007");
+    try expectSingleConditionRule("'push' || github.event_name == 'pull_request'", "EXPR007");
 }
 
 test "validate EXPR007: bare number literal right of ||" {
@@ -2644,22 +2702,34 @@ test "validate EXPR007: bare number literal right of ||" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.run_attempt == 1 || 2", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.run_attempt == 1 || 2", &list, 0);
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expectEqualStrings("EXPR007", list.get(0).rule_id);
     try std.testing.expect(firstFix(list, "EXPR007") != null);
 }
 
+test "validate EXPR007: a default value in an interpolation is not a condition" {
+    try expectNoDiagnostics("inputs.channel || 'stable'");
+}
+
+test "validate EXPR007: a ternary in an interpolation is not a condition" {
+    try expectNoDiagnostics("inputs.channel == 'beta' && '--beta' || '--release'");
+}
+
+test "validate EXPR007: a value position nested in a condition is not flagged" {
+    try expectNoConditionDiagnostics("contains(fromJSON(inputs.list || '[]'), 'a')");
+}
+
 test "validate EXPR007: no false positive for proper comparison" {
-    try expectNoDiagnostics("github.event_name == 'push' || github.event_name == 'pull_request'");
+    try expectNoConditionDiagnostics("github.event_name == 'push' || github.event_name == 'pull_request'");
 }
 
 test "validate EXPR007: no false positive for function call operands" {
-    try expectNoDiagnostics("success() || failure()");
+    try expectNoConditionDiagnostics("success() || failure()");
 }
 
 test "validate EXPR007: no false positive for boolean literal" {
-    try expectNoDiagnostics("true || github.event_name == 'push'");
+    try expectNoConditionDiagnostics("true || github.event_name == 'push'");
 }
 
 test "validate EXPR007: multiple bare literals in chained ||" {
@@ -2668,7 +2738,7 @@ test "validate EXPR007: multiple bare literals in chained ||" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request' || 'workflow_dispatch'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.event_name == 'push' || 'pull_request' || 'workflow_dispatch'", &list, 0);
     var expr007_count: usize = 0;
     for (list.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR007")) expr007_count += 1;
@@ -3130,7 +3200,7 @@ test "EXPR007 fix: rewrites bare string right of ||" {
     defer list.deinit();
 
     const src = "github.event_name == 'push' || 'pull_request'";
-    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), src, &list, 0);
     const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
     try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
     try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
@@ -3148,7 +3218,7 @@ test "EXPR007 fix: rewrites bare string left of ||" {
     defer list.deinit();
 
     const src = "'pull_request' || github.event_name == 'push'";
-    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), src, &list, 0);
     const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
     try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
     const edit = fix.edits[0];
@@ -3164,7 +3234,7 @@ test "EXPR007 fix: rewrites bare string with && and !=" {
     defer list.deinit();
 
     const src = "github.event_name != 'push' && 'pull_request'";
-    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), src, &list, 0);
     const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
     try std.testing.expectEqualStrings("github.event_name != 'pull_request'", fix.edits[0].replacement);
 }
@@ -3177,7 +3247,7 @@ test "EXPR007 fix: honors expr_base_byte offset" {
 
     const src = "github.event_name == 'push' || 'pull_request'";
     const base: usize = 100;
-    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, base);
+    validateCondition(arena.allocator(), src, &list, base);
     const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
     const lit_offset = std.mem.indexOf(u8, src, "'pull_request'").?;
     try std.testing.expectEqual(@as(usize, base + lit_offset), fix.edits[0].start_byte);
@@ -3190,7 +3260,7 @@ test "EXPR007 fix: no fix when sibling is function_call" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "success() || 'pull_request'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "success() || 'pull_request'", &list, 0);
     var saw_diag = false;
     for (list.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR007")) {
@@ -3207,7 +3277,7 @@ test "EXPR007 fix: no fix when LHS is not context_access" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "'a' == 'push' || 'pull_request'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "'a' == 'push' || 'pull_request'", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3217,7 +3287,7 @@ test "EXPR007 fix: no fix when LHS path contains .* (array access)" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event.commits.*.message == 'wip' || 'fixup'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.event.commits.*.message == 'wip' || 'fixup'", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3227,7 +3297,7 @@ test "EXPR007 fix: no fix when LHS path contains [ (bracket access)" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event['ref'] == 'main' || 'release'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.event['ref'] == 'main' || 'release'", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3237,7 +3307,7 @@ test "EXPR007 fix: no fix when bare literal contains '' escape" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.ref == 'main' || 'it''s'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.ref == 'main' || 'it''s'", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3247,7 +3317,7 @@ test "EXPR007 fix: no fix when sibling literal contains '' escape" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.ref == 'it''s' || 'main'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.ref == 'it''s' || 'main'", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3257,7 +3327,7 @@ test "EXPR007 fix: no fix for || with != mismatch (tautology)" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.ref != 'main' || 'release'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.ref != 'main' || 'release'", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3267,7 +3337,7 @@ test "EXPR007 fix: no fix for && with == mismatch (always false)" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.ref == 'main' && 'release'", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.ref == 'main' && 'release'", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3278,7 +3348,7 @@ test "EXPR007 fix: rewrites bare number right of ||" {
     defer list.deinit();
 
     const src = "github.run_attempt == 1 || 2";
-    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), src, &list, 0);
     const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
     try std.testing.expectEqual(diagnostics.FixSafety.unsafe, fix.safety);
     try std.testing.expectEqual(@as(usize, 1), fix.edits.len);
@@ -3294,7 +3364,7 @@ test "EXPR007 fix: rewrites bare number with && and !=" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.run_attempt != 1 && 2", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.run_attempt != 1 && 2", &list, 0);
     const fix = firstFix(list, "EXPR007") orelse return error.TestExpectedFix;
     try std.testing.expectEqualStrings("github.run_attempt != 2", fix.edits[0].replacement);
 }
@@ -3305,7 +3375,7 @@ test "EXPR007 fix: no fix when sibling comparison uses mismatched literal kind" 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.run_attempt == '1' || 2", Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), "github.run_attempt == '1' || 2", &list, 0);
     try std.testing.expect(firstFix(list, "EXPR007") == null);
 }
 
@@ -3319,7 +3389,7 @@ test "EXPR007 fix: no fix at outer || when sibling is itself a chain" {
     // Inner || matches V1 and gets a fix; outer || sibling is a binary_op '||' (not '==')
     // and must not produce a fix.
     const src = "github.event_name == 'push' || 'pull_request' || 'workflow_dispatch'";
-    validateExpression(arena.allocator(), src, Span.point(1, 1, 0), &list, 0);
+    validateCondition(arena.allocator(), src, &list, 0);
 
     var fix_count: usize = 0;
     var diag_count: usize = 0;
@@ -3339,7 +3409,7 @@ test "EXPR007 fix: suppressed when expr_base_byte is null" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    validateExpression(arena.allocator(), "github.event_name == 'push' || 'pull_request'", Span.point(1, 1, 0), &list, null);
+    validateCondition(arena.allocator(), "github.event_name == 'push' || 'pull_request'", &list, null);
     var saw_diag = false;
     for (list.items.items) |d| {
         if (std.mem.eql(u8, d.rule_id, "EXPR007")) {

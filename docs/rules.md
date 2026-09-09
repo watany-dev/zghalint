@@ -387,7 +387,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR004 | unknown-function | error | Unknown function name |
 | EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments |
 | EXPR006 | unsound-contains | warning | `contains()` uses substring matching which may match unintended values |
-| EXPR007 | unsound-condition | warning | Bare literal in logical operator, constant `if:` condition, or text mixed with `${{ }}` |
+| EXPR007 | unsound-condition | warning | Bare literal in a condition's logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR009 | fromjson-literal | error | `fromJSON()` string literal argument must be valid JSON |
 | EXPR010 | undefined-step-reference | error | `steps.<id>` must name a step defined earlier in the same job, and only `outputs` / `conclusion` / `outcome` exist below it |

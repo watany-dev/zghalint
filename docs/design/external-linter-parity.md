@@ -759,3 +759,4 @@ user 3 ms + sys 3 ms。
 - [x] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [x] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
+- [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
