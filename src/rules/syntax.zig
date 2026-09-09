@@ -217,15 +217,12 @@ fn siblingHasKeyIgnoreCase(m: Mapping, self_span: Span, key: []const u8) bool {
     return false;
 }
 
-/// The scalar written under the unknown key, if its value is one.
-fn unknownKeyScalar(m: Mapping, self_span: Span) ?[]const u8 {
+/// The value written under the unknown key.
+fn unknownKeyValue(m: Mapping, self_span: Span) ?yaml_types.Node {
     for (m.entries) |entry| {
         if (entry.key.span.start_byte != self_span.start_byte) continue;
         if (entry.key.span.end_byte != self_span.end_byte) continue;
-        return switch (entry.value) {
-            .scalar => |s| s.value,
-            else => null,
-        };
+        return entry.value;
     }
     return null;
 }
@@ -234,13 +231,14 @@ fn unknownKeyScalar(m: Mapping, self_span: Span) ?[]const u8 {
 /// turn SYN001 into SYN002 (#347). The unknown key itself is not a sibling,
 /// even when it equals the suggestion ignoring case (`Timeout-minutes`).
 ///
-/// A rename onto a key that never takes a scalar is dropped too: `stp: x`
-/// renamed to `steps: x` makes the workflow parser give up on the whole file,
-/// so the fix would trade one diagnostic for an unlintable file (fuzz).
+/// A rename onto a key that does not take the value already written under it is
+/// dropped too: `stp: x` renamed to `steps: x`, or `eps: -` renamed to `env: -`,
+/// makes the workflow parser give up on the whole file, so the fix would trade
+/// one diagnostic for an unlintable file (fuzz).
 fn unknownKeyFix(list: *DiagnosticList, uk: UnknownKey, suggestion: []const u8) ?diagnostics_mod.Fix {
     if (siblingHasKeyIgnoreCase(uk.mapping, uk.span, suggestion)) return null;
-    if (unknownKeyScalar(uk.mapping, uk.span)) |value| {
-        if (schema.rejectsScalarValue(suggestion, value)) return null;
+    if (unknownKeyValue(uk.mapping, uk.span)) |value| {
+        if (schema.rejectsValue(suggestion, value)) return null;
     }
     return rename.tokenFix(list, uk.span, uk.key, suggestion);
 }
@@ -1771,6 +1769,41 @@ test "SYN001: secrets: inherit is still renamed (fuzz)" {
         \\  build:
         \\    uses: ./.github/workflows/x.yml
         \\    screts: inherit
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix != null);
+}
+
+test "SYN001: no rename onto a mapping key holding a sequence (fuzz)" {
+    const source =
+        \\on:
+        \\jobs:
+        \\eps: -
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"env\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: an empty section is still renamed (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\    wth:
     ;
 
     var diags = DiagnosticList.init(testing.allocator);

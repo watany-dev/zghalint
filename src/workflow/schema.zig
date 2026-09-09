@@ -129,21 +129,33 @@ pub fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
     return false;
 }
 
-/// Keys whose value is always a collection. Naming one of them over a plain
-/// scalar is not a workflow the parser tolerates: it gives up on the file
-/// entirely, so a rename onto such a key would leave the file unlintable.
-const collection_only_keys = [_][]const u8{
-    "defaults", "env",      "jobs",  "matrix",
-    "outputs",  "services", "steps", "strategy",
-    "with",
+/// Keys whose value is always a mapping. Naming one of them over anything else
+/// is not a workflow the parser tolerates: it gives up on the file entirely, so
+/// a rename onto such a key would leave the file unlintable.
+const mapping_only_keys = [_][]const u8{
+    "defaults", "env",      "jobs",     "matrix",
+    "outputs",  "services", "strategy", "with",
 };
 
-/// True when renaming a key to `key` would leave the scalar `value` in a place
-/// the workflow parser rejects. `secrets:` is the one key that takes either a
-/// collection or the single scalar `inherit`.
-pub fn rejectsScalarValue(key: []const u8, value: []const u8) bool {
-    if (std.mem.eql(u8, key, "secrets")) return !std.mem.eql(u8, value, "inherit");
-    return isAllowedKey(key, &collection_only_keys);
+/// True when renaming a key to `key` would leave `value` in a place the workflow
+/// parser rejects. An empty value is never rejected: the section is reported as
+/// empty, but the file still parses.
+///
+/// `steps:` is the one collection key that takes a sequence rather than a
+/// mapping, and `secrets:` the one that takes either a mapping or the single
+/// scalar `inherit`.
+pub fn rejectsValue(key: []const u8, value: yaml.Node) bool {
+    if (value == .null_value) return false;
+    if (std.mem.eql(u8, key, "secrets")) {
+        return switch (value) {
+            .mapping => false,
+            .scalar => |s| !std.mem.eql(u8, s.value, "inherit"),
+            else => true,
+        };
+    }
+    if (std.mem.eql(u8, key, "steps")) return value != .sequence;
+    if (isAllowedKey(key, &mapping_only_keys)) return value != .mapping;
+    return false;
 }
 
 pub fn stepExpectedKeys(m: yaml.Mapping) []const []const u8 {
