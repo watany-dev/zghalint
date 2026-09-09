@@ -745,10 +745,16 @@ pub const Parser = struct {
         // end anchor and differs only in where the entry's bytes stop.
         if (value == .scalar) {
             const scalar = value.scalar;
-            // A block scalar's span already ends at the start of the line that
-            // closes it (or at EOF), trailing newline included. Scanning on to
-            // the next '\n' from there would swallow the next sibling key line.
-            const is_block = scalar.style == .literal or scalar.style == .folded;
+            // A block scalar that took content ends at the start of the line
+            // that closes it, trailing newline included. Scanning on to the
+            // next '\n' from there would swallow the next sibling key line.
+            // One that took none ends on its own indicator, mid-line, and does
+            // need the scan: anchoring an insertion at the indicator wrote the
+            // new key into the middle of the `on:` line (fuzz).
+            const at_line_start = scalar.span.end_byte > 0 and
+                scalar.span.end_byte <= self.source.len and
+                self.source[scalar.span.end_byte - 1] == '\n';
+            const is_block = (scalar.style == .literal or scalar.style == .folded) and at_line_start;
             var end_byte = scalar.span.end_byte;
             if (!is_block) {
                 while (end_byte < self.source.len and self.source[end_byte] != '\n') {
@@ -1329,6 +1335,19 @@ test "a trailing comment on an empty value does not swallow the next key" {
     try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
     try std.testing.expectEqualStrings("jobs", root.mapping.entries[1].key.value);
     try std.testing.expect(root.mapping.get("jobs").?.mapping.entries.len == 1);
+}
+
+test "an empty block scalar entry ends at its own line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "on: |\njobs:\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const doc = try parser.parse();
+    const entry = doc.mapping.entries[0];
+    try std.testing.expectEqualStrings("on", entry.key.value);
+    // The entry must not stop on the `|` itself: an insertion anchored there
+    // writes the next key into the middle of the `on:` line.
+    try std.testing.expectEqual(@as(usize, 6), entry.full_span.?.end_byte);
 }
 
 test "junk after a flow collection does not end the mapping (fuzz)" {
