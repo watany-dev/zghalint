@@ -26,15 +26,17 @@
   生成していたため、pool が効かなかった。
 - プロセス単位で 1 つのシングルトンに統一することで、2 回目以降の
   リクエストは keep-alive で ~30ms（RTT のみ）に収まる。
-- `std.Thread.Mutex` で POST/GET を直列化する。本設計では prefetch を
+- `std.Io.Mutex` で POST/GET を直列化する。本設計では prefetch を
   シーケンシャルに走らせるので競合は起きないが、将来の並列化に耐えるため
   Mutex を残す。
-- `init()` は `std.http.Client.initDefaultProxies` を呼び、`http_proxy` /
+- `std.process.Init` の I/O と環境マップを `runtime` に保持する (#398)。
+  HTTP クライアント・Mutex・ファイル操作は同じ I/O を使う。
+- `init()` は環境マップを渡して `std.http.Client.initDefaultProxies` を呼び、`http_proxy` /
   `HTTP_PROXY` / `https_proxy` / `HTTPS_PROXY` / `all_proxy` / `ALL_PROXY`
   を読む。`std.http.Client` はこれらを自動では解釈しない (#336)。
 - `SSL_CERT_FILE` が指す CA を `ca_bundle` に足す。Zig の既定スキャンは
   ディストリごとの固定パスだけで、プロキシが TLS を終端する環境の CA を
-  拾わない。読み込み後は `next_https_rescan_certs` を下ろし、初回 HTTPS
+  拾わない。読み込み後は `Client.now` に証明書検証の時刻を設定し、初回 HTTPS
   の rescan がカスタム CA を消さないようにする。
 - GitHub API に届かなかったときは `note: … skipped (github api unreachable;
   check HTTPS_PROXY / SSL_CERT_FILE)` を出す。ただし一部のステップだけ届いて
@@ -188,8 +190,8 @@ pub const CachedRepo = struct {
 
 pub fn load(allocator, owner, repo) ?CachedRepo;
 pub fn save(allocator, owner, repo, entry: CachedRepo) !void;
-pub fn loadFromDir(dir: std.fs.Dir, allocator, owner, repo) ?CachedRepo;
-pub fn saveToDir(dir: std.fs.Dir, allocator, owner, repo, entry: CachedRepo) !void;
+pub fn loadFromDir(dir: std.Io.Dir, allocator, owner, repo) ?CachedRepo;
+pub fn saveToDir(dir: std.Io.Dir, allocator, owner, repo, entry: CachedRepo) !void;
 pub fn isFresh(cached_at: i64) bool;
 ```
 
