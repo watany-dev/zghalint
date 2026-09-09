@@ -738,7 +738,32 @@ pub const Parser = struct {
         // A merge key or an alias puts an entry's text elsewhere in the file,
         // so the nested end can land before the key. The entry still owns at
         // least its own line.
-        return keyLineSpan(key, line_start, @max(key_line_end, nested));
+        const end = @max(key_line_end, nested);
+        return keyLineSpan(key, line_start, self.extendOverIndentedTail(end, key.span.start_col));
+    }
+
+    /// Lines the parser dropped still belong to the entry when they are
+    /// indented past its key: a bare `7` under `on:` holds no node, but an
+    /// insertion anchored before it lands inside the block all the same.
+    fn extendOverIndentedTail(self: *Parser, end_byte: usize, key_col: u32) usize {
+        if (key_col == 0) return end_byte;
+        // Column arithmetic only describes a line boundary; mid-line the
+        // leading run of spaces is not the line's indent.
+        if (end_byte != 0 and (end_byte > self.source.len or self.source[end_byte - 1] != '\n')) return end_byte;
+        const key_indent = key_col - 1;
+
+        var end = end_byte;
+        while (end < self.source.len) {
+            const line_end = self.scanLineEndInclusive(end);
+            var text = end;
+            while (text < line_end and (self.source[text] == ' ' or self.source[text] == '\t')) text += 1;
+            // A blank line is already a safe boundary, so stop rather than
+            // guess whether the block resumes after it.
+            if (text >= line_end or self.source[text] == '\n' or self.source[text] == '\r') return end;
+            if (text - end <= key_indent) return end;
+            end = line_end;
+        }
+        return end;
     }
 
     /// The last byte the node's text occupies, trailing newline included.
@@ -1134,6 +1159,36 @@ test "full_span of a block scalar entry at EOF without a trailing newline" {
     try std.testing.expectEqualStrings(
         "  runs-on: |\n    ubuntu-latest",
         entryFullSpanText(source, job, "runs-on").?,
+    );
+}
+
+test "full_span covers a trailing line the parser held no node for (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The bare `7` ends the block mapping without becoming an entry. It still
+    // sits under `on:`, so an insertion at the entry's end must follow it.
+    const source = "on:\n    s:\n    7\njobs:\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings(
+        "on:\n    s:\n    7\n",
+        entryFullSpanText(source, root.mapping, "on").?,
+    );
+}
+
+test "full_span stops at a blank line rather than reaching past it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "on:\n  push:\n\njobs:\n  b:\n    steps: []\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings(
+        "on:\n  push:\n",
+        entryFullSpanText(source, root.mapping, "on").?,
     );
 }
 
