@@ -202,7 +202,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 14)) {
+        switch (self.rng.uintLessThan(u8, 16)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -306,6 +306,29 @@ const Mutator = struct {
             13 => {
                 const quote: []const u8 = if (self.rng.boolean()) "\"" else "'";
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), quote);
+            },
+            // Put a comment at the end of a line. A comment sits exactly where
+            // an insertion anchored on the line's end lands, and a `#` dropped
+            // at a random offset almost always lands mid-token instead.
+            14 => {
+                if (len == 0) return;
+                const at = self.rng.uintLessThan(usize, len);
+                const nl = std.mem.indexOfScalarPos(u8, buf.items, at, '\n') orelse len;
+                const comment: []const u8 = if (self.rng.boolean()) " # c" else "  #";
+                try buf.insertSlice(alloc, nl, comment);
+            },
+            // Wrap a line's value in `${{ }}`. The expression rules and the
+            // fix builder both key off the whole value being one expression,
+            // and splicing `${{` and `}}` in separately rarely brackets one.
+            15 => {
+                if (len == 0) return;
+                const at = self.rng.uintLessThan(usize, len);
+                const start = if (std.mem.lastIndexOfScalar(u8, buf.items[0..at], '\n')) |i| i + 1 else 0;
+                const nl = std.mem.indexOfScalarPos(u8, buf.items, start, '\n') orelse len;
+                const colon = std.mem.indexOfScalarPos(u8, buf.items, start, ':') orelse return;
+                if (colon >= nl) return;
+                try buf.insertSlice(alloc, nl, " }}");
+                try buf.insertSlice(alloc, colon + 1, " ${{");
             },
             else => unreachable,
         }
