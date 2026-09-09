@@ -202,7 +202,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 11)) {
+        switch (self.rng.uintLessThan(u8, 14)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -272,6 +272,40 @@ const Mutator = struct {
                 const spaces = "                ";
                 const want = self.rng.uintAtMost(usize, spaces.len);
                 try buf.replaceRange(alloc, start, old, spaces[0..want]);
+            },
+            // Join two lines by dropping the newline between them, so several
+            // keys share one line (`b: strategy: fail-fast: false`). An entry
+            // whose extent is read off its own line gets that shape wrong in
+            // both directions, and reaching it by chance alone is rare.
+            11 => {
+                if (len == 0) return;
+                const at = self.rng.uintLessThan(usize, len);
+                const nl = std.mem.indexOfScalarPos(u8, buf.items, at, '\n') orelse return;
+                var end = nl + 1;
+                // Take the next line's indentation with the newline, otherwise
+                // the join only moves the gap rather than closing it.
+                while (end < buf.items.len and (buf.items[end] == ' ' or buf.items[end] == '\t')) end += 1;
+                buf.replaceRangeAssumeCapacity(nl, end - nl, &.{});
+            },
+            // Reopen a line's value as a flow collection that closes below it.
+            // A collection written across lines ends past the key's own line,
+            // which is where an insertion anchored on that line lands wrong.
+            12 => {
+                if (len == 0) return;
+                const at = self.rng.uintLessThan(usize, len);
+                const nl = std.mem.indexOfScalarPos(u8, buf.items, at, '\n') orelse len;
+                const open: []const u8 = if (self.rng.boolean()) "[\n" else "{\n";
+                const close: []const u8 = if (open[0] == '[') "\n]" else "\n}";
+                try buf.insertSlice(alloc, nl, close);
+                const start = if (std.mem.lastIndexOfScalar(u8, buf.items[0..at], '\n')) |i| i + 1 else 0;
+                const colon = std.mem.indexOfScalarPos(u8, buf.items, start, ':') orelse start;
+                try buf.insertSlice(alloc, @min(colon + 1, buf.items.len), open);
+            },
+            // Open a quoted scalar without closing it. The scalar then runs to
+            // the end of the file, so the entry has no boundary after it.
+            13 => {
+                const quote: []const u8 = if (self.rng.boolean()) "\"" else "'";
+                try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), quote);
             },
             else => unreachable,
         }
