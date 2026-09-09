@@ -26,6 +26,8 @@ const json_out = @import("output/json.zig");
 const sarif_out = @import("output/sarif.zig");
 const terminal_out = @import("output/terminal.zig");
 const action_metadata = @import("rules/action_metadata.zig");
+const config_mod = @import("config.zig");
+const dependabot = @import("rules/dependabot.zig");
 
 const max_input = 64 * 1024;
 
@@ -46,6 +48,8 @@ const Violation = error{
     FixGrewUnboundedly,
     TokenizerDidNotReachEof,
     TokenizerSpanOutOfRange,
+    SerializerCountMismatch,
+    ConfigNotDeterministic,
 };
 
 /// Seeds are the checked-in e2e fixtures: real workflow files that already
@@ -86,6 +90,19 @@ const builtin_seeds: []const []const u8 = &.{
     "job:\n  <<: *missing\n",
     "on:\n  pull_request_target:\njobs:\n  j:\n    runs-on: ubuntu-latest\n    permissions: write-all\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n      - run: npm publish\n",
     "on: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/x.yml\n    secrets: inherit\n",
+    // Layouts the campaign proved the insertion anchors turn on: a root
+    // mapping written indented, a mapping opened on its key's own line, a
+    // `with:` block off the usual grid, and a job body sharing the id's line.
+    "  on: push\n  jobs:\n    b:\n      runs-on: ubuntu-latest\n      steps:\n        - run: echo hi\n",
+    "on: push:\njobs:\n  b: runs-on: ubuntu-latest\n",
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n         node-version: 20\n",
+    // `.zghalint.yml`: the config parser and the glob matcher.
+    "rules:\n  SEC001:\n    enabled: false\n  BP001:\n    severity: warning\nignore:\n  - \"**/generated/*.yml\"\noutput:\n  format: sarif\n  color: never\nrunner:\n  labels:\n    - my-runner\n",
+    // `dependabot.yml`: its own linter, reached by no other property here.
+    "version: 2\nupdates:\n  - package-ecosystem: github-actions\n    directory: \"/\"\n    schedule:\n      interval: weekly\n",
+    // A composite action and a reusable workflow's input surface.
+    "name: a\ndescription: d\ninputs:\n  x:\n    required: true\nruns:\n  using: composite\n  steps:\n    - run: echo ${{ inputs.x }}\n      shell: bash\n",
+    "on:\n  workflow_call:\n    inputs:\n      x:\n        type: string\n        required: true\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ inputs.y }}\n",
 };
 
 /// Tokens spliced in by the mutator. Anything a rule or the fix builder keys
@@ -112,6 +129,15 @@ const dictionary: []const []const u8 = &.{
     ",",                   ": ",                              "@",                               "\xef\xbb\xbf",
     "\xc3\xa9",            "\xed\xa0\x80",                    "\x00",                            "0123456789abcdef0123456789abcdef01234567",
     "npm publish",         "curl | bash",                     "echo \"::set-output name=x::y\"",
+    // `.zghalint.yml`, `dependabot.yml` and the composite / reusable shapes.
+    "rules:",
+    "ignore:",             "severity:",                       "enabled:",                        "output:",
+    "format:",             "color:",                          "runner:",                         "labels:",
+    "visibility:",         "version: 2",                      "updates:",                        "package-ecosystem:",
+    "directory:",          "schedule:",                       "interval:",                       "github-actions",
+    "using: composite",    "description:",                    "inputs:",                         "required:",
+    "type:",               "default:",                        "**/*.yml",                        "*",
+    "?",                   "**",
 };
 
 const Mutator = struct {
@@ -225,6 +251,22 @@ fn checkDiagnostics(list: diagnostics.DiagnosticList, source: []const u8) Violat
     }
 }
 
+/// Length of the array reached by walking `path` through JSON objects, or null
+/// when the path does not lead to one.
+fn arrayLen(value: std.json.Value, path: []const []const u8) ?usize {
+    var current = value;
+    for (path) |key| {
+        current = switch (current) {
+            .object => |o| o.get(key) orelse return null,
+            else => return null,
+        };
+    }
+    return switch (current) {
+        .array => |a| a.items.len,
+        else => null,
+    };
+}
+
 /// The JSON and SARIF writers hand their bytes to CI systems, so "it rendered"
 /// is not the property -- "a parser accepts it" is.
 fn checkSerializers(
@@ -234,13 +276,15 @@ fn checkSerializers(
     var buf: std.ArrayList(u8) = .{};
     defer buf.deinit(alloc);
 
+    var json_count: ?usize = null;
     {
         var w = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
         json_out.renderJson(&w.writer, list, 1) catch return;
         buf = w.toArrayList();
         var parsed = std.json.parseFromSlice(std.json.Value, alloc, buf.items, .{}) catch
             return Violation.JsonOutputNotValid;
-        parsed.deinit();
+        defer parsed.deinit();
+        json_count = arrayLen(parsed.value, &.{"diagnostics"});
     }
 
     buf.clearRetainingCapacity();
@@ -250,7 +294,21 @@ fn checkSerializers(
         buf = w.toArrayList();
         var parsed = std.json.parseFromSlice(std.json.Value, alloc, buf.items, .{}) catch
             return Violation.SarifOutputNotValid;
-        parsed.deinit();
+        defer parsed.deinit();
+        const runs = switch (parsed.value) {
+            .object => |o| o.get("runs") orelse return Violation.SarifOutputNotValid,
+            else => return Violation.SarifOutputNotValid,
+        };
+        const first_run = switch (runs) {
+            .array => |a| if (a.items.len == 1) a.items[0] else return Violation.SarifOutputNotValid,
+            else => return Violation.SarifOutputNotValid,
+        };
+        // Two reports of the same run must agree on how many findings there
+        // were: a formatter that drops one silently hides it from CI.
+        const sarif_count = arrayLen(first_run, &.{"results"}) orelse return Violation.SarifOutputNotValid;
+        if (json_count) |n| {
+            if (n != sarif_count) return Violation.SerializerCountMismatch;
+        }
     }
 
     buf.clearRetainingCapacity();
@@ -333,6 +391,62 @@ fn checkFixLoop(
     return Violation.FixDidNotConverge;
 }
 
+/// `.zghalint.yml` is a second untrusted file the tool parses, and one that
+/// changes what every rule reports. The queries are part of the surface: an
+/// override table or a glob is only useful if it can be asked about.
+fn checkConfigPath(alloc: std.mem.Allocator, input: []const u8) !void {
+    var cfg = config_mod.parseConfig(alloc, input) catch return;
+    defer cfg.deinit();
+
+    var digest_a: u64 = 0;
+    for (registry.all_rules) |rule| {
+        digest_a = digest_a *% 31 +% @intFromBool(cfg.isRuleEnabled(rule.id));
+        digest_a = digest_a *% 31 +% @intFromEnum(cfg.getEffectiveSeverity(rule.id, rule.severity));
+    }
+    for (config_query_paths) |path| {
+        digest_a = digest_a *% 31 +% @intFromBool(cfg.isIgnored(path));
+    }
+
+    // The config outlives the source buffer it was parsed from, so a second
+    // parse answering differently means a string escaped the arena.
+    var again = config_mod.parseConfig(alloc, input) catch return Violation.ConfigNotDeterministic;
+    defer again.deinit();
+
+    var digest_b: u64 = 0;
+    for (registry.all_rules) |rule| {
+        digest_b = digest_b *% 31 +% @intFromBool(again.isRuleEnabled(rule.id));
+        digest_b = digest_b *% 31 +% @intFromEnum(again.getEffectiveSeverity(rule.id, rule.severity));
+    }
+    for (config_query_paths) |path| {
+        digest_b = digest_b *% 31 +% @intFromBool(again.isIgnored(path));
+    }
+
+    if (digest_a != digest_b) return Violation.ConfigNotDeterministic;
+}
+
+/// Paths fed to `isIgnored`, which is where the glob matcher runs. The shapes
+/// matter more than the names: a bare file, nested directories, a dotfile
+/// directory and a path with no separator at all.
+const config_query_paths: []const []const u8 = &.{
+    ".github/workflows/ci.yml",
+    ".github/workflows/nested/deploy.yaml",
+    "ci.yml",
+    "",
+    "a/b/c/d/e/f/g.yml",
+};
+
+/// `dependabot.yml` takes untrusted bytes down a path of its own: it never
+/// reaches the workflow parser, so nothing else in this driver covers it.
+fn checkDependabotPath(alloc: std.mem.Allocator, input: []const u8) !void {
+    var yp = yaml_parser.Parser.init(alloc, input);
+    const node = yp.parse() catch return;
+    var list = diagnostics.DiagnosticList.init(alloc);
+    defer list.deinit();
+    dependabot.lintDependabot(node, &list);
+    try checkDiagnostics(list, input);
+    try checkSerializers(alloc, list);
+}
+
 fn runOne(alloc: std.mem.Allocator, input: []const u8) !void {
     try tokenizeProperty(input);
 
@@ -362,6 +476,9 @@ fn runOne(alloc: std.mem.Allocator, input: []const u8) !void {
         expressions.validateExpression(alloc, input, diagnostics.Span.point(1, 1, 0), &list, 0);
         try checkDiagnostics(list, input);
     }
+
+    try checkConfigPath(alloc, input);
+    try checkDependabotPath(alloc, input);
 
     // `action.yml` takes the same untrusted bytes down a different path.
     {
