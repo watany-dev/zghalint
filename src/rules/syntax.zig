@@ -1951,6 +1951,32 @@ test "SYN003: permissions mapping is allowed to be empty" {
     }
 }
 
+test "SYN003: empty permissions and concurrency are reported instead of failing the parse" {
+    const source =
+        \\on: push
+        \\permissions:
+        \\concurrency:
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\    concurrency: {}
+        \\    steps:
+        \\      - run: echo ok
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{
+        sectionMsg("permissions"),
+        sectionMsg("permissions"),
+        sectionMsg("concurrency"),
+        sectionMsg("concurrency"),
+    });
+}
+
 test "SYN003: empty jobs mapping is reported" {
     const source =
         \\on: push

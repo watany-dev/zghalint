@@ -9,6 +9,16 @@ pub const EmptySection = struct {
     span: yaml_types.Span,
 };
 
+/// A section that is present but empty is still written in the file, so the
+/// rules that insert a missing section must stay quiet rather than add a
+/// second key of the same name (#364).
+pub fn hasEmptySection(sections: []const EmptySection, name: []const u8) bool {
+    for (sections) |section| {
+        if (std.mem.eql(u8, section.name, name)) return true;
+    }
+    return false;
+}
+
 pub const StringMap = std.StringArrayHashMap([]const u8);
 pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
 
@@ -451,6 +461,13 @@ pub const ActionRef = struct {
             return .{ .raw = raw, .is_local = true, .path = raw };
         }
 
+        // `$/{path}` names the repository the workflow came from, at the commit
+        // the run started from. There is no `@ref` to pin and no remote
+        // repository to look up, so it is local like `./{path}`.
+        if (std.mem.startsWith(u8, raw, "$/")) {
+            return .{ .raw = raw, .is_local = true, .path = raw };
+        }
+
         if (std.mem.startsWith(u8, raw, "docker://")) {
             return .{ .raw = raw, .is_docker = true };
         }
@@ -568,6 +585,10 @@ pub const Step = struct {
     run_meta: ?ScalarValueMeta = null,
     /// Span of the `uses:` scalar value (for SEC001 and the SC00x family).
     uses_value_span: ?yaml_types.Span = null,
+    /// Text of the comment trailing the `uses:` value, `#` stripped. A SHA
+    /// pin hides the version it stands for, so SC003 reads the `# v1.2.3`
+    /// convention that SEC001's autofix (and every pinning tool) writes.
+    uses_line_comment: ?[]const u8 = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
     /// Start byte and column of the step mapping's first key. A new `env:`
@@ -768,6 +789,13 @@ test "ActionRef.parse relative parent action" {
     const ref = ActionRef.parse("../other-action");
     try std.testing.expect(ref.is_local);
     try std.testing.expectEqualStrings("../other-action", ref.path.?);
+}
+
+test "ActionRef.parse self-repository action" {
+    const ref = ActionRef.parse("$/.github/actions/setup");
+    try std.testing.expect(ref.is_local);
+    try std.testing.expectEqualStrings("$/.github/actions/setup", ref.path.?);
+    try std.testing.expect(ref.owner == null);
 }
 
 test "ActionRef.parse docker action" {

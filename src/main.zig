@@ -431,19 +431,41 @@ fn prefetchNetworkData(
 
 /// 注記を出すだけで終了コードは変えない — 既存の 0/1/2 の意味を動かすと
 /// 利用者の CI を壊すため (#304)。
-fn reportUnreachableRules(stderr: *std.Io.Writer, config: *const Config) void {
+fn reportUnreachableRules(
+    stderr: *std.Io.Writer,
+    config: *const Config,
+    diags: *const zghalint.diagnostics.DiagnosticList,
+) void {
     const net_status = zghalint.rules.net_status;
-    var buf: [net_status.rule_count][]const u8 = undefined;
-    var count: usize = 0;
+    var skipped: [net_status.rule_count][]const u8 = undefined;
+    var skipped_count: usize = 0;
+    var partial: [net_status.rule_count][]const u8 = undefined;
+    var partial_count: usize = 0;
     for (std.enums.values(net_status.Rule)) |rule| {
         if (!net_status.isUnavailable(rule)) continue;
         // .zghalint.yml で無効にされたルールは元々指摘を出さないので、取得
         // できなかったことを伝えても利用者の判断材料にならない。
         if (!config.isRuleEnabled(rule.id())) continue;
-        buf[count] = rule.id();
-        count += 1;
+        // 一部のステップだけ取得できたルールは指摘を出している。それを
+        // 「skipped」と書くと、同じ実行が出す JSON / terminal の指摘と
+        // note が食い違う (#372)。
+        if (hasDiagnosticFor(diags, rule.id())) {
+            partial[partial_count] = rule.id();
+            partial_count += 1;
+        } else {
+            skipped[skipped_count] = rule.id();
+            skipped_count += 1;
+        }
     }
-    net_status.writeNote(stderr, buf[0..count]) catch {};
+    net_status.writeNote(stderr, skipped[0..skipped_count]) catch {};
+    net_status.writePartialNote(stderr, partial[0..partial_count]) catch {};
+}
+
+fn hasDiagnosticFor(diags: *const zghalint.diagnostics.DiagnosticList, rule_id: []const u8) bool {
+    for (diags.items.items) |diag| {
+        if (std.mem.eql(u8, diag.rule_id, rule_id)) return true;
+    }
+    return false;
 }
 
 /// A config that exists but cannot be read or parsed is an error, not a
@@ -884,7 +906,7 @@ pub fn main() !u8 {
     if (unlinted_count > 0) {
         stderr.print("error: {d} file(s) could not be linted; results above are incomplete\n", .{unlinted_count}) catch {};
     }
-    reportUnreachableRules(stderr, &config);
+    reportUnreachableRules(stderr, &config, &all_diags);
     if (had_fatal) return 2;
     if (hasErrors(&all_diags)) return 1;
     return 0;
@@ -905,12 +927,44 @@ test "reportUnreachableRules notes marked rules in SC order, skipping disabled o
     defer config.deinit();
     try config.rule_overrides.put("SC005", .{ .severity = null, .enabled = false });
 
+    var diags = zghalint.diagnostics.DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+
     var buf: [128]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    reportUnreachableRules(&w, &config);
+    reportUnreachableRules(&w, &config, &diags);
 
     try std.testing.expectEqualStrings(
         "note: SC003, SC006 skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)\n",
+        w.buffered(),
+    );
+}
+
+test "reportUnreachableRules calls a rule that still reported partly checked" {
+    zghalint.rules.net_status.reset();
+    defer zghalint.rules.net_status.reset();
+    zghalint.rules.net_status.markUnavailable(.sc005);
+    zghalint.rules.net_status.markUnavailable(.sc008);
+
+    var config = zghalint.config.Config.init(std.testing.allocator);
+    defer config.deinit();
+
+    var diags = zghalint.diagnostics.DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    try diags.append(.{
+        .rule_id = "SC005",
+        .severity = .info,
+        .message = "unresolved sha",
+        .span = zghalint.diagnostics.Span.point(1, 1, 0),
+    });
+
+    var buf: [256]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    reportUnreachableRules(&w, &config, &diags);
+
+    try std.testing.expectEqualStrings(
+        "note: SC008 skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)\n" ++
+            "note: SC005 partly checked (github api unreachable for some steps; check HTTPS_PROXY / SSL_CERT_FILE)\n",
         w.buffered(),
     );
 }
@@ -924,9 +978,12 @@ test "reportUnreachableRules stays silent when every marked rule is disabled" {
     defer config.deinit();
     try config.rule_overrides.put("SC003", .{ .severity = null, .enabled = false });
 
+    var diags = zghalint.diagnostics.DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+
     var buf: [128]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
-    reportUnreachableRules(&w, &config);
+    reportUnreachableRules(&w, &config, &diags);
 
     try std.testing.expectEqualStrings("", w.buffered());
 }

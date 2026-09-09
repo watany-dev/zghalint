@@ -45,13 +45,23 @@ pub fn reset() void {
 /// Names HTTPS_PROXY / SSL_CERT_FILE because those are the usual miss when
 /// GitHub is reachable from a browser but not from this process (#336).
 pub fn writeNote(w: *std.Io.Writer, ids: []const []const u8) !void {
+    try writeIds(w, ids, " skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)\n");
+}
+
+/// A rule that lost the API partway still reported what it could reach, so
+/// calling it "skipped" contradicts the findings the same run prints (#372).
+pub fn writePartialNote(w: *std.Io.Writer, ids: []const []const u8) !void {
+    try writeIds(w, ids, " partly checked (github api unreachable for some steps; check HTTPS_PROXY / SSL_CERT_FILE)\n");
+}
+
+fn writeIds(w: *std.Io.Writer, ids: []const []const u8, tail: []const u8) !void {
     if (ids.len == 0) return;
     try w.writeAll("note: ");
     for (ids, 0..) |id, i| {
         if (i > 0) try w.writeAll(", ");
         try w.writeAll(id);
     }
-    try w.writeAll(" skipped (github api unreachable; check HTTPS_PROXY / SSL_CERT_FILE)\n");
+    try w.writeAll(tail);
 }
 
 const testing = std.testing;
@@ -91,5 +101,19 @@ test "writeNote is silent for an empty list" {
     var buf: [128]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     try writeNote(&w, &.{});
+    try testing.expectEqualStrings("", w.buffered());
+}
+
+test "writePartialNote separates rules that still reported findings" {
+    var buf: [160]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try writePartialNote(&w, &.{"SC005"});
+    try testing.expectEqualStrings("note: SC005 partly checked (github api unreachable for some steps; check HTTPS_PROXY / SSL_CERT_FILE)\n", w.buffered());
+}
+
+test "writePartialNote is silent for an empty list" {
+    var buf: [160]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buf);
+    try writePartialNote(&w, &.{});
     try testing.expectEqualStrings("", w.buffered());
 }

@@ -62,8 +62,11 @@ const known_labels = [_]KnownLabel{
     .{ .label = "ubuntu-latest" },
     .{ .label = "ubuntu-24.04" },
     .{ .label = "ubuntu-22.04" },
+    .{ .label = "ubuntu-26.04" },
     .{ .label = "ubuntu-24.04-arm" },
     .{ .label = "ubuntu-22.04-arm" },
+    // Extends no other label, so the prefix match cannot cover it.
+    .{ .label = "ubuntu-slim" },
     .{ .label = "windows-latest" },
     .{ .label = "windows-2025" },
     .{ .label = "windows-2022" },
@@ -716,6 +719,8 @@ test "RUNNER002: known and larger-runner labels are accepted" {
         "ubuntu-latest",       "ubuntu-24.04-arm", "windows-2025",
         "macos-latest",        "self-hosted",      "ubuntu-latest-4-cores",
         "macos-latest-xlarge", "linux",            "UBUNTU-LATEST",
+        "ubuntu-slim",         "ubuntu-26.04",     "macos-26-intel",
+        "windows-2025-vs2026",
     };
     for (labels) |label| {
         const job = Job{ .id = "build", .runs_on = label, .runs_on_value_span = dummySpan(0, 10) };

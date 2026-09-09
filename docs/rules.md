@@ -55,6 +55,16 @@ Detect security vulnerabilities in workflow definitions.
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 
+### SEC016 の対象
+
+成果物を公開するワークフローだけを対象にする。`on: release` を持つもの、
+`on.push` に `tags:` / `tags-ignore:` があるもの（タグ push で回る＝タグを
+切って出すリリース）は、ジョブ名によらずワークフロー全体が対象になる。
+`branches:` と併記されていても、タグ push で回ることに変わりはないので
+対象に含める。それ以外のワークフローでは、ジョブ id / 表示名に `deploy` /
+`release` / `publish` / `prod` を含むジョブだけを見る。`on: push` がブランチ
+だけで絞られている通常の CI は対象外。
+
 ### SEC015 vs SEC018
 
 SEC015 (artipacked) is a stricter case of SEC018 (checkout persist-credentials):
@@ -283,6 +293,28 @@ Detect supply chain risks in action and container image references.
 `myorg/chekout` のような別 owner の fork は対象外。候補の置き換えは作者の意図を
 先取りするため、autofix は付けない。
 
+### SC003 が SHA ピンのバージョンを読む場所
+
+SHA ピンはバージョンを隠すため、`uses:` 行の末尾コメント `# v1.2.3` を版として
+semver 判定する。SEC001 の autofix も、ほかのピン止めツールもこの位置に書く慣習
+であり、Dependabot / Renovate が読む位置でもある。`# v1.2.3 (2024-01-01)` のよう
+に続きがある場合は先頭語だけを見る。
+
+コメントが SHA と一致しているかは検証しない。SHA だけ差し替えてコメントを直し忘れた
+ワークフロー（`bench/cases/c-supply-chain/sha-comment-mismatch.yml`）では、実体が
+脆弱でも修正済みバージョンのコメントを信じて沈黙する。ピン止めツールが両方を同時に
+書き換える前提を取っており、検証には SHA→tag の解決（SC005 の経路）が要る。
+
+`v4` や `4.2` のように 3 要素揃っていないコメントは版として採らない。`v4` は
+「その時 `v4` が指していた任意のパッチ」であって 4.0.0 ではないため、範囲との
+比較が答えを偽る。
+
+コメントが無い、または版として読めない場合は「脆弱と断定できない」ので severity
+を info に落とし、コメントを足すよう促す hint に差し替える。SEC001 が SHA ピンを
+求めている以上、既に修正済みのバージョンにピンした利用者を warning で罰しては
+ならない。ただしバージョン範囲を持たない advisory（全バージョンが対象）は、版が
+分からなくても該当するため warning のままにする。
+
 ### SEC001 / SC006 の SHA ピン止め autofix
 
 prefetch（`src/rules/prefetch.zig`）がタグの指すコミットを取得できた場合、
@@ -432,12 +464,18 @@ action / reusable workflow references.
 
 - `{owner}/{repo}@{ref}` / `{owner}/{repo}/{path}@{ref}` — `@ref` は必須
 - `./{path}` — ローカルアクション（`@ref` を付けられない）
+- `$/{path}` — ワークフロー自身のリポジトリの実行中コミット（`@ref` を付けられない）
 - `docker://{image}`
 
 ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
 
 - `{owner}/{repo}/.github/workflows/{file}.yml@{ref}`
 - `./.github/workflows/{file}.yml` — `@ref` を付けられない
+- `$/.github/workflows/{file}.yml` — `@ref` を付けられない
+
+`$/` はチェックアウトを必要としない自己参照で、github.com でのみ使える
+（GitHub Enterprise Server は非対応）。`$` 単体や `$//` のように後続のパスが
+無い形は形式不正として報告する。
 
 `uses:` の値が `${{ }}` を含む場合は実行時にしか決まらないため報告しない。
 

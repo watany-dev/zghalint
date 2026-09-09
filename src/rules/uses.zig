@@ -22,14 +22,16 @@ pub const Problem = struct {
 };
 
 const action_formats =
-    "use \"{owner}/{repo}@{ref}\", \"{owner}/{repo}/{path}@{ref}\", \"./{path}\" or \"docker://{image}\"";
+    "use \"{owner}/{repo}@{ref}\", \"{owner}/{repo}/{path}@{ref}\", \"./{path}\", \"$/{path}\" or \"docker://{image}\"";
 const workflow_formats =
-    "use \"{owner}/{repo}/.github/workflows/{file}@{ref}\" or \"./.github/workflows/{file}\"";
+    "use \"{owner}/{repo}/.github/workflows/{file}@{ref}\", \"./.github/workflows/{file}\" or \"$/.github/workflows/{file}\"";
 const drop_ref_hint = "remove the \"@ref\" suffix";
 const add_ref_hint = "append a ref, e.g. \"@v4\" or a full commit SHA";
 
 const docker_prefix = "docker://";
 const workflows_prefix = ".github/workflows/";
+/// GitHub's own name for the repository the running workflow came from.
+const self_repo_prefix = "$/";
 
 pub fn actionProblem(raw: []const u8) ?Problem {
     // A `uses:` built from an expression is only known at run time.
@@ -42,10 +44,10 @@ pub fn actionProblem(raw: []const u8) ?Problem {
 
     if (isLocalPath(raw)) {
         if (std.mem.indexOfScalar(u8, raw, '@') != null) return .{
-            .message = "local action reference must not carry a `@ref`; it always runs from the current checkout",
+            .message = "local action reference must not carry a `@ref`; it always runs from the repository the workflow came from",
             .hint = drop_ref_hint,
         };
-        if (!std.mem.startsWith(u8, raw, "./")) return .{
+        _ = localPath(raw) orelse return .{
             .message = "local action reference must be relative to the repository root",
             .hint = action_formats,
         };
@@ -91,14 +93,14 @@ pub fn reusableWorkflowProblem(raw: []const u8) ?Problem {
 
     if (isLocalPath(raw)) {
         if (std.mem.indexOfScalar(u8, raw, '@') != null) return .{
-            .message = "local reusable workflow call must not carry a `@ref`; it always runs from the current checkout",
+            .message = "local reusable workflow call must not carry a `@ref`; it always runs from the repository the workflow came from",
             .hint = drop_ref_hint,
         };
-        if (!std.mem.startsWith(u8, raw, "./")) return .{
+        const path = localPath(raw) orelse return .{
             .message = "local reusable workflow call must be relative to the repository root",
             .hint = workflow_formats,
         };
-        if (!isWorkflowFilePath(raw["./".len..])) return .{
+        if (!isWorkflowFilePath(path)) return .{
             .message = "local reusable workflow call must point to a `.yml` or `.yaml` file under \".github/workflows/\"",
             .hint = workflow_formats,
         };
@@ -154,8 +156,38 @@ fn pathBeforeRef(raw: []const u8) []const u8 {
     return raw[0..std.mem.indexOfScalar(u8, raw, '@').?];
 }
 
+/// `../` is matched here so it gets the "relative to the repository root"
+/// verdict instead of being read as an `{owner}/{repo}` pair.
 fn isLocalPath(raw: []const u8) bool {
-    return std.mem.startsWith(u8, raw, "./") or std.mem.startsWith(u8, raw, "../");
+    return std.mem.startsWith(u8, raw, "./") or
+        std.mem.startsWith(u8, raw, "../") or
+        std.mem.startsWith(u8, raw, self_repo_prefix);
+}
+
+/// `./` alone is the repository root, but `$/` alone names nothing, so an empty
+/// `$/` path is rejected along with `$//`. A `..` segment leaves the repository
+/// the reference promised to stay in, whichever prefix carries it.
+fn localPath(raw: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, raw, self_repo_prefix)) {
+        const path = raw[self_repo_prefix.len..];
+        if (path.len == 0 or path[0] == '/') return null;
+        return if (escapesRoot(path)) null else path;
+    }
+    if (std.mem.startsWith(u8, raw, "./")) {
+        const path = raw["./".len..];
+        return if (escapesRoot(path)) null else path;
+    }
+    return null;
+}
+
+/// Windows treats `\` as a separator too, so splitting on `/` alone would let
+/// `.\\..\\..\\etc` through.
+fn escapesRoot(path: []const u8) bool {
+    var it = std.mem.splitAny(u8, path, "/\\");
+    while (it.next()) |segment| {
+        if (std.mem.eql(u8, segment, "..")) return true;
+    }
+    return false;
 }
 
 /// A GitHub login never starts with a dot, so `.github/x@v1` is a path, not
@@ -286,6 +318,44 @@ test "DEP003: local action with a ref is reported" {
 
 test "DEP003: local action must start with ./" {
     _ = try expectActionProblem("../shared/action");
+}
+
+test "DEP003: $/ names the workflow's own repository" {
+    try expectActionOk("$/.github/actions/setup");
+    try expectActionOk("$/tools/lint");
+    try expectWorkflowOk("$/.github/workflows/reusable.yml");
+    try expectWorkflowOk("$/.github/workflows/reusable.yaml");
+}
+
+test "DEP003: $/ reference with a ref is reported" {
+    const problem = try expectActionProblem("$/.github/actions/setup@v1");
+    try testing.expectEqualStrings(drop_ref_hint, problem.hint);
+    const workflow_problem = try expectWorkflowProblem("$/.github/workflows/ci.yml@main");
+    try testing.expectEqualStrings(drop_ref_hint, workflow_problem.hint);
+}
+
+test "DEP003: $/ with an empty path is reported" {
+    _ = try expectActionProblem("$/");
+    _ = try expectActionProblem("$//");
+    _ = try expectWorkflowProblem("$/");
+    _ = try expectWorkflowProblem("$//.github/workflows/ci.yml");
+}
+
+test "DEP003: a local reference must not climb out of the repository" {
+    _ = try expectActionProblem("$/../other/action");
+    _ = try expectActionProblem("./../other/action");
+    _ = try expectActionProblem("$/..\\other\\action");
+    _ = try expectWorkflowProblem("$/../.github/workflows/ci.yml");
+}
+
+test "DEP003: a bare $ is not a self-repository reference" {
+    _ = try expectActionProblem("$");
+    _ = try expectWorkflowProblem("$");
+}
+
+test "DEP003: $/ reusable workflow call outside .github/workflows is reported" {
+    _ = try expectWorkflowProblem("$/workflows/reusable.yml");
+    _ = try expectWorkflowProblem("$/.github/workflows/reusable.txt");
 }
 
 test "DEP003: empty owner or repo segment is reported" {
