@@ -1795,6 +1795,22 @@ test "SYN001: no rename onto a mapping key holding a sequence (fuzz)" {
     try testing.expect(diags.get(0).fix == null);
 }
 
+test "SYN001: no rename onto concurrency: when the mapping names no group (fuzz)" {
+    const source =
+        \\on:
+        \\oncurrenc: p:
+        \\jobs:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"concurrency\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
 test "SYN001: an empty section is still renamed (fuzz)" {
     const source =
         \\on: push

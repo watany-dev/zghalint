@@ -143,9 +143,17 @@ const mapping_only_keys = [_][]const u8{
 ///
 /// `steps:` is the one collection key that takes a sequence rather than a
 /// mapping, and `secrets:` the one that takes either a mapping or the single
-/// scalar `inherit`.
+/// scalar `inherit`. `concurrency:` takes a scalar, or a mapping that names a
+/// `group`.
 pub fn rejectsValue(key: []const u8, value: yaml.Node) bool {
     if (value == .null_value) return false;
+    if (std.mem.eql(u8, key, "concurrency")) {
+        return switch (value) {
+            .mapping => |m| m.get("group") == null,
+            .scalar => false,
+            else => true,
+        };
+    }
     if (std.mem.eql(u8, key, "secrets")) {
         return switch (value) {
             .mapping => false,
