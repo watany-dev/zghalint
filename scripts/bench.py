@@ -157,6 +157,16 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "zizmor": ["obfuscation"],
         "actionlint": None,
     },
+    "obfuscated-command": {
+        "zghalint": ["BP007"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "github-app": {
+        "zghalint": None,
+        "zizmor": ["github-app"],
+        "actionlint": None,
+    },
     "dependabot-cooldown": {
         "zghalint": ["DEP001"],
         "zizmor": ["dependabot-cooldown"],

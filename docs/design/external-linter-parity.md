@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-08
+最終更新: 2026-09-09
 
 ## 1. 目的
 
@@ -479,6 +479,23 @@ fix エンジンは、同一マッピングでリネームが作るキーと挿�
 まとめ、両者で同じ判定にした。回帰ケースは
 `bench/cases/b-trigger-checkout/automerge-dependabot.yml`。
 
+#### G29. `actions/create-github-app-token` が installation の全権限を継承する — 要ルール追加
+
+`bench/cases/d-permissions-secrets/github-app-token-unscoped.yml`。
+
+```yaml
+- uses: actions/create-github-app-token@...
+  with:
+    app-id: ${{ secrets.APP_ID }}
+    private-key: ${{ secrets.PRIVATE_KEY }}
+```
+
+`permission-*` 入力を付けないと、発行されるトークンは GitHub App の
+installation が持つ全スコープを継承する。zizmor は `github-app` として
+指摘する。zghalint には該当ルールが無い。実運用のワークフロー群を三者比較
+したところで 3 件出た。`permission-issues: write` のようにスコープを書いた
+呼び出しは zizmor も黙るので、入力の有無で切れる。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -805,3 +822,4 @@ gate は zghalint の列しか見ないので赤くならない。
 - [x] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
+- [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する
