@@ -1,4 +1,4 @@
-# bench:expect use-trusted-publishing@20 zghalint=- actionlint=-
+# bench:expect use-trusted-publishing@20 actionlint=-
 name: api token instead of oidc
 on:
   release:
