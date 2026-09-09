@@ -306,7 +306,11 @@ pub const Tokenizer = struct {
             self.column = saved_col;
         }
 
-        while (self.atBreak()) {
+        // Content is always indented further than the key it belongs to, so a
+        // first non-empty line at column 0 belongs to no block scalar: this one
+        // is empty. Reading it as content used to give the scalar an indentation
+        // of zero, which then swallowed every line written below it (fuzz).
+        while (base_indent > 0 and self.atBreak()) {
             self.consumeNewline();
 
             var indent: u32 = 0;
@@ -820,6 +824,16 @@ test "tokenizer block scalar literal" {
     try std.testing.expectEqual(TokenKind.scalar, block.kind);
     const block_text = block.slice(tokenizer.source);
     try std.testing.expect(block_text[0] == '|');
+}
+
+test "tokenizer block scalar takes no content from column 0 (fuzz)" {
+    var tokenizer = Tokenizer.init("  run: |\n8\nname: CI");
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings("run", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("|", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("8", tokenizer.next().slice(tokenizer.source));
 }
 
 test "token slice" {
