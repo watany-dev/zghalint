@@ -1724,7 +1724,10 @@ fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseErro
         // `needs:` left empty is a list of nothing, not a broken workflow.
         // Rejecting it used to make the whole file unlintable (fuzz).
         .null_value => return .{ .values = &.{}, .spans = &.{} },
-        else => return error.InvalidValue,
+        // A mapping holds no strings either. `branches: l:` puts two keys on
+        // one line, and rejecting it failed the whole workflow parse, so every
+        // other diagnostic on the file went unreported (fuzz).
+        .mapping => return .{ .values = &.{}, .spans = &.{} },
     }
 }
 
@@ -2656,6 +2659,18 @@ test "an empty container credentials: does not fail the parse (fuzz)" {
     const wf = try parseWorkflow(alloc, try parser.parse());
     try testing.expectEqualStrings("node:20", wf.jobs[0].container.?.image.?);
     try testing.expect(wf.jobs[0].container.?.credentials == null);
+}
+
+test "a mapping where a string list belongs does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `branches: l:` puts two keys on one line, so `branches` holds a mapping.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on:\n push:\n  branches: l:\njobs:\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 0), wf.on.events[0].filter.?.branches.values.len);
 }
 
 test "a service with nothing under it does not fail the parse (fuzz)" {
