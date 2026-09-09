@@ -78,10 +78,33 @@ jobs:
       # composite action is what every consumer of this repository runs. Its
       # embedded scripts are checked directly; actionlint covers the ones in
       # .github/workflows/.
-      - name: shellcheck (scripts/ and action.yml)
+      - name: shellcheck (scripts/, install.sh and action.yml)
         run: |
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh install.sh
           ./scripts/shellcheck-action.sh action.yml
+
+      # formula 生成はタグ push 時にしか走らないので、壊れていても
+      # リリース途中まで気付けない。
+      - name: Homebrew formula generator
+        run: |
+          SUMS=$(mktemp)
+          FORMULA=$(mktemp)
+          for target in linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64; do
+            printf '%064d  zghalint-%s.tar.gz\n' 0 "$target" >> "$SUMS"
+          done
+          ./scripts/gen-homebrew-formula.sh v9.9.9 "$SUMS" > "$FORMULA"
+          ruby -c "$FORMULA"
+          for target in linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64; do
+            if ! grep -q "zghalint-$target.tar.gz" "$FORMULA"; then
+              echo "::error::generated formula has no entry for $target"
+              exit 1
+            fi
+          done
+          # 欠けたターゲットを空の sha256 のまま出力してはならない。
+          if ./scripts/gen-homebrew-formula.sh v9.9.9 /dev/null > /dev/null 2>&1; then
+            echo "::error::generator accepted a checksum file with no entries"
+            exit 1
+          fi
 
       # action.yml's download fallback and the README examples cannot read
       # build.zig.zon at build time, so drift there is only caught by comparing.

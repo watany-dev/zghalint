@@ -245,6 +245,11 @@ jobs:
           - target: windows-x86_64
             os: windows-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Download and run published asset (Unix)
         if: matrix.os != 'windows-latest'
         env:
@@ -335,3 +340,113 @@ jobs:
             exit 1
           }
           & $bin --help | Out-Null
+
+      # `curl | sh` の経路。install.sh はチェックアウトしたものを使う: raw.
+      # githubusercontent 越しに取ると、まだ main に入っていない修正が
+      # 検証されないまま公開されてしまう。install.sh は Windows を扱わない
+      # (リリースページと action を案内して終了する) ので Unix だけで回す。
+      - name: Install via install.sh (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          set -euo pipefail
+          TAG=${GITHUB_REF#refs/tags/}
+          PREFIX="$RUNNER_TEMP/zghalint-install"
+          ./install.sh --version "$TAG" --prefix "$PREFIX"
+          ACTUAL=$("$PREFIX/bin/zghalint" --version)
+          if [ "$ACTUAL" != "zghalint $TAG" ]; then
+            echo "::error::install.sh installed '$ACTUAL', expected 'zghalint $TAG'"
+            exit 1
+          fi
+
+  # Homebrew tap (watany-dev/homebrew-tap) の formula を、公開された
+  # SHA256SUMS から生成して置き換える。tap は別リポジトリなので
+  # GITHUB_TOKEN では書けず、`contents: write` を持つ PAT
+  # (secret: HOMEBREW_TAP_TOKEN) が要る。手順は docs/maintenance.md。
+  homebrew:
+    name: Update Homebrew tap
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    env:
+      TAP_REPO: watany-dev/homebrew-tap
+      FORMULA_PATH: Formula/zghalint.rb
+    steps:
+      # プレリリース (`-rc.`) は tap へ流さない。`brew install zghalint` した
+      # 利用者に検証中のビルドが降りてくるのを避ける。判定を式ではなく
+      # シェルで書くのは、release ジョブの --prerelease 判定と同じ規則を
+      # 同じ形で持つため (docs/maintenance.md のタグ命名規則)。
+      - name: Decide whether this tag goes to the tap
+        id: gate
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          case "$TAG" in
+            *-rc.*)
+              echo "::notice::$TAG is a prerelease; leaving the tap untouched"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Checkout
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 公開済みのチェックサムをそのまま使う。ここで作り直すと、formula が
+      # 利用者のダウンロードするアーカイブと別物を指しうる。
+      - name: Fetch published checksums
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG=${GITHUB_REF#refs/tags/}
+          URL="https://github.com/$REPO/releases/download/$TAG/SHA256SUMS"
+          attempt=1
+          while [ "$attempt" -le 5 ]; do
+            if curl -fSL "$URL" -o SHA256SUMS; then
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            if [ "$attempt" -le 5 ]; then sleep 10; fi
+          done
+          echo "::error::failed to download $URL"
+          exit 1
+
+      - name: Generate formula
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          TAG=${GITHUB_REF#refs/tags/}
+          ./scripts/gen-homebrew-formula.sh "$TAG" SHA256SUMS > zghalint.rb
+          cat zghalint.rb
+
+      # tap へは Contents API で 1 コミット。チェックアウトして push すると
+      # 認証情報がワークスペースに残る (SEC015 / zizmor: artipacked)。
+      - name: Publish formula to the tap
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping the tap update"
+            exit 0
+          fi
+          TAG=${GITHUB_REF#refs/tags/}
+
+          # 上書きには現在の blob sha が要る。初回はファイルが無いので空。
+          CURRENT_SHA=$(gh api "repos/$TAP_REPO/contents/$FORMULA_PATH" --jq .sha 2>/dev/null || true)
+          SHA_ARGS=()
+          if [ -n "$CURRENT_SHA" ]; then
+            SHA_ARGS=(-f "sha=$CURRENT_SHA")
+          fi
+
+          gh api --method PUT "repos/$TAP_REPO/contents/$FORMULA_PATH" \
+            -f "message=zghalint $TAG" \
+            -f "content=$(base64 -w0 zghalint.rb)" \
+            "${SHA_ARGS[@]}" > /dev/null
+          echo "updated $TAP_REPO/$FORMULA_PATH to $TAG"

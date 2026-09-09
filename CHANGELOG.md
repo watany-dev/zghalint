@@ -60,6 +60,16 @@ still be renumbered before 1.0.
 
 ### Added
 
+- `install.sh`: a `curl -fsSL .../install.sh | sh` installer. It resolves the
+  platform, downloads the matching release archive, verifies it against the
+  release's `SHA256SUMS`, and places the binary in `<prefix>/bin` (`/usr/local`
+  when writable, otherwise `$HOME/.local`). `--version`, `--prefix` and
+  `ZGHALINT_BASE_URL` are supported; Linux and macOS only. The release workflow
+  installs the published artifacts through it as part of the smoke job.
+- Homebrew tap: releases now update `Formula/zghalint.rb` in
+  `watany-dev/homebrew-tap`, so `brew install watany-dev/tap/zghalint` works.
+  The formula is generated from the release's published `SHA256SUMS`;
+  prereleases (`-rc.`) are not published to the tap.
 - SYN020 (`empty-workflow`, error): report a workflow file with no content at
   all — comments and whitespace only, or an empty mapping (#284). Such a file
   was previously rejected as unlintable (exit code 2); it is now an ordinary

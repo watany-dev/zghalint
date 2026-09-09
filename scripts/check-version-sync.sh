@@ -43,6 +43,16 @@ elif [ "$ACTION_VERSION" != "$ZON_VERSION" ]; then
   fail "action.yml FALLBACK_VERSION is v$ACTION_VERSION but build.zig.zon has $ZON_VERSION"
 fi
 
+# install.sh is fetched from a ref and run before any binary exists, so it
+# carries the release it installs. A stale value here sends `curl | sh` users
+# to the previous release.
+INSTALL_VERSION=$(sed -n 's/^DEFAULT_VERSION=v\(.*\)$/\1/p' install.sh | head -1)
+if [ -z "$INSTALL_VERSION" ]; then
+  fail "could not read DEFAULT_VERSION from install.sh"
+elif [ "$INSTALL_VERSION" != "$ZON_VERSION" ]; then
+  fail "install.sh DEFAULT_VERSION is v$INSTALL_VERSION but build.zig.zon has $ZON_VERSION"
+fi
+
 # The README is copy-pasted by readers, so a stale version there sends them to
 # a release that may not exist. Every `vX.Y.Z` in it is a zghalint release —
 # the Zig version is written without a leading `v` — so they are all compared.

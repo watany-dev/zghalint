@@ -20,6 +20,38 @@ Zero external dependencies — even the YAML parser is built from scratch.
 
 ## Installation
 
+### Install script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/watany-dev/zghalint/main/install.sh | sh
+```
+
+Detects the platform, downloads the matching release archive, verifies it
+against the release's `SHA256SUMS`, and installs the binary into `<prefix>/bin`.
+The prefix is `/usr/local` when `/usr/local/bin` is writable and `$HOME/.local`
+otherwise. Linux and macOS only; on Windows use the release archive or the
+GitHub Action.
+
+Options are passed after `-s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/watany-dev/zghalint/main/install.sh \
+  | sh -s -- --version v0.0.1-rc.1 --prefix "$HOME/.local"
+```
+
+`--version` takes a release tag and defaults to the release the script was
+published with; `--prefix` chooses the install directory. To read the script
+before running it, download it first and run `sh install.sh`.
+
+### Homebrew
+
+```bash
+brew install watany-dev/tap/zghalint
+```
+
+The tap is updated by the release workflow. Prereleases (`-rc.`) are not
+published to it, so `brew` installs the newest stable release.
+
 ### Build from source
 
 Requires **Zig 0.15.2** or later (the authoritative value is `minimum_zig_version` in `build.zig.zon`; see [docs/maintenance.md](docs/maintenance.md)).
