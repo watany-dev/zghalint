@@ -234,18 +234,13 @@ const Resolver = struct {
             "\"{s}\" is not defined in the values of matrix key \"{s}\"{s}",
             .{ prop, entry.name, suffix },
         ) catch return;
-        const hint = std.fmt.allocPrint(
-            alloc,
-            "add `{s}:` to the `{s}` values under `strategy.matrix:`, or drop the reference",
-            .{ prop, entry.name },
-        ) catch "declare the property in the axis values or in an `include:` entry";
 
         self.list.append(.{
             .rule_id = "EXPR011",
             .severity = .@"error",
             .message = message,
             .span = span,
-            .fix_hint = hint,
+            .fix_hint = "declare the property in every value of the axis, or in one of its `include:` entries",
             .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 2, s) else null,
         }) catch return;
     }
