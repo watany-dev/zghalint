@@ -4,6 +4,7 @@ const glob = @import("glob.zig");
 const workflow_types = @import("../workflow/types.zig");
 const workflow_events = @import("../workflow/events.zig");
 const workflow_parser = @import("../workflow/parser.zig");
+const schema = @import("../workflow/schema.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
@@ -216,11 +217,31 @@ fn siblingHasKeyIgnoreCase(m: Mapping, self_span: Span, key: []const u8) bool {
     return false;
 }
 
+/// The scalar written under the unknown key, if its value is one.
+fn unknownKeyScalar(m: Mapping, self_span: Span) ?[]const u8 {
+    for (m.entries) |entry| {
+        if (entry.key.span.start_byte != self_span.start_byte) continue;
+        if (entry.key.span.end_byte != self_span.end_byte) continue;
+        return switch (entry.value) {
+            .scalar => |s| s.value,
+            else => null,
+        };
+    }
+    return null;
+}
+
 /// A rename that would duplicate a sibling key is dropped: applying it would
 /// turn SYN001 into SYN002 (#347). The unknown key itself is not a sibling,
 /// even when it equals the suggestion ignoring case (`Timeout-minutes`).
+///
+/// A rename onto a key that never takes a scalar is dropped too: `stp: x`
+/// renamed to `steps: x` makes the workflow parser give up on the whole file,
+/// so the fix would trade one diagnostic for an unlintable file (fuzz).
 fn unknownKeyFix(list: *DiagnosticList, uk: UnknownKey, suggestion: []const u8) ?diagnostics_mod.Fix {
     if (siblingHasKeyIgnoreCase(uk.mapping, uk.span, suggestion)) return null;
+    if (unknownKeyScalar(uk.mapping, uk.span)) |value| {
+        if (schema.rejectsScalarValue(suggestion, value)) return null;
+    }
     return rename.tokenFix(list, uk.span, uk.key, suggestion);
 }
 
@@ -1719,6 +1740,45 @@ test "SYN001: distant key has no did-you-mean" {
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "totally-unrelated") != null);
     try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean") == null);
+}
+
+test "SYN001: no rename onto a key that never takes a scalar (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    stps: hello
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    // The suggestion still helps the reader; only the rewrite is withheld,
+    // because `steps: hello` makes the parser give up on the whole file.
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"steps\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: secrets: inherit is still renamed (fuzz)" {
+    const source =
+        \\on: workflow_call
+        \\jobs:
+        \\  build:
+        \\    uses: ./.github/workflows/x.yml
+        \\    screts: inherit
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix != null);
 }
 
 test "SYN001: message survives appendOwning after source list deinit" {

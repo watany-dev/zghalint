@@ -129,6 +129,23 @@ pub fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
     return false;
 }
 
+/// Keys whose value is always a collection. Naming one of them over a plain
+/// scalar is not a workflow the parser tolerates: it gives up on the file
+/// entirely, so a rename onto such a key would leave the file unlintable.
+const collection_only_keys = [_][]const u8{
+    "defaults", "env",      "jobs",  "matrix",
+    "outputs",  "services", "steps", "strategy",
+    "with",
+};
+
+/// True when renaming a key to `key` would leave the scalar `value` in a place
+/// the workflow parser rejects. `secrets:` is the one key that takes either a
+/// collection or the single scalar `inherit`.
+pub fn rejectsScalarValue(key: []const u8, value: []const u8) bool {
+    if (std.mem.eql(u8, key, "secrets")) return !std.mem.eql(u8, value, "inherit");
+    return isAllowedKey(key, &collection_only_keys);
+}
+
 pub fn stepExpectedKeys(m: yaml.Mapping) []const []const u8 {
     const has_run = m.get("run") != null;
     const has_uses = m.get("uses") != null;
