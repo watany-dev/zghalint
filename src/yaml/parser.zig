@@ -347,12 +347,16 @@ pub const Parser = struct {
 
             if (self.current.kind == .eof) break;
             if (self.current.column < key_indent) break;
-            // A line indented past the key, reached only after the entry's own
-            // value was fully parsed, belongs to no node: `on: []` followed by
-            // ` l` is orphan text. Ending the mapping there dropped every key
-            // written below it, so the file went unlintable from that line on
-            // (fuzz). Skip the line and look for the next sibling instead.
-            while (self.current.kind != .eof and self.current.column > key_indent) {
+            // A line that cannot start a sibling key belongs to no node: `on: []`
+            // followed by ` l` is orphan text indented past the key, and a `{`
+            // alone at the key's own indent opens a flow mapping nobody closes.
+            // Ending the mapping at either dropped every key written below it, so
+            // the file went unlintable from that line on (fuzz). Skip the line and
+            // look for the next sibling instead. A `-` still ends the mapping: it
+            // begins a block sequence rather than junk, and a `---` a document.
+            while (self.current.kind != .eof and (self.current.column > key_indent or
+                (self.current.column == key_indent and !endsBlockMapping(self.current.kind))))
+            {
                 self.skipLine();
             }
             if (self.current.kind == .eof) break;
@@ -647,6 +651,15 @@ pub const Parser = struct {
     /// Drop whatever still sits on the line `value` ended on, so the next
     /// sibling key is read from the line below instead of being taken for the
     /// end of the mapping.
+    /// Whether a token at a block mapping's own indent ends it rather than
+    /// leaving junk behind: a key, a sequence item, or a document marker.
+    fn endsBlockMapping(kind: TokenKind) bool {
+        return switch (kind) {
+            .scalar, .sequence_entry, .document_start, .document_end => true,
+            else => false,
+        };
+    }
+
     fn skipTrailingLineTokens(self: *Parser) void {
         while (self.current.kind != .newline and
             self.current.kind != .comment and
@@ -1520,6 +1533,25 @@ test "a quote inside a plain scalar does not stretch the entry (fuzz)" {
     const doc = try parser.parse();
     const on_span = doc.mapping.entries[0].full_span.?;
     try std.testing.expect(on_span.end_byte <= std.mem.indexOf(u8, source, "jobs:").?);
+}
+
+test "a stray flow-mapping start does not drop the keys below it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `{` opens a mapping nothing closes, so it starts no sibling key.
+    // Ending the top-level mapping there lost `jobs:`, and inserting a
+    // `permissions:` line above the `{` was enough to trigger it.
+    var parser = Parser.init(alloc, "on: 1\npermissions: {}\n{\njobs:\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 3), doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("jobs", doc.mapping.entries[2].key.value);
+
+    // A `-` at the same indent is a block sequence, not junk to skip over.
+    var seq = Parser.init(alloc, "on: 1\n- a\n");
+    const seq_doc = try seq.parse();
+    try std.testing.expectEqual(@as(usize, 1), seq_doc.mapping.entries.len);
 }
 
 test "an entry ends past a quote opened after a closing bracket (fuzz)" {
