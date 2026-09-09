@@ -342,11 +342,13 @@ pub const Parser = struct {
             } else try self.parseNode(key_indent + 1);
 
             const key_scalar = self.scalarFromToken(current_key);
+            const extent_end = self.entryEndByteInclusive(key_scalar, value);
             try entries.append(self.allocator, .{
                 .key = key_scalar,
                 .value = value,
                 .span = key_scalar.span,
-                .full_span = self.blockEntryFullSpan(key_scalar, value),
+                .full_span = self.blockEntryFullSpan(key_scalar, value, extent_end),
+                .extent_end = extent_end,
             });
 
             current_key = self.nextSiblingKey(key_indent, min_indent) orelse break;
@@ -781,7 +783,7 @@ pub const Parser = struct {
         };
     }
 
-    fn blockEntryFullSpan(self: *Parser, key: Scalar, value: Node) ?Span {
+    fn blockEntryFullSpan(self: *Parser, key: Scalar, value: Node, extent_end: ?usize) ?Span {
         const line_start = self.lineStartByte(key.span.start_byte);
 
         // The span has to remove the entry and nothing else, so it starts at
@@ -793,7 +795,7 @@ pub const Parser = struct {
             return null;
         }
 
-        const end_byte = self.entryEndByteInclusive(key, value) orelse return null;
+        const end_byte = extent_end orelse return null;
 
         // A scalar value sits on the key's own line, so its end line / column
         // follow the value itself. Every other shape keeps the key line as the
@@ -841,10 +843,10 @@ pub const Parser = struct {
                 if (end_byte < self.source.len) end_byte += 1;
             }
             // Junk left on the value's line is normally contained by it, so the
-            // newline ends the entry. An opening quote is not: `on:\n ''"` runs
-            // its quoted scalar on to the line below, and an insertion at the
-            // newline landed inside the quotes, where it is text rather than a
-            // key -- so `--fix` added the same key again every round (fuzz).
+            // newline ends the entry. A token that opens on the line and closes
+            // below is not: in `on:\n ''"` the quoted scalar runs on, and an
+            // insertion at the newline became quoted text rather than a key, so
+            // `--fix` added the same key again every round (fuzz).
             if (self.current.start < end_byte and self.current.end > end_byte) return null;
             return end_byte;
         }
@@ -999,7 +1001,10 @@ pub const Parser = struct {
                 // The entry's extent, not its removability: an inner key that
                 // shares a line still ends where its value ends, and the outer
                 // entry that owns the line is removable all the same (fuzz).
-                const last_end = self.entryEndByteInclusive(last.key, last.value) orelse return null;
+                const last_end = (if (m.flow)
+                    self.entryEndByteInclusive(last.key, last.value)
+                else
+                    last.extent_end) orelse return null;
                 break :blk self.flowCloseLineEnd(m.flow, m.close_byte, last_end);
             },
             .sequence => |seq| if (seq.items.len == 0)
@@ -1443,6 +1448,12 @@ test "an entry whose line opens a quote that closes below has no full_span (fuzz
     var parser = Parser.init(alloc, "on:\n ''\"\n\"\njobs:");
     const doc = try parser.parse();
     try std.testing.expect(doc.mapping.entries[0].full_span == null);
+
+    // The same one level down, where the entry the extent is read from is the
+    // last of a nested mapping rather than the one being measured.
+    var nested = Parser.init(alloc, "on:\n n: ''\"\n\"\njobs:");
+    const nested_doc = try nested.parse();
+    try std.testing.expect(nested_doc.mapping.entries[0].full_span == null);
 
     // The same line with the quote closed still ends where its newline does.
     var closed = Parser.init(alloc, "on:\n ''\"x\"\njobs:");

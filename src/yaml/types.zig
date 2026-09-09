@@ -147,6 +147,11 @@ pub const MappingEntry = struct {
     /// Byte range that can safely remove the entire entry from block-style YAML.
     /// Null when the parser cannot determine a stable removable range.
     full_span: ?Span = null,
+    /// Byte just past the entry's text, measured while the token stream still
+    /// said where it stopped. Recomputing it from the source alone cannot see
+    /// a token that opens on the entry's line and closes below. Null for a
+    /// flow entry, whose text is bounded by the closing brace instead.
+    extent_end: ?usize = null,
 };
 
 pub const Mapping = struct {
