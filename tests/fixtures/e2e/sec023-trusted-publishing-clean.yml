@@ -26,3 +26,17 @@ jobs:
     steps:
       - name: Publish to npm
         run: npm publish --provenance
+  crates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Mint a short-lived token
+        id: auth
+        run: echo "token=$(./scripts/mint-token.sh)" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked

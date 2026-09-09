@@ -257,6 +257,7 @@ OIDC (trusted publishing) に対応したレジストリで、長命の API ト�
 | `pypa/gh-action-pypi-publish` | `with.password` が空でない（`with.repository-url` が PyPI / TestPyPI を指す場合のみ）|
 | `rubygems/release-gem` | `with.setup-trusted-publisher: false`（既定は trusted publishing）|
 | `npm publish` を含む `run:` | 同じ step の `env.NODE_AUTH_TOKEN` が `${{ secrets.* }}` |
+| `cargo publish` を含む `run:` | 同じ step の `env.CARGO_REGISTRY_TOKEN` が `${{ secrets.* }}` |
 
 いずれも「`id-token: write` を付けて trusted publishing に切り替える」ことを
 `fix_hint` で示す。自動修正は付けない — トークンの削除はレジストリ側の
@@ -266,10 +267,12 @@ publisher 設定を伴うため、ワークフローの書き換えだけでは�
 push できるが、trusted publishing に対応しているのは PyPI と TestPyPI なので、
 社内インデックス（Artifactory / devpi など）を指している場合は報告しない。
 
-npm は step 自身の `env:` だけを見る。ジョブやワークフローに束ねた
-`NODE_AUTH_TOKEN` は、どの step が publish するのかを静的に決められないため
-対象外。また `${{ steps.*.outputs.* }}` のように実行時に組み立てた値は、
-既に短命トークンである可能性があるので報告しない。
+`run:` の 2 形（npm / cargo）は step 自身の `env:` だけを見る。ジョブやワーク
+フローに束ねた `NODE_AUTH_TOKEN` / `CARGO_REGISTRY_TOKEN` は、どの step が
+publish するのかを静的に決められないため対象外。また
+`${{ steps.*.outputs.* }}` のように実行時に組み立てた値は、既に短命トークンで
+ある可能性があるので報告しない — crates.io の trusted publishing は
+まさにこの形（auth step が短命トークンを出力する）を取る。
 
 ## Supply Chain Security Rules (SC)
 
@@ -364,7 +367,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or an action declaring a retired `runs.using` runtime (error) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
-| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
+| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
 
 ### BP002 missing-step-name

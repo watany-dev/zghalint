@@ -1592,7 +1592,7 @@ fn secretRunOccurrences(step: *const Step) env_binding.Occurrences {
 
 fn checkTrustedPublishing(step: *const Step, list: *DiagnosticList) void {
     if (step.uses) |ref| return checkPublishActionToken(step, ref, list);
-    checkNpmPublishToken(step, list);
+    checkRunPublishToken(step, list);
 }
 
 fn checkPublishActionToken(step: *const Step, ref: ActionRef, list: *DiagnosticList) void {
@@ -1637,23 +1637,52 @@ fn publishesToPyPI(with_map: workflow_types.StringMap) bool {
     return std.mem.indexOf(u8, trimmed, "pypi.org") != null;
 }
 
-/// `npm publish` authenticates through `NODE_AUTH_TOKEN`, which npm's trusted
-/// publishing replaces with an OIDC exchange. Only a token that comes straight
-/// from a repository secret is reported: a value the workflow computes may
-/// already be short-lived. `env:` is read on the step alone, so a token bound
-/// at job or workflow level is not seen (docs/rules.md).
-fn checkNpmPublishToken(step: *const Step, list: *DiagnosticList) void {
+/// A registry CLI authenticates through one env var, which the registry's
+/// trusted publishing replaces with an OIDC exchange.
+const RunPublisher = struct {
+    program: []const u8,
+    token_env: []const u8,
+    message: []const u8,
+    fix_hint: []const u8,
+};
+
+const run_publishers = [_]RunPublisher{
+    .{
+        .program = "npm",
+        .token_env = "NODE_AUTH_TOKEN",
+        .message = "publishes to npm with a long-lived automation token; npm supports trusted publishing (OIDC)",
+        .fix_hint = "drop NODE_AUTH_TOKEN and give the job 'permissions: id-token: write' so npm publish exchanges an OIDC token",
+    },
+    // crates.io reads `CARGO_REGISTRY_TOKEN`; its trusted publishing mints a
+    // short-lived token from the job's OIDC identity instead (#375).
+    .{
+        .program = "cargo",
+        .token_env = "CARGO_REGISTRY_TOKEN",
+        .message = "publishes to crates.io with a long-lived API token; crates.io supports trusted publishing (OIDC)",
+        .fix_hint = "drop CARGO_REGISTRY_TOKEN and give the job 'permissions: id-token: write' so cargo publish uses a trusted-publishing token",
+    },
+};
+
+/// Only a token that comes straight from a repository secret is reported: a
+/// value the workflow computes may already be short-lived, which is exactly
+/// what a trusted-publishing auth step produces. `env:` is read on the step
+/// alone, so a token bound at job or workflow level is not seen
+/// (docs/rules.md).
+fn checkRunPublishToken(step: *const Step, list: *DiagnosticList) void {
     const run = step.run orelse return;
-    if (!containsNpmPublish(run)) return;
     const env_map = step.env orelse return;
-    const value = env_map.get("NODE_AUTH_TOKEN") orelse return;
-    if (!isSecretsExpression(value)) return;
-    reportTrustedPublishing(
-        list,
-        "publishes to npm with a long-lived automation token; npm supports trusted publishing (OIDC)",
-        envAnchor(step, "NODE_AUTH_TOKEN").whole(),
-        "drop NODE_AUTH_TOKEN and give the job 'permissions: id-token: write' so npm publish exchanges an OIDC token",
-    );
+    for (run_publishers) |publisher| {
+        if (!containsPublishSubcommand(run, publisher.program)) continue;
+        const value = env_map.get(publisher.token_env) orelse continue;
+        if (!isSecretsExpression(value)) continue;
+        reportTrustedPublishing(
+            list,
+            publisher.message,
+            envAnchor(step, publisher.token_env).whole(),
+            publisher.fix_hint,
+        );
+        return;
+    }
 }
 
 fn reportTrustedPublishing(
@@ -1674,12 +1703,12 @@ fn reportTrustedPublishing(
 /// A flag whose value is a separate word (`npm --access public publish`) is not
 /// followed through, since nothing distinguishes that value from a subcommand.
 /// Blanks only: a newline between the two words would be two commands, not one.
-fn containsNpmPublish(s: []const u8) bool {
+fn containsPublishSubcommand(s: []const u8, program: []const u8) bool {
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
-        if (!isWordAt(s, i, "npm")) continue;
+        if (!isWordAt(s, i, program)) continue;
 
-        var j = i + "npm".len;
+        var j = i + program.len;
         var saw_separator = false;
         while (j < s.len) {
             if (s[j] == ' ' or s[j] == '\t') {
@@ -2372,6 +2401,7 @@ fn checkObfuscatedExecution(step: *const Step, list: *DiagnosticList) void {
     if (containsBase64PipeExec(run_body) or
         containsEvalVarExpansion(run_body) or
         containsCurlWgetPipeShell(run_body) or
+        containsDownloaderProcessSubstitution(run_body) or
         containsVarAsCommand(run_body))
     {
         list.append(.{
@@ -2474,10 +2504,86 @@ fn containsEvalVarExpansion(s: []const u8) bool {
     return false;
 }
 
+/// `bash <(curl ...)` runs a remote script just like `curl ... | sh`, only the
+/// download hangs off a process substitution instead of a pipe (#375). The
+/// shell word is required: `diff <(curl a) <(curl b)` downloads without
+/// executing.
+fn containsDownloaderProcessSubstitution(s: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, s, i, "<(")) |open| {
+        i = open + 2;
+        if (!precededByExecTarget(s, open)) continue;
+        const close = matchingParen(s, open + 1) orelse continue;
+        if (containsDownloader(s[open + 2 .. close])) return true;
+    }
+    return false;
+}
+
+/// The command word left of `<(`, with its own flags skipped so `bash -x <(...)`
+/// still counts. A leading path is dropped (`/bin/bash`), but the whole trailing
+/// name has to be the shell: `./scripts/install.sh` is not `sh`. `. <(curl ...)`
+/// sources the substitution too, so the POSIX dot spelling of `source` counts.
+fn precededByExecTarget(s: []const u8, open: usize) bool {
+    var end = open;
+    while (true) {
+        while (end > 0 and (s[end - 1] == ' ' or s[end - 1] == '\t')) end -= 1;
+        if (end == 0) return false;
+
+        var start = end;
+        while (start > 0 and !std.ascii.isWhitespace(s[start - 1])) start -= 1;
+        if (start == end) return false;
+
+        const token = s[start..end];
+        // A flag belongs to the command still further left.
+        if (token[0] == '-') {
+            end = start;
+            continue;
+        }
+        if (std.mem.eql(u8, token, ".")) return true;
+
+        const name = if (std.mem.lastIndexOfScalar(u8, token, '/')) |slash|
+            token[slash + 1 ..]
+        else
+            token;
+        for (exec_targets) |target| {
+            if (std.mem.eql(u8, name, target)) return true;
+        }
+        return false;
+    }
+}
+
+/// `open` is the `(`; nesting is tracked so an inner `$(...)` or `<(...)` does
+/// not end the outer substitution early.
+fn matchingParen(s: []const u8, open: usize) ?usize {
+    var depth: usize = 0;
+    var i = open;
+    while (i < s.len) : (i += 1) {
+        switch (s[i]) {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if (depth == 0) return i;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn containsDownloader(s: []const u8) bool {
+    for (0..s.len) |i| {
+        for (downloaders) |downloader| {
+            if (isWordAt(s, i, downloader)) return true;
+        }
+    }
+    return false;
+}
+
+const downloaders = [_][]const u8{ "curl", "wget" };
+
 /// Single forward pass: a `| sh` counts once any downloader word precedes it,
 /// so each byte is visited once regardless of how many `curl`s the body has.
 fn containsCurlWgetPipeShell(s: []const u8) bool {
-    const downloaders = [_][]const u8{ "curl", "wget" };
     var seen_downloader = false;
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
@@ -6189,6 +6295,48 @@ test "SEC023: npmpublish is not npm publish" {
     try testing.expect(!hasDiagnostic(&list, "SEC023"));
 }
 
+test "SEC023: cargo publish with CARGO_REGISTRY_TOKEN from a secret" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
+    var list = runStep(.{ .run = "cargo publish --locked", .env = env_map });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: cargo publish behind a flag before the subcommand" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
+    var list = runStep(.{ .run = "cargo --locked publish", .env = env_map });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: cargo publish without a token stays quiet" {
+    var list = runStep(.{ .run = "cargo publish --locked" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: a trusted-publishing cargo token is not reported" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("CARGO_REGISTRY_TOKEN", "${{ steps.auth.outputs.token }}") catch unreachable;
+    var list = runStep(.{ .run = "cargo publish --locked", .env = env_map });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
+test "SEC023: CARGO_REGISTRY_TOKEN without a publish stays quiet" {
+    var env_map = workflow_types.StringMap.init(testing.allocator);
+    defer env_map.deinit();
+    env_map.put("CARGO_REGISTRY_TOKEN", "${{ secrets.CRATES_IO_TOKEN }}") catch unreachable;
+    var list = runStep(.{ .run = "cargo build --release", .env = env_map });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC023"));
+}
+
 test "SEC017: ACTIONS_ALLOW_UNSECURE_COMMANDS in step env" {
     var env_map = workflow_types.StringMap.init(testing.allocator);
     defer env_map.deinit();
@@ -6503,6 +6651,72 @@ test "BP007: wget piped to sh" {
     var list = runStep(.{ .run = "wget -qO- https://example.com/setup.sh | sh" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: bash reading a process substitution of curl" {
+    var list = runStep(.{ .run = "bash <(curl -sL https://example.com/install.sh) 1.7.11" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: source reading a process substitution of wget" {
+    var list = runStep(.{ .run = "source <(wget -qO- https://example.com/env.sh)" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: dot reading a process substitution of curl" {
+    var list = runStep(.{ .run = ". <(curl -sL https://example.com/env.sh)" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: process substitution nesting a command substitution" {
+    var list = runStep(.{ .run = "bash <(curl -sL \"https://example.com/$(uname -s).sh\")" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: diffing two downloads does not execute them" {
+    var list = runStep(.{ .run = "diff <(curl -s https://example.com/a) <(curl -s https://example.com/b)" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: process substitution of a local command is not a download" {
+    var list = runStep(.{ .run = "bash <(cat scripts/setup.sh)" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a shell flag before the process substitution" {
+    var list = runStep(.{ .run = "bash -x <(curl -sL https://example.com/install.sh)" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: an absolute path to the shell" {
+    var list = runStep(.{ .run = "/bin/bash <(curl -sL https://example.com/install.sh)" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a local script whose name ends in sh is not a shell" {
+    var list = runStep(.{ .run = "./scripts/install.sh <(curl -s https://example.com/a)" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a process substitution at the start of a line" {
+    var list = runStep(.{ .run = "echo hi\n<(curl -s https://example.com/a)" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: a word ending in sh is not a shell" {
+    var list = runStep(.{ .run = "refresh <(curl -s https://example.com/a)" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: variable as command at line start" {

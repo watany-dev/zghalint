@@ -982,3 +982,5 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
 - [x] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める
 - [x] G33 (#386): SEC016 の対象に `on.push.tags` を含める
+- [x] G34 (#375): BP007 を `bash <(curl ...)` のプロセス置換にも反応させる
+- [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える

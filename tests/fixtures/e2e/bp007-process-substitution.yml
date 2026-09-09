@@ -1,0 +1,23 @@
+# zghalint:expect BP007@17
+# zghalint:expect BP007@19
+name: process substitution
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: bp007-process-substitution
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Install actionlint
+        run: bash <(curl -sL https://example.com/download-actionlint.bash) 1.7.11
+      - name: Load remote env
+        run: source <(wget -qO- https://example.com/env.sh)
+      - name: Compare two downloads
+        run: diff <(curl -s https://example.com/a) <(curl -s https://example.com/b)
+      - name: Run a local script
+        run: bash <(cat scripts/setup.sh)
