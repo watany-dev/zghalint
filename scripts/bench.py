@@ -636,6 +636,8 @@ def _apply_fix_allow(case: Case, rest: str) -> None:
     tool, sep, ids = pair.partition("=")
     if not sep or tool not in TOOLS or not ids:
         raise CaseError(f"malformed allowance {pair!r} (expected `<tool>=<IDs>`)")
+    if (flag, tool) in case.fix_allows:
+        raise CaseError(f"duplicate `bench:fix-allow` for {flag} {tool} (list the IDs in one line)")
     case.fix_allows[(flag, tool)] = ([i for i in ids.split(",") if i], reason)
 
 

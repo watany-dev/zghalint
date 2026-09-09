@@ -217,19 +217,22 @@ sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集�
 python3 scripts/bench.py --json /tmp/bench.json
 python3 scripts/bench_gate.py --json /tmp/bench.json          # 比較
 python3 scripts/bench_gate.py --json /tmp/bench.json -o gate.md
-python3 scripts/bench_gate.py --json /tmp/bench.json --update # baseline を置き換える
+python3 scripts/bench_gate.py --json /tmp/bench.json --update # baseline を更新する
 ```
 
 | 判定 | 条件 |
 |---|---|
 | 回帰 (非ゼロ終了) | 検出数が baseline より減った / `bench:forbid` 違反が増えた / baseline に無かった実行エラーが出た |
 | 新規ケース (失敗させない) | baseline に無いケース。その FN は gap の候補として表に載る |
-| 注意 (失敗させない) | 位置一致の低下、ケース側で期待値が減ったとき |
+| 注意 (失敗させない) | 位置一致の低下、期待値の増減、baseline から続く実行エラー |
 
 見るのは zghalint の列だけ。actionlint と zizmor の数字は各ツールの版と
 ランナーの shellcheck の有無で動くので、gate の対象にすると zghalint と
 無関係な赤が出る。ケースを足したりルールを直したりしたら `--update` で
 baseline を更新し、`bench/baseline.json` の差分を同じ PR に含める。
+`--update` は報告に載ったケースだけを書き換え、載っていないケースはそのまま
+残す (消えるのは `bench/cases/` から実体が無くなったものだけ) ので、
+`--case` で絞った報告から更新しても baseline は切り詰められない。
 
 ## CI
 

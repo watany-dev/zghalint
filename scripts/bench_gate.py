@@ -31,13 +31,29 @@ DEFAULT_BASELINE = REPO_ROOT / "bench" / "baseline.json"
 
 TOOL = "zghalint"
 
+CASES_DIR = REPO_ROOT / "bench" / "cases"
+
+
+class GateError(Exception):
+    """The report cannot be compared at all (as opposed to a regression)."""
+
 
 def summarize(report: dict) -> dict[str, dict]:
-    """The zghalint column of a `bench.py --json` report, keyed by case."""
+    """The zghalint column of a `bench.py --json` report, keyed by case.
+
+    `bench.py` omits a tool from both `scores` and `errors` when it never ran
+    it -- a missing binary, say. Scoring that as zero would read as a total
+    recall collapse, and `--update` would happily write it down as the new
+    baseline, so refuse the report instead.
+    """
     cases = {}
+    absent = []
     for case in report.get("cases", []):
         score = case.get("scores", {}).get(TOOL)
         error = case.get("errors", {}).get(TOOL)
+        if score is None and error is None:
+            absent.append(case["case"])
+            continue
         entry: dict[str, object] = {
             "expected": score["expected"] if score else 0,
             "detected": score["detected"] if score else 0,
@@ -48,6 +64,11 @@ def summarize(report: dict) -> dict[str, dict]:
         if error is not None:
             entry["error"] = error
         cases[case["case"]] = entry
+    if absent:
+        raise GateError(
+            f"{TOOL} did not run on {len(absent)} case(s) (e.g. {absent[0]}); "
+            "build the binary and re-run bench.py"
+        )
     return cases
 
 
@@ -104,6 +125,18 @@ def compare(current: dict[str, dict], baseline: dict[str, dict]) -> Comparison:
             cmp.regressions.append((name, f"実行エラー: {now['error']}"))
         elif before.get("error") and not now.get("error"):
             cmp.improvements.append((name, "実行エラーが解消"))
+        elif now.get("error") and before.get("error"):
+            # Already red at the last update: not a regression, but it must
+            # not drop out of the report either.
+            cmp.warnings.append((name, f"実行エラーが継続: {now['error']}"))
+        # A header gaining a `bench:expect` that zghalint misses leaves
+        # `detected` untouched, so count the misses instead of the hits.
+        missed_now = now["expected"] - now["detected"]
+        missed_before = before["expected"] - before["detected"]
+        if missed_now > missed_before and now["detected"] >= before["detected"]:
+            cmp.new_findings.append(
+                (name, f"未検出が増えた: {missed_before} → {missed_now} 件 (期待値の追加)")
+            )
         if now["line_matched"] < before["line_matched"]:
             cmp.warnings.append(
                 (name, f"位置一致の低下: {before['line_matched']} → {now['line_matched']}")
@@ -177,6 +210,26 @@ def render_markdown(current: dict[str, dict], baseline: dict[str, dict], cmp: Co
     return "\n".join(out)
 
 
+def update_baseline(
+    path: Path, current: dict[str, dict], cases_dir: Path = CASES_DIR
+) -> dict[str, dict]:
+    """The baseline after folding in *current*.
+
+    A report from `bench.py --case ...` covers a subset, so replacing the file
+    wholesale would silently drop every case the filter excluded. Keep those
+    entries and prune only the ones whose case no longer exists on disk.
+    """
+    if path.is_file():
+        merged = dict(json.loads(path.read_text(encoding="utf-8")).get("cases", {}))
+    else:
+        merged = {}
+    for name in list(merged):
+        if name not in current and not (cases_dir / name).exists():
+            del merged[name]
+    merged.update(current)
+    return merged
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -192,14 +245,19 @@ def main(argv: list[str] | None = None) -> int:
     if not args.json.is_file():
         print(f"no such report: {args.json}", file=sys.stderr)
         return 2
-    current = summarize(json.loads(args.json.read_text(encoding="utf-8")))
+    try:
+        current = summarize(json.loads(args.json.read_text(encoding="utf-8")))
+    except GateError as exc:
+        print(f"::error::{exc}", file=sys.stderr)
+        return 2
 
     if args.update:
+        merged = update_baseline(args.baseline, current)
         args.baseline.write_text(
-            json.dumps({"cases": current}, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            json.dumps({"cases": merged}, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        print(f"wrote {args.baseline} ({len(current)} cases)")
+        print(f"wrote {args.baseline} ({len(merged)} cases, {len(current)} from this report)")
         return 0
 
     if not args.baseline.is_file():

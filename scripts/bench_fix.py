@@ -209,7 +209,7 @@ def check_flag(
 
     added = {tool: added_idents(before_runs, after_runs, tool) for tool in FIX_TOOLS}
     for tool, ids in added.items():
-        allowed_ids, reason = getattr(case, "fix_allows", {}).get((flag, tool), ([], ""))
+        allowed_ids, reason = case.fix_allows.get((flag, tool), ([], ""))
         result.allowed.extend((tool, i, reason) for i in ids if i in allowed_ids)
         added[tool] = [i for i in ids if i not in allowed_ids]
     result.new_zghalint = added["zghalint"]

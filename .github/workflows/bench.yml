@@ -72,7 +72,7 @@ jobs:
 
       - name: Cross-check the autofix rewrites
         id: fix
-        if: always() && steps.score.outcome != 'skipped'
+        if: always()
         run: |
           set +e
           python3 scripts/bench.py --fix -o bench-fix.md --json bench-fix.json

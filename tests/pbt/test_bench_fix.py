@@ -65,3 +65,26 @@ def test_fix_allow_moves_an_expected_increase_out_of_problems():
     result.new_zizmor = []
     result.allowed = [("zizmor", "dangerous-triggers", "G22")]
     assert result.problems == []
+
+
+def load_bench():
+    import sys
+
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    import bench
+
+    return bench
+
+
+def test_duplicate_fix_allow_for_one_flag_and_tool_is_rejected():
+    """Two lines used to silently overwrite each other, dropping allowances."""
+    bench = load_bench()
+    case = bench.Case(path=PROJECT_ROOT / "x.yml", name="x.yml")
+    bench._apply_fix_allow(case, "--fix zizmor=a 理由")
+    try:
+        bench._apply_fix_allow(case, "--fix zizmor=b 別の理由")
+    except bench.CaseError:
+        pass
+    else:
+        raise AssertionError("expected CaseError")
+    assert case.fix_allows[("--fix", "zizmor")][0] == ["a"]

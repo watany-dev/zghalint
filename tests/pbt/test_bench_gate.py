@@ -13,6 +13,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = PROJECT_ROOT / "scripts" / "bench_gate.py"
 
@@ -38,8 +40,13 @@ def report(case: str, **score) -> dict:
         "violations": 0,
     }
     base.update(score)
-    errors = {"zghalint": base.pop("error")} if "error" in base else {}
-    return {"cases": [{"case": case, "scores": {"zghalint": base}, "errors": errors}]}
+    # `bench.py --json` writes a tool into `scores` or into `errors`, never
+    # both, so a failed run carries no score column at all.
+    if "error" in base:
+        entry = {"case": case, "scores": {}, "errors": {"zghalint": base["error"]}}
+    else:
+        entry = {"case": case, "scores": {"zghalint": base}, "errors": {}}
+    return {"cases": [entry]}
 
 
 def test_summarize_keeps_only_the_zghalint_column():
@@ -105,7 +112,7 @@ def test_recovering_from_a_baseline_error_is_an_improvement():
     baseline = gate.summarize(report("a/x.yml", error="exit 134"))
     cmp = gate.compare(gate.summarize(report("a/x.yml")), baseline)
     assert not cmp.failed
-    assert cmp.improvements == [("a/x.yml", "実行エラーが解消")]
+    assert ("a/x.yml", "実行エラーが解消") in cmp.improvements
 
 
 def test_line_accuracy_drop_warns_without_failing():
@@ -141,3 +148,39 @@ def test_render_markdown_reports_the_regression_rows():
     text = gate.render_markdown(current, baseline, gate.compare(current, baseline))
     assert "recall 低下" in text
     assert "`a/x.yml`" in text
+
+
+def test_a_tool_that_never_ran_is_refused_instead_of_scored_as_zero():
+    """Without this, `--update` could write an all-zero baseline."""
+    raw = {"cases": [{"case": "a/x.yml", "scores": {"zizmor": {}}, "errors": {}}]}
+    with pytest.raises(gate.GateError):
+        gate.summarize(raw)
+
+
+def test_expectations_added_to_an_existing_case_show_up_as_fn_candidates():
+    baseline = gate.summarize(report("a/x.yml"))
+    current = gate.summarize(report("a/x.yml", expected=3))
+    cmp = gate.compare(current, baseline)
+    assert not cmp.failed
+    assert [name for name, _ in cmp.new_findings] == ["a/x.yml"]
+
+
+def test_an_error_present_in_the_baseline_is_still_reported():
+    baseline = gate.summarize(report("a/x.yml", error="exit 134"))
+    cmp = gate.compare(gate.summarize(report("a/x.yml", error="exit 134")), baseline)
+    assert not cmp.failed
+    assert cmp.warnings[0][0] == "a/x.yml"
+
+
+def test_update_keeps_cases_the_report_did_not_cover(tmp_path):
+    """A `--case`-filtered report must not truncate the baseline."""
+    path = tmp_path / "baseline.json"
+    cases_dir = tmp_path / "cases"
+    (cases_dir / "a").mkdir(parents=True)
+    (cases_dir / "a" / "keep.yml").write_text("on: push\n", encoding="utf-8")
+    path.write_text(
+        json.dumps({"cases": {"a/keep.yml": {"detected": 1}, "a/gone.yml": {"detected": 1}}}),
+        encoding="utf-8",
+    )
+    merged = gate.update_baseline(path, gate.summarize(report("b/new.yml")), cases_dir)
+    assert sorted(merged) == ["a/keep.yml", "b/new.yml"]
