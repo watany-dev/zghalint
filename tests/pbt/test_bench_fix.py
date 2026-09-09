@@ -54,3 +54,14 @@ def test_changed_paths_reports_only_rewritten_files():
     before = {"a.yml": b"a", "b.yml": b"b"}
     after = {"a.yml": b"a\n", "b.yml": b"b"}
     assert fix.changed_paths(before, after) == ["a.yml"]
+
+
+def test_fix_allow_moves_an_expected_increase_out_of_problems():
+    """`bench:fix-allow` is what keeps an intentional rewrite from going red."""
+    result = fix.FlagResult(flag="--fix-unsafe")
+    assert result.problems == []
+    result.new_zizmor = ["dangerous-triggers"]
+    assert result.problems == ["zizmor +dangerous-triggers"]
+    result.new_zizmor = []
+    result.allowed = [("zizmor", "dangerous-triggers", "G22")]
+    assert result.problems == []

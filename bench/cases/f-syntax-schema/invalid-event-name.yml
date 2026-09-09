@@ -1,4 +1,5 @@
-# bench:expect unknown-event@4
+# bench:expect unknown-event@5
+# bench:fix-allow --fix-unsafe zizmor=dangerous-triggers 候補が特権トリガのときは --fix-unsafe でのみ置換する (G22 / #346)
 name: unknown event
 on:
   pull_request_targt:

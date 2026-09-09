@@ -114,6 +114,8 @@ class FlagResult:
     yaml_broken: list[tuple[str, str]] = field(default_factory=list)
     comments_lost: list[tuple[str, str]] = field(default_factory=list)
     skipped_overlaps: int = 0
+    #: (tool, ID, reason) the case declared with `bench:fix-allow`.
+    allowed: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def problems(self) -> list[str]:
@@ -142,6 +144,8 @@ class CaseFixResult:
 
 
 SKIPPED_RE = re.compile(r"(\d+) fix(?:es)? skipped")
+
+FIX_TOOLS = ("zghalint", "actionlint", "zizmor")
 
 
 def _apply(binary: Path, staged, flag: str, run_cmd) -> tuple[int, str]:
@@ -203,9 +207,14 @@ def check_flag(
         restore_tree(staged.root, before_snap)
         return result
 
-    result.new_zghalint = added_idents(before_runs, after_runs, "zghalint")
-    result.new_actionlint = added_idents(before_runs, after_runs, "actionlint")
-    result.new_zizmor = added_idents(before_runs, after_runs, "zizmor")
+    added = {tool: added_idents(before_runs, after_runs, tool) for tool in FIX_TOOLS}
+    for tool, ids in added.items():
+        allowed_ids, reason = getattr(case, "fix_allows", {}).get((flag, tool), ([], ""))
+        result.allowed.extend((tool, i, reason) for i in ids if i in allowed_ids)
+        added[tool] = [i for i in ids if i not in allowed_ids]
+    result.new_zghalint = added["zghalint"]
+    result.new_actionlint = added["actionlint"]
+    result.new_zizmor = added["zizmor"]
 
     if result.rewritten:
         _apply(binary, staged, flag, run_cmd)
@@ -261,6 +270,7 @@ def render_markdown(results: list[CaseFixResult], available: dict[str, bool]) ->
 
     rewritten = 0
     problem_rows: list[tuple[str, str, str]] = []
+    allowed_rows: list[tuple[str, str, str, str, str]] = []
     for case in results:
         for flag in case.flags:
             if flag.rewritten:
@@ -268,6 +278,9 @@ def render_markdown(results: list[CaseFixResult], available: dict[str, bool]) ->
             problems = flag.problems
             if problems:
                 problem_rows.append((case.name, flag.flag, "; ".join(problems)))
+            allowed_rows.extend(
+                (case.name, flag.flag, tool, ident, reason) for tool, ident, reason in flag.allowed
+            )
 
     out.append("## 集計")
     out.append("")
@@ -276,6 +289,7 @@ def render_markdown(results: list[CaseFixResult], available: dict[str, bool]) ->
     out.append(f"| ケース | {len(results)} |")
     out.append(f"| 書き換えが起きた適用 (フラグ単位) | {rewritten} |")
     out.append(f"| 問題あり | {len(problem_rows)} |")
+    out.append(f"| 許容した増加 (`bench:fix-allow`) | {len(allowed_rows)} |")
     out.append("")
 
     out.append("## 問題")
@@ -285,6 +299,17 @@ def render_markdown(results: list[CaseFixResult], available: dict[str, bool]) ->
         out.append("|---|---|---|")
         for name, flag, detail in problem_rows:
             out.append(f"| `{name}` | `{flag}` | {detail} |")
+    else:
+        out.append("なし。")
+    out.append("")
+
+    out.append("## 許容した増加 (`bench:fix-allow`)")
+    out.append("")
+    if allowed_rows:
+        out.append("| case | flag | tool | ID | 理由 |")
+        out.append("|---|---|---|---|---|")
+        for name, flag, tool, ident, reason in allowed_rows:
+            out.append(f"| `{name}` | `{flag}` | {tool} | `{ident}` | {reason} |")
     else:
         out.append("なし。")
     out.append("")
@@ -324,6 +349,7 @@ def as_json(results: list[CaseFixResult]) -> dict:
                         "yaml_broken": [{"file": p, "error": e} for p, e in f.yaml_broken],
                         "comments_lost": [{"file": p, "line": line} for p, line in f.comments_lost],
                         "skipped_overlaps": f.skipped_overlaps,
+                        "allowed": [{"tool": t, "id": i, "reason": r} for t, i, r in f.allowed],
                     }
                     for f in case.flags
                 ],
