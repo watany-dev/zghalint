@@ -1011,13 +1011,12 @@ fn runTaintContexts(wf: *const Workflow) RunTaintContexts {
 
 /// A fixed-capacity list of context prefixes, in first-appended order.
 ///
-/// `append` ignores a context already held, which is what keeps the capacity
-/// an upper bound: both tables below size the buffer by counting each context
-/// once, while the loops that fill it walk `wf.on.events`, and `on:` may name
-/// the same event more than once. YAML duplicate keys parse (SYN002 reports
-/// them, it does not drop them), so three `workflow_dispatch:` entries used to
-/// append `github.event.inputs` three times and write past the end — a panic
-/// in Debug and an out-of-bounds store in ReleaseFast (#366).
+/// Holding each context once is what keeps the capacity an upper bound: the
+/// tables below size the buffer by counting each context once, while the loops
+/// that fill it walk `wf.on.events`, where a duplicate `on:` key leaves the
+/// same event twice over — SYN002 reports those keys, it does not drop them.
+/// Appending per occurrence wrote past the end: a panic in Debug, an
+/// out-of-bounds store up to SIGSEGV in ReleaseFast (#366).
 fn ContextSet(comptime capacity: usize) type {
     return struct {
         const Self = @This();
