@@ -533,6 +533,11 @@ pub const Strategy = struct {
     fail_fast: bool = true,
     fail_fast_value_span: ?yaml_types.Span = null,
     fail_fast_entry_span: ?yaml_types.Span = null,
+    /// The `strategy:` entry itself, and how many keys sit under it. Removing
+    /// the only key of a section leaves a header with nothing beneath it, and
+    /// whatever line follows becomes its value instead (PERF003 autofix, fuzz).
+    entry_span: ?yaml_types.Span = null,
+    entry_count: usize = 0,
     matrix: ?Matrix = null,
     /// True when a `matrix:` key is present, even if its value carries no
     /// inspectable axes (`matrix: ${{ fromJSON(...) }}` leaves `matrix` null).

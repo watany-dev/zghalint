@@ -15,6 +15,7 @@ const DiagnosticList = engine.DiagnosticList;
 const spans = @import("spans.zig");
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
+const Strategy = workflow_types.Strategy;
 const Fix = diagnostics_mod.Fix;
 
 /// - `.with_cache_input`: the action exposes a `cache:` input taking a
@@ -355,14 +356,26 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
-fn buildFailFastDisabledFix(diag_list: *DiagnosticList, entry_span: Span) ?Fix {
+fn buildFailFastDisabledFix(diag_list: *DiagnosticList, strategy: Strategy, entry_span: Span) ?Fix {
+    // `fail-fast` alone under `strategy:` means removing it empties the
+    // section, and the next line then reads as the section's value. Take the
+    // whole `strategy:` entry instead, which is what the removal leaves behind
+    // anyway (fuzz).
+    const sole_key = strategy.entry_count == 1;
+    // Without a span that removes the section, there is no safe rewrite: the
+    // inner delete on its own is what empties it.
+    const removal_span = if (sole_key) (strategy.entry_span orelse return null) else entry_span;
+
     const edits = fix_builder.deleteMappingEntry(
         diag_list.fixAllocator(),
-        entry_span,
+        removal_span,
     ) orelse return null;
 
     return .{
-        .description = "remove fail-fast: false from strategy",
+        .description = if (sole_key)
+            "remove the strategy section, whose only key is fail-fast: false"
+        else
+            "remove fail-fast: false from strategy",
         .safety = .unsafe,
         .edits = edits,
     };
@@ -382,7 +395,7 @@ fn checkFailFastDisabled(job: *const Job, diag_list: *DiagnosticList) void {
         .fix_hint = "Consider removing 'fail-fast: false' to cancel remaining jobs on first failure.",
     };
     if (strategy.fail_fast_entry_span) |entry_span| {
-        diag.fix = buildFailFastDisabledFix(diag_list, entry_span);
+        diag.fix = buildFailFastDisabledFix(diag_list, strategy, entry_span);
     }
 
     diag_list.append(diag) catch return;
@@ -1328,6 +1341,70 @@ test "PERF003: autofix removes fail-fast line from workflow source" {
     ,
         result.content,
     );
+}
+
+test "PERF003: autofix removes a strategy section whose only key is fail-fast (fuzz)" {
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      fail-fast: false
+        \\    steps:
+        \\      - run: npm test
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkFailFastDisabled(&wf.jobs[0], &diags);
+
+    const all_fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
+    defer std.testing.allocator.free(all_fixes);
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, all_fixes);
+    defer result.deinit(std.testing.allocator);
+
+    // Leaving `strategy:` behind would give the section no value, and the
+    // `steps:` line below would become one.
+    try std.testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: npm test
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "PERF003: no autofix when the sole-key strategy has no removable span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `strategy` shares its line with `b`, so removing it as a line would take
+    // the job with it. Removing `fail-fast` alone empties the section instead.
+    const source = "on: push\njobs:\n b: strategy:\n     fail-fast: false\n     x\n";
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkFailFastDisabled(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
 }
 
 test "PERF003: no warning when fail-fast is true (default)" {

@@ -1022,6 +1022,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         try recordEmpty(&empty, ctx.allocator, "strategy", n);
         if (!isEmptyContainer(n)) {
             job.strategy = try parseStrategy(ctx, n);
+            job.strategy.?.entry_span = m.getFullSpan("strategy");
             switch (n) {
                 .mapping => |sm| {
                     if (sm.get("matrix")) |matrix_node| {
@@ -1453,7 +1454,7 @@ fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
         else => return error.InvalidValue,
     };
 
-    var strategy = types.Strategy{};
+    var strategy = types.Strategy{ .entry_count = m.entries.len };
     for (m.entries) |entry| {
         if (std.mem.eql(u8, entry.key.value, "fail-fast")) {
             if (type_validation.checkBool(

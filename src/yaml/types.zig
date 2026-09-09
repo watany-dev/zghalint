@@ -163,6 +163,17 @@ pub const Mapping = struct {
         return null;
     }
 
+    /// Span covering the whole `key: value` entry, or null when the key is
+    /// absent or the entry has no span that removes it and nothing else.
+    pub fn getFullSpan(self: Mapping, key: []const u8) ?Span {
+        for (self.entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, key)) {
+                return entry.full_span;
+            }
+        }
+        return null;
+    }
+
     pub fn getScalar(self: Mapping, key: []const u8) ?[]const u8 {
         if (self.get(key)) |node| {
             switch (node) {
