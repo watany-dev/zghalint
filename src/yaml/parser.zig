@@ -338,38 +338,7 @@ pub const Parser = struct {
                 .full_span = self.blockEntryFullSpan(key_scalar, value),
             });
 
-            // Text left over on the line the entry ended on is junk: `on: []l`
-            // leaves `l` behind. Ending the mapping there dropped every key
-            // written below it, so the whole rest of the file went unlintable
-            // and an inserted top-level key stayed invisible (fuzz).
-            self.skipTrailingLineTokens();
-            self.skipNewlinesAndComments();
-
-            if (self.current.kind == .eof) break;
-            if (self.current.column < key_indent) break;
-            // A line that cannot start a sibling key belongs to no node: `on: []`
-            // followed by ` l` is orphan text indented past the key, and a `{`
-            // alone at the key's own indent opens a flow mapping nobody closes.
-            // Ending the mapping at either dropped every key written below it, so
-            // the file went unlintable from that line on (fuzz). Skip the line and
-            // look for the next sibling instead. A `-` still ends the mapping: it
-            // begins a block sequence rather than junk, and a `---` a document.
-            while (self.current.kind != .eof and (self.current.column > key_indent or
-                (self.current.column == key_indent and !endsBlockMapping(self.current.kind))))
-            {
-                self.skipLine();
-            }
-            if (self.current.kind == .eof) break;
-            if (self.current.column < key_indent) break;
-            if (self.current.column < min_indent) break;
-
-            if (self.current.kind == .scalar) {
-                current_key = self.current;
-                self.advance();
-                continue;
-            }
-
-            break;
+            current_key = self.nextSiblingKey(key_indent, min_indent) orelse break;
         }
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
@@ -651,6 +620,33 @@ pub const Parser = struct {
     /// Drop whatever still sits on the line `value` ended on, so the next
     /// sibling key is read from the line below instead of being taken for the
     /// end of the mapping.
+    /// The next key of a block mapping whose keys sit at `key_indent`, leaving
+    /// the `:` after it current. Every line that cannot start a key is junk to
+    /// skip over: text left on the line the entry ended on (`on: []l`), a line
+    /// indented past the key (`on: []` then ` l`), a `{` opening a flow mapping
+    /// nothing closes, and a scalar with no `:` after it. Ending the mapping at
+    /// any of them dropped every key written below it, so the rest of the file
+    /// went unlintable and an inserted top-level key stayed invisible (fuzz).
+    fn nextSiblingKey(self: *Parser, key_indent: u32, min_indent: u32) ?Token {
+        self.skipTrailingLineTokens();
+        self.skipNewlinesAndComments();
+        while (true) {
+            while (self.current.kind != .eof and (self.current.column > key_indent or
+                (self.current.column == key_indent and !endsBlockMapping(self.current.kind))))
+            {
+                self.skipLine();
+            }
+            if (self.current.kind != .scalar) return null;
+            if (self.current.column < key_indent) return null;
+            if (self.current.column < min_indent) return null;
+
+            const key = self.current;
+            self.advance();
+            if (self.current.kind == .mapping_value) return key;
+            self.skipLine();
+        }
+    }
+
     /// Whether a token at a block mapping's own indent ends it rather than
     /// leaving junk behind: a key, a sequence item, or a document marker.
     fn endsBlockMapping(kind: TokenKind) bool {
@@ -1547,6 +1543,12 @@ test "a stray flow-mapping start does not drop the keys below it (fuzz)" {
     const doc = try parser.parse();
     try std.testing.expectEqual(@as(usize, 3), doc.mapping.entries.len);
     try std.testing.expectEqualStrings("jobs", doc.mapping.entries[2].key.value);
+
+    // A scalar with no `:` after it is not a key either.
+    var bare = Parser.init(alloc, "on: 1\npermissions: {}\nj\njobs:\n");
+    const bare_doc = try bare.parse();
+    try std.testing.expectEqual(@as(usize, 3), bare_doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("jobs", bare_doc.mapping.entries[2].key.value);
 
     // A `-` at the same indent is a block sequence, not junk to skip over.
     var seq = Parser.init(alloc, "on: 1\n- a\n");
