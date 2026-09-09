@@ -302,15 +302,23 @@ def _run_once(cmd: Command, cwd: Path) -> tuple[float, int]:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    watchdog = threading.Timer(TIMEOUT_SEC, proc.kill)
+    timed_out = threading.Event()
+
+    def kill_on_timeout() -> None:
+        timed_out.set()
+        proc.kill()
+
+    watchdog = threading.Timer(TIMEOUT_SEC, kill_on_timeout)
     watchdog.start()
     try:
         code = proc.wait()
+    except BaseException:
+        proc.kill()
+        raise
     finally:
-        timed_out = not watchdog.is_alive()
         watchdog.cancel()
     elapsed = time.perf_counter() - start
-    if timed_out:
+    if timed_out.is_set():
         raise subprocess.TimeoutExpired(cmd.argv, TIMEOUT_SEC)
     return elapsed, code
 
