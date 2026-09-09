@@ -7,6 +7,10 @@
 //!
 //! A dynamic matrix (`matrix: ${{ fromJSON(...) }}`) carries keys that are
 //! only known at run time, so nothing is reported for such a job.
+//!
+//! When an axis takes mapping values, the property behind the axis name
+//! (`matrix.platform.image`) is resolved too, against the union of the keys its
+//! cells — and any `include:` entry for that axis — carry (issue #382).
 
 const std = @import("std");
 const engine = @import("engine.zig");
@@ -16,6 +20,8 @@ const expr_scan = @import("expr_scan.zig");
 const spans = @import("spans.zig");
 const util = @import("../util.zig");
 const rename = @import("rename.zig");
+const yaml_types = @import("../yaml/types.zig");
+const type_validation = @import("../workflow/type_validation.zig");
 const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
@@ -35,18 +41,46 @@ fn keyEql(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
 }
 
+/// One declared matrix key, with what is known about the values behind it.
+const Key = struct {
+    name: []const u8,
+    /// Property names the key's values carry, as the union over every cell.
+    props: std.ArrayList([]const u8) = .empty,
+    /// True once a value is seen that is not an inspectable mapping — a scalar
+    /// axis, an axis built at run time, an expression key. The properties then
+    /// cannot be enumerated, so `matrix.<key>.<prop>` stays unchecked.
+    unknowable: bool = false,
+};
+
+const Keys = struct {
+    entries: []Key,
+    /// The same names as a flat slice, for `util.didYouMean`.
+    names: []const []const u8,
+
+    fn find(self: Keys, name: []const u8) ?*const Key {
+        for (self.entries) |*key| {
+            if (keyEql(key.name, name)) return key;
+        }
+        return null;
+    }
+};
+
 /// Axis names plus every key an `include:` entry adds, deduplicated in source
 /// order. `exclude:` entries can only narrow existing axes (SYN019 checks
 /// that), so they contribute no names.
-fn collectKeys(job: *const Job, alloc: std.mem.Allocator) ?[]const []const u8 {
+fn collectKeys(job: *const Job, alloc: std.mem.Allocator) ?Keys {
     const strategy = job.strategy orelse return null;
     if (!strategy.matrix_key_present) return null;
     const matrix = strategy.matrix orelse return null;
 
-    var keys: std.ArrayList([]const u8) = .empty;
+    var keys: std.ArrayList(Key) = .empty;
     for (matrix.axes) |axis| {
         if (!isMetaAxis(axis.name)) {
-            appendUnique(&keys, alloc, axis.name);
+            const key = upsert(&keys, alloc, axis.name) orelse continue;
+            // An axis whose values the parser could not inspect
+            // (`os: ${{ fromJSON(...) }}`) still declares its name.
+            if (axis.dynamic or axis.values.len == 0) key.unknowable = true;
+            for (axis.values) |value| absorb(key, alloc, value);
             continue;
         }
         if (!std.mem.eql(u8, axis.name, "include")) continue;
@@ -55,10 +89,49 @@ fn collectKeys(job: *const Job, alloc: std.mem.Allocator) ?[]const []const u8 {
                 .mapping => |m| m,
                 else => continue,
             };
-            for (entry.entries) |kv| appendUnique(&keys, alloc, kv.key.value);
+            for (entry.entries) |kv| {
+                const key = upsert(&keys, alloc, kv.key.value) orelse continue;
+                absorb(key, alloc, kv.value);
+            }
         }
     }
-    return keys.toOwnedSlice(alloc) catch null;
+
+    var names: std.ArrayList([]const u8) = .empty;
+    for (keys.items) |key| names.append(alloc, key.name) catch return null;
+    return .{
+        .entries = keys.toOwnedSlice(alloc) catch return null,
+        .names = names.toOwnedSlice(alloc) catch return null,
+    };
+}
+
+/// The existing entry for `name`, or a fresh one appended in source order.
+/// Null only when the entry could not be allocated.
+fn upsert(keys: *std.ArrayList(Key), alloc: std.mem.Allocator, name: []const u8) ?*Key {
+    for (keys.items) |*key| {
+        if (keyEql(key.name, name)) return key;
+    }
+    keys.append(alloc, .{ .name = name }) catch return null;
+    return &keys.items[keys.items.len - 1];
+}
+
+/// Folds one cell of a key into what is known about its properties. Anything
+/// but a mapping — or a mapping whose key is itself an expression — leaves the
+/// property set unenumerable.
+fn absorb(key: *Key, alloc: std.mem.Allocator, value: yaml_types.Node) void {
+    const mapping = switch (value) {
+        .mapping => |m| m,
+        else => {
+            key.unknowable = true;
+            return;
+        },
+    };
+    for (mapping.entries) |kv| {
+        if (type_validation.containsExpression(kv.key.value)) {
+            key.unknowable = true;
+            continue;
+        }
+        appendUnique(&key.props, alloc, kv.key.value);
+    }
 }
 
 fn appendUnique(keys: *std.ArrayList([]const u8), alloc: std.mem.Allocator, name: []const u8) void {
@@ -70,7 +143,7 @@ fn appendUnique(keys: *std.ArrayList([]const u8), alloc: std.mem.Allocator, name
 
 const Resolver = struct {
     /// Declared matrix keys, or null when the job has no `matrix:` at all.
-    keys: ?[]const []const u8,
+    keys: ?Keys,
     /// Backs the expression parse trees; diagnostic messages are allocated
     /// from the list's own arena instead.
     alloc: std.mem.Allocator,
@@ -89,10 +162,19 @@ const Resolver = struct {
         // `matrix` alone (`toJSON(matrix)`) and computed keys
         // (`matrix[github.ref]`) carry no name to resolve.
         const key = identSegment(iter.next()) orelse return;
-        for (declared) |name| {
-            if (keyEql(name, key)) return;
+        const entry = declared.find(key) orelse {
+            self.reportUnknownKey(path, key, declared.names, span);
+            return;
+        };
+
+        // The axis is declared; a property behind it only resolves when every
+        // cell is a mapping, so the key set is the union of what they carry.
+        if (entry.unknowable or entry.props.items.len == 0) return;
+        const prop = identSegment(iter.next()) orelse return;
+        for (entry.props.items) |name| {
+            if (keyEql(name, prop)) return;
         }
-        self.reportUnknownKey(path, key, declared, span);
+        self.reportUnknownProperty(path, entry, prop, span);
     }
 
     fn reportUnavailable(self: Resolver, span: Span) void {
@@ -131,6 +213,40 @@ const Resolver = struct {
             .span = span,
             .fix_hint = "declare the key under `strategy.matrix:` or one of its `include:` entries",
             .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 1, s) else null,
+        }) catch return;
+    }
+
+    fn reportUnknownProperty(
+        self: Resolver,
+        path: []const u8,
+        entry: *const Key,
+        prop: []const u8,
+        span: Span,
+    ) void {
+        const alloc = self.list.fixAllocator();
+        const suggestion = util.didYouMean(prop, entry.props.items);
+        const suffix = if (suggestion) |s|
+            std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
+        else
+            "";
+        const message = std.fmt.allocPrint(
+            alloc,
+            "\"{s}\" is not defined in the values of matrix key \"{s}\"{s}",
+            .{ prop, entry.name, suffix },
+        ) catch return;
+        const hint = std.fmt.allocPrint(
+            alloc,
+            "add `{s}:` to the `{s}` values under `strategy.matrix:`, or drop the reference",
+            .{ prop, entry.name },
+        ) catch "declare the property in the axis values or in an `include:` entry";
+
+        self.list.append(.{
+            .rule_id = "EXPR011",
+            .severity = .@"error",
+            .message = message,
+            .span = span,
+            .fix_hint = hint,
+            .fix = if (suggestion) |s| rename.pathSegmentFix(self.list, span, path, 2, s) else null,
         }) catch return;
     }
 };
@@ -370,6 +486,107 @@ test "EXPR011: a bare matrix reference needs no key but still needs a matrix" {
         \\        os: [ubuntu-latest]
         \\    steps:
         \\      - run: echo "${{ toJSON(matrix) }}"
+    );
+}
+
+test "EXPR011: a property missing from every cell of an object axis is reported" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        platform:
+        \\          - target: x86_64-unknown-linux-gnu
+        \\            arch: x64
+        \\    steps:
+        \\      - run: echo "${{ matrix.platform.image }}"
+    , "\"image\" is not defined in the values of matrix key \"platform\"");
+}
+
+test "EXPR011: a misspelled property is reported with a suggestion" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        platform:
+        \\          - target: x86_64-unknown-linux-gnu
+        \\            arch: x64
+        \\    steps:
+        \\      - run: echo "${{ matrix.platform.ach }}"
+    , "\"ach\" is not defined in the values of matrix key \"platform\". did you mean \"arch\"?");
+}
+
+test "EXPR011: object-axis properties are the union over the cells and include" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        platform:
+        \\          - target: x86_64-unknown-linux-gnu
+        \\            arch: x64
+        \\          - target: aarch64-apple-darwin
+        \\            sdk: macosx
+        \\        include:
+        \\          - platform:
+        \\              target: wasm32
+        \\              image: scratch
+        \\    steps:
+        \\      - run: echo "${{ matrix.platform.arch }} ${{ matrix.platform.sdk }} ${{ matrix.platform.image }}"
+    );
+}
+
+test "EXPR011: a scalar axis leaves its properties unchecked" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\    steps:
+        \\      - run: echo "${{ matrix.os.anything }}"
+    );
+}
+
+test "EXPR011: an axis with a cell built by an expression stays silent" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        platform:
+        \\          - target: x86_64-unknown-linux-gnu
+        \\            arch: x64
+        \\          - ${{ fromJSON(vars.EXTRA_PLATFORM) }}
+        \\    steps:
+        \\      - run: echo "${{ matrix.platform.image }}"
+    );
+}
+
+test "EXPR011: a nested property one level deeper is not resolved" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        platform:
+        \\          - toolchain:
+        \\              rust: stable
+        \\    steps:
+        \\      - run: echo "${{ matrix.platform.toolchain.cargo }}"
     );
 }
 
