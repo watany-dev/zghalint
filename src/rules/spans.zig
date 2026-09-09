@@ -75,18 +75,26 @@ pub const Anchor = struct {
         const start_off = @min(offset, value.len);
         const end_off = @min(start_off + len, value.len);
 
+        const content_start_byte = contentStartByte(token, self.style, value);
+        // An alias (`*name`) carries the anchored node's text under the alias's
+        // own two-byte token, so an offset into the value is not an offset into
+        // the source. Report the token whole rather than a position past the end
+        // of the file (fuzz). A token with no extent records no such claim, so
+        // there is nothing to contradict and the offsets stand.
+        const token_has_extent = token.end_byte > token.start_byte;
+        if (token_has_extent and content_start_byte + value.len > token.end_byte) return token;
+
         const origin = contentOrigin(token, self.style);
         const start = advance(origin.line, origin.col, value[0..start_off]);
         const end = advance(start.line, start.col, value[start_off..end_off]);
 
-        const content_start = contentStartByte(token, self.style, value);
         return .{
             .start_line = start.line,
             .start_col = start.col,
             .end_line = end.line,
             .end_col = end.col,
-            .start_byte = content_start + start_off,
-            .end_byte = content_start + end_off,
+            .start_byte = content_start_byte + start_off,
+            .end_byte = content_start_byte + end_off,
         };
     }
 };
@@ -130,6 +138,24 @@ test "Anchor.at on a plain scalar offsets from the token column" {
     try std.testing.expectEqual(@as(u32, 16), s.start_col);
     try std.testing.expectEqual(@as(usize, 107), s.start_byte);
     try std.testing.expectEqual(@as(usize, 115), s.end_byte);
+}
+
+test "Anchor.at reports the whole token when the value does not fit it (fuzz)" {
+    // `*c` is two bytes of source carrying the anchored node's longer text, so
+    // an offset into the value would run past the end of the file.
+    const token = Span{
+        .start_line = 4,
+        .start_col = 6,
+        .end_line = 4,
+        .end_col = 8,
+        .start_byte = 33,
+        .end_byte = 35,
+    };
+    const a = Anchor.fromMeta(.{ .value_span = token, .style = .plain }, Span.point(1, 1, 0));
+    const s = a.at("${{a}}", 0, 6);
+    try std.testing.expectEqual(@as(usize, 33), s.start_byte);
+    try std.testing.expectEqual(@as(usize, 35), s.end_byte);
+    try std.testing.expectEqual(@as(u32, 8), s.end_col);
 }
 
 test "Anchor.at on a quoted scalar skips the opening quote" {
