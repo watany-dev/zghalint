@@ -42,6 +42,11 @@ still be renumbered before 1.0.
 
 ### Fixed
 
+- A workflow whose `on:` block repeats an event no longer writes past the taint
+  table's fixed buffer. YAML duplicate keys parse, so three
+  `workflow_dispatch:` keys appended the same contexts three times: a panic in
+  Debug and an out-of-bounds store, up to SIGSEGV, in ReleaseFast (#366). The
+  table now holds each context once. SYN002 still reports the duplicate keys.
 - SYN009 no longer applies `--fix` when the suggestion is `pull_request_target`
   or `workflow_run`. Those triggers run with the default branch's secrets, so
   turning a name that never fired into one of them requires `--fix-unsafe`
