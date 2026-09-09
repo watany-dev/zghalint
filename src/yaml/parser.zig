@@ -841,17 +841,61 @@ pub const Parser = struct {
         const key_indent = key_col - 1;
 
         var end = end_byte;
+        var quote: ?u8 = null;
         while (end < self.source.len) {
             const line_end = self.scanLineEndInclusive(end);
             var text = end;
             while (text < line_end and (self.source[text] == ' ' or self.source[text] == '\t')) text += 1;
-            // A blank line is already a safe boundary, so stop rather than
-            // guess whether the block resumes after it.
-            if (text >= line_end or self.source[text] == '\n' or self.source[text] == '\r') return end;
-            if (text - end <= key_indent) return end;
+            // Indentation says nothing while a quoted scalar is still open:
+            // its closing line may sit at column 0 and still belong to the
+            // block. Stopping there put an insertion inside the quotes (fuzz).
+            if (quote == null) {
+                // A blank line is already a safe boundary, so stop rather than
+                // guess whether the block resumes after it.
+                if (text >= line_end or self.source[text] == '\n' or self.source[text] == '\r') return end;
+                if (text - end <= key_indent) return end;
+            }
+            quote = scanQuoteState(self.source[end..line_end], quote);
             end = line_end;
         }
-        return end;
+        // A quote that never closes leaves no boundary to trust.
+        return if (quote == null) end else end_byte;
+    }
+
+    /// Whether a quoted scalar is still open at the end of `line`, given the
+    /// state at its start. A quote opens a scalar only at a token start, so an
+    /// apostrophe inside a plain scalar (`don't`) is just a character.
+    fn scanQuoteState(line: []const u8, state: ?u8) ?u8 {
+        var open = state;
+        var i: usize = 0;
+        while (i < line.len) : (i += 1) {
+            const c = line[i];
+            if (open) |q| {
+                if (c != q) continue;
+                // `''` is one escaped quote inside a single-quoted scalar; a
+                // double-quoted one uses a backslash instead.
+                if (q == '\'' and i + 1 < line.len and line[i + 1] == '\'') {
+                    i += 1;
+                    continue;
+                }
+                if (q == '"') {
+                    var backslashes: usize = 0;
+                    while (backslashes < i and line[i - 1 - backslashes] == '\\') backslashes += 1;
+                    if (backslashes % 2 == 1) continue;
+                }
+                open = null;
+                continue;
+            }
+            const prev: u8 = if (i == 0) ' ' else line[i - 1];
+            // A comment holds no scalar, so nothing in it opens one.
+            if (c == '#' and (i == 0 or prev == ' ' or prev == '\t')) break;
+            if (c != '\'' and c != '"') continue;
+            switch (prev) {
+                ' ', '\t', ':', ',', '[', '{', '-' => open = c,
+                else => {},
+            }
+        }
+        return open;
     }
 
     /// The last byte the node's text occupies, trailing newline included.
@@ -1392,6 +1436,26 @@ test "an entry sharing its line with an outer key has no removable span (fuzz)" 
     try std.testing.expect(strategy.value.mapping.entries[0].full_span == null);
     // A key that does start its own line keeps its span.
     try std.testing.expect(doc.mapping.entries[0].full_span != null);
+}
+
+test "an entry's tail runs to the line closing a quoted scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The closing `'` sits at column 0 and still belongs to `on:`; an
+    // insertion stopping before it lands inside the quotes.
+    const source = "on:\n e: o\n  '\n'\njobs:\n";
+    var parser = Parser.init(alloc, source);
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 16), doc.mapping.entries[0].full_span.?.end_byte);
+
+    // An apostrophe inside a plain scalar opens nothing, so the tail still
+    // stops at the sibling key.
+    const plain = "on:\n e: don't\njobs:\n";
+    var plain_parser = Parser.init(alloc, plain);
+    const plain_doc = try plain_parser.parse();
+    try std.testing.expectEqual(@as(usize, 14), plain_doc.mapping.entries[0].full_span.?.end_byte);
 }
 
 test "a flow collection entry ends past its closing bracket (fuzz)" {
