@@ -209,12 +209,23 @@ EXPR010-EXPR016 や SEC002 のパス解決には影響しない。型検査側�
 
 これでベンチの FN は 0 件になり、recall は 100% になった。
 
-#### G10 (#281). `needs:` の未定義ジョブ / 循環依存を検出しない — 要ルール追加
+#### G10 (#281). `needs:` の未定義ジョブ / 循環依存を検出しない — 対応済み
 
 `bench/cases/f-syntax-schema/needs-unknown-job.yml` と `needs-cycle.yml`。
 存在しないジョブ名を `needs:` に書いても、ジョブ依存が閉路を作っても zghalint は
-無反応。どちらも実行時に必ず失敗する構成で、actionlint は `job-needs` として
+無反応だった。どちらも実行時に必ず失敗する構成で、actionlint は `job-needs` として
 両方を報告する。
+
+`src/rules/needs_graph.zig` に 2 ルールを追加した。SYN021 は `needs:` の各項目を
+ジョブ名の集合と照合し、編集距離 2 以内の候補が 1 つあれば `--fix` のリネームを
+付ける。SYN022 はジョブグラフを深さ優先で一度だけ走査し、戻り辺 1 本につき 1 件、
+閉路が戻ってくるジョブのキーで報告する (自己参照も閉路)。どちらもパース済みの
+`Workflow` だけで完結するので追加の I/O は無い。
+
+ID 命名規則に反する項目 (`1-build`) は SYN006 が既に報告するため SYN021 では
+飛ばし、同じ span に error を二重に出さない。指摘位置は問題の名前が書かれている
+`needs:` の項目そのものにしたので、ジョブのキー行を指す actionlint に合わせて
+いたケースの `@<line>` を 13 → 14 に直した。
 
 #### G11 (#282). UTF-8 BOM 付きのファイルを解析できない — 対応済み
 
@@ -510,6 +521,29 @@ fix エンジンは、同一マッピングでリネームが作るキーと挿�
 まとめ、両者で同じ判定にした。回帰ケースは
 `bench/cases/b-trigger-checkout/automerge-dependabot.yml`。
 
+#### G26 (#358). BP003 が第三者アクションの古い major を見逃す — 対応済み
+
+```yaml
+- uses: softprops/action-gh-release@v1   # 埋め込み表が知る現行 major は 2
+```
+
+BP003 は古いアクションを 2 経路で見ていた。埋め込みメタデータ表
+（`src/rules/data/popular_actions.zig`）の `runs.using` が廃止済みなら `error`、
+手書きのバージョン表（`deprecated_actions`）に載っていれば `warning` である。
+表は読んだ major を全て持つが、第三者アクションについては現行 major しか読んで
+いないため、古い major の参照はどのエントリにも一致せず `using` が分からない。
+手書きの表は `actions/*` の 8 件だけなので、そちらにも掛からない。actionlint /
+zizmor も指摘しないので parity gap ではないが、2 経路の隙間に落ちる構造上の穴で
+ある。
+
+第 3 の判定として「参照している major < 表が知る最新 major」を `info` で報告する
+ようにした（`popular_actions.latestMajor()`）。データは今の表のままでよい。
+`deprecated_actions` が名指すアクションは「まだ許容する最も古い major」を人が
+決めているので対象外にし、autofix は major を上げる破壊的変更なので `unsafe`
+（`--fix-unsafe` 側）に置いた。判断の詳細は
+`docs/adr/0015-bp003-behind-current-major.md`。回帰ケースは
+`tests/fixtures/e2e/bp003-behind-current-major.yml`。
+
 #### G29. `actions/create-github-app-token` が installation の全権限を継承する — 要ルール追加
 
 `bench/cases/d-permissions-secrets/github-app-token-unscoped.yml`。
@@ -527,7 +561,7 @@ installation が持つ全スコープを継承する。zizmor は `github-app` �
 したところで 3 件出た。`permission-issues: write` のようにスコープを書いた
 呼び出しは zizmor も黙るので、入力の有無で切れる。
 
-#### G30 (#382). オブジェクト軸の未定義プロパティを EXPR011 が見ない — 要ルール改善
+#### G30 (#382). オブジェクト軸の未定義プロパティを EXPR011 が見ない — 対応済み
 
 `bench/cases/e-expression/matrix-object-property-undeclared.yml`。
 
@@ -550,6 +584,12 @@ EXPR011 は `matrix.<key>` の第 1 セグメントだけを軸名 / `include:` 
 実運用のワークフロー群を三者比較したところで、軸オブジェクトに無いキーを
 参照する `run:` / `with:` が複数ジョブで出た。セルによってキーが違う場合は
 和集合を宣言済みとみなし、値が式のセルはその軸では沈黙する。
+
+軸ごとにプロパティ名の集合を持たせ、`matrix.<axis>.<prop>` の第 2 セグメント
+まで照合するようにした。集合は軸の各セルと、同じ軸を足す `include:`
+エントリのマッピングキーの和集合。セルがマッピングでない (スカラー軸、
+`${{ }}` で作られるセル、式のキー) 軸は集合を数え上げられないので、その軸の
+プロパティは従来どおり見ない。3 セグメント目以降も見ない。
 
 #### G31 (#383). DEP003 が `$/` の自己参照 `uses:` を形式不正にする — 対応済み
 
@@ -954,7 +994,7 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
 - [x] G9 (#280): 関数呼び出しの結果へのプロパティ / インデックスアクセスを式パーサに
       解釈させる (EXPR009 の取りこぼしもこれで直る)
-- [ ] G10 (#281): `needs:` の未定義ジョブと循環依存を検出する
+- [x] G10 (#281): `needs:` の未定義ジョブと循環依存を検出する (SYN021 / SYN022)
 - [x] G11 (#282): UTF-8 BOM を読み飛ばす
 - [x] G12 (#283): `---` / `...` のドキュメントマーカーを受理する
 - [x] G13 (#284): 中身のないワークフローを診断として報告する (SYN020)
@@ -975,10 +1015,13 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
 - [x] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [x] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
+- [x] G26 (#358): BP003 が表の最新 major より古い major を `info` で報告する
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
 - [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する
-- [ ] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
+- [x] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
 - [x] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
 - [x] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める
 - [x] G33 (#386): SEC016 の対象に `on.push.tags` を含める
+- [x] G34 (#375): BP007 を `bash <(curl ...)` のプロセス置換にも反応させる
+- [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える

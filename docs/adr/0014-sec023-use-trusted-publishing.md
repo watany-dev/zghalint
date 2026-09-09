@@ -36,13 +36,19 @@ SEC001–SEC022 は使用済み。name は zizmor の ident と揃える。ベ�
 トークンが漏れて初めて被害が出る hardening 提案であり、ワークフロー自体は正しく
 動く。同じ「より安全な書き方がある」クラスの SEC019 / SEC007 と揃えて info とする。
 
-### D3. 対象は 3 つの形に限る
+### D3. 対象は次の形に限る
 
 | 対象 | 発火条件 |
 |---|---|
 | `pypa/gh-action-pypi-publish` | `with.password` が空でなく、`with.repository-url` が無いか `pypi.org` を指す |
 | `rubygems/release-gem` | `with.setup-trusted-publisher: false` |
 | `npm publish` を含む `run:` | 同じ step の `env.NODE_AUTH_TOKEN` が `${{ secrets.* }}` |
+| `cargo publish` を含む `run:` | 同じ step の `env.CARGO_REGISTRY_TOKEN` が `${{ secrets.* }}` |
+
+`cargo publish` の行は #375（ptuf のドッグフード）で後から足した。crates.io も
+trusted publishing を提供しており、CLI がトークンを受ける経路は npm と同じく
+環境変数 1 本なので、npm の判定を「プログラム名と環境変数名の組」に一般化して
+表に 1 行足すだけで済んだ。
 
 `repository-url` を見るのは、この action が社内インデックス（Artifactory /
 devpi など）へも push できるからである。trusted publishing に対応しているのは

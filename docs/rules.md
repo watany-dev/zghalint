@@ -20,7 +20,7 @@ zghalint includes **101 rules** across 11 categories to help you write secure, e
 ないため `--fix-unsafe` でのみ適用する。候補が定まらない場合は診断のみで、
 autofix は付かない。
 
-対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019、EXPR010–EXPR014、
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 
 ---
@@ -257,6 +257,7 @@ OIDC (trusted publishing) に対応したレジストリで、長命の API ト�
 | `pypa/gh-action-pypi-publish` | `with.password` が空でない（`with.repository-url` が PyPI / TestPyPI を指す場合のみ）|
 | `rubygems/release-gem` | `with.setup-trusted-publisher: false`（既定は trusted publishing）|
 | `npm publish` を含む `run:` | 同じ step の `env.NODE_AUTH_TOKEN` が `${{ secrets.* }}` |
+| `cargo publish` を含む `run:` | 同じ step の `env.CARGO_REGISTRY_TOKEN` が `${{ secrets.* }}` |
 
 いずれも「`id-token: write` を付けて trusted publishing に切り替える」ことを
 `fix_hint` で示す。自動修正は付けない — トークンの削除はレジストリ側の
@@ -266,10 +267,12 @@ publisher 設定を伴うため、ワークフローの書き換えだけでは�
 push できるが、trusted publishing に対応しているのは PyPI と TestPyPI なので、
 社内インデックス（Artifactory / devpi など）を指している場合は報告しない。
 
-npm は step 自身の `env:` だけを見る。ジョブやワークフローに束ねた
-`NODE_AUTH_TOKEN` は、どの step が publish するのかを静的に決められないため
-対象外。また `${{ steps.*.outputs.* }}` のように実行時に組み立てた値は、
-既に短命トークンである可能性があるので報告しない。
+`run:` の 2 形（npm / cargo）は step 自身の `env:` だけを見る。ジョブやワーク
+フローに束ねた `NODE_AUTH_TOKEN` / `CARGO_REGISTRY_TOKEN` は、どの step が
+publish するのかを静的に決められないため対象外。また
+`${{ steps.*.outputs.* }}` のように実行時に組み立てた値は、既に短命トークンで
+ある可能性があるので報告しない — crates.io の trusted publishing は
+まさにこの形（auth step が短命トークンを出力する）を取る。
 
 ## Supply Chain Security Rules (SC)
 
@@ -361,10 +364,10 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
 | BP002 | missing-step-name | info | `run:` step is missing a `name` field. `uses:`-only steps are skipped |
-| BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or an action declaring a retired `runs.using` runtime (error) |
+| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (error), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
-| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
+| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
 
 ### BP002 missing-step-name
@@ -373,7 +376,7 @@ Enforce workflow best practices for maintainability and reliability.
 action name, and requiring `name:` there is not the usual style. Unnamed
 `run:` steps are still reported, because the log label is the command text.
 
-### BP003 の 2 つの判定
+### BP003 の 3 つの判定
 
 - **バージョン表**: `actions/checkout` など置き換え先が判明しているアクションを
   固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
@@ -382,6 +385,13 @@ action name, and requiring `name:` there is not the usual style. Unnamed
   （`node12` / `node16`）なら `error` で報告する。ローカルアクション
   （`uses: ./{path}`）は `action.yml` を読み、リモートアクションは DEP005 の
   埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
+- **現行 major との比較**: 参照している major が、埋め込みメタデータが知る最新の
+  major より古ければ `info` で報告する（#358）。第三者アクションは現行 major しか
+  表に無いため、古い major は `using` が分からずランタイム判定に掛からない。この
+  判定はデータを増やさずにその穴を埋める。バージョン表が名指すアクション
+  （`actions/checkout` など）は表の方針が優先されるので対象外。autofix は major を
+  上げる破壊的変更なので `--fix-unsafe` 側に置く。設計は
+  `docs/adr/0015-bp003-behind-current-major.md`。
 
 両方が該当する場合はランタイム判定を優先する（廃止済みランタイムは警告で済む
 「古いだけのバージョン」と違って実行そのものが失敗するため）。autofix は失われ
@@ -391,8 +401,8 @@ action name, and requiring `name:` there is not the usual style. Unnamed
 付かない。
 
 固定リストに無いアクションでも、データセットに載っていれば廃止済みランタイムを
-検出できる（例: `actions/checkout@v2` は `node12`）。データセットに無いアクション
-は判定しない。
+検出できる（例: `actions/checkout@v2` は `node12`）。載っていれば古い major の
+検出（3 つ目の判定）も効く。データセットに無いアクションは判定しない。
 
 ## Permissions Rules (PERM)
 
@@ -431,7 +441,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
 | EXPR009 | fromjson-literal | error | `fromJSON()` string literal argument must be valid JSON |
 | EXPR010 | undefined-step-reference | error | `steps.<id>` must name a step defined earlier in the same job, and only `outputs` / `conclusion` / `outcome` exist below it |
-| EXPR011 | matrix-context | error | `matrix.<key>` must name a key declared in the job's `strategy.matrix` (including keys added by `include:`), and a job without `strategy.matrix` has no `matrix` context |
+| EXPR011 | matrix-context | error | `matrix.<key>` must name a key declared in the job's `strategy.matrix` (including keys added by `include:`), and a job without `strategy.matrix` has no `matrix` context. When an axis takes mapping values, `matrix.<key>.<prop>` must name a property some cell carries |
 | EXPR012 | needs-context | error | `needs.<job>` references a job outside this job's `needs:`, an unknown property, or an output the referenced job does not declare |
 | EXPR013 | inputs-context | error | `inputs.<name>` must name an input declared by `workflow_dispatch.inputs` or `workflow_call.inputs`, and a workflow with neither trigger has no `inputs` context |
 | EXPR014 | secrets-context | error | `secrets.<name>` must name a secret declared under `on.workflow_call.secrets` (only checked when that section exists; `GITHUB_TOKEN` is always valid) |
@@ -603,6 +613,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis (`--fix` で重複を削除) |
 | SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
 | SYN020 | empty-workflow | error | ワークフローファイルに中身が無い（コメントと空白だけ、または空のマッピング） |
+| SYN021 | undefined-needs-job | error | `needs:` がこのワークフローに無いジョブ名を指している（`--fix` で綴りを修正） |
+| SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
 
 ### SYN001 unknown-key
 
@@ -1033,6 +1045,47 @@ quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
 
 中身のあるルート（シーケンス、あるいは `null` のような値を持つスカラー）は
 「空」ではなく型の誤りなので、このルールではなくパースエラーとして報告される。
+
+### SYN021 undefined-needs-job
+
+`needs:` に書いたジョブ名が `jobs:` に存在しない場合を報告する。GitHub は
+ワークフローの起動時にこれを拒否するため、実行される前に必ず失敗する。
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make
+  deploy:
+    # error[SYN021]: "buld" in "needs" is not a job in this workflow. did you mean "build"?
+    needs: [buld]
+```
+
+ジョブ名は大文字小文字を区別せずに照合する（ランナーの解決規則に合わせる）ため、
+`Build` を `build` と書いても指摘しない。編集距離 2 以内のジョブ名がただ 1 つある
+ときは `--fix` がその名前へ置き換える。
+
+`1-build` のような ID 命名規則に反する名前は SYN006 が報告するので、同じ場所に
+二重の error を出さないようこのルールでは飛ばす。`${{ }}` を含む値も同じ扱い。
+
+### SYN022 needs-cycle
+
+ジョブの依存グラフに閉路があると、その閉路のジョブはどれも開始条件を満たせない。
+自分自身を `needs:` に書いた場合も閉路として扱う。
+
+```yaml
+jobs:
+  # error[SYN022]: job "a" is in a dependency cycle: a -> b -> a
+  a:
+    needs: [b]
+  b:
+    needs: [a]
+```
+
+深さ優先探索で戻り辺を 1 本見つけるごとに 1 件報告する。閉路へ流れ込むだけの
+ジョブ（`entry: needs: [a]`）は閉路の一部ではないので報告しない。指摘の位置は
+閉路が戻ってくるジョブのキーで、メッセージには閉路の並びをそのまま載せる。
 
 ## Action Metadata Rules (ACT)
 
