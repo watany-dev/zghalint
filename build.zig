@@ -121,6 +121,25 @@ pub fn build(b: *std.Build) void {
     const fuzz_step = b.step("fuzz", "Run fuzz targets (add --fuzz for continuous fuzzing)");
     fuzz_step.dependOn(&run_fuzz_tests.step);
 
+    // Long fuzzing campaigns (100k+ inputs) run through a plain executable:
+    // `zig build fuzz --fuzz` is unusable on Zig 0.15.2, and the driver owns
+    // its own corpus, mutator and properties.
+    const fuzz_driver_mod = b.createModule(.{
+        .root_source_file = b.path("src/fuzz_driver.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    addRepoFiles(b, fuzz_driver_mod);
+    const fuzz_driver = b.addExecutable(.{
+        .name = "fuzz-driver",
+        .root_module = fuzz_driver_mod,
+    });
+    const run_fuzz_driver = b.addRunArtifact(fuzz_driver);
+    if (b.args) |args| run_fuzz_driver.addArgs(args);
+    const fuzz_driver_step = b.step("fuzz-driver", "Run the standalone fuzz driver (--iterations N --seed S)");
+    fuzz_driver_step.dependOn(&run_fuzz_driver.step);
+
     // The CLI test binary is measured too, so coverage covers argument
     // parsing, exit codes and `--fix` write-back, not just the library.
     const cov_exe_tests = b.addTest(.{
