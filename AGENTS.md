@@ -20,6 +20,23 @@ zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
 ```
 
+### ベンチ (actionlint / zizmor との三者比較)
+
+週次の `.github/workflows/bench.yml` が回すのと同じ 3 モード。外部ツールの
+導入は `.github/workflows/ci.yml` の `lint` ジョブを参照。
+
+```bash
+zig build                                            # 採点対象のバイナリ
+python3 scripts/bench.py --json /tmp/bench.json      # 採点行列
+python3 scripts/bench_gate.py --json /tmp/bench.json # baseline との比較 (回帰なら非ゼロ)
+python3 scripts/bench_gate.py --json /tmp/bench.json --update  # baseline を更新
+python3 scripts/bench.py --fix                       # autofix の交差検証
+zig build -Doptimize=ReleaseFast && python3 scripts/bench.py --perf  # 性能
+```
+
+形式とケースの足し方は `bench/README.md`、結果の扱いは
+`docs/design/external-linter-parity.md` §4.8。
+
 ### Prerequisites
 
 - Zig 0.15.2 or later（定義の真は `build.zig.zon` の `minimum_zig_version`。更新手順は `docs/maintenance.md`）
