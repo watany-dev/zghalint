@@ -364,14 +364,14 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "actionlint": ["matrix"],
     },
     #: `needs:` naming a job the workflow does not define, and a cycle in the
-    #: job graph. actionlint reports both; zghalint has no rule for either.
+    #: job graph. actionlint reports both under `job-needs`.
     "needs-unknown-job": {
-        "zghalint": None,
+        "zghalint": ["SYN021"],
         "zizmor": None,
         "actionlint": ["job-needs~does not exist"],
     },
     "needs-cycle": {
-        "zghalint": None,
+        "zghalint": ["SYN022"],
         "zizmor": None,
         "actionlint": ["job-needs~cyclic"],
     },

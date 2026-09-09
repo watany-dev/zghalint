@@ -76,6 +76,12 @@ still be renumbered before 1.0.
 
 ### Added
 
+- SYN021 (`undefined-needs-job`, error) and SYN022 (`needs-cycle`, error):
+  validate the job dependency graph (#281). SYN021 reports a `needs:` entry
+  naming no job in the workflow, with a `--fix` rename when a single job ID
+  sits within edit distance 2; SYN022 reports a cycle in that graph, a job
+  needing itself included. Both configurations fail the run before any step
+  executes, and neither needs network access.
 - `install.sh`: a `curl -fsSL .../install.sh | sh` installer. It resolves the
   platform, downloads the matching release archive, verifies it against the
   release's `SHA256SUMS`, and places the binary in `<prefix>/bin` (`/usr/local`

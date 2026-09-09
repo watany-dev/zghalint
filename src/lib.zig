@@ -80,6 +80,7 @@ test {
     _ = @import("rules/expr_catalog.zig");
     _ = @import("rules/expr_check.zig");
     _ = @import("rules/needs_context.zig");
+    _ = @import("rules/needs_graph.zig");
     _ = @import("rules/matrix_context.zig");
     _ = @import("rules/inputs_context.zig");
     _ = @import("rules/secrets_context.zig");

@@ -1,0 +1,47 @@
+# zghalint:expect SYN021@28 SYN022@32
+# zghalint:forbid SYN006 SYN008
+name: needs graph
+on: [push]
+concurrency: ci
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Build
+        run: echo build
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [build]
+    steps:
+      - name: Test
+        run: echo test
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [buld]
+    steps:
+      - name: Deploy
+        run: echo deploy
+  left:
+    name: Left
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [right]
+    steps:
+      - name: Left
+        run: echo left
+  right:
+    name: Right
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [left]
+    steps:
+      - name: Right
+        run: echo right

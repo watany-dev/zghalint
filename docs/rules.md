@@ -20,7 +20,7 @@ zghalint includes **92 rules** across 11 categories to help you write secure, ef
 ないため `--fix-unsafe` でのみ適用する。候補が定まらない場合は診断のみで、
 autofix は付かない。
 
-対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019、EXPR010–EXPR014、
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 
 ---
@@ -603,6 +603,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN018 | duplicate-matrix-value | warning | The same value appears more than once in a `strategy.matrix` axis (`--fix` で重複を削除) |
 | SYN019 | matrix-include-exclude | warning | `strategy.matrix` `include` / `exclude` names a key or value the matrix never produces |
 | SYN020 | empty-workflow | error | ワークフローファイルに中身が無い（コメントと空白だけ、または空のマッピング） |
+| SYN021 | undefined-needs-job | error | `needs:` がこのワークフローに無いジョブ名を指している（`--fix` で綴りを修正） |
+| SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
 
 ### SYN001 unknown-key
 
@@ -1033,6 +1035,47 @@ quoted scalars are strings, so `"3.10"` and `"3.1"` stay distinct.
 
 中身のあるルート（シーケンス、あるいは `null` のような値を持つスカラー）は
 「空」ではなく型の誤りなので、このルールではなくパースエラーとして報告される。
+
+### SYN021 undefined-needs-job
+
+`needs:` に書いたジョブ名が `jobs:` に存在しない場合を報告する。GitHub は
+ワークフローの起動時にこれを拒否するため、実行される前に必ず失敗する。
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: make
+  deploy:
+    # error[SYN021]: "buld" in "needs" is not a job in this workflow. did you mean "build"?
+    needs: [buld]
+```
+
+ジョブ名は大文字小文字を区別せずに照合する（ランナーの解決規則に合わせる）ため、
+`Build` を `build` と書いても指摘しない。編集距離 2 以内のジョブ名がただ 1 つある
+ときは `--fix` がその名前へ置き換える。
+
+`1-build` のような ID 命名規則に反する名前は SYN006 が報告するので、同じ場所に
+二重の error を出さないようこのルールでは飛ばす。`${{ }}` を含む値も同じ扱い。
+
+### SYN022 needs-cycle
+
+ジョブの依存グラフに閉路があると、その閉路のジョブはどれも開始条件を満たせない。
+自分自身を `needs:` に書いた場合も閉路として扱う。
+
+```yaml
+jobs:
+  # error[SYN022]: job "a" is in a dependency cycle: a -> b -> a
+  a:
+    needs: [b]
+  b:
+    needs: [a]
+```
+
+深さ優先探索で戻り辺を 1 本見つけるごとに 1 件報告する。閉路へ流れ込むだけの
+ジョブ（`entry: needs: [a]`）は閉路の一部ではないので報告しない。指摘の位置は
+閉路が戻ってくるジョブのキーで、メッセージには閉路の並びをそのまま載せる。
 
 ## Action Metadata Rules (ACT)
 
