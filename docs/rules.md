@@ -360,7 +360,7 @@ Detect CI performance issues and resource waste.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。SEC016 の対象ジョブ（リリース / デプロイ）は SEC016 と逆向きの助言になるため対象外 |
+| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただしリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は SEC016 と逆向きの助言になるため指摘しない |
 | PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job (`--fix-unsafe` で 2 つ目のステップを削除) |
 | PERF003 | fail-fast-disabled | warning | Strategy has `fail-fast` disabled, wasting CI resources on failures |
 
