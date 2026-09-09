@@ -1,6 +1,9 @@
-# zghalint:expect SYN003@7 SYN003@8 SYN003@13 SYN003@14 BP002@15
+# zghalint:expect SYN003 BP002@18
+# zghalint:forbid SEC007 BP005 PERM002
 # #364: an empty `permissions:` / `concurrency:` is a diagnostic, not a parse
-# failure that swallows every other finding in the file.
+# failure that swallows every other finding in the file. The sections are
+# written, so the rules that insert a missing one stay quiet instead of
+# producing a duplicate key.
 name: empty sections
 on: push
 permissions:
@@ -13,3 +16,5 @@ jobs:
     concurrency:
     steps:
       - run: echo ok
+      - name: Third-party action
+        uses: someorg/some-action@0000000000000000000000000000000000000000 # v1

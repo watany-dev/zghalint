@@ -267,6 +267,7 @@ fn buildJobPermissionsFix(list: *DiagnosticList, job: *const Job) ?Fix {
 
 fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.permissions != null) return;
+    if (workflow_types.hasEmptySection(job.empty_sections, "permissions")) return;
 
     for (job.steps) |*step| {
         if (step.uses) |action_ref| {

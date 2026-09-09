@@ -833,6 +833,7 @@ fn makeMissingPermissionsFix(wf: *const Workflow, list: *DiagnosticList) ?Fix {
 }
 
 fn checkMissingPermissions(wf: *const Workflow, list: *DiagnosticList) void {
+    if (workflow_types.hasEmptySection(wf.empty_sections, "permissions")) return;
     if (wf.permissions == null) {
         list.append(.{
             .rule_id = "SEC007",

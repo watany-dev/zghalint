@@ -9,6 +9,16 @@ pub const EmptySection = struct {
     span: yaml_types.Span,
 };
 
+/// A section that is present but empty is still written in the file, so the
+/// rules that insert a missing section must stay quiet rather than add a
+/// second key of the same name (#364).
+pub fn hasEmptySection(sections: []const EmptySection, name: []const u8) bool {
+    for (sections) |section| {
+        if (std.mem.eql(u8, section.name, name)) return true;
+    }
+    return false;
+}
+
 pub const StringMap = std.StringArrayHashMap([]const u8);
 pub const ScalarValueMetaMap = std.StringArrayHashMap(ScalarValueMeta);
 
