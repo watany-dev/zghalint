@@ -780,9 +780,28 @@ pub const Parser = struct {
     /// Where an entry's text stops, trailing newline included. This is the
     /// entry's extent alone: whether the entry starts its own line, and so
     /// whether it can be removed as one, is `blockEntryFullSpan`'s question.
+    /// Whether a quoted scalar carries its closing quote. A plain or block
+    /// scalar has none to carry, so it is trivially closed.
+    fn quotedScalarIsClosed(self: *Parser, scalar: Scalar) bool {
+        const quote: u8 = switch (scalar.style) {
+            .single_quoted => '\'',
+            .double_quoted => '"',
+            else => return true,
+        };
+        const end = scalar.span.end_byte;
+        // The span holds both quotes, so anything shorter cannot hold two.
+        if (end > self.source.len or end < scalar.span.start_byte + 2) return false;
+        return self.source[end - 1] == quote;
+    }
+
     fn entryEndByteInclusive(self: *Parser, key: Scalar, value: Node) ?usize {
         if (value == .scalar) {
             const scalar = value.scalar;
+            // A quoted scalar that never closes runs to the end of the file, so
+            // there is no boundary after it: text appended there becomes more
+            // quoted content, and `--fix` appended the same key every round
+            // (fuzz).
+            if (!self.quotedScalarIsClosed(scalar)) return null;
             // A block scalar that took content ends at the start of the line
             // that closes it, trailing newline included. Scanning on to the
             // next '\n' from there would swallow the next sibling key line.
@@ -1436,6 +1455,25 @@ test "an entry sharing its line with an outer key has no removable span (fuzz)" 
     try std.testing.expect(strategy.value.mapping.entries[0].full_span == null);
     // A key that does start its own line keeps its span.
     try std.testing.expect(doc.mapping.entries[0].full_span != null);
+}
+
+test "an entry whose quoted scalar never closes has no span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The scalar runs to the end of the file, so an insertion anchored after it
+    // lands inside the quotes and never parses as a key.
+    const source = "jobs:\non:\n \"\n";
+    var parser = Parser.init(alloc, source);
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[1].full_span == null);
+
+    // The same scalar, closed, keeps its span.
+    const closed = "jobs:\non: \"x\"\n";
+    var closed_parser = Parser.init(alloc, closed);
+    const closed_doc = try closed_parser.parse();
+    try std.testing.expectEqual(@as(usize, 14), closed_doc.mapping.entries[1].full_span.?.end_byte);
 }
 
 test "an entry's tail runs to the line closing a quoted scalar (fuzz)" {
