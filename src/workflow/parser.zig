@@ -1456,10 +1456,14 @@ fn parseConcurrency(ctx: *ParseContext, node: Node) ParseError!types.Concurrency
 }
 
 fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
+    // A `strategy:` holding a scalar is a type error SYN004 reports, not a reason
+    // to fail the whole workflow parse: removing `fail-fast` left the junk line
+    // below it as the section's value, so a file that linted a moment before
+    // stopped parsing (fuzz).
+    if (!type_validation.checkMapping(node, "strategy", ctx.type_mismatches, ctx.allocator)) {
+        return types.Strategy{};
+    }
+    const m = node.mapping;
 
     var strategy = types.Strategy{ .entry_count = m.entries.len };
     for (m.entries) |entry| {
@@ -2772,6 +2776,25 @@ test "a credentials: holding a scalar does not fail the parse (fuzz)" {
     try testing.expect(wf.jobs[0].container.?.credentials == null);
     try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
     try testing.expectEqualStrings("credentials", wf.type_mismatches[0].field);
+}
+
+test "a strategy: holding a scalar does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Removing `fail-fast` under `--fix-unsafe` left the junk line below it as
+    // the section's value. Failing the parse there made the file unlintable
+    // after a pass that had linted it fine.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n b:\n  strategy: 2\n  x:\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].strategy == null or wf.jobs[0].strategy.?.entry_count == 0);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("strategy", wf.type_mismatches[0].field);
 }
 
 test "parseJob with container credentials" {
