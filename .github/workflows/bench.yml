@@ -1,0 +1,212 @@
+name: Bench
+
+# PR ごとには回さない。外部ツール 2 本の導入と 100 件超のケース実行で数分
+# かかる一方、見たいのは「週をまたいだスコアの動き」だから。手元で確かめたい
+# ときは workflow_dispatch で回す。
+on:
+  schedule:
+    # 毎週月曜 04:17 UTC。分をずらすのは毎時 0 分の混雑を避けるため。
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 週次実行と手動実行が重なっても、走っている計測は止めない (性能ジョブの
+# 数字が途中で切れるのを避ける)。
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  score:
+    name: Score (zghalint vs actionlint / zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # version を省略すると build.zig.zon の minimum_zig_version が使われる。
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: Build
+        run: zig build
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/lint-requirements.txt
+
+      # 版は ci.yml の lint ジョブと同じピン留めにする。ここだけ新しい版に
+      # なると、スコアの増減がツール更新由来なのか zghalint の変更由来なのか
+      # 区別できなくなる。版を上げるときは両方を同時に動かし、差分を
+      # docs/design/external-linter-parity.md に記録すること。
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+        run: |
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+
+      # zizmor の版は .github/lint-requirements.txt に固定してある。
+      - name: Install zizmor
+        run: pip install -r .github/lint-requirements.txt
+
+      # 採点自体は落とさない。回帰かどうかは baseline との比較で決める。
+      - name: Score the bench cases
+        id: score
+        run: |
+          set +e
+          python3 scripts/bench.py -o bench-matrix.md --json bench-scores.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Cross-check the autofix rewrites
+        id: fix
+        if: always()
+        run: |
+          set +e
+          python3 scripts/bench.py --fix -o bench-fix.md --json bench-fix.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      # baseline より recall が落ちた・FP が増えた・実行エラーが出たケースが
+      # あれば非ゼロ。新規ケースの FN は表に出すだけで落とさない。
+      - name: Compare against the baseline
+        id: gate
+        if: always() && steps.score.outputs.exit_code == '0'
+        run: |
+          set +e
+          python3 scripts/bench_gate.py --json bench-scores.json -o bench-gate.md
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Write the job summary
+        if: always()
+        run: |
+          for f in bench-gate.md bench-matrix.md bench-fix.md; do
+            if [ -f "$f" ]; then
+              cat "$f" >> "$GITHUB_STEP_SUMMARY"
+              printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload the bench reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-reports
+          path: |
+            bench-matrix.md
+            bench-scores.json
+            bench-fix.md
+            bench-fix.json
+            bench-gate.md
+          if-no-files-found: warn
+
+      # 採点そのものが動かなかった (終了コード 2)、baseline に対する回帰、
+      # autofix が新しい指摘を生んだ、のいずれかでジョブを失敗させる。
+      - name: Fail on a regression
+        if: always()
+        env:
+          SCORE: ${{ steps.score.outputs.exit_code }}
+          FIX: ${{ steps.fix.outputs.exit_code }}
+          GATE: ${{ steps.gate.outputs.exit_code }}
+        run: |
+          status=0
+          if [ "$SCORE" != "0" ]; then
+            echo "::error::scripts/bench.py exited with ${SCORE:-<not run>}"
+            status=1
+          fi
+          if [ "$FIX" != "0" ]; then
+            echo "::error::autofix cross-check exited with ${FIX:-<not run>}"
+            status=1
+          fi
+          if [ "$GATE" != "0" ]; then
+            echo "::error::bench gate exited with ${GATE:-<not run>}"
+            status=1
+          fi
+          exit "$status"
+
+  perf:
+    name: Performance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      # Debug ビルドの数字は比較に使えない (parity doc §4.7)。
+      - name: Build (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/lint-requirements.txt
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+        run: |
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+
+      - name: Install zizmor
+        run: pip install -r .github/lint-requirements.txt
+
+      # hyperfine が無ければ bench_perf.py は同じ回数の in-process ループに
+      # 落ちる。最大 RSS は GNU time でしか取れない (BSD time では列が `–`)。
+      - name: Install hyperfine and GNU time
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hyperfine time
+
+      # many-small シナリオ用。取得に失敗しても計測は続く (そのシナリオが
+      # 「計測できなかった」として理由つきで表に載る)。
+      - name: Fetch the workflow corpus
+        continue-on-error: true
+        run: python3 scripts/fetch-corpus.py
+
+      # 数字はランナーの相乗り具合で揺れるので、ここでは失敗させず記録する。
+      # 回帰の判定は score ジョブの baseline 比較が担う。
+      - name: Measure wall time and peak RSS
+        env:
+          # network シナリオはトークンが無いと計測せず理由だけ載る。
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/bench.py --perf -o bench-perf.md --json bench-perf.json
+
+      - name: Write the job summary
+        if: always()
+        run: |
+          if [ -f bench-perf.md ]; then
+            cat bench-perf.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the performance report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-perf
+          path: |
+            bench-perf.md
+            bench-perf.json
+          if-no-files-found: warn

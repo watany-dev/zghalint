@@ -729,6 +729,51 @@ user 3 ms + sys 3 ms。
 と `which shellcheck` を先に確かめる。`network` は今回も api.github.com に
 到達できず未計測。
 
+### 4.8 ベンチ結果からの更新手順
+
+`.github/workflows/bench.yml` が毎週月曜に `scripts/bench.py` を回す
+(`workflow_dispatch` で手動実行もできる)。結果の Markdown は job summary と
+`bench-reports` artifact に出る。手元で同じものを見るには次を実行する。
+
+```bash
+zig build
+python3 scripts/bench.py -o /tmp/bench.md --json /tmp/bench.json
+python3 scripts/bench_gate.py --json /tmp/bench.json
+python3 scripts/bench.py --fix
+```
+
+ワークフローが赤くなるのは 3 つの場合だけで、いずれも「以前より悪くなった」を
+意味する。
+
+| 失敗 | 意味 | 対応 |
+|---|---|---|
+| gate の「回帰」表に行がある | baseline より recall が落ちた / FP が増えた / 実行エラーが出た | 原因のコミットを特定して直す。仕様変更なら baseline を更新する |
+| autofix 交差検証の「問題」表に行がある | `--fix` が新しい指摘・非冪等・YAML 破壊・コメント欠落を生んだ | fix エンジンの issue にする |
+| `scripts/bench.py` が終了コード 2 | ケースヘッダの不備など、採点自体が回らない | ヘッダを直す |
+
+新規ケースの FN は失敗させない。gate の「新規ケース」表と行列の FN 表に載る
+ので、そこから次の手順で gap にする。
+
+1. FN を §4.1 の次の空き番号 (G26 以降) として起票し、この文書に節を足す。
+   表題は `#### G<n> (#<issue>). <要約> — 要ルール追加` の形にそろえる。
+2. ルールを実装したら見出しを「対応済み」に変え、§5 のチェックボックスを埋める。
+3. 対応するケースを `tests/fixtures/e2e/` へ昇格させる。bench のケースは
+   三者比較のために残す。
+4. `python3 scripts/bench_gate.py --json <報告> --update` で
+   `bench/baseline.json` を更新し、差分をコミットする。以後その検出は
+   落ちたら回帰として赤くなる。
+
+意図的な不一致は 2 か所に書き分ける。スコアから外すものはケースの
+`bench:skip <tool>[:<kind>] <理由>` (行列の skip 表に出る) と §4.3 を同期させ、
+`--fix` が意図して作る指摘はケースの
+`bench:fix-allow <flag> <tool>=<ID> <理由>` に書く。
+
+外部ツールの版は `ci.yml` の `lint` ジョブと `bench.yml` の両方に同じ
+ピン留めで書いてある (actionlint は SHA256、zizmor は
+`.github/lint-requirements.txt`)。版を上げるときは両方を同時に動かし、
+上げる前後で `scripts/bench.py` を回して増減を §4 に記録する。数字が動いても
+gate は zghalint の列しか見ないので赤くならない。
+
 ## 5. 次アクション
 
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する

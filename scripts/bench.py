@@ -522,6 +522,10 @@ class Case:
     #: (tool, kind or None for the whole case) → reason.
     skips: dict[tuple[str, str | None], str] = field(default_factory=dict)
     persona: str = "regular"
+    #: (flag, tool) → (accepted IDs, reason). Declares that `--fix` /
+    #: `--fix-unsafe` is meant to make that tool report those IDs, so the
+    #: autofix cross-check does not flag the increase every run.
+    fix_allows: dict[tuple[str, str], tuple[list[str], str]] = field(default_factory=dict)
     #: Set for a multi-file case: the directory staged as a miniature repo
     #: root, with `path` the entry file inside it. `None` for a lone file.
     tree: Path | None = None
@@ -551,7 +555,7 @@ class Case:
         return self.skips.get((tool, kind))
 
 
-DIRECTIVE_RE = re.compile(r"^#\s*bench:(expect|forbid|skip|persona)\s+(.*)$")
+DIRECTIVE_RE = re.compile(r"^#\s*bench:(expect|forbid|skip|persona|fix-allow)\s+(.*)$")
 TARGET_RE = re.compile(r"^(?P<kind>[A-Za-z0-9][A-Za-z0-9._-]*)(?:@(?P<line>\d+))?$")
 
 
@@ -605,8 +609,36 @@ def _apply_directive(case: Case, directive: str, rest: str) -> None:
             case.skips[(name, kind or None)] = reason
         return
 
+    if directive == "fix-allow":
+        _apply_fix_allow(case, rest)
+        return
+
     expectation = _parse_expectation(rest)
     (case.expects if directive == "expect" else case.forbids).append(expectation)
+
+
+FIX_FLAGS = ("--fix", "--fix-unsafe")
+
+
+def _apply_fix_allow(case: Case, rest: str) -> None:
+    """`bench:fix-allow <flag> <tool>=<IDs> <reason>`.
+
+    The rewrite is meant to produce those findings, so the cross-check lists
+    them as accepted instead of as a defect. The reason is required and lands
+    in the report, the same way `bench:skip` carries one.
+    """
+    fields = rest.split(None, 2)
+    if len(fields) < 3:
+        raise CaseError("`bench:fix-allow` needs a flag, a `<tool>=<IDs>` pair and a reason")
+    flag, pair, reason = fields[0], fields[1], fields[2].strip()
+    if flag not in FIX_FLAGS:
+        raise CaseError(f"unknown fix flag {flag!r} (expected one of {', '.join(FIX_FLAGS)})")
+    tool, sep, ids = pair.partition("=")
+    if not sep or tool not in TOOLS or not ids:
+        raise CaseError(f"malformed allowance {pair!r} (expected `<tool>=<IDs>`)")
+    if (flag, tool) in case.fix_allows:
+        raise CaseError(f"duplicate `bench:fix-allow` for {flag} {tool} (list the IDs in one line)")
+    case.fix_allows[(flag, tool)] = ([i for i in ids.split(",") if i], reason)
 
 
 def _parse_expectation(rest: str) -> Expectation:

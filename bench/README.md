@@ -110,6 +110,16 @@ skip されない。
 
 そのケースを採点する zizmor の persona。省略時は `regular`。
 
+### `bench:fix-allow <flag> <tool>=<IDs> <理由>`
+
+autofix 交差検証 (`--fix` モード) 専用。`<flag>` (`--fix` / `--fix-unsafe`) の
+書き換えがそのツールに `<IDs>` を出させるのは意図どおりだ、と宣言する。
+採点には影響せず、交差検証の「問題」から「許容した増加」表へ移る。理由は必須。
+
+```yaml
+# bench:fix-allow --fix-unsafe zizmor=dangerous-triggers 候補が特権トリガのときは --fix-unsafe でのみ置換する (G22)
+```
+
 ## 採点
 
 | 指標 | 定義 |
@@ -197,6 +207,48 @@ sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集�
 `--repo owner/repo` で manifest に無いリポジトリを対象に加える。取得は毎回
 `bench/corpus/` を作り直す。
 
+## baseline との比較 (`scripts/bench_gate.py`)
+
+`bench/baseline.json` は前回記録した zghalint のケース別スコア。gate は
+今回の `--json` 報告とそれを突き合わせ、**以前より悪くなったときだけ**
+非ゼロで終わる。
+
+```bash
+python3 scripts/bench.py --json /tmp/bench.json
+python3 scripts/bench_gate.py --json /tmp/bench.json          # 比較
+python3 scripts/bench_gate.py --json /tmp/bench.json -o gate.md
+python3 scripts/bench_gate.py --json /tmp/bench.json --update # baseline を更新する
+```
+
+| 判定 | 条件 |
+|---|---|
+| 回帰 (非ゼロ終了) | 検出数が baseline より減った / `bench:forbid` 違反が増えた / baseline に無かった実行エラーが出た |
+| 新規ケース (失敗させない) | baseline に無いケース。その FN は gap の候補として表に載る |
+| 注意 (失敗させない) | 位置一致の低下、期待値の増減、baseline から続く実行エラー |
+
+見るのは zghalint の列だけ。actionlint と zizmor の数字は各ツールの版と
+ランナーの shellcheck の有無で動くので、gate の対象にすると zghalint と
+無関係な赤が出る。ケースを足したりルールを直したりしたら `--update` で
+baseline を更新し、`bench/baseline.json` の差分を同じ PR に含める。
+`--update` は報告に載ったケースだけを書き換え、載っていないケースはそのまま
+残す (消えるのは `bench/cases/` から実体が無くなったものだけ) ので、
+`--case` で絞った報告から更新しても baseline は切り詰められない。
+
+## CI
+
+`.github/workflows/bench.yml` が毎週月曜と `workflow_dispatch` で回す。
+PR では回さない。
+
+- `score` ジョブ: 採点 → autofix 交差検証 → baseline 比較。回帰・autofix の
+  問題・採点の失敗のいずれかでジョブが赤くなる。Markdown は job summary と
+  `bench-reports` artifact に出る。
+- `perf` ジョブ: `--perf`。数字はランナーの相乗りで揺れるので失敗させず、
+  記録だけ残す。
+
+外部ツールの版は `ci.yml` の `lint` ジョブと同じピン留めにする (actionlint は
+SHA256、zizmor は `.github/lint-requirements.txt`)。上げ方と結果の扱いは
+`docs/design/external-linter-parity.md` §4.8。
+
 ## ケースを追加する
 
 1. カテゴリのディレクトリに `.yml` を置く (複数ファイルならディレクトリごと)。
@@ -204,7 +256,9 @@ sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集�
    数えるので、`@<line>` を書いた後にヘッダを増やすとずれる。
 3. `python3 scripts/bench.py --case '<category>/*'` で意図どおり採点されるか
    確認する。行番号は実際の出力に合わせる。
-4. `ruff check scripts/ && ruff format --check scripts/` を通す。
+4. `python3 scripts/bench_gate.py --json <報告> --update` で baseline に
+   加える。
+5. `ruff check scripts/ && ruff format --check scripts/` を通す。
 
 ベンチで確認した FN は parity doc の gap として個別 issue に起票し、
 ADR → ルール実装 → `tests/fixtures/e2e` への昇格、という流れに乗せる。
