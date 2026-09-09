@@ -881,6 +881,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
 
     var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
+    job.entry_count = m.entries.len;
     // `j: runs-on: x` puts the body on the job id's line, where an insertion
     // aligned to the body's column would land mid-line. A body that is not
     // indented past the id is no better: `e{up: :` followed by `d:` at the id's

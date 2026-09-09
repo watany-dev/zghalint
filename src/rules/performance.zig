@@ -357,12 +357,16 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
-fn buildFailFastDisabledFix(diag_list: *DiagnosticList, strategy: Strategy, entry_span: Span) ?Fix {
+fn buildFailFastDisabledFix(diag_list: *DiagnosticList, job: *const Job, strategy: Strategy, entry_span: Span) ?Fix {
     // `fail-fast` alone under `strategy:` means removing it empties the
     // section, and the next line then reads as the section's value. Take the
     // whole `strategy:` entry instead, which is what the removal leaves behind
     // anyway (fuzz).
     const sole_key = strategy.entry_count == 1;
+    // The same one level up: a job whose only key is `strategy:` has no body
+    // left once the section goes, so the parse the fix was meant to preserve
+    // fails instead (fuzz).
+    if (sole_key and job.entry_count == 1) return null;
     // Without a span that removes the section, there is no safe rewrite: the
     // inner delete on its own is what empties it.
     const removal_span = if (sole_key) (strategy.entry_span orelse return null) else entry_span;
@@ -396,7 +400,7 @@ fn checkFailFastDisabled(job: *const Job, diag_list: *DiagnosticList) void {
         .fix_hint = "Consider removing 'fail-fast: false' to cancel remaining jobs on first failure.",
     };
     if (strategy.fail_fast_entry_span) |entry_span| {
-        diag.fix = buildFailFastDisabledFix(diag_list, strategy, entry_span);
+        diag.fix = buildFailFastDisabledFix(diag_list, job, strategy, entry_span);
     }
 
     diag_list.append(diag) catch return;
@@ -1387,6 +1391,24 @@ test "PERF003: autofix removes a strategy section whose only key is fail-fast (f
     ,
         result.content,
     );
+}
+
+test "PERF003: no autofix when the strategy is the job's only key (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Removing the section would leave `b:` with no body at all, so the file
+    // stopped parsing where it had linted a moment before.
+    const source = "on: push\njobs:\n b:\n  strategy:\n   fail-fast: false\n";
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkFailFastDisabled(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.items.items.len);
+    try std.testing.expect(diags.get(0).fix == null);
 }
 
 test "PERF003: no autofix when the sole-key strategy has no removable span (fuzz)" {

@@ -656,6 +656,9 @@ pub const Service = struct {
 
 pub const Job = struct {
     id: []const u8,
+    /// How many keys sit under the job id. Removing the only one leaves the job
+    /// with no body, and the next line becomes its value (PERF003 autofix, fuzz).
+    entry_count: usize = 0,
     /// Span of the job key in the top-level `jobs:` mapping (for SYN005/SYN006 diagnostics).
     id_span: ?yaml_types.Span = null,
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
