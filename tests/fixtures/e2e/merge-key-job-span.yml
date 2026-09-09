@@ -1,0 +1,20 @@
+# A job built from a merge key must still report a forward span: the merged
+# entries live at the anchor, which sits earlier in the file, so taking the
+# mapping's range off the merged list made BP001 end before it began (#367).
+# zghalint:expect BP001@13
+# zghalint:expect BP001@18 BP002
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: merge-key-job-span
+jobs:
+  build:
+    <<: &common
+      runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+  test:
+    <<: *common
+    steps:
+      - run: echo test

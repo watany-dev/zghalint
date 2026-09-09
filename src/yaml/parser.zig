@@ -350,18 +350,23 @@ pub const Parser = struct {
         }
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
-        const owned_entries = try self.applyMergeKeys(parsed_entries);
-        const span = if (owned_entries.len > 0)
+        // The span is taken before merging. `applyMergeKeys` appends entries
+        // whose text lives at the merge source, which sits anywhere in the file
+        // -- reading the range off the merged list made a mapping written after
+        // its anchor end before it began (#367). The entries parsed here are in
+        // source order, so the first and last of them bound the mapping.
+        const span = if (parsed_entries.len > 0)
             Span{
-                .start_line = owned_entries[0].key.span.start_line,
-                .start_col = owned_entries[0].key.span.start_col,
-                .end_line = owned_entries[owned_entries.len - 1].span.end_line,
-                .end_col = owned_entries[owned_entries.len - 1].span.end_col,
-                .start_byte = owned_entries[0].key.span.start_byte,
-                .end_byte = owned_entries[owned_entries.len - 1].span.end_byte,
+                .start_line = parsed_entries[0].key.span.start_line,
+                .start_col = parsed_entries[0].key.span.start_col,
+                .end_line = parsed_entries[parsed_entries.len - 1].span.end_line,
+                .end_col = parsed_entries[parsed_entries.len - 1].span.end_col,
+                .start_byte = parsed_entries[0].key.span.start_byte,
+                .end_byte = parsed_entries[parsed_entries.len - 1].span.end_byte,
             }
         else
             self.spanFromToken(first_key_token);
+        const owned_entries = try self.applyMergeKeys(parsed_entries);
 
         return Node{ .mapping = .{ .entries = owned_entries, .span = span } };
     }
@@ -698,21 +703,44 @@ pub const Parser = struct {
         // value's span may point at a far-away token (the next sibling), so we
         // anchor on `key.span.end_byte` instead.
         const key_line_end = self.scanLineEndInclusive(key.span.end_byte);
-        const end_byte = switch (value) {
+        const nested = switch (value) {
             .scalar => unreachable,
             .null_value => key_line_end,
-            .mapping => |m| if (m.entries.len == 0) key_line_end else blk: {
+            .mapping => |m| if (m.entries.len == 0) key_line_end else (self.nodeEndByteInclusive(value) orelse return null),
+            .sequence => |seq| if (seq.items.len == 0) key_line_end else (self.nodeEndByteInclusive(value) orelse return null),
+        };
+
+        // A merge key or an alias puts an entry's text elsewhere in the file,
+        // so the nested end can land before the key. The entry still owns at
+        // least its own line.
+        return keyLineSpan(key, line_start, @max(key_line_end, nested));
+    }
+
+    /// The last byte the node's text occupies, trailing newline included.
+    /// Nested values are followed to the end: a sequence whose last item is a
+    /// multi-line mapping ends where that mapping's last value ends, not where
+    /// its last key sits (#368).
+    fn nodeEndByteInclusive(self: *Parser, node: Node) ?usize {
+        return switch (node) {
+            .mapping => |m| if (m.entries.len == 0)
+                self.scanLineEndInclusive(m.span.end_byte)
+            else blk: {
                 const last = m.entries[m.entries.len - 1];
                 const last_full = self.blockEntryFullSpan(last.key, last.value) orelse return null;
                 break :blk last_full.end_byte;
             },
             .sequence => |seq| if (seq.items.len == 0)
-                key_line_end
+                self.scanLineEndInclusive(seq.span.end_byte)
             else
-                self.scanLineEndInclusive(seq.items[seq.items.len - 1].getSpan().end_byte),
+                self.nodeEndByteInclusive(seq.items[seq.items.len - 1]),
+            // A block scalar's span already ends at the start of the line that
+            // closes it; scanning on would swallow the next sibling.
+            .scalar => |sc| if (sc.style == .literal or sc.style == .folded)
+                sc.span.end_byte
+            else
+                self.scanLineEndInclusive(sc.span.end_byte),
+            else => self.scanLineEndInclusive(node.getSpan().end_byte),
         };
-
-        return keyLineSpan(key, line_start, end_byte);
     }
 
     /// The line / column pair describes the key line only; the byte range is
@@ -1760,4 +1788,53 @@ test "flow sequence defining an anchor carries no item_deletes" {
     const seq = node.mapping.entries[0].value.sequence;
 
     try std.testing.expectEqual(@as(usize, 0), seq.item_deletes.len);
+}
+
+test "merge key leaves the mapping span covering its own text" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\anchor: &common
+        \\  runs-on: ubuntu-latest
+        \\job:
+        \\  <<: *common
+        \\  steps: []
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const job = node.mapping.entries[1].value.mapping;
+
+    try std.testing.expect(job.span.start_byte <= job.span.end_byte);
+    try std.testing.expectEqual(@as(u32, 4), job.span.start_line);
+    try std.testing.expectEqual(@as(u32, 5), job.span.end_line);
+}
+
+test "full_span of a sequence covers the nested value of its last item" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\on:
+        \\  schedule:
+        \\    - cron: "0 0 * * *"
+        \\      extra:
+        \\        - a
+        \\        - b
+        \\jobs: {}
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    const on_entry = node.mapping.entries[0];
+    const full = on_entry.full_span orelse return error.TestExpectedNonNull;
+
+    try std.testing.expectEqualStrings(
+        \\on:
+        \\  schedule:
+        \\    - cron: "0 0 * * *"
+        \\      extra:
+        \\        - a
+        \\        - b
+        \\
+    , source[full.start_byte..full.end_byte]);
 }
