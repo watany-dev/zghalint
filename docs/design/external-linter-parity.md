@@ -88,7 +88,17 @@ SEC016 の現行実装 (`src/rules/security.zig`) は
 しか見ていない。`mlugg/setup-zig`、`astral-sh/setup-uv` のように
 **入力を書かなくても既定でキャッシュを有効にする** action がリリース系
 ワークフローに現れると検出できない。既知の「既定でキャッシュする action」
-リストを SEC016 に持たせるのが対応方針。
+リストを SEC016 に持たせるのが対応方針。入力名は action ごとに違い、
+`cache:` だけではなく `enable-cache` (`astral-sh/setup-uv`) や
+`package-manager-cache` (`actions/setup-node`) や `use-cache`
+(`mlugg/setup-zig`) がある。
+
+再現ケースは `bench/cases/h-practices/setup-uv-default-cache-in-release.yml`。
+`on: release` とジョブ名 `publish` で `job_at_risk` は立つが、`setup-uv` に
+`cache:` が無いので SEC016 は沈黙する。zizmor は `cache-poisoning` を出す。
+実運用のワークフロー群を三者比較したところ、同じ形 (setup-uv の
+`enable-cache` 省略、setup-node の `package-manager-cache` 省略) が
+publish ジョブで複数出た。G33 の tag-push 判定とは別経路。
 
 #### G2. `action.yml` (composite action) を解析できない — 対応済み
 
@@ -576,6 +586,31 @@ error を出す。actionlint 1.7.7 も未知とするが、指摘は誤り。`ma
 は `macos-15` の接尾辞として受理される一方、`ubuntu-slim` はどの現行ラベルの
 接尾辞にもならない。表を足すときは現行の公式ラベル一覧と突き合わせる。
 
+#### G33 (#386). SEC016 が tag push のリリースを対象にしない — 要ルール改善
+
+`bench/cases/h-practices/cache-on-tag-push.yml`。
+
+```yaml
+on:
+  push:
+    tags:
+      - "v*"
+jobs:
+  build:
+    steps:
+      - uses: actions/cache@...
+```
+
+SEC016 の対象判定は `on: release` か、ジョブ id / 表示名に `deploy` /
+`release` / `publish` / `prod` が含まれることだけである。タグを push して
+成果物を出す形はどちらにも落ちず、明示的な `actions/cache` でも沈黙する。
+zizmor は tag-push を公開ワークフローとして `cache-poisoning` を出す。
+
+実運用のワークフロー群を三者比較したところ、タグ発火のリリースでジョブ名が
+`build` 系のままキャッシュしている形が出た。G1 (既定でキャッシュする
+setup action) を直しても、この判定は残る。`on: push` のブランチだけ
+(タグ無し) は対象外のままにする。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -611,6 +646,17 @@ error を出す。actionlint 1.7.7 も未知とするが、指摘は誤り。`ma
   採用しない。前者は GitHub UI の表示の話で、後者は公式ドキュメントが
   `./` を正規のローカル参照として載せており、zghalint が DEP004 で見ている
   のもその形である。
+- zizmor の `superfluous-actions` (`softprops/action-gh-release` を `gh release`
+  の `run:` に書き換えろ) は informational で、第三者アクションの好みの話
+  なので採用しない。
+- zizmor の `dangerous-triggers` はトリガ自体 (`pull_request_target` /
+  `workflow_run`) を指し、zghalint は危険な checkout だけを指す。checkout の
+  無い CLA アシスタントや、`workflow_run` で SHA を明示する後段は意図した差
+  (§4.6 と同じ)。
+- `jobs.<id>.environment.deployment` (`false` でデプロイ記録を作らず
+  environment の secrets だけ使う) は 2026-03 の正規構文。actionlint 1.7.7 は
+  `name` / `url` 以外を未知キーとする。zghalint は environment の入れ子キーを
+  検査しないので沈黙しており、指摘は誤りなので A に数えない。
 
 ### 4.4 ルール間の相互作用メモ
 
@@ -902,7 +948,8 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 ## 5. 次アクション
 
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
-      (PERF001 が持っている知識を共有する)
+      (PERF001 が持っている知識を共有する。入力名は `cache` /
+      `enable-cache` / `package-manager-cache` / `use-cache`)
 - [x] G2: composite action (`action.yml`) の解析サポート
 - [x] §4.4: PERF001 と SEC016 の適用条件の整合を確認する
 - [x] G9 (#280): 関数呼び出しの結果へのプロパティ / インデックスアクセスを式パーサに
@@ -934,3 +981,4 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [ ] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
 - [ ] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
 - [ ] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める
+- [ ] G33 (#386): SEC016 の対象に `on.push.tags` を含める

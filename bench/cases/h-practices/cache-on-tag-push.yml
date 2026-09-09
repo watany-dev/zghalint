@@ -1,0 +1,23 @@
+# bench:expect cache-poisoning@18
+name: release
+on:
+  push:
+    tags:
+      - "v*"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Restore
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ~/.cargo
+          key: cargo
+      - name: Package
+        run: echo ok
