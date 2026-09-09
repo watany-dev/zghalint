@@ -1,5 +1,5 @@
 # bench:expect cache-poisoning@18
-name: release
+name: build
 on:
   push:
     tags:
