@@ -93,8 +93,8 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 | 4 | **YAML パーサ ラウンドトリップ不変条件** (`parse(s) == parse(serialize(parse(s)))`) | **P1** | 1,134 行の自前 YAML パーサ。テスト 36 個のみで網羅性低い | 中 | パーサバグ早期発見 |
 | 5 | **生成戦略の拡充**（matrix / reusable workflow / `if` 条件式 / multiline run / 巨大 jobs） | **P1** | 現ジェネレータは固定パターン中心。実運用ワークフローを反映できていない | 中 | 既存テスト全体の実効カバー底上げ |
 | 6 | ~~**Zig in-process PBT**~~ | **完了** | `std.Random` 自前実装ではなく `std.testing.fuzz` を採用し、YAML tokenizer / YAML parser / 式パーサの 3 ターゲットを実装 (2026-09-07、§6-4) | 大 | カバレッジ誘導で深掘り・CI で時間制限付き探索 |
-| 7 | **新しい不変条件の追加** (a) ファイル順序非依存 (b) `--quick` と通常モードの整合性 (c) severity override の単調性 (d) JSON ↔ SARIF の diagnostic 数一致 | **P2** | PBT は不変条件の数が価値を決める。低コストで追加可 | 小 | 検出領域の多角化 |
-| 8 | **advisory / archived / dependabot / refconfusion / stale_refs の検出 PBT** | **P2** | 外部依存があり生成困難な可能性。要調査 | 中 | 残ルールの網羅 |
+| 7 | **新しい不変条件の追加** (a) ファイル順序非依存 (b) `--quick` と通常モードの整合性 (c) severity override の単調性 (d) ~~JSON ↔ SARIF の diagnostic 数一致~~ (完了、§6-5) | **P2** | PBT は不変条件の数が価値を決める。低コストで追加可 | 小 | 検出領域の多角化 |
+| 8 | **advisory / archived / dependabot / refconfusion / stale_refs の検出 PBT** | **P2** | 外部依存があり生成困難な可能性。要調査 (dependabot はファズドライバが到達済み、§6-5) | 中 | 残ルールの網羅 |
 | 9 | ~~**Hypothesis DB 永続化と CI 統合**~~ | **完了** | `actions/cache` で `.hypothesis/` を run 間に引き継ぎ、依存を `==` で固定、`-x` を `--maxfail=3` に変更 (2026-09-07, #235) | 小 | 回帰防止・shrink 結果の蓄積 |
 | 10 | **terminal 出力フォーマッタの property test** | **P3** | 視覚出力で重要度低。ANSI escape を含み検証が煩雑 | 中 | 限定的 |
 
@@ -198,6 +198,39 @@ in-process 側は `std.Random` を自前で回すのではなく、Zig 標準の
   立てて常駐し自発的には終了しないので、`timeout --signal=INT 300` で打ち切り、
   終了コード 124 を「所定時間内に反例なし」として扱う形になる。手元で試す場合は
   `zig build fuzz --fuzz --webui=127.0.0.1` (既定のバインドが失敗する環境がある)。
+
+### 6-5. 単体ファズドライバ (`src/fuzz_driver.zig`)
+
+`--fuzz` の探索実行が使えない間、探索そのものは自前のドライバが担う。入力は
+seed 1 つから決定的に生成するので、失敗した seed をそのまま再現に使える。
+
+```bash
+zig build fuzz-driver -- --iterations 20000 --seed 1000000  # キャンペーン
+zig build fuzz-driver -- --seed 1234567 --iterations 1      # 1 件を再現
+zig build fuzz-driver -- --file case.yml                    # 最小化済み入力を確認
+```
+
+**入力クラス** — 生成した 1 つのバイト列を、それを受け取りうる全経路に流す。
+
+| 経路 | 入口 | 検証する性質 |
+|---|---|---|
+| ワークフロー | `parser` → `registry.all_rules` | 診断の well-formedness、lint の決定性、`--fix` / `--fix-unsafe` の収束 (8 ラウンド) とパース保存 |
+| `action.yml` | `action_metadata` | 同上 (メタデータ経路の診断) |
+| `.zghalint.yml` | `config.parseConfig` | 2 回のパースが一致すること。`isRuleEnabled` / `getEffectiveSeverity` を全ルールに、`isIgnored` を固定パス集合に当てた結果でダイジェストを取る |
+| `dependabot.yml` | `dependabot.lintDependabot` | 診断の well-formedness と直列化 |
+| トークナイザ | `yaml/tokenizer.zig` | span が入力範囲内、必ず停止する |
+| 式 | `expressions.validateExpression` | 生の式としての診断が well-formed |
+| 出力 | `json` / `sarif` / `terminal` | 直列化が落ちない。**JSON と SARIF の件数が一致する** (#7d) |
+
+**運用**
+
+- 失敗率はキャンペーンの品質指標として見る。修正のたびに同じ seed 範囲で回し直し、
+  クラスが消えたことを確認する。
+- 最小化は行単位 ddmin → バイト単位トリムのデルタデバッグで行い、得られた最小
+  ケースは**バグを持つモジュール側の名前付き単体テスト**にする。ドライバの
+  `builtin_seeds` に足すのは探索領域を広げる入力に限る (§6-4 と同じ方針)。
+- これまで見つかった autofix バグはすべて「挿入アンカーが、入力が持たない
+  ブロック配置を前提にしている」という同じ形をしている。
 
 ## 7. 検証手順
 
