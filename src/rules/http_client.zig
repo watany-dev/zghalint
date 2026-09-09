@@ -44,7 +44,7 @@ pub fn deinit() void {
     client_initialized = false;
 }
 
-/// Runs the deferred `applyCustomCa` once. The caller holds `client_mutex`.
+/// The caller holds `client_mutex`.
 fn applyPendingCustomCa() void {
     if (!custom_ca_pending) return;
     custom_ca_pending = false;

@@ -85,7 +85,6 @@ test "levenshteinDistanceBounded matches the exact distance within the bound" {
     try std.testing.expectEqual(@as(usize, 2), levenshteinDistanceBounded("kitten", "sittin", 2));
     try std.testing.expectEqual(@as(usize, 1), levenshteinDistanceBounded("chekout", "checkout", 1));
     try std.testing.expectEqual(@as(usize, 0), levenshteinDistanceBounded("abc", "abc", 0));
-    // Beyond the bound: bailing out early by length, and by a DP row.
     try std.testing.expectEqual(std.math.maxInt(usize), levenshteinDistanceBounded("a", "abcd", 2));
     try std.testing.expectEqual(std.math.maxInt(usize), levenshteinDistanceBounded("kitten", "sitting", 2));
     try std.testing.expectEqual(std.math.maxInt(usize), levenshteinDistanceBounded("Asia/Tokyo", "Europe/Rome", 2));

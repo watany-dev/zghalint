@@ -632,7 +632,6 @@ const secret_prefix_heads = blk: {
     break :blk heads;
 };
 
-/// One diagnostic per string, at the earliest prefix occurrence.
 fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
     var pos: usize = 0;
     while (std.mem.indexOfAnyPos(u8, s, pos, secret_prefix_heads)) |offset| : (pos = offset + 1) {

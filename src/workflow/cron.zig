@@ -128,7 +128,6 @@ pub const Schedule = struct {
 const minutes_per_hour: u64 = 60;
 const minutes_per_day: u64 = 24 * minutes_per_hour;
 
-/// First minute of the next `period`-sized block (hour or day) after `minute`.
 fn nextBoundary(minute: u64, period: u64) u64 {
     return (minute / period + 1) * period;
 }
@@ -143,7 +142,6 @@ const Field = struct {
         return (self.mask & (@as(u64, 1) << shift)) != 0;
     }
 
-    /// Smallest enabled value strictly greater than `value`, if any.
     /// `value` must be below 63 so the exclusion mask cannot overflow.
     fn nextAbove(self: Field, value: u8) ?u8 {
         const shift: u6 = @intCast(value + 1);
