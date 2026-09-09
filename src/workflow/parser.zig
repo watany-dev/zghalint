@@ -1146,15 +1146,17 @@ fn parseSteps(ctx: *ParseContext, node: Node, steps_key_line: u32) ParseError![]
     return steps;
 }
 
-/// True when a block scalar has not fixed its own indentation yet. YAML takes
-/// the indentation from the first non-empty content line, so a scalar that has
-/// none still claims whatever is written below it. An empty block scalar has no
-/// content at all and is reported as its bare `|` or `>` indicator.
-fn blockScalarIndentationOpen(value: []const u8) bool {
+/// True when a block scalar would claim a sibling key written below it. YAML
+/// takes the content indentation from the first non-empty line, so a scalar with
+/// none is still open and swallows whatever comes next. A scalar whose content
+/// sits no further right than its own key is under-indented and swallows a
+/// sibling too. `key_column` is 1-based, as spans are.
+fn blockScalarIndentationOpen(value: []const u8, key_column: u32) bool {
     if (std.mem.indexOfScalar(u8, value, '\n') == null) return true;
     var lines = std.mem.splitScalar(u8, value, '\n');
     while (lines.next()) |line| {
-        if (std.mem.indexOfNone(u8, line, " \t") != null) return false;
+        const indent = std.mem.indexOfNone(u8, line, " \t") orelse continue;
+        return indent < key_column;
     }
     return true;
 }
@@ -1210,7 +1212,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             .scalar => |s| {
                 step.run_meta = .{ .value_span = s.span, .style = s.style };
                 indentation_open = (s.style == .literal or s.style == .folded) and
-                    blockScalarIndentationOpen(s.value);
+                    blockScalarIndentationOpen(s.value, entry.key.span.start_col);
             },
             else => {},
         }
@@ -3205,6 +3207,12 @@ test "an empty run: block scalar offers no shell insertion point (fuzz)" {
     var blank = yaml_parser_mod.Parser.init(alloc, head ++ "\n\n");
     const wf_blank = try parseWorkflow(alloc, try blank.parse());
     try testing.expect(wf_blank.jobs[0].steps[0].shell_insertion_byte == null);
+
+    // Content no further right than the `run` key is under-indented, so a
+    // sibling key written below it lands inside the scalar too.
+    var shallow = yaml_parser_mod.Parser.init(alloc, head ++ "\n  echo hi\n");
+    const wf_shallow = try parseWorkflow(alloc, try shallow.parse());
+    try testing.expect(wf_shallow.jobs[0].steps[0].shell_insertion_byte == null);
 
     var filled = yaml_parser_mod.Parser.init(alloc, head ++ "\n          echo hi\n");
     const wf_filled = try parseWorkflow(alloc, try filled.parse());
