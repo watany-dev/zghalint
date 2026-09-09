@@ -48,10 +48,6 @@ const Violation = error{
     TokenizerSpanOutOfRange,
 };
 
-// ---------------------------------------------------------------------------
-// Corpus
-// ---------------------------------------------------------------------------
-
 /// Seeds are the checked-in e2e fixtures: real workflow files that already
 /// reach deep into the rules, so a mutation lands somewhere interesting far
 /// more often than a mutation of a hand-written snippet would.
@@ -118,10 +114,6 @@ const dictionary: []const []const u8 = &.{
     "npm publish",         "curl | bash",                     "echo \"::set-output name=x::y\"",
 };
 
-// ---------------------------------------------------------------------------
-// Mutator
-// ---------------------------------------------------------------------------
-
 const Mutator = struct {
     rng: std.Random,
     corpus: []const []const u8,
@@ -163,17 +155,14 @@ const Mutator = struct {
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
         switch (self.rng.uintLessThan(u8, 10)) {
-            // Insert a dictionary token at a random byte.
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
             },
-            // Overwrite a byte.
             3 => {
                 if (len == 0) return;
                 buf.items[self.rng.uintLessThan(usize, len)] = self.rng.int(u8);
             },
-            // Delete a run of bytes.
             4 => {
                 if (len == 0) return;
                 const start = self.rng.uintLessThan(usize, len);
@@ -214,7 +203,6 @@ const Mutator = struct {
                 if (len == 0) return;
                 buf.shrinkRetainingCapacity(self.rng.uintLessThan(usize, len));
             },
-            // Swap two chunks.
             9 => {
                 if (len < 4) return;
                 const a = self.rng.uintLessThan(usize, len);
@@ -225,10 +213,6 @@ const Mutator = struct {
         }
     }
 };
-
-// ---------------------------------------------------------------------------
-// Properties
-// ---------------------------------------------------------------------------
 
 fn checkDiagnostics(list: diagnostics.DiagnosticList, source: []const u8) Violation!void {
     for (list.items.items) |d| {
@@ -390,10 +374,6 @@ fn runOne(alloc: std.mem.Allocator, input: []const u8) !void {
         } else |_| {}
     }
 }
-
-// ---------------------------------------------------------------------------
-// Driver
-// ---------------------------------------------------------------------------
 
 pub fn main() !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
