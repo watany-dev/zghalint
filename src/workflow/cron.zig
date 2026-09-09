@@ -69,12 +69,30 @@ pub const Schedule = struct {
     }
 
     /// Minutes since Unix epoch (1970-01-01 00:00 UTC).
+    ///
+    /// Equivalent to scanning every minute in `(from_minute, limit)` for the
+    /// first match, but skips whole days and hours that cannot match, so a
+    /// yearly schedule costs a few hundred `decompose` calls instead of half
+    /// a million.
     pub fn nextAfter(self: *const Schedule, from_minute: u64) ?u64 {
         const limit = from_minute + 366 * 24 * 60 * 20;
         var minute = from_minute + 1;
         while (minute < limit) {
-            if (self.matches(minute)) return minute;
-            minute += 1;
+            const parts = decompose(minute);
+            if (!self.dayMatches(parts)) {
+                minute = nextBoundary(minute, minutes_per_day);
+                continue;
+            }
+            if (!self.hour.contains(parts.hour)) {
+                minute = nextBoundary(minute, minutes_per_hour);
+                continue;
+            }
+            if (self.minute.contains(parts.minute)) return minute;
+            if (self.minute.nextAbove(parts.minute)) |next| {
+                minute += next - parts.minute;
+            } else {
+                minute = nextBoundary(minute, minutes_per_hour);
+            }
         }
         return null;
     }
@@ -90,6 +108,12 @@ pub const Schedule = struct {
         const parts = decompose(minute_since_epoch);
         if (!self.minute.contains(parts.minute)) return false;
         if (!self.hour.contains(parts.hour)) return false;
+        return self.dayMatches(parts);
+    }
+
+    /// POSIX cron: when both day-of-month and day-of-week are restricted,
+    /// either one matching is enough; otherwise only the restricted one counts.
+    fn dayMatches(self: *const Schedule, parts: DateParts) bool {
         if (!self.month.contains(parts.month)) return false;
 
         const dom_match = self.dom.contains(parts.dom);
@@ -101,6 +125,14 @@ pub const Schedule = struct {
     }
 };
 
+const minutes_per_hour: u64 = 60;
+const minutes_per_day: u64 = 24 * minutes_per_hour;
+
+/// First minute of the next `period`-sized block (hour or day) after `minute`.
+fn nextBoundary(minute: u64, period: u64) u64 {
+    return (minute / period + 1) * period;
+}
+
 const Field = struct {
     mask: u64,
     is_star: bool,
@@ -109,6 +141,15 @@ const Field = struct {
         if (self.is_star) return true;
         const shift: u6 = @intCast(value);
         return (self.mask & (@as(u64, 1) << shift)) != 0;
+    }
+
+    /// Smallest enabled value strictly greater than `value`, if any.
+    /// `value` must be below 63 so the exclusion mask cannot overflow.
+    fn nextAbove(self: Field, value: u8) ?u8 {
+        const shift: u6 = @intCast(value + 1);
+        const above = self.mask & ~((@as(u64, 1) << shift) - 1);
+        if (above == 0) return null;
+        return @intCast(@ctz(above));
     }
 };
 
@@ -324,4 +365,65 @@ test "minIntervalSeconds comma list in minute field" {
 test "minIntervalSeconds wildcard minute with stepped hour matches actionlint" {
     const sched = try Schedule.parse("* */3 * * *");
     try testing.expectEqual(@as(?u64, 60), sched.minIntervalSeconds());
+}
+
+/// Reference implementation: the minute-by-minute scan `nextAfter` replaced.
+fn nextAfterLinear(sched: *const Schedule, from_minute: u64) ?u64 {
+    const limit = from_minute + 366 * 24 * 60 * 20;
+    var minute = from_minute + 1;
+    while (minute < limit) {
+        if (sched.matches(minute)) return minute;
+        minute += 1;
+    }
+    return null;
+}
+
+test "nextAbove finds the next enabled value" {
+    const field = Field{ .mask = (1 << 5) | (1 << 30) | (1 << 59), .is_star = false };
+    try testing.expectEqual(@as(?u8, 5), field.nextAbove(0));
+    try testing.expectEqual(@as(?u8, 30), field.nextAbove(5));
+    try testing.expectEqual(@as(?u8, 59), field.nextAbove(58));
+    try testing.expectEqual(@as(?u8, null), field.nextAbove(59));
+}
+
+test "nextAfter agrees with the linear scan" {
+    const specs = [_][]const u8{
+        "* * * * *",
+        "*/7 * * * *",
+        "5,17,42 3,15 * * *",
+        "0 0 * * *",
+        "30 6 * * MON",
+        "0 12 1 * *",
+        "0 0 1 1 *",
+        "0 0 29 2 *",
+        "15 4 13 * FRI",
+        "0 22 * DEC SAT,SUN",
+        "59 23 31 12 *",
+        "0 9-17/2 * * 1-5",
+    };
+    // Starting points spread over the first days of 1970 exercise the day,
+    // hour and minute jumps from arbitrary offsets.
+    const starts = [_]u64{ 0, 1, 59, 60, 61, 1439, 1440, 1441, 4 * 1440 + 17 * 60 + 3, 31 * 1440, 58 * 1440 + 1439 };
+    for (specs) |spec| {
+        const sched = try Schedule.parse(spec);
+        for (starts) |start| {
+            var from = start;
+            // Follow three consecutive occurrences so the second and later
+            // jumps start from a matching minute, as `minIntervalSeconds` does.
+            var i: usize = 0;
+            while (i < 3) : (i += 1) {
+                const expected = nextAfterLinear(&sched, from);
+                const actual = sched.nextAfter(from);
+                try testing.expectEqual(expected, actual);
+                from = expected orelse break;
+            }
+        }
+    }
+}
+
+test "minIntervalSeconds yearly and leap-day schedules" {
+    const yearly = try Schedule.parse("0 0 1 1 *");
+    try testing.expectEqual(@as(?u64, 365 * 24 * 60 * 60), yearly.minIntervalSeconds());
+    const leap = try Schedule.parse("0 0 29 2 *");
+    try testing.expectEqual(@as(?u64, 4 * 365 * 24 * 60 * 60 + 24 * 60 * 60), leap.minIntervalSeconds());
 }
