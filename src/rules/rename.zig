@@ -54,7 +54,22 @@ pub fn pathSegmentFix(
     new_segment: []const u8,
 ) ?Fix {
     const segment = segmentSpan(path_span, path, segment_index) orelse return null;
+    // A candidate that is not a path identifier -- a step id such as `a>b` --
+    // is re-lexed as a shorter path plus a remainder, so the same diagnostic
+    // fires again with a fresh candidate and every `--fix` round grows the
+    // expression (#369).
+    if (!isPathIdentifier(new_segment)) return null;
     return tokenFix(list, segment.span, segment.text, new_segment);
+}
+
+/// GitHub's grammar for a property name in a `${{ }}` path.
+fn isPathIdentifier(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
+    for (name[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return false;
+    }
+    return true;
 }
 
 const SegmentSpan = struct {
@@ -151,4 +166,22 @@ test "tokenFix returns null for a span that is not the token" {
     defer list.deinit();
 
     try testing.expect(tokenFix(&list, pathSpan(0, 40), "pusg", "push") == null);
+}
+
+test "isPathIdentifier accepts only expression-safe segments" {
+    try testing.expect(isPathIdentifier("build"));
+    try testing.expect(isPathIdentifier("_build-2"));
+    try testing.expect(!isPathIdentifier(""));
+    try testing.expect(!isPathIdentifier("2build"));
+    try testing.expect(!isPathIdentifier("a>b"));
+    try testing.expect(!isPathIdentifier("a b"));
+    try testing.expect(!isPathIdentifier("a.b"));
+}
+
+test "pathSegmentFix declines a candidate that is not a path identifier" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+
+    const path = "steps.b";
+    try testing.expect(pathSegmentFix(&list, pathSpan(40, path.len), path, 1, "a>b") == null);
 }

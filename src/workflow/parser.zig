@@ -79,6 +79,16 @@ fn isInlineScalar(node: Node) bool {
     };
 }
 
+/// `with: fetch-depth: 0` parses to a mapping here too, but its entries sit on
+/// the key's line: a fix that appends an entry below is not read back as part
+/// of the mapping, so the same fix fires again on every `--fix` round (#370).
+/// Such a mapping offers no append point at all.
+fn isOwnLineBlockMapping(parent: Mapping, key: []const u8, body: Mapping) bool {
+    if (body.entries.len == 0) return false;
+    const key_span = parent.getKeySpan(key) orelse return false;
+    return body.entries[0].key.span.start_line > key_span.start_line;
+}
+
 fn isEmptyContainer(node: Node) bool {
     return switch (node) {
         .mapping => |m| m.entries.len == 0,
@@ -1179,7 +1189,9 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                         // last value ends where its span says: a flow collection's
                         // span covers only its opening bracket, and a block scalar
                         // ends at the start of the next line (#171).
-                        if (last.full_span != null and isInlineScalar(last.value)) {
+                        if (last.full_span != null and isInlineScalar(last.value) and
+                            isOwnLineBlockMapping(m, "with", with_mapping))
+                        {
                             step.with_last_entry_end_byte = last.value.getSpan().end_byte;
                         }
                     }
@@ -1203,7 +1215,9 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                         // Same conditions as `with_last_entry_end_byte`: only a
                         // block mapping whose last value is an inline scalar
                         // ends where its span says it does (#171).
-                        if (last.full_span != null and isInlineScalar(last.value)) {
+                        if (last.full_span != null and isInlineScalar(last.value) and
+                            isOwnLineBlockMapping(m, "env", env_mapping))
+                        {
                             step.env_last_entry_end_byte = last.value.getSpan().end_byte;
                         }
                     }
@@ -3006,6 +3020,10 @@ test "with_last_entry_end_byte is set only for an inline scalar in a block with:
         .{ .name = "block scalar value", .with_block = "        with:\n          x: |\n            a\n", .anchored_after = null },
         .{ .name = "plain scalar value", .with_block = "        with:\n          x: y\n", .anchored_after = "x: y" },
         .{ .name = "quoted multi-line value", .with_block = "        with:\n          x: \"a\n            b\"\n", .anchored_after = "b\"" },
+        // `with: x: y` parses to a mapping here, but its entry sits on the
+        // key's line: nothing appended below is read back as part of it, so
+        // the fix that used this anchor never converged (#370).
+        .{ .name = "entry on the with: line", .with_block = "        with: x: y\n", .anchored_after = null },
     };
 
     for (cases) |case| {

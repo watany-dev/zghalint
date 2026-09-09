@@ -1,0 +1,20 @@
+# A did-you-mean candidate is written back into the expression, so a step id
+# that is not a valid path identifier must not become a rename fix: the rewrite
+# was re-lexed as a shorter path and the fix grew the expression on every
+# `--fix` round (#369). The `.fixed` sibling pins that nothing is rewritten.
+# zghalint:expect EXPR010@20 SYN006
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: expr010-rename-invalid-id
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tagged step
+        id: a>b
+        run: echo hi
+      - name: Read it back
+        run: echo ${{ steps.b.outputs.x }}

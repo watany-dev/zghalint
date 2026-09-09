@@ -156,6 +156,56 @@ fn checkFixedOutput(
     }
 }
 
+/// Every diagnostic must describe a forward range. A reversed one makes SARIF
+/// regions and terminal underlines nonsense, and it is easy to produce by
+/// accident: a mapping built from a merge key ended before it began (#367).
+fn checkSpanOrdering(name: []const u8, diags: []const diagnostics.Diagnostic) !void {
+    for (diags) |diag| {
+        const span = diag.span;
+        const ordered = span.start_byte <= span.end_byte and
+            (span.start_line < span.end_line or
+                (span.start_line == span.end_line and span.start_col <= span.end_col));
+        if (ordered) continue;
+        std.debug.print(
+            "fixture '{s}': {s} span runs backwards: {d}:{d} (byte {d}) -> {d}:{d} (byte {d})\n",
+            .{
+                name,            diag.rule_id,  span.start_line, span.start_col,
+                span.start_byte, span.end_line, span.end_col,    span.end_byte,
+            },
+        );
+        return error.SpanRunsBackwards;
+    }
+}
+
+/// `--fix` must reach a fixed point: re-running it on its own output has to
+/// leave the file alone. A fix whose rewrite is not read back the way it was
+/// meant re-fires forever and grows the file on every round (#369, #370).
+fn checkFixConverges(
+    alloc: std.mem.Allocator,
+    name: []const u8,
+    source: []const u8,
+    lint: LintFn,
+    include_unsafe: bool,
+) !void {
+    var content = source;
+    // One round applies the fixes, the second proves nothing is left. The
+    // extras absorb a fix that legitimately uncovers another one.
+    for (0..5) |_| {
+        var list = try lint(alloc, content);
+        defer list.deinit();
+
+        const fixes = try fix_engine.collectFixes(alloc, list.items.items, include_unsafe);
+        const result = try fix_engine.applyFixes(alloc, content, fixes);
+        if (std.mem.eql(u8, result.content, content)) return;
+        content = result.content;
+    }
+
+    std.debug.print("fixture '{s}': --fix{s} does not converge\n--- after 5 rounds ---\n{s}\n", .{
+        name, if (include_unsafe) "-unsafe" else "", content,
+    });
+    return error.FixDidNotConverge;
+}
+
 fn matches(diag: diagnostics.Diagnostic, exp: Expectation) bool {
     if (!std.mem.eql(u8, diag.rule_id, exp.rule_id)) return false;
     const want_line = exp.line orelse return true;
@@ -220,7 +270,10 @@ fn runFixtures(
             }
         }
 
+        try checkSpanOrdering(entry.name, list.items.items);
         try checkFixedOutputs(alloc, dir, entry.name, source, list.items.items);
+        try checkFixConverges(alloc, entry.name, source, lint, false);
+        try checkFixConverges(alloc, entry.name, source, lint, true);
     }
 }
 
