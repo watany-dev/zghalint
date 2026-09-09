@@ -6438,6 +6438,18 @@ test "BP007: $CMD == still counts as a command" {
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
+test "BP007: assignment without spaces is still assignment" {
+    var list = runStep(.{ .run = "$PACK_OUTPUT=npm pack" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: braced assignment is not a command" {
+    var list = runStep(.{ .run = "${PACK_OUTPUT} = npm pack" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
 test "BP007: no false positive on a variable in a continuation line" {
     var list = runStep(.{ .run = "gh release create \"$TAG\" \\\n  --title \"$TAG\" \\\n  $PRERELEASE_FLAG \\\n  artifacts/*" });
     defer list.deinit();
