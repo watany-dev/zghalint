@@ -1,6 +1,6 @@
 # 実施ロードマップ（2026-09-09 時点）
 
-オープンな PR / issue を main（`1da00fc`）の実装状況と突き合わせ、以後の実施順序を示す。
+オープンな PR / issue を main（`fa1e023`）の実装状況と突き合わせ、以後の実施順序を示す。
 経緯や前版との差分は git log と PR #130 / #207 の履歴に残しているため、本書には現在形の内容だけを書く。
 
 ## 1. 現状サマリ
@@ -8,21 +8,21 @@
 | 項目 | 状態 |
 |---|---|
 | ルール数 | `docs/rules.md` の表は 101 行（SYN020 追加分）で `registry.all_rules` と一致。`src/docs_sync_test.zig`（#242）が ID の欠落・余剰を両方向でテストする。長く残っていた見出しの「92 rules」は本回で 101 に直したため、本文と表の不一致はなくなった。ただし同期テストは今も ID 集合しか見ないので、見出しの数字は手で守る |
-| `src/**/*.zig` | 58,848 行 |
-| ユニットテスト | 1981 件（`zig build test` 緑）。#331 で低品質なテストの削除とテーブル駆動化を行った上で（PR #332）、SC007・ドッグフーディング・形式手法・autofix 拡張・fix の衝突修正・SEC023・SYN020・EXPR007 / EXPR011 の誤検出修正・性能最適化の分が積み増している |
+| `src/**/*.zig` | 59,029 行 |
+| ユニットテスト | 1985 件（`zig build test` 緑）。#331 で低品質なテストの削除とテーブル駆動化を行った上で（PR #332）、SC007・ドッグフーディング・形式手法・autofix 拡張・fix の衝突修正・SEC023・SYN020・EXPR007 / EXPR011 の誤検出修正・性能最適化の分が積み増している |
 | #55 actionlint parity | 54 sub-issue 中 **54 close 済み（100%）**。umbrella #55 本体も close 済み |
 | 型検査エンジン | T0〜T4 完了（#129 は PR #256 で overlay 接続、close 済み）。EXPR018 引数型検査（#162）も同 PR で完了・close 済み |
-| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（70 本）と `tests/fixtures/e2e-action/*.yml`（8 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証。兄弟ファイル `<name>.fixed` / `<name>.fixed-unsafe` を置いたフィクスチャは `--fix` / `--fix-unsafe` 適用後のバイト列も固定する（PR #328、現在 11 本） |
-| bench | `bench/cases/` に 142 ファイル（複数ファイルのケースをまとめて 137 ケース）。A〜D は PR #277、E〜J は PR #287 で揃い、G16 / G17 の堅牢性ケース 3 本が PR #301、G21 の再現ケース 1 本が PR #317、G25 の再現ケース 1 本が PR #357 で加わった。`scripts/bench.py` の採点で zghalint は recall 99%（111/112）・位置一致 96%（107/112）、実行エラー 0 件（#284 の実行エラーは SYN020 で解消）。FN 1（G30 = #382、`matrix-object-property-undeclared`）と FP 2（G31 = #383 の `self-repository-prefix`、G32 = #384 の `ubuntu-slim-runner`）が本回 `bench/baseline.json` に記録された——実運用 CI の三者比較（PR #385）で出た穴で、記録した時点が「既知の gap」であって回帰ではない。外部ツール未導入の環境では zghalint 単独で採点する。採点結果は `bench/baseline.json` に固定し、`scripts/bench_gate.py` が回帰を非ゼロ終了で落とす（#270、PR #373）。`.github/workflows/bench.yml` が週次で 3 モードを回して parity doc へ流す。`--perf`（`scripts/bench_perf.py`）が wall time と最大 RSS を 4 シナリオで測り、実ワークフローのコーパスは `scripts/fetch-corpus.py` が取得する（#268、PR #296）。`--fix`（`scripts/bench_fix.py`）は autofix 交差検証で、非冪等 0 / YAML 破損 0 / コメント欠落 0。意図した増加は各ケースの `# bench:fix-allow <flag> <tool>=<ID> <理由>` で宣言し、宣言のないものだけが問題として残る（#269、PR #345、宣言形式は PR #373）。PR #356 が §4.6 の性能表を無効と判定した——zghalint 列が Debug ビルド、actionlint 列が shellcheck 無しという二重の環境差で、ReleaseFast + shellcheck ありで測り直した §4.7 では §4.5 と同じ水準（wall time で 15〜60 倍、RSS で 6〜23 倍の差）に戻る |
+| E2E テスト | `src/e2e_test.zig` が `tests/fixtures/e2e/*.yml`（74 本）と `tests/fixtures/e2e-action/*.yml`（8 本）の `# zghalint:expect RULE@line` / `forbid` コメントを読んで検証。兄弟ファイル `<name>.fixed` / `<name>.fixed-unsafe` を置いたフィクスチャは `--fix` / `--fix-unsafe` 適用後のバイト列も固定する（PR #328、現在 16 本） |
+| bench | `bench/cases/` に 144 ファイル（複数ファイルのケースをまとめて 139 ケース）。A〜D は PR #277、E〜J は PR #287 で揃い、G16 / G17 の堅牢性ケース 3 本が PR #301、G21 の再現ケース 1 本が PR #317、G25 の再現ケース 1 本が PR #357 で加わった。`scripts/bench.py` の採点で zghalint は recall 97%（111/114）・位置一致 94%（107/114）、実行エラー 0 件（#284 の実行エラーは SYN020 で解消）。FN 3（G30 = #382 の `matrix-object-property-undeclared`、G33 = #386 の `cache-on-tag-push` と `setup-uv-default-cache-in-release`）とFP 2（G31 = #383 の `self-repository-prefix`、G32 = #384 の `ubuntu-slim-runner`）が `bench/baseline.json` に記録済みの既知 gap で、回帰ではない。外部ツール未導入の環境では zghalint 単独で採点する。採点結果は `bench/baseline.json` に固定し、`scripts/bench_gate.py` が回帰を非ゼロ終了で落とす（#270、PR #373）。`.github/workflows/bench.yml` が週次で 3 モードを回して parity doc へ流す。`--perf`（`scripts/bench_perf.py`）が wall time と最大 RSS を 4 シナリオで測り、実ワークフローのコーパスは `scripts/fetch-corpus.py` が取得する（#268、PR #296）。`--fix`（`scripts/bench_fix.py`）は autofix 交差検証で、非冪等 0 / YAML 破損 0 / コメント欠落 0。意図した増加は各ケースの `# bench:fix-allow <flag> <tool>=<ID> <理由>` で宣言し、宣言のないものだけが問題として残る（#269、PR #345、宣言形式は PR #373）。PR #356 が §4.6 の性能表を無効と判定した——zghalint 列が Debug ビルド、actionlint 列が shellcheck 無しという二重の環境差で、ReleaseFast + shellcheck ありで測り直した §4.7 では §4.5 と同じ水準（wall time で 15〜60 倍、RSS で 6〜23 倍の差）に戻る |
 | PBT（`tests/pbt/`） | 42 個の `@given`、xfail 0 件。依存は固定済み（#235） |
-| ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241）。長時間キャンペーン用に `src/fuzz_driver.zig` が単体ドライバとして立ち、PR #371 で入った。探索実行（`zig build fuzz --fuzz`）は Zig 0.15.2 のファザ側の不具合で動かず、シード資産の再生のみ（`docs/design/pbt-strategy.md` §6-4）。この経路が #364 / #366〜#370 の 6 件を掘り出し、うち #366 は PR #376 で解決した |
+| ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241）。長時間キャンペーン用に `src/fuzz_driver.zig` が単体ドライバとして立ち、PR #371 で入った。探索実行（`zig build fuzz --fuzz`）は Zig 0.15.2 のファザ側の不具合で動かず、シード資産の再生のみ（`docs/design/pbt-strategy.md` §6-4）。この経路が #364 / #366〜#370 の 6 件を掘り出し、うち 5 件（#366 は PR #376、#367〜#370 は PR #380）が解決した。PR #380 は E2E ハーネスに全フィクスチャ共通の不変条件を 2 つ足しており、診断の span が逆転しないことと `--fix` / `--fix-unsafe` が不動点に達することを常設で見る |
 | ADR | `docs/adr/0001`〜`0014`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003、0014 は SEC023 trusted publishing） |
-| オープン PR | #217（形式仕様とモデル検査）・#306（bench 再実行記録）・#380（#367〜#370 の span 逆転と fix 非収束を 4 件まとめて直す）の 3 本。本ロードマップの #207 は `3951cc7` でマージ済みで、以後の同期はこのブランチが引き継ぐ。#362（#284 = G13）/ #363（#359 / #360 = G27 / G28）/ #365（性能最適化）/ #371（ファズドライバと #364〜#370 の起票）/ #373（#270 = bench 運用ループ）/ #374（install.sh と Homebrew tap）/ #376（#366 = taint テーブル溢れ）/ #377（perf bench に ghalint / octoscan / poutine / action-validator を追加）/ #379（SEC013 の GHCR login と BP007 の PowerShell 代入の FP、G29 の起票）/ #385（実運用 CI の三者比較から G30〜G32 を起票）が新たにマージされた。#306 は別セッションの PR のため本 PR からは触らない |
-| オープン issue | 14 件。内訳はファズ由来の未修正バグ 5（#364 / #367〜#370、うち #367〜#370 は PR #380 で対処中）、ドッグフーディング D6 / D7（#372 / #375）、bench 由来の parity gap 6（#281 = G10、#358 = G26、#382 = G30、#383 = G31、#384 = G32、#386 = G33）、および bot が立てた本文「ignore」の #381（実体のない試験用で対象外）。#366 は PR #376 の `37588ef` が `ContextSet` へ畳んで重複 append を無視する形にしたため、ReleaseFast で重複 10 件・40 件・`repository_dispatch` 4 件を再現確認した上で本回 close した。ベンチマーク umbrella #262 は sub-issue 19 件が全て close したため本回で close し、#284（G13）は SYN020 の着地で、#360（G28）は EXPR007 の修正で本回 close した。#55 #64 #135 #159 #262〜#271 #273〜#276 #280 #282〜#286 #293 #294 #297〜#300 #304 #305 #307〜#314 #322〜#327 #331 #333〜#337 #346〜#349 #359 #360 #284 は実装済みのため close 済み |
+| オープン PR | #217（形式仕様とモデル検査）と #306（bench 再実行記録）の 2 本。本ロードマップの #207 は `3951cc7` でマージ済みで、以後の同期はこのブランチが引き継ぐ。#362（#284 = G13）/ #363（#359 / #360 = G27 / G28）/ #365（性能最適化）/ #371（ファズドライバと #364〜#370 の起票）/ #373（#270 = bench 運用ループ）/ #374（install.sh と Homebrew tap）/ #376（#366 = taint テーブル溢れ）/ #377（perf bench に ghalint / octoscan / poutine / action-validator を追加）/ #379（SEC013 の GHCR login と BP007 の PowerShell 代入の FP、G29 の起票）/ #385（G30〜G32 の起票）/ #387（G33 の起票）/ #380（#367〜#370 の span 逆転と fix 非収束）が新たにマージされた。#306 は別セッションの PR のため本 PR からは触らない |
+| オープン issue | 10 件。内訳はファズ由来の未修正バグ 1（#364）、ドッグフーディング D6 / D7（#372 / #375）、bench 由来の parity gap 6（#281 = G10、#358 = G26、#382 = G30、#383 = G31、#384 = G32、#386 = G33）、および bot が立てた本文「ignore」の #381（実体のない試験用で対象外）。ファズ由来の 6 件は #366 が PR #376 で、#367〜#370 が PR #380 で解決し、いずれも実バイナリでの再現確認を添えて close した。残る #364 だけが手つかずである。ベンチマーク umbrella #262 は sub-issue 19 件が全て close したため本回で close し、#284（G13）は SYN020 の着地で、#360（G28）は EXPR007 の修正で本回 close した。#55 #64 #135 #159 #262〜#271 #273〜#276 #280 #282〜#286 #293 #294 #297〜#300 #304 #305 #307〜#314 #322〜#327 #331 #333〜#337 #346〜#349 #359 #360 #284 は実装済みのため close 済み |
 | 配布 | `install.sh`（`curl | sh` で GitHub Release から取得）と Homebrew tap（`brew install watany-dev/tap/zghalint`）が PR #374 で入った。tap は release ワークフローが `scripts/gen-homebrew-formula.sh` で更新し、`-rc.` のプレリリースは反映しない。release は provenance attestation とバイナリスモークを持つ |
 | 性能 | PR #365 が ReleaseFast のプロファイルからホットパスを削った——SEC002 の `${{` / `}}` 探索をベクトル化した `indexOfScalarPos` に、`pathMatchesPattern` を先頭バイトでの事前棄却つきに、taint 伝播の固定点を outputs を持つジョブだけに、SEC003 の秘密プレフィックス探索を 1 走査に、`didYouMean` を有界 Levenshtein の早期打ち切りに、cron の `nextAfter` を分単位から境界スキップに、terminal の `writeSanitized` を 16 バイト単位の読み飛ばしに、CA バンドル読込を最初の fetch まで遅延させた。`zig build -Dstrip` で Release でもシンボルを残せる |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
-| 既知バグ | ファズ由来の 5 件が未修正。クラッシュ（#366）は解消したため、残りは全て診断品質と書き換えの問題である。**#364**（空の `permissions:` / `concurrency:` でファイル全体が lint 不能）と **#367**（マージキー `<<:` で診断の span が逆転する）が入力側、**#368**（SEC007 / BP005 の挿入が `on:` ブロックの途中に落ちて `--fix-unsafe` がワークフローを壊す）・**#369**（EXPR010 の rename fix が収束せず式が伸び続ける）・**#370**（SEC019 の persist-credentials fix が `with:` 非マッピングで無限に追記する）が fix 側。形式検証由来の反例と PR #261 で直した 7 件はすべて解消済み。#367〜#370 の 4 件は PR #380 が同時に扱っている |
+| 既知バグ | ファズ由来で未修正なのは **#364**（空の `permissions:` / `concurrency:` でファイル全体が lint 不能）の 1 件だけになった。クラッシュ（#366）も `--fix` がワークフローを壊す 3 件（#368〜#370）も span 逆転（#367）も解消済みで、形式検証由来の反例と PR #261 で直した 7 件も同様である |
 
 Phase 1（トリガー `on:` 群）、Phase 2（job / step / matrix）、Phase 3（contextual typing）、
 Phase 4（action.yml / reusable workflow）はいずれも完了した。
@@ -114,35 +114,35 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 | PR #217 形式仕様 | Alloy（ルール所有権）と TLA+（prefetch / autofix）の仕様と反例。#218〜#224 の出所で、指摘はすべて修正済み。マージすれば以後の反例追加が同じ場所に載る |
 | リポジトリ運用・CI 基盤（旧 #230 #234〜#244） | 12 件すべて実装済み・close 済み（Dependabot / PBT 依存固定 / Zig 版一元化 / coverage / concurrency / 外部静的解析 / ファズ / 自リポジトリ dogfooding / action.yml スモーク / メタファイル / release provenance / タグ整合 / `docs/rules.md` 同期テスト）。track として終了 |
 
-## 3. 直近の着手順（上位 5 件）
+## 3. 直近の着手順（上位 4 件）
 
 | 順 | 対象 | 理由 |
 |---|---|---|
-| 1 | #368 / #369 / #370 | `--fix` がワークフローを壊す 3 本。#368 は挿入位置が `on:` ブロックの途中に落ち、#369 は EXPR010 の rename が収束せず式が伸び続け、#370 は SEC019 の persist-credentials が `with:` 非マッピングで無限に追記する。壊れた書き換えは誤検出より利用体験を損なう。PR #380 が #367 と併せて 4 件を扱っているので、まずはそのレビューを通す |
-| 2 | #364 / #367 | 入力側の 2 本。#364 は空の `permissions:` / `concurrency:` でファイル全体が lint 不能になり（#284 と同じ「ファイルが丸ごと落ちる」系）、#367 はマージキー `<<:` で診断の span が逆転する。#367 は PR #380 に含まれ、#364 だけが手つかずで残る |
-| 3 | #382 / #383 / #384 / #386（G30〜G33） | 実運用 CI の三者比較で出た新しい gap 4 本。#382 は EXPR011 がオブジェクト軸の未定義プロパティを見ない見逃し、#383 は DEP003 が `$/` の自己参照 `uses` を形式不正と誤判定、#384 は RUNNER002 が `ubuntu-slim` を未知ラベル扱いする。#386 は SEC016 が tag push のリリースを対象から外す見逃しで、bench ケースはまだ無い。G30〜G32 は baseline に記録済みなので、直せば gate がそのまま改善を検知する |
-| 4 | #372 / #375（D6 / D7） | 実運用リポジトリから出た FP と見逃し。D6 は SC003 の SHA ピン誤検知・SC005 の annotated tag・Release 資産欠落、D7 は EXPR007 の値 ternary・BP007 の process substitution 見逃し・SEC023 の crates.io。PR #379 が SEC013 の GHCR login と BP007 の PowerShell 代入を先に潰しており、残りが本体 |
-| 5 | #281 / #358 | bench 由来で残る旧 parity gap 2 本。#281 は `needs:` の未知 job と循環の検出（ルール追加 1 本）、#358 は BP003 が第三者アクションの古い major を見逃す |
+| 1 | #382 / #383 / #384 / #386（G30〜G33） | 実運用 CI の三者比較で出た gap 4 本で、検出そのものの課題としては最大の塊。#382 は EXPR011 がオブジェクト軸の未定義プロパティを見ない見逃し、#383 は DEP003 が `$/` の自己参照 `uses` を形式不正と誤判定、#384 は RUNNER002 が `ubuntu-slim` を未知ラベル扱い、#386 は SEC016 が tag push のリリースを対象から外す見逃し。4 本とも `bench/baseline.json` に FN 3 / FP 2 として記録済みで、直せば gate がそのまま改善を検知する |
+| 2 | #364 | ファズ由来で唯一残る未修正バグ。空の `permissions:` / `concurrency:` でファイル全体が lint 不能になる（#284 と同じ「ファイルが丸ごと落ちる」系）。1 ファイルの診断がゼロになる形なので、誤検出より影響が大きい |
+| 3 | #372 / #375（D6 / D7） | 実運用リポジトリから出た FP と見逃し。D6 は SC003 の SHA ピン誤検知・SC005 の annotated tag・Release 資産欠落、D7 は EXPR007 の値 ternary・BP007 の process substitution 見逃し・SEC023 の crates.io。PR #379 が SEC013 の GHCR login と BP007 の PowerShell 代入を先に潰しており、残りが本体 |
+| 4 | #281 / #358 | bench 由来で残る旧 parity gap 2 本。#281 は `needs:` の未知 job と循環の検出（ルール追加 1 本）、#358 は BP003 が第三者アクションの古い major を見逃す |
 
 あわせて `docs/design/external-linter-parity.md` へ G26〜G33 を追記する。G25 までしか書かれておらず、
 解決済みの G27 / G28 / G29 も未解決の G26 / G30〜G33 もどこにも記録されていない。
 `bench/baseline.json` には数値として入っているのに、経緯を残す側が追いついていない状態である。
 
 Phase 1〜4 はすべて閉じ、ルール追加の主戦場は #55 から bench（#262）へ移り、その bench も閉じた。
-採点は全カテゴリを覆って recall 99%（111/112）・位置一致 96%、実行エラー 0 件で、
+採点は全カテゴリを覆って recall 97%（111/114）・位置一致 94%、実行エラー 0 件で、
 `bench/baseline.json` と `scripts/bench_gate.py` が回帰を落とす形で常設化されている。
-本回 FN 1・FP 2 が新たに載ったのは品質低下ではなく、bench が実運用ワークフローを取り込んで
-未知の gap を 3 件掘り出したためで、これは gate の設計どおりの動きである。
+FN 3・FP 2 が載っているのは品質低下ではなく、bench が実運用ワークフローを取り込んで
+未知の gap を掘り出した結果であり、これは gate の設計どおりの動きである。
 
 **穴を探す役目は経験的な bench から、ファズ・形式手法・ドッグフーディングの 3 経路へ完全に移った。**
 形式手法は F1〜F7 を PR #338 で出し切って SEC 表の抜けを 7 件埋め、その PR 自身が壊した抽出器も PR #355 で直って
 CI と PBT の両方から回るようになった。ドッグフーディングは D1〜D5 を片付けた後、新たに D6 / D7（#372 / #375）を出しており、
-PR #378 で `doghooding` スキルとして手順が固定され、PR #385 がその手順どおり G30〜G32 を起票した。
+PR #378 で `doghooding` スキルとして手順が固定され、PR #385 / #387 がその手順どおり G30〜G33 を起票した。
 そしてファズが最も鋭い——PR #371 の単体ドライバは 1 回のキャンペーンで 6 件（#364 / #366〜#370）を掘り出し、
 そのうち 1 件は Release ビルドでのみ落ちるクラッシュ、3 件は `--fix` がワークフローを壊す欠陥だった。
 `bench/cases/` の交差検証も形式手法も、この 3 件の fix 欠陥を見つけられていない。
-唯一のクラッシュだった #366 は PR #376 で解決したので、**未修正の 5 件は全て診断品質と書き換えの問題であり、
-うち 4 件は PR #380 が扱っている。**
+6 件のうち 5 件は PR #376 / #380 で片付き、**残りは #364 の 1 件である。**
+PR #380 が E2E ハーネスへ span の非逆転と fix の不動点を全フィクスチャ共通の不変条件として足したので、
+ファズが見つけた性質の一部は通常のテストからも守られるようになった。
 
 検出と autofix が一段落したことで、配布（PR #374 の `install.sh` と Homebrew tap）と
 GitHub Actions 以外への展開（PR #320 の v0.2 マルチ CI ロードマップ）が次の軸として重なる。
