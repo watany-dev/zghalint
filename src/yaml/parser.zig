@@ -503,13 +503,15 @@ pub const Parser = struct {
             }
         }
 
+        var close_byte: ?usize = null;
         if (self.current.kind == .flow_mapping_end) {
             self.advance();
+            close_byte = self.last_end;
         }
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const owned_entries = try self.applyMergeKeys(parsed_entries);
-        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span } };
+        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span, .close_byte = close_byte } };
     }
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
@@ -540,8 +542,10 @@ pub const Parser = struct {
             if (self.current.start == before) break;
         }
 
+        var close_byte: ?usize = null;
         if (self.current.kind == .flow_sequence_end) {
             self.advance();
+            close_byte = self.last_end;
         }
 
         const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
@@ -549,7 +553,12 @@ pub const Parser = struct {
             &[_]types.ItemDelete{}
         else
             try self.flowItemDeletes(extents.items, open_line);
-        return Node{ .sequence = .{ .items = owned_items, .span = start_span, .item_deletes = owned_deletes } };
+        return Node{ .sequence = .{
+            .items = owned_items,
+            .span = start_span,
+            .item_deletes = owned_deletes,
+            .close_byte = close_byte,
+        } };
     }
 
     /// Where one flow item's text starts and stops, comma excluded.
@@ -801,8 +810,8 @@ pub const Parser = struct {
         const nested = switch (value) {
             .scalar => unreachable,
             .null_value => key_line_end,
-            .mapping => |m| if (m.entries.len == 0) key_line_end else (self.nodeEndByteInclusive(value) orelse return null),
-            .sequence => |seq| if (seq.items.len == 0) key_line_end else (self.nodeEndByteInclusive(value) orelse return null),
+            .mapping => |m| if (m.entries.len == 0) self.flowCloseLineEnd(m.close_byte, key_line_end) else (self.nodeEndByteInclusive(value) orelse return null),
+            .sequence => |seq| if (seq.items.len == 0) self.flowCloseLineEnd(seq.close_byte, key_line_end) else (self.nodeEndByteInclusive(value) orelse return null),
         };
 
         // A merge key or an alias puts an entry's text elsewhere in the file,
@@ -810,6 +819,15 @@ pub const Parser = struct {
         // least its own line.
         const end = @max(key_line_end, nested);
         return self.extendOverIndentedTail(end, key.span.start_col);
+    }
+
+    /// The end of the line holding a flow collection's closing bracket. A flow
+    /// collection written across lines closes below its last item, so an
+    /// insertion anchored on the item's line lands inside the brackets (fuzz).
+    fn flowCloseLineEnd(self: *Parser, close_byte: ?usize, fallback: usize) usize {
+        const close = close_byte orelse return fallback;
+        if (close > self.source.len) return fallback;
+        return @max(fallback, self.scanLineEndInclusive(close));
     }
 
     /// Lines the parser dropped still belong to the entry when they are
@@ -843,18 +861,21 @@ pub const Parser = struct {
     fn nodeEndByteInclusive(self: *Parser, node: Node) ?usize {
         return switch (node) {
             .mapping => |m| if (m.entries.len == 0)
-                self.scanLineEndInclusive(m.span.end_byte)
+                self.flowCloseLineEnd(m.close_byte, self.scanLineEndInclusive(m.span.end_byte))
             else blk: {
                 const last = m.entries[m.entries.len - 1];
                 // The entry's extent, not its removability: an inner key that
                 // shares a line still ends where its value ends, and the outer
                 // entry that owns the line is removable all the same (fuzz).
-                break :blk self.entryEndByteInclusive(last.key, last.value) orelse return null;
+                const last_end = self.entryEndByteInclusive(last.key, last.value) orelse return null;
+                break :blk self.flowCloseLineEnd(m.close_byte, last_end);
             },
             .sequence => |seq| if (seq.items.len == 0)
-                self.scanLineEndInclusive(seq.span.end_byte)
-            else
-                self.nodeEndByteInclusive(seq.items[seq.items.len - 1]),
+                self.flowCloseLineEnd(seq.close_byte, self.scanLineEndInclusive(seq.span.end_byte))
+            else blk: {
+                const last_end = self.nodeEndByteInclusive(seq.items[seq.items.len - 1]) orelse return null;
+                break :blk self.flowCloseLineEnd(seq.close_byte, last_end);
+            },
             // A block scalar's span already ends at the start of the line that
             // closes it; scanning on would swallow the next sibling.
             .scalar => |sc| if (sc.style == .literal or sc.style == .folded)
@@ -1371,6 +1392,23 @@ test "an entry sharing its line with an outer key has no removable span (fuzz)" 
     try std.testing.expect(strategy.value.mapping.entries[0].full_span == null);
     // A key that does start its own line keeps its span.
     try std.testing.expect(doc.mapping.entries[0].full_span != null);
+}
+
+test "a flow collection entry ends past its closing bracket (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // An insertion anchored on the `on:` line would land between the brackets.
+    const empty_source = "on: [\n]\njobs:\n";
+    var empty = Parser.init(alloc, empty_source);
+    const empty_doc = try empty.parse();
+    try std.testing.expectEqual(@as(usize, 8), empty_doc.mapping.entries[0].full_span.?.end_byte);
+
+    const filled_source = "on: [\n  push\n]\njobs:\n";
+    var filled = Parser.init(alloc, filled_source);
+    const filled_doc = try filled.parse();
+    try std.testing.expectEqual(@as(usize, 15), filled_doc.mapping.entries[0].full_span.?.end_byte);
 }
 
 test "an empty block scalar entry ends at its own line (fuzz)" {

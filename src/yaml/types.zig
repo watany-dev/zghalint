@@ -123,6 +123,10 @@ pub const ItemDelete = struct {
 pub const Sequence = struct {
     items: []Node,
     span: Span,
+    /// Byte just past the closing `]` of a flow sequence, when the parser saw
+    /// one. `span` covers the opening indicator alone, so a sequence written
+    /// across lines needs this to say where its text really stops.
+    close_byte: ?usize = null,
     /// How to remove each item, parallel to `items`. Empty when the parser
     /// can offer no stable range — an alias expansion, whose text lives at
     /// the anchor rather than here.
@@ -141,6 +145,9 @@ pub const MappingEntry = struct {
 pub const Mapping = struct {
     entries: []MappingEntry,
     span: Span,
+    /// Byte just past the closing `}` of a flow mapping. See
+    /// `Sequence.close_byte`.
+    close_byte: ?usize = null,
 
     pub fn get(self: Mapping, key: []const u8) ?Node {
         for (self.entries) |entry| {
