@@ -161,7 +161,17 @@ pub fn rejectsValue(key: []const u8, value: yaml.Node) bool {
             else => true,
         };
     }
-    if (std.mem.eql(u8, key, "steps")) return value != .sequence;
+    // A step is a mapping, and one that is not makes the parser give up on the
+    // whole file, so `tps: -` renamed to `steps: -` trades one diagnostic for
+    // an unlintable workflow (fuzz).
+    if (std.mem.eql(u8, key, "steps")) {
+        return switch (value) {
+            .sequence => |seq| for (seq.items) |item| {
+                if (item != .mapping) break true;
+            } else false,
+            else => true,
+        };
+    }
     if (isAllowedKey(key, &mapping_only_keys)) return value != .mapping;
     return false;
 }
