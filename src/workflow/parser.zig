@@ -1189,14 +1189,22 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
+        var indentation_open = false;
         switch (entry.value) {
             .scalar => |s| {
                 step.run_meta = .{ .value_span = s.span, .style = s.style };
+                // A block scalar with no content lines has not fixed its own
+                // indentation yet: the first indented line below it becomes
+                // its content, so a key inserted there is not a key at all
+                // (fuzz). Content always ends in a newline; an empty one is
+                // reported as the bare `|` or `>` indicator.
+                indentation_open = (s.style == .literal or s.style == .folded) and
+                    std.mem.indexOfScalar(u8, s.value, '\n') == null;
             },
             else => {},
         }
         if (entry.full_span) |fs| {
-            step.shell_insertion_byte = fs.end_byte;
+            if (!indentation_open) step.shell_insertion_byte = fs.end_byte;
         }
         break;
     }
@@ -3167,6 +3175,23 @@ test "an empty needs: leaves the workflow parseable (fuzz)" {
 
     try testing.expectEqual(@as(usize, 1), wf.jobs.len);
     try testing.expectEqual(@as(usize, 0), wf.jobs[0].needs.len);
+}
+
+test "an empty run: block scalar offers no shell insertion point (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const head = "on: push\njobs:\n  d:\n    runs-on: windows-latest\n    steps:\n      - run: |";
+
+    var empty = yaml_parser_mod.Parser.init(alloc, head ++ "\n");
+    const wf_empty = try parseWorkflow(alloc, try empty.parse());
+    try testing.expect(wf_empty.jobs[0].steps[0].shell_insertion_byte == null);
+
+    var filled = yaml_parser_mod.Parser.init(alloc, head ++ "\n          echo hi\n");
+    const wf_filled = try parseWorkflow(alloc, try filled.parse());
+    try testing.expect(wf_filled.jobs[0].steps[0].shell_insertion_byte != null);
 }
 
 test "a step with: that is not a mapping is a type mismatch, not a parse failure (fuzz)" {
