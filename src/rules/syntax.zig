@@ -1951,6 +1951,44 @@ test "SYN003: permissions mapping is allowed to be empty" {
     }
 }
 
+test "SYN003: implicit-null permissions is reported instead of failing the parse" {
+    const source =
+        \\on: push
+        \\permissions:
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permissions:
+        \\    steps:
+        \\      - run: echo ok
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{ sectionMsg("permissions"), sectionMsg("permissions") });
+}
+
+test "SYN003: empty concurrency is reported instead of failing the parse" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency: {}
+        \\    steps:
+        \\      - run: echo ok
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try lintYaml(source, &diags);
+
+    try expectSyn003(diags, &.{ sectionMsg("concurrency"), sectionMsg("concurrency") });
+}
+
 test "SYN003: empty jobs mapping is reported" {
     const source =
         \\on: push

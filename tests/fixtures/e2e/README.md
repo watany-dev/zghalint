@@ -78,6 +78,7 @@ Two checks run on all fixtures, with no directive needed:
 | `syn009-privileged-trigger-fix.yml` | #346: `--fix` leaves a `pull_request_target` typo; `--fix-unsafe` rewrites it |
 | `syn001-sibling-rename.yml` | #347: `--fix` leaves `runs-onn` when `runs-on` is already a sibling |
 | `syn001-sec007-permissions-collision.yml` | #348: `--fix-unsafe` keeps the SYN001 rename of `prmissions` and drops the SEC007 insert |
+| `syn003-empty-permissions-concurrency.yml` | #364 repro: empty `permissions:` / `concurrency:` report SYN003 and the file keeps linting |
 | `syntax.yml` | Schema, type, and duplicate-ID violations |
 | `syn010-syn011-event-config.yml` | #66/#67: invalid `types:` values and filters the event does not offer |
 | `syn014-syn015-cron.yml` | #70/#71: invalid `schedule` cron syntax and sub-5-minute intervals |

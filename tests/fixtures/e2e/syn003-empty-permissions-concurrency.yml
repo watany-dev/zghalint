@@ -1,0 +1,15 @@
+# zghalint:expect SYN003@7 SYN003@8 SYN003@13 SYN003@14 BP002@15
+# #364: an empty `permissions:` / `concurrency:` is a diagnostic, not a parse
+# failure that swallows every other finding in the file.
+name: empty sections
+on: push
+permissions:
+concurrency:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+    concurrency:
+    steps:
+      - run: echo ok

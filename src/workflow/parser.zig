@@ -103,6 +103,13 @@ fn recordEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allo
     try list.append(allocator, .{ .name = name, .span = node.getSpan() });
 }
 
+/// `permissions: {}` is the deny-all form and carries meaning, so only a
+/// value-less `permissions:` counts as an empty section.
+fn recordNullSection(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, name: []const u8, node: Node) !void {
+    if (node != .null_value) return;
+    try list.append(allocator, .{ .name = name, .span = node.getSpan() });
+}
+
 fn recordTriggerNestedEmpty(list: *std.ArrayList(types.EmptySection), allocator: std.mem.Allocator, node: Node) !void {
     const mapping = switch (node) {
         .mapping => |m| m,
@@ -187,26 +194,37 @@ pub fn parseWorkflowTracked(
     else
         try parseJobs(&ctx, jobs_node);
 
+    var concurrency: ?types.Concurrency = null;
+    if (root.get("concurrency")) |n| {
+        try recordEmpty(&empty, allocator, "concurrency", n);
+        if (!isEmptyContainer(n)) {
+            concurrency = parseConcurrency(&ctx, n) catch |err| {
+                ctx.note("concurrency", n.getSpan());
+                return err;
+            };
+        }
+    }
+
     var workflow = types.Workflow{
         .name = root.getScalar("name"),
         .on = trigger,
-        .concurrency = if (root.get("concurrency")) |n| parseConcurrency(&ctx, n) catch |err| {
-            ctx.note("concurrency", n.getSpan());
-            return err;
-        } else null,
+        .concurrency = concurrency,
         .jobs = jobs,
         .type_mismatches = try type_mismatches.toOwnedSlice(allocator),
         .yaml_root = node,
     };
 
     if (root.get("permissions")) |n| {
-        const parsed = parsePermissions(allocator, n) catch |err| {
-            ctx.note("permissions", n.getSpan());
-            return err;
-        };
-        workflow.permissions = parsed.permissions;
-        workflow.permissions_meta = parsed.meta;
-        workflow.permission_problems = parsed.problems;
+        try recordNullSection(&empty, allocator, "permissions", n);
+        if (n != .null_value) {
+            const parsed = parsePermissions(allocator, n) catch |err| {
+                ctx.note("permissions", n.getSpan());
+                return err;
+            };
+            workflow.permissions = parsed.permissions;
+            workflow.permissions_meta = parsed.meta;
+            workflow.permission_problems = parsed.problems;
+        }
     }
 
     if (root.get("env")) |n| {
@@ -948,10 +966,13 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     }
 
     if (m.get("permissions")) |n| {
-        const parsed = try parsePermissions(ctx.allocator, n);
-        job.permissions = parsed.permissions;
-        job.permissions_meta = parsed.meta;
-        job.permission_problems = parsed.problems;
+        try recordNullSection(&empty, ctx.allocator, "permissions", n);
+        if (n != .null_value) {
+            const parsed = try parsePermissions(ctx.allocator, n);
+            job.permissions = parsed.permissions;
+            job.permissions_meta = parsed.meta;
+            job.permission_problems = parsed.problems;
+        }
     }
     if (m.get("env")) |n| {
         try recordEmpty(&empty, ctx.allocator, "env", n);
@@ -963,7 +984,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
     if (m.get("concurrency")) |n| {
-        job.concurrency = try parseConcurrency(ctx, n);
+        try recordEmpty(&empty, ctx.allocator, "concurrency", n);
+        if (!isEmptyContainer(n)) {
+            job.concurrency = try parseConcurrency(ctx, n);
+        }
     }
     if (m.get("strategy")) |n| {
         try recordEmpty(&empty, ctx.allocator, "strategy", n);
