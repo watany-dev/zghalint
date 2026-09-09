@@ -130,6 +130,21 @@ const builtin_seeds: []const []const u8 = &.{
     // post hooks, a docker runner, outputs and branding.
     "name: a\ndescription: d\nbranding:\n  icon: activity\n  color: blue\ninputs:\n  x:\n    description: d\n    default: \"1\"\noutputs:\n  o:\n    description: d\n    value: ${{ steps.s.outputs.v }}\nruns:\n  using: node20\n  main: dist/index.js\n  pre: dist/pre.js\n  post: dist/post.js\n",
     "name: a\ndescription: d\nruns:\n  using: docker\n  image: Dockerfile\n  args:\n    - ${{ inputs.x }}\n  env:\n    A: 1\n",
+    // `permissions:` as a mapping of scopes, which no seed writes: the only
+    // ones here are `write-all` and the absent form.
+    "on: push\npermissions:\n  contents: read\n  id-token: write\njobs:\n  b:\n    permissions: {}\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n  c:\n    permissions:\n      contents: write\n      pull-requests: write\n      actions: none\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+    // A whole workflow in flow style. Every span the fix engine anchors on
+    // then sits inside `{}` / `[]` rather than on a line of its own.
+    "{on: push, jobs: {b: {runs-on: ubuntu-latest, steps: [{run: 'echo hi'}, {uses: actions/checkout@v4, with: {ref: main}}]}}}\n",
+    // The expression surface beyond the status functions: indexing, nesting a
+    // call inside a string, and the JSON helpers the matrix form uses.
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix: ${{ fromJSON(needs.a.outputs.m) }}\n    steps:\n      - run: echo \"${{ format('{0}-{1}', github.event.inputs['x'], toJSON(matrix)) }}\"\n        if: ${{ !cancelled() && join(github.event.commits.*.id, ',') != '' }}\n        env:\n          E: ${{ github.event['pull_request']['title'] }}\n",
+    // Multibyte text in keys, values and comments. Every span a rule reports
+    // and every byte the fix engine inserts at is an offset into these bytes.
+    "name: ワークフロー \u{1F600}\non: push\njobs:\n  ジョブ:\n    runs-on: ubuntu-latest\n    steps:\n      - name: ステップ\n        run: echo \"日本語 ${{ github.event.issue.title }}\" # コメント\n",
+    // A comment on every line, including between a key and its block. An
+    // insertion anchored on the block's first entry lands after them.
+    "# top\non: push # trailing\n# before jobs\njobs: # on the key\n  # before the id\n  b:\n    # before runs-on\n    runs-on: ubuntu-latest # trailing\n    steps:\n      # before the step\n      - run: echo hi # trailing\n",
 };
 
 /// Tokens spliced in by the mutator. Anything a rule or the fix builder keys
@@ -185,6 +200,12 @@ const dictionary: []const []const u8 = &.{
         "using: node20",                   "using: docker",                   "main:",
     "pre:",                "post:",                           "image:",                          "args:",
     "entrypoint:",         "branding:",
+    // The permission scopes, the JSON and formatting helpers, and a multibyte
+    // run of bytes the span math has to carry through unchanged.
+                          "id-token:",                       "contents:",
+    "pull-requests:",      "write-all",                       "fromJSON(",                       "toJSON(",
+    "format(",             "join(",                           "['x']",                           ".*",
+    "!cancelled()",        "日本語",                       "\u{1F600}",
 };
 
 const Mutator = struct {
