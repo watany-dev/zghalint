@@ -551,7 +551,7 @@ EXPR011 は `matrix.<key>` の第 1 セグメントだけを軸名 / `include:` 
 参照する `run:` / `with:` が複数ジョブで出た。セルによってキーが違う場合は
 和集合を宣言済みとみなし、値が式のセルはその軸では沈黙する。
 
-#### G31 (#383). DEP003 が `$/` の自己参照 `uses:` を形式不正にする — 要ルール修正
+#### G31 (#383). DEP003 が `$/` の自己参照 `uses:` を形式不正にする — 対応済み
 
 `bench/cases/g-reusable/self-repository-prefix.yml`。
 
@@ -570,7 +570,7 @@ jobs:
 §4.3 の `self-repository` (zizmor が `./` を `$/` へ書き換えろと勧める指摘)
 は引き続き採用しない。こちらは既に書かれた `$/` を誤って弾く誤検出。
 
-#### G32 (#384). RUNNER002 が `ubuntu-slim` を未知ラベルにする — 要データ更新
+#### G32 (#384). RUNNER002 が `ubuntu-slim` を未知ラベルにする — 対応済み
 
 `bench/cases/h-practices/ubuntu-slim-runner.yml`。
 
@@ -586,7 +586,7 @@ error を出す。actionlint 1.7.7 も未知とするが、指摘は誤り。`ma
 は `macos-15` の接尾辞として受理される一方、`ubuntu-slim` はどの現行ラベルの
 接尾辞にもならない。表を足すときは現行の公式ラベル一覧と突き合わせる。
 
-#### G33 (#386). SEC016 が tag push のリリースを対象にしない — 要ルール改善
+#### G33 (#386). SEC016 が tag push のリリースを対象にしない — 対応済み
 
 `bench/cases/h-practices/cache-on-tag-push.yml`。
 
@@ -979,6 +979,6 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
 - [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する
 - [ ] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
-- [ ] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
-- [ ] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める
-- [ ] G33 (#386): SEC016 の対象に `on.push.tags` を含める
+- [x] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
+- [x] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める
+- [x] G33 (#386): SEC016 の対象に `on.push.tags` を含める
