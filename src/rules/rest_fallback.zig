@@ -154,16 +154,23 @@ fn matchShasInRefs(
 
     // Each annotated tag is dereferenced once and compared against every
     // still-unresolved target, rather than once per target.
+    var deref_failed = false;
     for (annotated_shas[0..annotated_count]) |tag_sha| {
         if (unresolved == 0) break;
-        const commit_sha = dereferenceAnnotatedTag(allocator, owner, repo, tag_sha) catch continue;
+        const commit_sha = dereferenceAnnotatedTag(allocator, owner, repo, tag_sha) catch {
+            deref_failed = true;
+            continue;
+        };
         defer allocator.free(commit_sha);
         unresolved -= markMatches(commit_sha, targets, out);
     }
 
-    // Annotated tags that were never dereferenced, or a possibly truncated
-    // page, mean "no match" cannot be asserted.
-    if (annotated_overflow or items.len >= 100) return;
+    // Annotated tags that were never dereferenced, whose peel request failed,
+    // or a possibly truncated page, mean "no match" cannot be asserted. A
+    // failed peel is the common case when GitHub is unreachable: the listing
+    // came from cache or a proxy, and calling every annotated tag "no tag"
+    // turns a properly tagged SHA into a false SC005 (#372).
+    if (annotated_overflow or deref_failed or items.len >= 100) return;
 
     for (out) |*res| {
         if (res.* != .has_tag) res.* = .no_tag;
@@ -539,7 +546,7 @@ test "resolveTagsForShas: empty input is a no-op that issues no request" {
     try resolveTagsForShas(arena.allocator(), "o", "r", &.{}, &out);
 }
 
-test "matchShaInRefs: annotated tags fail to dereference offline -> no_tag" {
+test "matchShaInRefs: annotated tags that fail to dereference -> unknown" {
     rules_engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
     defer rules_engine.clearNetworkDeadline();
 
@@ -552,7 +559,23 @@ test "matchShaInRefs: annotated tags fail to dereference offline -> no_tag" {
         \\]
     ;
     const result = matchShaInRefs(arena.allocator(), body, "ffffffffffffffffffffffffffffffffffffffff", "o", "r");
-    try testing.expectEqual(TagResolution.no_tag, result);
+    try testing.expectEqual(TagResolution.unknown, result);
+}
+
+test "matchShaInRefs: a lightweight match survives a failed peel of another tag" {
+    rules_engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    defer rules_engine.clearNetworkDeadline();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const body =
+        \\[
+        \\  {"ref":"refs/tags/v1","object":{"sha":"tagsha111111111111111111111111111111111","type":"tag"}},
+        \\  {"ref":"refs/tags/v2","object":{"sha":"hit","type":"commit"}}
+        \\]
+    ;
+    const result = matchShaInRefs(arena.allocator(), body, "hit", "o", "r");
+    try testing.expectEqual(TagResolution.has_tag, result);
 }
 
 test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" {
