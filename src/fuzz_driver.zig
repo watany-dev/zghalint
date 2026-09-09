@@ -103,6 +103,20 @@ const builtin_seeds: []const []const u8 = &.{
     // A composite action and a reusable workflow's input surface.
     "name: a\ndescription: d\ninputs:\n  x:\n    required: true\nruns:\n  using: composite\n  steps:\n    - run: echo ${{ inputs.x }}\n      shell: bash\n",
     "on:\n  workflow_call:\n    inputs:\n      x:\n        type: string\n        required: true\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ inputs.y }}\n",
+    // Block scalars whose indentation the campaign proved the fix anchors turn
+    // on: an explicit indentation indicator, chomping, and content that starts
+    // further left than its own key.
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |2\n         echo hi\n",
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |+\n\n\n      - run: >-\n          echo hi\n",
+    // Job sections no seed reaches: a matrix with include / exclude, an
+    // environment, a service container and job-level defaults and outputs.
+    "on: push\njobs:\n  b:\n    runs-on: ${{ matrix.os }}\n    environment:\n      name: prod\n      url: https://x\n    defaults:\n      run:\n        shell: bash\n        working-directory: ./sub\n    outputs:\n      o: ${{ steps.s.outputs.v }}\n    strategy:\n      fail-fast: false\n      max-parallel: 2\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n        include:\n          - os: ubuntu-latest\n            n: 20\n        exclude:\n          - os: macos-latest\n    services:\n      db:\n        image: postgres:16\n        ports:\n          - 5432:5432\n        options: --health-cmd pg_isready\n    container:\n      image: node:20\n      credentials:\n        username: u\n        password: ${{ secrets.P }}\n    steps:\n      - id: s\n        run: echo v=1 >> $GITHUB_OUTPUT\n",
+    // Shapes the YAML layer alone decides: a tag, an explicit key, a directive,
+    // a quoted key, and a second document after the workflow.
+    "%YAML 1.2\n---\n!!map\non: !!str push\n? jobs\n: b:\n    runs-on: ubuntu-latest\n---\nsecond: doc\n",
+    "\"on\": push\n'jobs':\n  \"b\":\n    runs-on: ubuntu-latest\n",
+    // CRLF throughout: every span the rules report is a byte offset into this.
+    "on: push\r\njobs:\r\n  b:\r\n    runs-on: ubuntu-latest\r\n    steps:\r\n      - run: echo hi\r\n",
 };
 
 /// Tokens spliced in by the mutator. Anything a rule or the fix builder keys
@@ -138,6 +152,14 @@ const dictionary: []const []const u8 = &.{
     "using: composite",    "description:",                    "inputs:",                         "required:",
     "type:",               "default:",                        "**/*.yml",                        "*",
     "?",                   "**",
+    // The block scalar header, which decides where the content starts and
+    // therefore where an inserted key lands.
+                                 "|2",                              "|-2",
+    "|+",                  ">2",                              ">+",                              "|1",
+    // Shapes only the YAML layer sees: tags, directives, explicit keys, a lone
+    // carriage return, and a colon with no space after it.
+    "!!str",               "!!map",                           "!tag",                            "%YAML 1.2",
+    "? ",                  "\r",                              ":x",                              " \n",
 };
 
 const Mutator = struct {
@@ -180,7 +202,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 10)) {
+        switch (self.rng.uintLessThan(u8, 11)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -234,6 +256,22 @@ const Mutator = struct {
                 const a = self.rng.uintLessThan(usize, len);
                 const b = self.rng.uintLessThan(usize, len);
                 std.mem.swap(u8, &buf.items[a], &buf.items[b]);
+            },
+            // Re-indent a whole line to an arbitrary width. Stepping by two
+            // keeps a line on the grid the surrounding block already uses; the
+            // bugs live off it, where a line is deeper than its parent but
+            // shallower than its sibling.
+            10 => {
+                if (len == 0) return;
+                const at = self.rng.uintLessThan(usize, len);
+                const start = if (std.mem.lastIndexOfScalar(u8, buf.items[0..at], '\n')) |i| i + 1 else 0;
+                var old: usize = 0;
+                while (start + old < len and (buf.items[start + old] == ' ' or buf.items[start + old] == '\t')) {
+                    old += 1;
+                }
+                const spaces = "                ";
+                const want = self.rng.uintAtMost(usize, spaces.len);
+                try buf.replaceRange(alloc, start, old, spaces[0..want]);
             },
             else => unreachable,
         }
