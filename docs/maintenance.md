@@ -45,6 +45,7 @@
 |---|---|---|
 | `build.zig.zon` の `.version` | `--version` 出力の元（`build.zig` 経由） | `release.yml` の `verify` がタグと突き合わせる |
 | `action.yml` の `FALLBACK_VERSION` | ref がリリースタグでない（SHA ピン・移動メジャータグ・ブランチ）ときのダウンロード先 | `ci.yml` の `lint` と `release.yml` の `verify` |
+| `install.sh` の `DEFAULT_VERSION` | `curl \| sh` に `--version` を渡さなかったときのダウンロード先 | `ci.yml` の `lint` と `release.yml` の `verify` |
 | `README.md` の `uses: watany-dev/zghalint@v...` の例 | 利用者向けの記載 | `ci.yml` の `lint` と `release.yml` の `verify` |
 
 `ci.yml` は `build.zig.zon` との一致だけを見る（引数なし実行）。`release.yml` は
@@ -66,8 +67,9 @@
 ### 手順
 
 1. `build.zig.zon` の `.version` を新しいバージョンに更新する
-2. `action.yml` の `FALLBACK_VERSION` と `README.md` の例を同じバージョンへ揃え、
-   `./scripts/check-version-sync.sh` で確認する
+2. `action.yml` の `FALLBACK_VERSION`、`install.sh` の `DEFAULT_VERSION`、
+   `README.md` の例を同じバージョンへ揃え、`./scripts/check-version-sync.sh`
+   で確認する
 3. コミットして `main` へ入れる
 4. `git tag v<version> && git push origin v<version>` — 3 を入れた時点で
    `FALLBACK_VERSION` は未公開のリリースを指す。その間に `main` のコミットを
@@ -77,6 +79,44 @@
    - ビルドしたバイナリの `--version` 出力がタグと一致すること
 
 不一致があれば `::error::` を出して落ちるので、タグを打ち直す。
+
+## 配布経路
+
+リリース資産のほかに、`curl | sh` と Homebrew の 2 経路がある。どちらも
+公開済みの `SHA256SUMS` を照合するので、資産が揃う前に走らせてはならない。
+
+### install.sh
+
+リポジトリ直下の `install.sh`。利用者は `main` の raw URL から取得して実行する
+ため、**`main` に入った時点で公開されている**（タグは介在しない）。壊すと
+`curl | sh` が即座に壊れることに注意する。
+
+| 項目 | 場所 |
+|---|---|
+| 既定のダウンロード先 | `DEFAULT_VERSION`（上のバージョン表） |
+| 対応 target | linux / macos × x86_64 / aarch64。Windows はリリースページと action へ案内して終了 |
+| 単体テスト | `tests/pbt/test_install_sh.py`（`file://` に置いた偽リリースへ `ZGHALINT_BASE_URL` を向ける） |
+| lint | `ci.yml` の `lint` が `shellcheck install.sh` |
+| リリース時の実地確認 | `release.yml` の `smoke` が Unix ランナーで実際に公開資産を入れて `--version` を突き合わせる |
+
+### Homebrew tap
+
+`release.yml` の `homebrew` ジョブが `watany-dev/homebrew-tap` の
+`Formula/zghalint.rb` を書き換える。
+
+- formula は `scripts/gen-homebrew-formula.sh <tag> <SHA256SUMS>` が生成する。
+  チェックサムは公開済みの `SHA256SUMS` をそのまま読む（作り直すと formula が
+  利用者のダウンロードするアーカイブと別物を指しうる）
+- プレリリース（`-rc.`）はスキップする。`brew install` した利用者に検証中の
+  ビルドを渡さないため
+- 書き込みは Contents API 1 コミット。チェックアウトして push すると認証情報が
+  ワークスペースに残る（SEC015 / zizmor の artipacked）
+- 事前に必要なもの: tap リポジトリ `watany-dev/homebrew-tap` が存在すること、
+  および `contents: write` を持つ PAT を zghalint 側の secret
+  `HOMEBREW_TAP_TOKEN` に置くこと。secret が空ならジョブは `::warning::` を
+  出して何もせず成功する（リリース自体は止めない）
+- 生成物の妥当性は `ci.yml` の `lint` が毎回確認する（ダミーの `SHA256SUMS` で
+  生成して `ruby -c`、およびエントリ欠落時に落ちること）
 
 ## 依存の更新
 
