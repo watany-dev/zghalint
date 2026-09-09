@@ -1146,6 +1146,19 @@ fn parseSteps(ctx: *ParseContext, node: Node, steps_key_line: u32) ParseError![]
     return steps;
 }
 
+/// True when a block scalar has not fixed its own indentation yet. YAML takes
+/// the indentation from the first non-empty content line, so a scalar that has
+/// none still claims whatever is written below it. An empty block scalar has no
+/// content at all and is reported as its bare `|` or `>` indicator.
+fn blockScalarIndentationOpen(value: []const u8) bool {
+    if (std.mem.indexOfScalar(u8, value, '\n') == null) return true;
+    var lines = std.mem.splitScalar(u8, value, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOfNone(u8, line, " \t") != null) return false;
+    }
+    return true;
+}
+
 fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     const m = switch (node) {
         .mapping => |mp| mp,
@@ -1189,17 +1202,15 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
+        // A block scalar whose indentation is still open swallows the line
+        // below it as content, so a key inserted there is not a key at all
+        // and --fix appends it again every round (fuzz).
         var indentation_open = false;
         switch (entry.value) {
             .scalar => |s| {
                 step.run_meta = .{ .value_span = s.span, .style = s.style };
-                // A block scalar with no content lines has not fixed its own
-                // indentation yet: the first indented line below it becomes
-                // its content, so a key inserted there is not a key at all
-                // (fuzz). Content always ends in a newline; an empty one is
-                // reported as the bare `|` or `>` indicator.
                 indentation_open = (s.style == .literal or s.style == .folded) and
-                    std.mem.indexOfScalar(u8, s.value, '\n') == null;
+                    blockScalarIndentationOpen(s.value);
             },
             else => {},
         }
@@ -3188,6 +3199,12 @@ test "an empty run: block scalar offers no shell insertion point (fuzz)" {
     var empty = yaml_parser_mod.Parser.init(alloc, head ++ "\n");
     const wf_empty = try parseWorkflow(alloc, try empty.parse());
     try testing.expect(wf_empty.jobs[0].steps[0].shell_insertion_byte == null);
+
+    // Blank lines do not fix the indentation either: the first non-empty line
+    // does, and this scalar still has none.
+    var blank = yaml_parser_mod.Parser.init(alloc, head ++ "\n\n");
+    const wf_blank = try parseWorkflow(alloc, try blank.parse());
+    try testing.expect(wf_blank.jobs[0].steps[0].shell_insertion_byte == null);
 
     var filled = yaml_parser_mod.Parser.init(alloc, head ++ "\n          echo hi\n");
     const wf_filled = try parseWorkflow(alloc, try filled.parse());
