@@ -56,11 +56,10 @@ fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
     checkEmptySections(step.empty_sections, list);
 }
 
-/// A file with no content at all cannot become a `Workflow`: the parser needs
-/// `on` and `jobs` and gives up, which would drop the whole file as unlintable
-/// (exit code 2). An emptied-out workflow that was never deleted is a finding
-/// of its own, so the CLI runs this on the YAML document before parsing and
-/// reports SYN020 instead. Returns whether the document was empty.
+/// An emptied-out workflow that was never deleted is a finding of its own, but
+/// the workflow parser needs `on` and `jobs` and gives up on it, which would
+/// drop the file as unlintable. So SYN020 is reported from the YAML document,
+/// before the parse the CLI skips when this returns true.
 pub fn lintEmptyWorkflow(root: Node, list: *DiagnosticList) bool {
     const empty = switch (root) {
         .null_value => true,
@@ -1389,9 +1388,9 @@ pub const rules = [_]Rule{
         .category = .syntax,
         .check_job = &checkMatrixIncludeExclude,
     },
-    // Reported by `lintEmptyWorkflow` before the workflow parser runs, so
-    // there is no `check_*` to hang it on; the entry exists so the ID is
-    // configurable and documented like every other rule.
+    // `lintEmptyWorkflow` runs before the workflow parser, so there is no
+    // `check_*` to hang this on; the entry exists so the ID is configurable
+    // and documented like every other rule.
     .{
         .id = "SYN020",
         .name = "empty-workflow",
