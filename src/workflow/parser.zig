@@ -1588,6 +1588,10 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                     .image = s.value,
                 };
             },
+            // A service written with nothing under it names no image. It is
+            // reported as an empty section; failing the whole workflow parse
+            // over it dropped every other diagnostic too (fuzz).
+            .null_value => services[i] = .{ .name = entry.key.value },
             else => return error.InvalidValue,
         }
     }
@@ -2652,6 +2656,21 @@ test "an empty container credentials: does not fail the parse (fuzz)" {
     const wf = try parseWorkflow(alloc, try parser.parse());
     try testing.expectEqualStrings("node:20", wf.jobs[0].container.?.image.?);
     try testing.expect(wf.jobs[0].container.?.credentials == null);
+}
+
+test "a service with nothing under it does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    services:\n      redis:\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqualStrings("redis", wf.jobs[0].services[0].name);
+    try testing.expect(wf.jobs[0].services[0].image == null);
 }
 
 test "parseJob with container credentials" {
