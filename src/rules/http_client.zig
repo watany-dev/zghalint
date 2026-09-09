@@ -11,6 +11,12 @@ var client_storage: std.http.Client = undefined;
 var client_initialized: bool = false;
 var client_mutex: std.Thread.Mutex = .{};
 
+/// Set by `init`, cleared by the first `fetch`, which is where the CA bundle
+/// scan actually runs. A run that never touches the network (`--offline`, or
+/// every lookup served from the disk cache) then never pays for reading and
+/// parsing the certificate files, which dominated small offline runs.
+var custom_ca_pending: bool = false;
+
 /// Owns the `Proxy` structs `initDefaultProxies` allocates. `Client.deinit`
 /// does not free those, so they live in this arena until we tear down.
 var proxy_arena: std.heap.ArenaAllocator = undefined;
@@ -25,7 +31,7 @@ pub fn init(allocator: Allocator) void {
     client_storage = .{ .allocator = allocator };
     proxy_arena = .init(allocator);
     client_storage.initDefaultProxies(proxy_arena.allocator()) catch {};
-    applyCustomCa(allocator);
+    custom_ca_pending = true;
     client_initialized = true;
 }
 
@@ -36,6 +42,13 @@ pub fn deinit() void {
     client_storage.deinit();
     proxy_arena.deinit();
     client_initialized = false;
+}
+
+/// The caller holds `client_mutex`.
+fn applyPendingCustomCa() void {
+    if (!custom_ca_pending) return;
+    custom_ca_pending = false;
+    applyCustomCa(client_storage.allocator);
 }
 
 /// Zig's default CA scan uses hardcoded system paths and ignores
@@ -153,6 +166,7 @@ pub fn fetch(
     if (!client_initialized) return error.NotInitialized;
     client_mutex.lock();
     defer client_mutex.unlock();
+    applyPendingCustomCa();
     return client_storage.fetch(opts) catch return error.FetchFailed;
 }
 
@@ -267,21 +281,33 @@ test "init honors HTTPS_PROXY (#336)" {
     try testing.expectEqual(@as(u16, 8080), proxy.port);
 }
 
-test "init ignores a missing SSL_CERT_FILE without failing (#336)" {
+test "init defers the CA bundle scan until the first fetch" {
+    if (client_initialized) return error.SkipZigTest;
+    init(testing.allocator);
+    defer deinit();
+    try testing.expect(custom_ca_pending);
+
+    applyPendingCustomCa();
+    try testing.expect(!custom_ca_pending);
+}
+
+test "fetch ignores a missing SSL_CERT_FILE without failing (#336)" {
     if (client_initialized) return error.SkipZigTest;
     var env = try test_support.EnvGuard.set(testing.allocator, "SSL_CERT_FILE", "/no/such/ca.pem");
     defer env.deinit();
     init(testing.allocator);
     defer deinit();
+    applyPendingCustomCa();
     try testing.expect(client_initialized);
 }
 
-test "init ignores a relative SSL_CERT_FILE without panicking (#336)" {
+test "fetch ignores a relative SSL_CERT_FILE without panicking (#336)" {
     if (client_initialized) return error.SkipZigTest;
     var env = try test_support.EnvGuard.set(testing.allocator, "SSL_CERT_FILE", "not-absolute.pem");
     defer env.deinit();
     init(testing.allocator);
     defer deinit();
+    applyPendingCustomCa();
     try testing.expect(client_initialized);
 }
 

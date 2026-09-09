@@ -130,9 +130,9 @@ const ExprIter = struct {
     pos: usize = 0,
 
     fn next(self: *ExprIter) ?ExprSpan {
-        while (std.mem.indexOfPos(u8, self.s, self.pos, "${{")) |open| {
+        while (findExprOpen(self.s, self.pos)) |open| {
             const inner_start = open + 3;
-            const close = std.mem.indexOfPos(u8, self.s, inner_start, "}}") orelse {
+            const close = findExprClose(self.s, inner_start) orelse {
                 self.pos = self.s.len;
                 return null;
             };
@@ -145,6 +145,25 @@ const ExprIter = struct {
         return null;
     }
 };
+
+/// `indexOfPos` with a needle this short compares byte by byte, while
+/// `indexOfScalarPos` is vectorised; `$` is rare in a `run:` body, so hopping
+/// between candidates and checking the two bytes after each is much cheaper.
+fn findExprOpen(s: []const u8, start: usize) ?usize {
+    var pos = start;
+    while (std.mem.indexOfScalarPos(u8, s, pos, '$')) |i| : (pos = i + 1) {
+        if (std.mem.startsWith(u8, s[i..], "${{")) return i;
+    }
+    return null;
+}
+
+fn findExprClose(s: []const u8, start: usize) ?usize {
+    var pos = start;
+    while (std.mem.indexOfScalarPos(u8, s, pos, '}')) |i| : (pos = i + 1) {
+        if (i + 1 < s.len and s[i + 1] == '}') return i;
+    }
+    return null;
+}
 
 fn findExpr(s: []const u8, comptime pred: fn ([]const u8) bool) ?ExprMatch {
     var it: ExprIter = .{ .s = s };
@@ -350,6 +369,9 @@ fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNam
         var table = base;
         table.tainted_jobs = out.slice();
         for (wf.jobs) |*job| {
+            // Only `outputs:` can export a value, so a job without one never
+            // joins the set and its steps need no walk here.
+            if (job.outputs.len == 0) continue;
             if (out.contains(job.id)) continue;
             if (!walkJobTaint(job, table, workflow_env, null, wf)) continue;
             out.append(job.id);
@@ -600,9 +622,21 @@ fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
     forEachStepScalar(step, .{}, list, scan);
 }
 
-fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+/// The distinct first bytes of `secret_prefixes`, so one `indexOfAny` sweep
+/// finds every position worth comparing instead of one `indexOf` per prefix.
+const secret_prefix_heads = blk: {
+    var heads: []const u8 = &.{};
     for (secret_prefixes) |prefix| {
-        if (std.mem.indexOf(u8, s, prefix)) |offset| {
+        if (std.mem.indexOfScalar(u8, heads, prefix[0]) == null) heads = heads ++ [_]u8{prefix[0]};
+    }
+    break :blk heads;
+};
+
+fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+    var pos: usize = 0;
+    while (std.mem.indexOfAnyPos(u8, s, pos, secret_prefix_heads)) |offset| : (pos = offset + 1) {
+        for (secret_prefixes) |prefix| {
+            if (!std.mem.startsWith(u8, s[offset..], prefix)) continue;
             list.append(.{
                 .rule_id = "SEC003",
                 .severity = .@"error",
@@ -610,7 +644,7 @@ fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
                 .span = anchor.at(s, offset, prefix.len),
                 .fix_hint = "use a GitHub secret (secrets.YOUR_SECRET) instead of hardcoding credentials",
             }) catch return;
-            return; // One diagnostic per string is enough
+            return;
         }
     }
 }
@@ -2132,6 +2166,11 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
 /// The pattern only needs to be a prefix of the reference, because everything
 /// below an untrusted node is untrusted too.
 fn pathMatchesPattern(path: ContextPath, pattern: []const u8) bool {
+    // Most references in a real workflow are `steps.*`, `matrix.*` or a
+    // function name, and most patterns are `github.*`: comparing the first
+    // byte of the root rejects those pairs without splitting the pattern.
+    if (path.len > 0 and path.segments[0].len > 0 and pattern.len > 0 and pattern[0] != '*' and
+        std.ascii.toLower(path.segments[0][0]) != std.ascii.toLower(pattern[0])) return false;
     var it = std.mem.splitScalar(u8, pattern, '.');
     var idx: usize = 0;
     while (it.next()) |pat_seg| : (idx += 1) {
@@ -3280,6 +3319,24 @@ test "SEC003: sk-test_ pattern detected" {
     var list = runStep(.{ .run = "export KEY=sk-test_abcdefg" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
+}
+
+test "SEC003: the diagnostic points at the earliest secret, not the first prefix in the list" {
+    var list = runStep(.{
+        .run = "echo AKIAIOSFODNN7EXAMPLE ghp_abcdefghijklmnop",
+        .run_meta = .{ .value_span = Span.point(1, 1, 0), .style = .plain },
+    });
+    defer list.deinit();
+    const diag = findDiagnostic(&list, "SEC003") orelse return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 5), diag.span.start_byte);
+    try testing.expectEqual(@as(usize, 9), diag.span.end_byte);
+    try testing.expectEqual(@as(usize, 1), list.len());
+}
+
+test "SEC003: a head byte that does not start a prefix is skipped" {
+    var list = runStep(.{ .run = "git status && say Ask sk-later xox-not gh_" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC003"));
 }
 
 test "SEC004: write-all at workflow level" {
@@ -6346,6 +6403,26 @@ test "ExprIter: a run of unclosed ${{ is scanned once" {
     const first = it2.next() orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings(" a ${{ github.event.issue.title ", first.inner);
     try testing.expect(it2.next() == null);
+}
+
+test "ExprIter: a lone $ or } is stepped over, not treated as a delimiter" {
+    var it: ExprIter = .{ .s = "echo $HOME ${VAR} } ${{ a } b }} ${{" };
+    const first = it.next() orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings(" a } b ", first.inner);
+    try testing.expectEqual(@as(usize, 20), first.match.offset);
+    try testing.expectEqual(@as(usize, 12), first.match.len);
+    try testing.expect(it.next() == null);
+
+    var none: ExprIter = .{ .s = "$ { { a } }" };
+    try testing.expect(none.next() == null);
+}
+
+test "pathMatchesPattern: the root fast reject keeps case-insensitive and wildcard matches" {
+    try testing.expect(pathMatchesPattern(parseContextPath("GitHub.Event.Issue.Title", 0), "github.event.issue.title"));
+    try testing.expect(pathMatchesPattern(parseContextPath("github.event.commits[0].message", 0), "github.event.commits"));
+    try testing.expect(!pathMatchesPattern(parseContextPath("steps.meta.outputs.github", 0), "github.event"));
+    try testing.expect(!pathMatchesPattern(parseContextPath("hithub.event", 0), "github.event"));
+    try testing.expect(pathMatchesPattern(parseContextPath("matrix.os", 0), "*.os"));
 }
 
 test "containsCurlWgetPipeShell: long input with many pipes stays linear" {

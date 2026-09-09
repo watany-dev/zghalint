@@ -36,6 +36,9 @@ still be renumbered before 1.0.
 - PERM002 no longer warns when the workflow already declares `permissions:`
   with no write scope. `write-all` or any `: write` at workflow level still
   asks each job to narrow the grant (#334).
+- SEC003 now anchors its diagnostic at the earliest secret-looking token in a
+  string. Previously a string holding two patterns reported the one that came
+  first in the internal prefix list; the number of findings is unchanged.
 
 ### Fixed
 

@@ -30,6 +30,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -285,17 +286,41 @@ class Measurement:
 
 
 def _run_once(cmd: Command, cwd: Path) -> tuple[float, int]:
-    """One plain run: (wall seconds, exit code)."""
+    """One plain run: (wall seconds, exit code).
+
+    `subprocess.run(timeout=...)` is deliberately avoided: with a timeout
+    CPython polls the child with sleeps that start at 0.5 ms and double up
+    to 50 ms, so a 5 ms run reads as 8-13 ms and a 20 ms run as 30-50 ms.
+    A blocking `wait()` returns as soon as the child exits; a timer thread
+    keeps the timeout by killing the child instead.
+    """
     start = time.perf_counter()
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         cmd.argv,
         cwd=str(cwd),
         env=cmd.env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        timeout=TIMEOUT_SEC,
     )
-    return time.perf_counter() - start, proc.returncode
+    timed_out = threading.Event()
+
+    def kill_on_timeout() -> None:
+        timed_out.set()
+        proc.kill()
+
+    watchdog = threading.Timer(TIMEOUT_SEC, kill_on_timeout)
+    watchdog.start()
+    try:
+        code = proc.wait()
+    except BaseException:
+        proc.kill()
+        raise
+    finally:
+        watchdog.cancel()
+    elapsed = time.perf_counter() - start
+    if timed_out.is_set():
+        raise subprocess.TimeoutExpired(cmd.argv, TIMEOUT_SEC)
+    return elapsed, code
 
 
 def gnu_time() -> str | None:
