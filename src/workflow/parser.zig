@@ -1050,13 +1050,13 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     if (m.get("container")) |n| {
         try recordEmpty(&empty, ctx.allocator, "container", n);
         if (!isEmptyContainer(n)) {
-            job.container = try parseContainer(ctx.allocator, n);
+            job.container = try parseContainer(ctx.allocator, n, ctx.type_mismatches);
         }
     }
     if (m.get("services")) |n| {
         try recordEmpty(&empty, ctx.allocator, "services", n);
         if (!isEmptyContainer(n)) {
-            job.services = try parseServices(ctx.allocator, n);
+            job.services = try parseServices(ctx.allocator, n, ctx.type_mismatches);
         }
     }
     if (m.get("outputs")) |n| {
@@ -1539,22 +1539,29 @@ fn parseSecretsConfig(allocator: std.mem.Allocator, node: Node) ParseError!types
     }
 }
 
-fn parseCredentials(node: Node) ParseError!?types.Credentials {
-    const m = switch (node) {
-        .mapping => |m| m,
-        // A `credentials:` written with nothing under it carries no username
-        // and no password. Rejecting it failed the whole workflow parse over
-        // one blank section, so every other rule went unreported (fuzz).
-        .null_value => return null,
-        else => return error.InvalidValue,
-    };
+fn parseCredentials(
+    node: Node,
+    mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
+    allocator: std.mem.Allocator,
+) ParseError!?types.Credentials {
+    // A `credentials:` written with nothing under it carries no username and no
+    // password, and one holding a scalar is a type error SYN004 reports.
+    // Rejecting either failed the whole workflow parse over one section, so
+    // every other rule went unreported (fuzz).
+    if (node == .null_value) return null;
+    if (!type_validation.checkMapping(node, "credentials", mismatches, allocator)) return null;
+    const m = node.mapping;
     return .{
         .username = m.getScalar("username"),
         .password = m.getScalar("password"),
     };
 }
 
-fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Container {
+fn parseContainer(
+    allocator: std.mem.Allocator,
+    node: Node,
+    mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
+) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
             return .{ .image = s.value };
@@ -1562,7 +1569,10 @@ fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Con
         .mapping => |m| {
             return .{
                 .image = m.getScalar("image"),
-                .credentials = if (m.get("credentials")) |n| try parseCredentials(n) else null,
+                .credentials = if (m.get("credentials")) |n|
+                    try parseCredentials(n, mismatches, allocator)
+                else
+                    null,
                 .env_keys = if (m.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
             };
         },
@@ -1570,7 +1580,11 @@ fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Con
     }
 }
 
-fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const types.Service {
+fn parseServices(
+    allocator: std.mem.Allocator,
+    node: Node,
+    mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
+) ParseError![]const types.Service {
     const m = switch (node) {
         .mapping => |m| m,
         else => return error.InvalidValue,
@@ -1583,7 +1597,10 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                 services[i] = .{
                     .name = entry.key.value,
                     .image = vm.getScalar("image"),
-                    .credentials = if (vm.get("credentials")) |n| try parseCredentials(n) else null,
+                    .credentials = if (vm.get("credentials")) |n|
+                        try parseCredentials(n, mismatches, allocator)
+                    else
+                        null,
                     .env_keys = if (vm.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
                 };
             },
@@ -2737,6 +2754,24 @@ test "a service with nothing under it does not fail the parse (fuzz)" {
     try testing.expect(wf.jobs[0].services[0].image == null);
 }
 
+test "a credentials: holding a scalar does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `--fix` can rename a typo into `credentials:` while the value below it is
+    // still a scalar. Failing the parse dropped every other diagnostic in the
+    // file, so the round-trip never converged.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    container:\n      image: node:20\n      credentials: u\n    steps:\n      - run: echo\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].container.?.credentials == null);
+    try testing.expectEqualStrings("credentials", wf.type_mismatches[0].field);
+}
+
 test "parseJob with container credentials" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -3137,7 +3172,7 @@ test "parseServices with scalar image" {
         .{ .key = mkScalarS("redis"), .value = mkScalar("redis:6"), .span = mkSpan() },
     };
 
-    const services = try parseServices(arena.allocator(), mkMapping(&entries));
+    const services = try parseServices(arena.allocator(), mkMapping(&entries), null);
     try testing.expectEqual(@as(usize, 1), services.len);
     try testing.expectEqualStrings("redis", services[0].name);
     try testing.expectEqualStrings("redis:6", services[0].image.?);
