@@ -882,8 +882,13 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
     // `j: runs-on: x` puts the body on the job id's line, where an insertion
-    // aligned to the body's column would land mid-line.
-    job.body_own_line = m.entries.len > 0 and m.entries[0].key.span.start_line > id_span.start_line;
+    // aligned to the body's column would land mid-line. A body that is not
+    // indented past the id is no better: `e{up: :` followed by `d:` at the id's
+    // own column parses as a body here, but an insertion aligned to it reads
+    // back as another job (fuzz).
+    job.body_own_line = m.entries.len > 0 and
+        m.entries[0].key.span.start_line > id_span.start_line and
+        m.entries[0].key.span.start_col > id_span.start_col;
     job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
     job.runs_on = m.getScalar("runs-on");
@@ -3134,6 +3139,34 @@ test "a CRLF workflow parses like its LF twin" {
     try testing.expectEqualStrings("build", wf.jobs[0].id);
     try testing.expectEqualStrings("ubuntu-latest", wf.jobs[0].runs_on.?);
     try testing.expectEqualStrings("actions/checkout@v4", wf.jobs[0].steps[0].uses.?.raw);
+}
+
+test "a job body flush with its id does not count as own-line (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `e{up: :` leaves `d:` at the job id's own column, where the mapping still
+    // reads as the job's body but an insertion aligned to it becomes a job.
+    var yp = yaml_parser_mod.Parser.init(alloc, "on:\njobs:\n  e{up: :\n  d: ");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expect(!wf.jobs[0].body_own_line);
+}
+
+test "a job body indented past its id counts as own-line" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expect(wf.jobs[0].body_own_line);
 }
 
 /// #293: a parse error used to be reported as a bare error name, leaving the
