@@ -15,7 +15,10 @@ tool reports.
     python3 scripts/bench.py --fix          # autofix cross-check (bench_fix.py)
 
 A missing external tool is reported as unavailable rather than scored, so the
-harness stays usable with only zghalint installed.
+harness stays usable with only zghalint installed. `--perf` also times ghalint,
+octoscan, poutine and action-validator when they are on PATH (see
+`scripts/install-perf-rivals.sh`); the scoring matrix stays three tools because
+the kind map is actionlint / zizmor specific.
 
 See `bench/README.md` for the header format.
 """

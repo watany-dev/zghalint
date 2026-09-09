@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-08
+最終更新: 2026-09-09
 
 ## 1. 目的
 
@@ -36,6 +36,27 @@ shellcheck が一度も走っていないという状態だった。
 その分を補正している (列番号のみブロック本文相対のまま)。
 
 これにより `# shellcheck disable=SC2086` が初めて実際に機能するようになった。
+
+### 2.2 性能比較に足すツール (`--perf` のみ)
+
+採点行列は actionlint / zizmor の 3 者のままにする。指摘 ID の対応表
+(`DEFAULT_KIND_MAP` と `bench:expect`) がこの 2 ツール向けで、方針リンターや
+スキーマ検証器を同じ kind に載せる作業は parity gap の追跡とは別物になる。
+
+`--perf` にはローカルのワークフロー YAML を lint / scan する CLI を足す。
+導入は `scripts/install-perf-rivals.sh` (Linux x86_64、SHA256 ピン)。PATH に
+無ければ「見つからない」として表に載り、計測は続く。
+
+| ツール | 版 | 何をするか |
+| --- | --- | --- |
+| ghalint | 1.5.6 | セキュリティ方針 (権限、timeout、SHA ピン) |
+| octoscan | 0.1.7 | actionlint ベースの脆弱性スキャナ |
+| poutine | 1.1.6 | CI/CD サプライチェーンスキャナ (OPA)。`--disable-version-check` |
+| action-validator | 0.9.0 | workflow / action の JSON Schema |
+
+載せないもの: frizbee / pinny / scharf / pinact (ピン留め専用)、Scorecard
+(GitHub API)、ggshield (シークレット)、Semgrep / Checkov / super-linter
+(汎用 SAST / 集約)。詳細は `bench/README.md`。
 
 ## 3. 導入時に修正した指摘
 
@@ -770,7 +791,8 @@ python3 scripts/bench.py --fix
 
 外部ツールの版は `ci.yml` の `lint` ジョブと `bench.yml` の両方に同じ
 ピン留めで書いてある (actionlint は SHA256、zizmor は
-`.github/lint-requirements.txt`)。版を上げるときは両方を同時に動かし、
+`.github/lint-requirements.txt`)。`--perf` の rival は
+`scripts/install-perf-rivals.sh` にピンする。版を上げるときは両方を同時に動かし、
 上げる前後で `scripts/bench.py` を回して増減を §4 に記録する。数字が動いても
 gate は zghalint の列しか見ないので赤くならない。
 
