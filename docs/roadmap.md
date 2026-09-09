@@ -18,7 +18,7 @@
 | ファズ | `src/fuzz_test.zig` が YAML パーサと式パーサのターゲットを持ち、CI で回る（#241）。長時間キャンペーン用に `src/fuzz_driver.zig` が単体ドライバとして立ち、PR #371 で入った。探索実行（`zig build fuzz --fuzz`）は Zig 0.15.2 のファザ側の不具合で動かず、シード資産の再生のみ（`docs/design/pbt-strategy.md` §6-4）。この経路が #364 / #366〜#370 の 6 件を掘り出し、うち #366 は PR #376 で解決した |
 | ADR | `docs/adr/0001`〜`0014`（0012 は RUNNER002 matrix 展開、0013 は RUNNER003、0014 は SEC023 trusted publishing） |
 | オープン PR | #217（形式仕様とモデル検査）・#306（bench 再実行記録）・#380（#367〜#370 の span 逆転と fix 非収束を 4 件まとめて直す）の 3 本。本ロードマップの #207 は `3951cc7` でマージ済みで、以後の同期はこのブランチが引き継ぐ。#362（#284 = G13）/ #363（#359 / #360 = G27 / G28）/ #365（性能最適化）/ #371（ファズドライバと #364〜#370 の起票）/ #373（#270 = bench 運用ループ）/ #374（install.sh と Homebrew tap）/ #376（#366 = taint テーブル溢れ）/ #377（perf bench に ghalint / octoscan / poutine / action-validator を追加）/ #379（SEC013 の GHCR login と BP007 の PowerShell 代入の FP、G29 の起票）/ #385（実運用 CI の三者比較から G30〜G32 を起票）が新たにマージされた。#306 は別セッションの PR のため本 PR からは触らない |
-| オープン issue | 13 件。内訳はファズ由来の未修正バグ 5（#364 / #367〜#370、うち #367〜#370 は PR #380 で対処中）、ドッグフーディング D6 / D7（#372 / #375）、bench 由来の parity gap 5（#281 = G10、#358 = G26、#382 = G30、#383 = G31、#384 = G32）、および bot が立てた本文「ignore」の #381（実体のない試験用で対象外）。#366 は PR #376 の `37588ef` が `ContextSet` へ畳んで重複 append を無視する形にしたため、ReleaseFast で重複 10 件・40 件・`repository_dispatch` 4 件を再現確認した上で本回 close した。ベンチマーク umbrella #262 は sub-issue 19 件が全て close したため本回で close し、#284（G13）は SYN020 の着地で、#360（G28）は EXPR007 の修正で本回 close した。#55 #64 #135 #159 #262〜#271 #273〜#276 #280 #282〜#286 #293 #294 #297〜#300 #304 #305 #307〜#314 #322〜#327 #331 #333〜#337 #346〜#349 #359 #360 #284 は実装済みのため close 済み |
+| オープン issue | 14 件。内訳はファズ由来の未修正バグ 5（#364 / #367〜#370、うち #367〜#370 は PR #380 で対処中）、ドッグフーディング D6 / D7（#372 / #375）、bench 由来の parity gap 6（#281 = G10、#358 = G26、#382 = G30、#383 = G31、#384 = G32、#386 = G33）、および bot が立てた本文「ignore」の #381（実体のない試験用で対象外）。#366 は PR #376 の `37588ef` が `ContextSet` へ畳んで重複 append を無視する形にしたため、ReleaseFast で重複 10 件・40 件・`repository_dispatch` 4 件を再現確認した上で本回 close した。ベンチマーク umbrella #262 は sub-issue 19 件が全て close したため本回で close し、#284（G13）は SYN020 の着地で、#360（G28）は EXPR007 の修正で本回 close した。#55 #64 #135 #159 #262〜#271 #273〜#276 #280 #282〜#286 #293 #294 #297〜#300 #304 #305 #307〜#314 #322〜#327 #331 #333〜#337 #346〜#349 #359 #360 #284 は実装済みのため close 済み |
 | 配布 | `install.sh`（`curl | sh` で GitHub Release から取得）と Homebrew tap（`brew install watany-dev/tap/zghalint`）が PR #374 で入った。tap は release ワークフローが `scripts/gen-homebrew-formula.sh` で更新し、`-rc.` のプレリリースは反映しない。release は provenance attestation とバイナリスモークを持つ |
 | 性能 | PR #365 が ReleaseFast のプロファイルからホットパスを削った——SEC002 の `${{` / `}}` 探索をベクトル化した `indexOfScalarPos` に、`pathMatchesPattern` を先頭バイトでの事前棄却つきに、taint 伝播の固定点を outputs を持つジョブだけに、SEC003 の秘密プレフィックス探索を 1 走査に、`didYouMean` を有界 Levenshtein の早期打ち切りに、cron の `nextAfter` を分単位から境界スキップに、terminal の `writeSanitized` を 16 バイト単位の読み飛ばしに、CA バンドル読込を最初の fetch まで遅延させた。`zig build -Dstrip` で Release でもシンボルを残せる |
 | バージョン定義 | Zig の版は `build.zig.zon` の `minimum_zig_version` 一箇所が真。参照側の一覧と更新手順は `docs/maintenance.md`（#236） |
@@ -120,12 +120,12 @@ PR #260 で埋め込みメタデータ（`src/rules/data/popular_actions.zig`）
 |---|---|---|
 | 1 | #368 / #369 / #370 | `--fix` がワークフローを壊す 3 本。#368 は挿入位置が `on:` ブロックの途中に落ち、#369 は EXPR010 の rename が収束せず式が伸び続け、#370 は SEC019 の persist-credentials が `with:` 非マッピングで無限に追記する。壊れた書き換えは誤検出より利用体験を損なう。PR #380 が #367 と併せて 4 件を扱っているので、まずはそのレビューを通す |
 | 2 | #364 / #367 | 入力側の 2 本。#364 は空の `permissions:` / `concurrency:` でファイル全体が lint 不能になり（#284 と同じ「ファイルが丸ごと落ちる」系）、#367 はマージキー `<<:` で診断の span が逆転する。#367 は PR #380 に含まれ、#364 だけが手つかずで残る |
-| 3 | #382 / #383 / #384（G30〜G32） | 実運用 CI の三者比較で出た新しい gap 3 本。#382 は EXPR011 がオブジェクト軸の未定義プロパティを見ない見逃し、#383 は DEP003 が `$/` の自己参照 `uses` を形式不正と誤判定、#384 は RUNNER002 が `ubuntu-slim` を未知ラベル扱いする。いずれも baseline に記録済みなので、直せば gate がそのまま改善を検知する |
+| 3 | #382 / #383 / #384 / #386（G30〜G33） | 実運用 CI の三者比較で出た新しい gap 4 本。#382 は EXPR011 がオブジェクト軸の未定義プロパティを見ない見逃し、#383 は DEP003 が `$/` の自己参照 `uses` を形式不正と誤判定、#384 は RUNNER002 が `ubuntu-slim` を未知ラベル扱いする。#386 は SEC016 が tag push のリリースを対象から外す見逃しで、bench ケースはまだ無い。G30〜G32 は baseline に記録済みなので、直せば gate がそのまま改善を検知する |
 | 4 | #372 / #375（D6 / D7） | 実運用リポジトリから出た FP と見逃し。D6 は SC003 の SHA ピン誤検知・SC005 の annotated tag・Release 資産欠落、D7 は EXPR007 の値 ternary・BP007 の process substitution 見逃し・SEC023 の crates.io。PR #379 が SEC013 の GHCR login と BP007 の PowerShell 代入を先に潰しており、残りが本体 |
 | 5 | #281 / #358 | bench 由来で残る旧 parity gap 2 本。#281 は `needs:` の未知 job と循環の検出（ルール追加 1 本）、#358 は BP003 が第三者アクションの古い major を見逃す |
 
-あわせて `docs/design/external-linter-parity.md` へ G26〜G32 を追記する。G25 までしか書かれておらず、
-解決済みの G27 / G28 / G29 も未解決の G26 / G30〜G32 もどこにも記録されていない。
+あわせて `docs/design/external-linter-parity.md` へ G26〜G33 を追記する。G25 までしか書かれておらず、
+解決済みの G27 / G28 / G29 も未解決の G26 / G30〜G33 もどこにも記録されていない。
 `bench/baseline.json` には数値として入っているのに、経緯を残す側が追いついていない状態である。
 
 Phase 1〜4 はすべて閉じ、ルール追加の主戦場は #55 から bench（#262）へ移り、その bench も閉じた。
