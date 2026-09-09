@@ -65,8 +65,8 @@ const known_labels = [_]KnownLabel{
     .{ .label = "ubuntu-26.04" },
     .{ .label = "ubuntu-24.04-arm" },
     .{ .label = "ubuntu-22.04-arm" },
-    // 1 vCPU Linux image; not a suffix of any other label, so it needs its own
-    // entry to stay out of RUNNER002.
+    // 1 vCPU Linux image. It does not extend any other label, so the prefix
+    // match cannot cover it and it needs its own entry.
     .{ .label = "ubuntu-slim" },
     .{ .label = "windows-latest" },
     .{ .label = "windows-2025" },

@@ -58,11 +58,12 @@ Detect security vulnerabilities in workflow definitions.
 ### SEC016 の対象
 
 成果物を公開するワークフローだけを対象にする。`on: release` を持つもの、
-`on.push` が `tags:` / `tags-ignore:` で絞られているもの（タグを切って出す
-リリース）は、ジョブ名によらずワークフロー全体が対象になる。それ以外の
-ワークフローでは、ジョブ id / 表示名に `deploy` / `release` / `publish` /
-`prod` を含むジョブだけを見る。`on: push` がブランチだけで絞られている通常の
-CI は対象外。
+`on.push` に `tags:` / `tags-ignore:` があるもの（タグ push で回る＝タグを
+切って出すリリース）は、ジョブ名によらずワークフロー全体が対象になる。
+`branches:` と併記されていても、タグ push で回ることに変わりはないので
+対象に含める。それ以外のワークフローでは、ジョブ id / 表示名に `deploy` /
+`release` / `publish` / `prod` を含むジョブだけを見る。`on: push` がブランチ
+だけで絞られている通常の CI は対象外。
 
 ### SEC015 vs SEC018
 

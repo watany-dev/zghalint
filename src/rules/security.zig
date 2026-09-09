@@ -1723,13 +1723,13 @@ fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
     return findExpr(s, exprHasSecretJsonCall);
 }
 
-/// A workflow that publishes artifacts. Besides `on: release`, a push filtered
-/// to tags is the other common shape: `v*` tags are what a release is cut from,
-/// so every job in such a workflow handles release material. A push filtered to
-/// branches only is ordinary CI and stays out of scope.
+/// A workflow that publishes artifacts. Besides `on: release`, a push that
+/// names tags is the other common shape: `v*` tags are what a release is cut
+/// from, so every job in such a workflow handles release material. `branches:`
+/// alongside it does not take the workflow out of scope — the tag pushes still
+/// run it. A push filtered to branches only is ordinary CI.
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
-    if (wf.hasEvent(.release)) return true;
-    return hasTagFilteredPush(wf);
+    return wf.hasEvent(.release) or hasTagFilteredPush(wf);
 }
 
 fn hasTagFilteredPush(wf: *const Workflow) bool {
@@ -2841,6 +2841,13 @@ const tag_push_trigger = Trigger{ .events = &[_]EventConfig{.{
 const branch_push_trigger = Trigger{ .events = &[_]EventConfig{.{
     .event = .push,
     .filter = .{ .spans = .{ .branches = test_support.dummySpan(0, 0) } },
+}} };
+const branch_and_tag_push_trigger = Trigger{ .events = &[_]EventConfig{.{
+    .event = .push,
+    .filter = .{ .spans = .{
+        .branches = test_support.dummySpan(0, 0),
+        .tags = test_support.dummySpan(0, 0),
+    } },
 }} };
 const workflow_dispatch_trigger = test_support.makeTrigger(.workflow_dispatch);
 const workflow_call_trigger = test_support.makeTrigger(.workflow_call);
@@ -4868,6 +4875,19 @@ test "SEC016: tag push + setup action caching by default" {
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
     };
     const wf = Workflow{ .name = "Release", .on = tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: a push naming both branches and tags stays in scope" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "CI", .on = branch_and_tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} };
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC016"));

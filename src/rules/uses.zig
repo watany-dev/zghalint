@@ -168,15 +168,30 @@ fn isLocalPath(raw: []const u8) bool {
 
 /// The path a local reference points at, or null when the prefix is not one of
 /// the accepted ones. `./` alone is the repository root, but `$/` alone names
-/// nothing, so an empty `$/` path is rejected along with `$//`.
+/// nothing, so an empty `$/` path is rejected along with `$//`. A `..` segment
+/// leaves the repository the reference promised to stay in, whichever prefix
+/// carries it.
 fn localPath(raw: []const u8) ?[]const u8 {
-    if (std.mem.startsWith(u8, raw, "./")) return raw["./".len..];
     if (std.mem.startsWith(u8, raw, self_repo_prefix)) {
         const path = raw[self_repo_prefix.len..];
         if (path.len == 0 or path[0] == '/') return null;
-        return path;
+        return if (escapesRoot(path)) null else path;
+    }
+    if (std.mem.startsWith(u8, raw, "./")) {
+        const path = raw["./".len..];
+        return if (escapesRoot(path)) null else path;
     }
     return null;
+}
+
+/// Windows treats `\` as a separator too, so splitting on `/` alone would let
+/// `.\\..\\..\\etc` through.
+fn escapesRoot(path: []const u8) bool {
+    var it = std.mem.splitAny(u8, path, "/\\");
+    while (it.next()) |segment| {
+        if (std.mem.eql(u8, segment, "..")) return true;
+    }
+    return false;
 }
 
 /// A GitHub login never starts with a dot, so `.github/x@v1` is a path, not
@@ -328,6 +343,13 @@ test "DEP003: $/ with an empty path is reported" {
     _ = try expectActionProblem("$//");
     _ = try expectWorkflowProblem("$/");
     _ = try expectWorkflowProblem("$//.github/workflows/ci.yml");
+}
+
+test "DEP003: a local reference must not climb out of the repository" {
+    _ = try expectActionProblem("$/../other/action");
+    _ = try expectActionProblem("./../other/action");
+    _ = try expectActionProblem("$/..\\other\\action");
+    _ = try expectWorkflowProblem("$/../.github/workflows/ci.yml");
 }
 
 test "DEP003: a bare $ is not a self-repository reference" {
