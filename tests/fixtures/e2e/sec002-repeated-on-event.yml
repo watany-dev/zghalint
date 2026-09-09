@@ -1,0 +1,18 @@
+# zghalint:expect SYN002@8 SEC002@18
+# #366 repro: a block mapping may repeat a key, so `on:` names the same event
+# three times. The taint table used to append the event's contexts once per
+# occurrence and write past its fixed buffer.
+name: repeated on event
+on:
+  workflow_dispatch:
+  workflow_dispatch:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Echo the dispatch input
+        run: echo "${{ github.event.inputs.target }}"

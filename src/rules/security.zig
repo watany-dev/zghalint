@@ -1009,25 +1009,47 @@ fn runTaintContexts(wf: *const Workflow) RunTaintContexts {
     return out;
 }
 
+/// A fixed-capacity list of context prefixes, in first-appended order.
+///
+/// `append` ignores a context already held, which is what keeps the capacity
+/// an upper bound: both tables below size the buffer by counting each context
+/// once, while the loops that fill it walk `wf.on.events`, and `on:` may name
+/// the same event more than once. YAML duplicate keys parse (SYN002 reports
+/// them, it does not drop them), so three `workflow_dispatch:` entries used to
+/// append `github.event.inputs` three times and write past the end — a panic
+/// in Debug and an out-of-bounds store in ReleaseFast (#366).
+fn ContextSet(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+
+        buf: [capacity][]const u8 = undefined,
+        len: usize = 0,
+
+        fn append(self: *Self, context: []const u8) void {
+            for (self.buf[0..self.len]) |existing| {
+                if (std.mem.eql(u8, existing, context)) return;
+            }
+            // Unreachable while the capacity counts every context a caller
+            // may append; a table that outgrew its count drops contexts here
+            // rather than corrupting the stack.
+            if (self.len == capacity) return;
+            self.buf[self.len] = context;
+            self.len += 1;
+        }
+
+        fn slice(self: *const Self) []const []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+}
+
 const max_run_taint_contexts = blk: {
     var n: usize = run_dangerous_contexts.len + bare_inputs_contexts.len;
     for (dispatch_payload_table) |entry| n += entry.contexts.len;
     break :blk n;
 };
 
-const RunTaintContexts = struct {
-    buf: [max_run_taint_contexts][]const u8 = undefined,
-    len: usize = 0,
-
-    fn append(self: *RunTaintContexts, context: []const u8) void {
-        self.buf[self.len] = context;
-        self.len += 1;
-    }
-
-    fn slice(self: *const RunTaintContexts) []const []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+const RunTaintContexts = ContextSet(max_run_taint_contexts);
 
 /// Every context in the table, plus the bare `inputs` root.
 const max_checkout_ref_contexts = blk: {
@@ -1036,22 +1058,7 @@ const max_checkout_ref_contexts = blk: {
     break :blk n;
 };
 
-const CheckoutRefContexts = struct {
-    buf: [max_checkout_ref_contexts][]const u8 = undefined,
-    len: usize = 0,
-
-    fn append(self: *CheckoutRefContexts, context: []const u8) void {
-        for (self.buf[0..self.len]) |existing| {
-            if (std.mem.eql(u8, existing, context)) return;
-        }
-        self.buf[self.len] = context;
-        self.len += 1;
-    }
-
-    fn slice(self: *const CheckoutRefContexts) []const []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+const CheckoutRefContexts = ContextSet(max_checkout_ref_contexts);
 
 /// The `inputs.*` shorthand names whatever started the run: the values a
 /// `workflow_dispatch` actor typed, or the values a caller passed. Analysing
@@ -3766,6 +3773,52 @@ const pr_target_and_workflow_run_trigger = Trigger{ .events = &[_]EventConfig{
     .{ .event = .pull_request_target },
     .{ .event = .workflow_run },
 } };
+
+// A block mapping may repeat a key, and the workflow parser keeps every
+// occurrence, so `on:` can name one event many times over (#366).
+const repeated_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .workflow_dispatch },
+    .{ .event = .workflow_dispatch },
+    .{ .event = .workflow_dispatch },
+    .{ .event = .repository_dispatch },
+    .{ .event = .repository_dispatch },
+    .{ .event = .issue_comment },
+    .{ .event = .issue_comment },
+} };
+
+test "taint tables hold a repeated event once (#366)" {
+    const jobs = [_]Job{.{ .id = "build", .steps = &[_]Step{}, .permissions = Permissions{} }};
+    const wf = Workflow{
+        .name = "CI",
+        .on = repeated_dispatch_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+    };
+
+    const taint = runTaintContexts(&wf);
+    try expectNoRepeat(taint.slice());
+    try testing.expect(containsContext(taint.slice(), "github.event.inputs"));
+    try testing.expect(containsContext(taint.slice(), "github.event.client_payload"));
+    try testing.expect(containsContext(taint.slice(), "inputs"));
+
+    const refs = untrustedRefContexts(&wf);
+    try expectNoRepeat(refs.slice());
+    try testing.expect(containsContext(refs.slice(), "github.event.inputs"));
+    try testing.expect(containsContext(refs.slice(), "github.event.comment.body"));
+}
+
+fn containsContext(contexts: []const []const u8, needle: []const u8) bool {
+    for (contexts) |context| {
+        if (std.mem.eql(u8, context, needle)) return true;
+    }
+    return false;
+}
+
+fn expectNoRepeat(contexts: []const []const u8) !void {
+    for (contexts, 0..) |context, i| {
+        try testing.expect(!containsContext(contexts[0..i], context));
+    }
+}
 
 fn runCheckoutWith(on: Trigger, key: []const u8, value: []const u8) DiagnosticList {
     var with = workflow_types.StringMap.init(testing.allocator);
