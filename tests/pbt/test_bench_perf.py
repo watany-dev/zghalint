@@ -40,7 +40,7 @@ def test_repo_tool_commands_stay_offline_and_scan_the_repo():
     by_tool = {c.tool: c for c in cmds}
     assert set(by_tool) == {"ghalint", "octoscan", "poutine"}
     assert by_tool["ghalint"].argv == ["ghalint", "--log-color", "never", "run"]
-    assert by_tool["octoscan"].argv[:3] == ["octoscan", "scan", ".github/workflows"]
+    assert by_tool["octoscan"].argv[:3] == ["octoscan", "scan", "."]
     assert "--disable-version-check" in by_tool["poutine"].argv
     assert by_tool["poutine"].argv[:3] == ["poutine", "analyze_local", "."]
     for cmd in cmds:

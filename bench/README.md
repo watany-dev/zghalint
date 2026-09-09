@@ -192,7 +192,9 @@ Python から直接 `wait4(2)` で読むと Linux が親プロセスの RSS を�
 GNU time が無い環境 (macOS の BSD time を含む) では RSS 列は `–` になる。
 zghalint / actionlint / zizmor / action-validator はファイル一覧を argv に渡す。
 ghalint / octoscan / poutine は `.github/workflows/` しか見ないので、同じ
-ファイルをそこに複製してから走らせる (複製は計測に含めない)。poutine は
+ファイルをそこに複製してから走らせる (複製は計測に含めない)。octoscan の
+対象はリポジトリルート (`.`) にする — ワークフローディレクトリを渡すと
+actionlint 由来のプロジェクト検出が 0 ファイルになる。poutine は
 起動時に版チェックで GitHub へ行くため `--disable-version-check` を付ける。
 actionlint と octoscan は PATH に shellcheck があれば `run:` ごとに起動する
 — それがデフォルトのコストなので、計測でも外さない。

@@ -283,10 +283,11 @@ def repo_tool_commands() -> list[Command]:
     env = dict(os.environ)
     return [
         Command("ghalint", "offline (repo)", ["ghalint", "--log-color", "never", "run"], env),
+        # A workflows-directory target finds 0 files; the project root is cwd.
         Command(
             "octoscan",
             "offline (repo)",
-            ["octoscan", "scan", ".github/workflows", "--format", "json"],
+            ["octoscan", "scan", ".", "--format", "json"],
             env,
         ),
         Command(
@@ -708,12 +709,14 @@ def render_markdown(report: PerfReport) -> str:
     out.append("")
     out.append(
         "exit は最後の計測実行の終了コード。指摘ありで非ゼロになるのは各ツール正常 "
-        "(zghalint 1、actionlint 1、zizmor 10〜14、ghalint 1、action-validator 1)。"
+        "(zghalint 1、actionlint 1、zizmor 10〜14、ghalint 1、octoscan 2、"
+        "action-validator 1)。"
         "poutine は `--fail-on-violation` を付けないので指摘があっても 0。"
         "zghalint の 2 は「一部ファイルを lint できなかった」で、`cases` には"
         "パースを拒否する堅牢性ケースが含まれる。"
         "ghalint / octoscan / poutine は `.github/workflows/` へ複製した同一ファイルを"
-        "スキャンする (argv にファイルを取らないため)。"
+        "スキャンする (argv にファイルを取らないため)。octoscan の対象は"
+        "リポジトリルートで、ワークフローディレクトリを渡すと 0 ファイルになる。"
     )
     out.append("")
 

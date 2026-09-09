@@ -796,6 +796,33 @@ python3 scripts/bench.py --fix
 上げる前後で `scripts/bench.py` を回して増減を §4 に記録する。数字が動いても
 gate は zghalint の列しか見ないので赤くならない。
 
+### 4.9 2026-09-09 の rival 性能計測
+
+actionlint / zizmor 以外のローカル CLI を `--perf` に足して測った。環境は
+Linux x86_64 / 4 logical CPU、zghalint は `-Doptimize=ReleaseFast`、
+hyperfine 1.18.0 (10 runs / warmup 3)、GNU time、shellcheck 0.9.0。
+rival の版は §2.2。コーパス 33 リポジトリ / 228 ファイル。
+
+| シナリオ | zghalint | 次点 | 最遅 |
+|---|---|---|---|
+| cases (130 ファイル / 2,201 行) | 2.9 ms · 2.0 MiB | ghalint 13.7 ms · 14.8 MiB | action-validator 1.136 s · 7.6 MiB |
+| huge (1 ファイル / 10,035 行) | 9.9 ms · 8.0 MiB | ghalint 27.4 ms · 17.5 MiB | octoscan 866.0 ms · 27.1 MiB |
+| many-small (1,000 ファイル / 89,607 行) | 83.1 ms · 6.6 MiB | ghalint 214.2 ms · 15.3 MiB | poutine 11.820 s · 169.6 MiB |
+
+| シナリオ | zizmor | actionlint | octoscan | poutine | action-validator |
+|---|---|---|---|---|---|
+| cases | 67.1 ms · 34.0 MiB | 117.5 ms · 14.8 MiB | 326.8 ms · 21.1 MiB | 172.4 ms · 50.3 MiB | 1.136 s · 7.6 MiB |
+| huge | 312.3 ms · 42.3 MiB | 774.5 ms · 16.8 MiB | 866.0 ms · 27.1 MiB | 431.8 ms · 65.7 MiB | 76.6 ms · 11.8 MiB |
+| many-small | 1.405 s · 167.6 MiB | 3.871 s · 65.4 MiB | 4.044 s · 73.1 MiB | 11.820 s · 169.6 MiB | 9.452 s · 8.3 MiB |
+
+一番近い rival は ghalint (方針リンター、Go)。wall time で 2.6〜4.7 倍、
+RSS で 2〜7 倍。actionlint / octoscan は shellcheck 子プロセス込み。
+poutine は OPA を内蔵しており many-small で RSS も zizmor 並み。
+action-validator は単一巨大ファイルでは速いが、ファイル数が増えると
+JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定のため未計測。
+
+採点行列には足していない (§2.2)。
+
 ## 5. 次アクション
 
 - [ ] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
