@@ -295,12 +295,38 @@ const secret_prefixes = [_][]const u8{
     "xoxp-",
 };
 
-const cache_setup_actions = [_][]const u8{
-    "actions/setup-node",
-    "actions/setup-python",
-    "actions/setup-java",
-    "actions/setup-go",
-    "actions/setup-dotnet",
+/// A setup action whose caching SEC016 has to see. `cache_input` names the
+/// input that turns the action's own caching on or off; `on_by_default` says
+/// what the action does when that input is absent. `astral-sh/setup-uv` and
+/// `mlugg/setup-zig` cache without being asked, so an omitted input is a
+/// finding rather than the all-clear (parity doc §4.1 G1).
+const CacheSetupAction = struct {
+    name: []const u8,
+    cache_input: []const u8,
+    on_by_default: bool = false,
+    /// For an action that caches by default the fix is the opt-out input, not
+    /// dropping a `cache:` the author never wrote.
+    disable_hint: ?[]const u8 = null,
+};
+
+const cache_setup_actions = [_]CacheSetupAction{
+    .{ .name = "actions/setup-node", .cache_input = "cache" },
+    .{ .name = "actions/setup-python", .cache_input = "cache" },
+    .{ .name = "actions/setup-java", .cache_input = "cache" },
+    .{ .name = "actions/setup-go", .cache_input = "cache" },
+    .{ .name = "actions/setup-dotnet", .cache_input = "cache" },
+    .{
+        .name = "astral-sh/setup-uv",
+        .cache_input = "enable-cache",
+        .on_by_default = true,
+        .disable_hint = "astral-sh/setup-uv caches by default; set 'enable-cache: false' in this release/deploy job, or build from a dedicated cache scope",
+    },
+    .{
+        .name = "mlugg/setup-zig",
+        .cache_input = "use-cache",
+        .on_by_default = true,
+        .disable_hint = "mlugg/setup-zig caches by default; set 'use-cache: false' in this release/deploy job, or build from a dedicated cache scope",
+    },
 };
 
 const deploy_keywords = [_][]const u8{
@@ -1736,15 +1762,14 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
         if (!job_at_risk) continue;
 
         for (job.steps) |*step| {
-            if (isCacheAction(step) or isSetupActionWithCache(step)) {
-                list.append(.{
-                    .rule_id = "SEC016",
-                    .severity = .warning,
-                    .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
-                    .span = spans.usesSpan(step),
-                    .fix_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope",
-                }) catch return;
-            }
+            const hint = cachePoisoningHint(step) orelse continue;
+            list.append(.{
+                .rule_id = "SEC016",
+                .severity = .warning,
+                .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
+                .span = spans.usesSpan(step),
+                .fix_hint = hint,
+            }) catch return;
         }
     }
 }
@@ -1760,6 +1785,12 @@ fn findUnredactedSecrets(s: []const u8) ?ExprMatch {
 /// run it. A push filtered to branches only is ordinary CI.
 fn isReleaseOrDeployTrigger(wf: *const Workflow) bool {
     return wf.hasEvent(.release) or hasTagFilteredPush(wf);
+}
+
+/// SEC016's scope for one job, shared with PERF001 so the two rules do not
+/// give opposite advice about the same step (parity doc §4.4).
+pub fn isCachePoisoningScope(wf: *const Workflow, job: *const Job) bool {
+    return isReleaseOrDeployTrigger(wf) or isDeployJob(job);
 }
 
 fn hasTagFilteredPush(wf: *const Workflow) bool {
@@ -1792,20 +1823,29 @@ fn isCacheAction(step: *const Step) bool {
     return std.mem.eql(u8, base, "actions/cache");
 }
 
-fn isSetupActionWithCache(step: *const Step) bool {
-    const action_ref = step.uses orelse return false;
+const generic_cache_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope";
+
+fn cachePoisoningHint(step: *const Step) ?[]const u8 {
+    if (isCacheAction(step)) return generic_cache_hint;
+    const action_ref = step.uses orelse return null;
     const base = util.actionBaseName(action_ref.raw);
-    for (cache_setup_actions) |setup_action| {
-        if (std.mem.eql(u8, base, setup_action)) {
-            if (step.with) |with_map| {
-                if (with_map.get("cache")) |val| {
-                    if (val.len > 0) return true;
-                }
-            }
-            return false;
-        }
+    for (cache_setup_actions) |setup| {
+        if (!std.mem.eql(u8, base, setup.name)) continue;
+        if (!setupCachingEnabled(step, setup)) return null;
+        return setup.disable_hint orelse generic_cache_hint;
     }
-    return false;
+    return null;
+}
+
+/// An absent or blank input leaves the action at its default. A value that is
+/// there is read as an opt-out: only `false` turns caching off, since the
+/// other values are package manager names (`cache: npm`), `true`, or `auto`.
+fn setupCachingEnabled(step: *const Step, setup: CacheSetupAction) bool {
+    const with_map = step.with orelse return setup.on_by_default;
+    const raw = with_map.get(setup.cache_input) orelse return setup.on_by_default;
+    const value = std.mem.trim(u8, raw, " \t\n\r");
+    if (value.len == 0) return setup.on_by_default;
+    return !std.ascii.eqlIgnoreCase(value, "false");
 }
 
 fn exprHasSecretJsonCall(expr: []const u8) bool {
@@ -5052,6 +5092,80 @@ test "SEC016: deploy job without cache (no false positive)" {
         .{ .id = "deploy", .name = "Deploy", .steps = &steps, .permissions = Permissions{} },
     };
     const wf = Workflow{ .name = "CD", .on = empty_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: setup-uv in release caches without any input" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("astral-sh/setup-uv@v6") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "publish", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: setup-uv with enable-cache false (no false positive)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("enable-cache", "false") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("astral-sh/setup-uv@v6"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "publish", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: setup-zig on a tag push caches without any input" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("mlugg/setup-zig@v2") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: setup-zig with use-cache false (no false positive)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("use-cache", "False") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("mlugg/setup-zig@v2"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: opt-in setup action with cache disabled (no false positive)" {
+    var with = workflow_types.StringMap.init(testing.allocator);
+    with.put("cache", "false") catch unreachable;
+    defer with.deinit();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-go@v5"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "publish", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC016"));

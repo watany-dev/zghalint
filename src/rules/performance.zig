@@ -7,10 +7,12 @@ const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
 const workspace = @import("../workspace.zig");
+const security = @import("security.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
 const Step = engine.Step;
+const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const spans = @import("spans.zig");
 const Span = yaml_types.Span;
@@ -213,6 +215,18 @@ fn formatAmbiguity(
     ) catch null;
 }
 
+/// PERF001 asks for a cache; SEC016 warns about caching in a workflow that
+/// publishes. A release or deploy job belongs to SEC016, so PERF001 keeps out
+/// of it instead of handing the author the opposite instruction — telling a
+/// release job to re-enable `astral-sh/setup-uv`'s cache is advice SEC016
+/// then reports as cache poisoning (parity doc §4.4).
+fn checkCacheNotUsedWorkflow(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    for (wf.jobs) |*job| {
+        if (security.isCachePoisoningScope(wf, job)) continue;
+        checkCacheNotUsed(job, diag_list);
+    }
+}
+
 fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
     inline for (cacheable_setups) |ca| {
         checkCacheableSetup(ca, job, diag_list);
@@ -388,7 +402,7 @@ pub const rules = [_]Rule{
         .description = "Job uses a language setup action without caching enabled",
         .severity = .warning,
         .category = .performance,
-        .check_job = checkCacheNotUsed,
+        .check_workflow = checkCacheNotUsedWorkflow,
     },
     .{
         .id = "PERF002",
@@ -893,6 +907,61 @@ test "PERF001: no warning for unrelated actions" {
     defer diags.deinit();
     checkCacheNotUsed(&job, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: release workflow leaves the cache decision to SEC016" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: publish
+        \\on:
+        \\  release:
+        \\    types: [published]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\      - uses: astral-sh/setup-uv@v6
+        \\        with:
+        \\          enable-cache: "false"
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: ordinary CI workflow still reports a missing cache" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "PERF001: detect missing cache for setup-bun" {

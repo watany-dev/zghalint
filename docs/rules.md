@@ -65,6 +65,14 @@ Detect security vulnerabilities in workflow definitions.
 `release` / `publish` / `prod` を含むジョブだけを見る。`on: push` がブランチ
 だけで絞られている通常の CI は対象外。
 
+キャッシュしているステップの判定は `actions/cache` の明示利用に加えて、
+キャッシュ入力を持つ setup 系 action を見る。入力を書かなくても既定で
+キャッシュする `astral-sh/setup-uv` (`enable-cache`) と `mlugg/setup-zig`
+(`use-cache`) は、入力の省略そのものを指摘する。入力が書かれている場合は
+値を opt-out として読み、`false` のときだけ沈黙する
+(`actions/setup-node` などの `cache:` は指定して初めて有効になるので、
+省略は指摘しない)。
+
 ### SEC015 vs SEC018
 
 SEC015 (artipacked) is a stricter case of SEC018 (checkout persist-credentials):
@@ -352,7 +360,7 @@ Detect CI performance issues and resource waste.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled |
+| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。SEC016 の対象ジョブ（リリース / デプロイ）は SEC016 と逆向きの助言になるため対象外 |
 | PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job (`--fix-unsafe` で 2 つ目のステップを削除) |
 | PERF003 | fail-fast-disabled | warning | Strategy has `fail-fast` disabled, wasting CI resources on failures |
 
