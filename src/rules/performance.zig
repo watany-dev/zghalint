@@ -7,10 +7,12 @@ const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
 const workspace = @import("../workspace.zig");
+const security = @import("security.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
 const Step = engine.Step;
+const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const spans = @import("spans.zig");
 const Span = yaml_types.Span;
@@ -213,9 +215,24 @@ fn formatAmbiguity(
     ) catch null;
 }
 
+fn checkCacheNotUsedWorkflow(wf: *const Workflow, diag_list: *DiagnosticList) void {
+    for (wf.jobs) |*job| {
+        checkCacheNotUsedInJob(job, diag_list, security.isCachePoisoningScope(wf, job));
+    }
+}
+
 fn checkCacheNotUsed(job: *const Job, diag_list: *DiagnosticList) void {
+    checkCacheNotUsedInJob(job, diag_list, false);
+}
+
+/// `.uv_independent` is the one finding that asks the author to *re-enable* a
+/// cache, the opposite of what SEC016 tells a release or deploy job to do
+/// about the same input; there SEC016 has the call (parity doc §4.4). The
+/// other kinds ask for a cache that is simply missing, and keep applying.
+fn checkCacheNotUsedInJob(job: *const Job, diag_list: *DiagnosticList, in_sec016_scope: bool) void {
     inline for (cacheable_setups) |ca| {
-        checkCacheableSetup(ca, job, diag_list);
+        const deferred_to_sec016 = in_sec016_scope and ca.kind == .uv_independent;
+        if (!deferred_to_sec016) checkCacheableSetup(ca, job, diag_list);
     }
 }
 
@@ -388,7 +405,7 @@ pub const rules = [_]Rule{
         .description = "Job uses a language setup action without caching enabled",
         .severity = .warning,
         .category = .performance,
-        .check_job = checkCacheNotUsed,
+        .check_workflow = checkCacheNotUsedWorkflow,
     },
     .{
         .id = "PERF002",
@@ -893,6 +910,89 @@ test "PERF001: no warning for unrelated actions" {
     defer diags.deinit();
     checkCacheNotUsed(&job, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: setup-uv disabled in a release workflow is SEC016's call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: publish
+        \\on:
+        \\  release:
+        \\    types: [published]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: astral-sh/setup-uv@v6
+        \\        with:
+        \\          enable-cache: "false"
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: a missing cache is still reported in a release workflow" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: publish
+        \\on:
+        \\  release:
+        \\    types: [published]
+        \\jobs:
+        \\  unit-tests:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "PERF001: setup-uv disabled in ordinary CI is still reported" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: CI
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: astral-sh/setup-uv@v6
+        \\        with:
+        \\          enable-cache: "false"
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "PERF001: detect missing cache for setup-bun" {
