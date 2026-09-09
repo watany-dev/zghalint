@@ -1,0 +1,26 @@
+# bench:expect github-app@18 zizmor=github-app zghalint=- actionlint=-
+name: labeler
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Mint a token
+        id: mint
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+      - name: Label
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          github-token: ${{ steps.mint.outputs.token }}
+          script: return 1

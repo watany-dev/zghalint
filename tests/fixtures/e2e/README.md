@@ -63,6 +63,9 @@ silently. Fixtures without such a sibling are unaffected.
 | `expr015-expr016-availability.yml` | EXPR015/EXPR016: contexts and special functions against the key they appear under |
 | `expr017-github-event-overlay.yml` | #124: the curated `github.event` overlay widens EXPR017 without new EXPR003s |
 | `expr006-array-contains.yml` | #333 FP guard: `contains(labels.*.name, 'x')` is array membership |
+| `sec013-ghcr-credentials.yml` | SEC013 FP guard: GHCR login with `github.actor` + `secrets.GITHUB_TOKEN` |
+| `bp007-pwsh-assignment.yml` | BP007 FP guard: PowerShell `$PACK_OUTPUT = npm pack` is assignment |
+| `bp007-line-continuation.yml` | BP007 FP guard: `$VAR` on a continued `gh release create` line |
 | `syn009-privileged-trigger-fix.yml` | #346: `--fix` leaves a `pull_request_target` typo; `--fix-unsafe` rewrites it |
 | `syn001-sibling-rename.yml` | #347: `--fix` leaves `runs-onn` when `runs-on` is already a sibling |
 | `syn001-sec007-permissions-collision.yml` | #348: `--fix-unsafe` keeps the SYN001 rename of `prmissions` and drops the SEC007 insert |

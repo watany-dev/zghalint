@@ -39,6 +39,12 @@ still be renumbered before 1.0.
 - SEC003 now anchors its diagnostic at the earliest secret-looking token in a
   string. Previously a string holding two patterns reported the one that came
   first in the internal prefix list; the number of findings is unchanged.
+- SEC013 no longer treats a `${{ }}` expression as a hardcoded container
+  credential. `username: ${{ github.actor }}` with
+  `password: ${{ secrets.GITHUB_TOKEN }}` is the documented GHCR login.
+- BP007 no longer treats `$NAME = ...` at the start of a line as a command.
+  That is PowerShell assignment (`$PACK_OUTPUT = npm pack`); `$CMD == ...`
+  is still a command.
 
 ### Fixed
 

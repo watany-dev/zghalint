@@ -1,0 +1,19 @@
+# bench:forbid obfuscated-command
+name: pack
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Pack and run
+        shell: pwsh
+        run: |
+          $PACK_OUTPUT = npm pack
+          $TARBALL = $PACK_OUTPUT[-1]
+          npx "./$TARBALL" --version

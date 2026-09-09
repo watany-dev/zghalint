@@ -1502,7 +1502,7 @@ fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) vo
 fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, job_span: Span, list: *DiagnosticList) void {
     const credentials = creds orelse return;
     if (credentials.username) |username| {
-        if (!isSecretsExpression(username)) {
+        if (!isExpressionValue(username)) {
             list.append(.{
                 .rule_id = "SEC013",
                 .severity = .@"error",
@@ -1513,7 +1513,7 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, job_span: Sp
         }
     }
     if (credentials.password) |password| {
-        if (!isSecretsExpression(password)) {
+        if (!isExpressionValue(password)) {
             list.append(.{
                 .rule_id = "SEC013",
                 .severity = .@"error",
@@ -1525,11 +1525,18 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, job_span: Sp
     }
 }
 
-fn isSecretsExpression(value: []const u8) bool {
+/// A value that is already a `${{ }}` expression is not plaintext. SEC013
+/// reports hardcoded credentials, so `github.actor` / `github.token` — the
+/// documented GHCR login — must stay quiet, same as `secrets.*`.
+fn isExpressionValue(value: []const u8) bool {
     const trimmed = std.mem.trim(u8, value, " \t\n\r");
     if (trimmed.len < 5) return false;
-    if (!std.mem.startsWith(u8, trimmed, "${{")) return false;
-    if (!std.mem.endsWith(u8, trimmed, "}}")) return false;
+    return std.mem.startsWith(u8, trimmed, "${{") and std.mem.endsWith(u8, trimmed, "}}");
+}
+
+fn isSecretsExpression(value: []const u8) bool {
+    if (!isExpressionValue(value)) return false;
+    const trimmed = std.mem.trim(u8, value, " \t\n\r");
     const inner = std.mem.trim(u8, trimmed[3 .. trimmed.len - 2], " \t");
     return std.mem.startsWith(u8, inner, "secrets.");
 }
@@ -2508,7 +2515,8 @@ fn containsVarAsCommand(s: []const u8) bool {
         // `${{ }}` is a GitHub expression and `$(...)` a command substitution.
         if (std.mem.startsWith(u8, rest, "${{") or rest[1] == '(') continue;
 
-        const name = if (rest[1] == '{') blk: {
+        const braced = rest[1] == '{';
+        const name = if (braced) blk: {
             const end = 2 + identRunLen(rest[2..]);
             if (end >= rest.len or rest[end] != '}') break :blk "";
             break :blk rest[2..end];
@@ -2516,7 +2524,19 @@ fn containsVarAsCommand(s: []const u8) bool {
             if (!isIdentStart(rest[1])) break :blk "";
             break :blk rest[1 .. 1 + identRunLen(rest[1..])];
         };
-        if (isAllUppercase(name)) return true;
+        if (name.len == 0 or !isAllUppercase(name)) continue;
+
+        // `$NAME = ...` is assignment (PowerShell, and the lookalike in
+        // bash). `$CMD == ...` is still a command with `==` as an argument.
+        const token_end: usize = if (braced) 3 + name.len else 1 + name.len;
+        if (token_end < rest.len) {
+            const after = std.mem.indexOfNone(u8, rest[token_end..], " \t") orelse {
+                return true;
+            };
+            const eq = token_end + after;
+            if (rest[eq] == '=' and (eq + 1 >= rest.len or rest[eq + 1] != '=')) continue;
+        }
+        return true;
     }
     return false;
 }
@@ -4950,6 +4970,26 @@ test "SEC013: secrets expression credentials (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC013"));
 }
 
+test "SEC013: github.actor and secrets.GITHUB_TOKEN is the GHCR login (no false positive)" {
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "${{ github.actor }}", .password = "${{ secrets.GITHUB_TOKEN }}" },
+    };
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
+test "SEC013: github.token password is an expression (no false positive)" {
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "${{ github.repository_owner }}", .password = "${{ github.token }}" },
+    };
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
 test "SEC013: container without credentials (no false positive)" {
     const container = workflow_types.Container{ .image = "node:14" };
     var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
@@ -4980,6 +5020,12 @@ test "isSecretsExpression: empty string" {
 
 test "isSecretsExpression: non-secrets expression" {
     try testing.expect(!isSecretsExpression("${{ github.actor }}"));
+}
+
+test "isExpressionValue: github.actor and secrets wrap" {
+    try testing.expect(isExpressionValue("${{ github.actor }}"));
+    try testing.expect(isExpressionValue("${{ secrets.GITHUB_TOKEN }}"));
+    try testing.expect(!isExpressionValue("myuser"));
 }
 
 test "SC001: unpinned container image with tag" {
@@ -6378,6 +6424,30 @@ test "BP007: variable as command at line start" {
     var list = runStep(.{ .run = "export CMD=\"malicious\"\n$CMD" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: PowerShell assignment is not a command" {
+    var list = runStep(.{ .run = "$PACK_OUTPUT = npm pack\n$TARBALL = $PACK_OUTPUT[-1]\nnpx \"./$TARBALL\" --version" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: $CMD == still counts as a command" {
+    var list = runStep(.{ .run = "$CMD == foo" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: assignment without spaces is still assignment" {
+    var list = runStep(.{ .run = "$PACK_OUTPUT=npm pack" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: braced assignment is not a command" {
+    var list = runStep(.{ .run = "${PACK_OUTPUT} = npm pack" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on a variable in a continuation line" {
