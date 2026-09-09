@@ -36,6 +36,8 @@ fn writeSanitized(writer: anytype, s: []const u8) !void {
     var i: usize = 0;
     var run_start: usize = 0;
     while (i < s.len) {
+        i = skipPlainAscii(s, i);
+        if (i >= s.len) break;
         const c = s[i];
         if (c < 0x80) {
             if (c == '\t' or (c >= 0x20 and c != 0x7f)) {
@@ -64,6 +66,24 @@ fn writeSanitized(writer: anytype, s: []const u8) !void {
         i += seq.len;
     }
     try writer.writeAll(s[run_start..]);
+}
+
+/// Index of the first byte at or after `start` that `writeSanitized` has to
+/// look at: an ASCII control, DEL, or the start of a multi-byte sequence.
+/// Almost every byte of a diagnostic is printable ASCII, so whole chunks are
+/// checked at once rather than one branch per byte.
+fn skipPlainAscii(s: []const u8, start: usize) usize {
+    const lane_count = 16;
+    const V = @Vector(lane_count, u8);
+    var i = start;
+    while (i + lane_count <= s.len) : (i += lane_count) {
+        const chunk: V = s[i..][0..lane_count].*;
+        const control = chunk < @as(V, @splat(0x20));
+        const del_or_high = chunk >= @as(V, @splat(0x7f));
+        if (@reduce(.Or, control) or @reduce(.Or, del_or_high)) break;
+    }
+    while (i < s.len and s[i] >= 0x20 and s[i] < 0x7f) i += 1;
+    return i;
 }
 
 fn decodeUtf8(s: []const u8) ?struct { len: usize, cp: u21 } {
@@ -265,6 +285,30 @@ test "writeSanitized escapes bytes that are not valid UTF-8" {
     buf.clearRetainingCapacity();
     try writeSanitized(writer, "\xffz\x7f");
     try std.testing.expectEqualStrings("\\xffz\\x7f", buf.items);
+}
+
+test "writeSanitized escapes controls past the first chunk of plain text" {
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(std.testing.allocator);
+    const writer = buf.writer(std.testing.allocator);
+
+    // Longer than one 16-byte chunk before the first byte that needs escaping,
+    // then a control in the tail the byte loop handles, then more plain text.
+    const input = "abcdefghijklmnopqrstuvwxyz0123456789\x1b[31mred\x07" ++ "0123456789abcdef" ++ "\x00";
+    try writeSanitized(writer, input);
+    try std.testing.expectEqualStrings(
+        "abcdefghijklmnopqrstuvwxyz0123456789\\x1b[31mred\\x07" ++ "0123456789abcdef" ++ "\\x00",
+        buf.items,
+    );
+}
+
+test "skipPlainAscii stops at tab, control, DEL and the first high byte" {
+    try std.testing.expectEqual(@as(usize, 3), skipPlainAscii("abc\tdef", 0));
+    try std.testing.expectEqual(@as(usize, 20), skipPlainAscii("01234567890123456789\x7f", 0));
+    try std.testing.expectEqual(@as(usize, 18), skipPlainAscii("0123456789abcdefgh\xc3\xa9", 0));
+    try std.testing.expectEqual(@as(usize, 7), skipPlainAscii("abc\tdef", 4));
+    try std.testing.expectEqual(@as(usize, 0), skipPlainAscii("\x01abc", 0));
+    try std.testing.expectEqual(@as(usize, 0), skipPlainAscii("", 0));
 }
 
 test "renderDiagnostic no hint" {
