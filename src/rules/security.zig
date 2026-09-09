@@ -350,6 +350,9 @@ fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNam
         var table = base;
         table.tainted_jobs = out.slice();
         for (wf.jobs) |*job| {
+            // Only `outputs:` can export a value, so a job without one never
+            // joins the set and its steps need no walk here.
+            if (job.outputs.len == 0) continue;
             if (out.contains(job.id)) continue;
             if (!walkJobTaint(job, table, workflow_env, null, wf)) continue;
             out.append(job.id);
