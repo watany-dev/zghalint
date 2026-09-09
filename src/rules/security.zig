@@ -295,11 +295,9 @@ const secret_prefixes = [_][]const u8{
     "xoxp-",
 };
 
-/// A setup action whose caching SEC016 has to see. `cache_input` names the
-/// input that turns the action's own caching on or off; `on_by_default` says
-/// what the action does when that input is absent. `astral-sh/setup-uv` and
-/// `mlugg/setup-zig` cache without being asked, so an omitted input is a
-/// finding rather than the all-clear (parity doc §4.1 G1).
+/// `astral-sh/setup-uv` and `mlugg/setup-zig` cache without being asked, so an
+/// omitted `cache_input` is a finding rather than the all-clear
+/// (parity doc §4.1 G1).
 const CacheSetupAction = struct {
     name: []const u8,
     cache_input: []const u8,
