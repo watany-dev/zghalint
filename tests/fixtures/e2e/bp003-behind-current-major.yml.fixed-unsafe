@@ -1,0 +1,22 @@
+# zghalint:expect BP003@22
+# zghalint:forbid BP001 BP005
+# #358: a third-party action referenced at a major older than the current one.
+# `actions/checkout@v4` is the counter-case: the curated version table still
+# accepts it, so the behind-major half must stay silent there.
+name: release
+on:
+  push:
+    tags: ["v*"]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: softprops/action-gh-release@v2

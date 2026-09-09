@@ -510,6 +510,29 @@ fix エンジンは、同一マッピングでリネームが作るキーと挿�
 まとめ、両者で同じ判定にした。回帰ケースは
 `bench/cases/b-trigger-checkout/automerge-dependabot.yml`。
 
+#### G26 (#358). BP003 が第三者アクションの古い major を見逃す — 対応済み
+
+```yaml
+- uses: softprops/action-gh-release@v1   # 埋め込み表が知る現行 major は 2
+```
+
+BP003 は古いアクションを 2 経路で見ていた。埋め込みメタデータ表
+（`src/rules/data/popular_actions.zig`）の `runs.using` が廃止済みなら `error`、
+手書きのバージョン表（`deprecated_actions`）に載っていれば `warning` である。
+表は読んだ major を全て持つが、第三者アクションについては現行 major しか読んで
+いないため、古い major の参照はどのエントリにも一致せず `using` が分からない。
+手書きの表は `actions/*` の 8 件だけなので、そちらにも掛からない。actionlint /
+zizmor も指摘しないので parity gap ではないが、2 経路の隙間に落ちる構造上の穴で
+ある。
+
+第 3 の判定として「参照している major < 表が知る最新 major」を `info` で報告する
+ようにした（`popular_actions.latestMajor()`）。データは今の表のままでよい。
+`deprecated_actions` が名指すアクションは「まだ許容する最も古い major」を人が
+決めているので対象外にし、autofix は major を上げる破壊的変更なので `unsafe`
+（`--fix-unsafe` 側）に置いた。判断の詳細は
+`docs/adr/0015-bp003-behind-current-major.md`。回帰ケースは
+`tests/fixtures/e2e/bp003-behind-current-major.yml`。
+
 #### G29. `actions/create-github-app-token` が installation の全権限を継承する — 要ルール追加
 
 `bench/cases/d-permissions-secrets/github-app-token-unscoped.yml`。
@@ -975,6 +998,7 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] G23 (#347): SYN001 のリネーム先が既にあるキーなら autofix を付けない
 - [x] G24 (#348): SYN001 のリネームと SEC007 の挿入が同じ `permissions:` を二重に作らない
 - [x] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
+- [x] G26 (#358): BP003 が表の最新 major より古い major を `info` で報告する
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
 - [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する

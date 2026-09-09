@@ -361,7 +361,7 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
 | BP002 | missing-step-name | info | `run:` step is missing a `name` field. `uses:`-only steps are skipped |
-| BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or an action declaring a retired `runs.using` runtime (error) |
+| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (error), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
@@ -373,7 +373,7 @@ Enforce workflow best practices for maintainability and reliability.
 action name, and requiring `name:` there is not the usual style. Unnamed
 `run:` steps are still reported, because the log label is the command text.
 
-### BP003 の 2 つの判定
+### BP003 の 3 つの判定
 
 - **バージョン表**: `actions/checkout` など置き換え先が判明しているアクションを
   固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
@@ -382,6 +382,13 @@ action name, and requiring `name:` there is not the usual style. Unnamed
   （`node12` / `node16`）なら `error` で報告する。ローカルアクション
   （`uses: ./{path}`）は `action.yml` を読み、リモートアクションは DEP005 の
   埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
+- **現行 major との比較**: 参照している major が、埋め込みメタデータが知る最新の
+  major より古ければ `info` で報告する（#358）。第三者アクションは現行 major しか
+  表に無いため、古い major は `using` が分からずランタイム判定に掛からない。この
+  判定はデータを増やさずにその穴を埋める。バージョン表が名指すアクション
+  （`actions/checkout` など）は表の方針が優先されるので対象外。autofix は major を
+  上げる破壊的変更なので `--fix-unsafe` 側に置く。設計は
+  `docs/adr/0015-bp003-behind-current-major.md`。
 
 両方が該当する場合はランタイム判定を優先する（廃止済みランタイムは警告で済む
 「古いだけのバージョン」と違って実行そのものが失敗するため）。autofix は失われ
@@ -391,8 +398,8 @@ action name, and requiring `name:` there is not the usual style. Unnamed
 付かない。
 
 固定リストに無いアクションでも、データセットに載っていれば廃止済みランタイムを
-検出できる（例: `actions/checkout@v2` は `node12`）。データセットに無いアクション
-は判定しない。
+検出できる（例: `actions/checkout@v2` は `node12`）。載っていれば古い major の
+検出（3 つ目の判定）も効く。データセットに無いアクションは判定しない。
 
 ## Permissions Rules (PERM)
 

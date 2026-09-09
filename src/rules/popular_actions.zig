@@ -51,6 +51,38 @@ pub fn lookup(action: ActionRef) ?ActionMeta {
     return null;
 }
 
+/// The newest major of `action` the table knows, or null when the action is
+/// not in the table at all.
+///
+/// `lookup` answers "what does the referenced major declare"; this answers
+/// "how far behind is the referenced major". BP003 needs the second question
+/// because the table holds every major it has read, but only the current one
+/// for most third-party actions: a reference to an older major of such an
+/// action matches no entry, and without this the old major is indistinguishable
+/// from an action the linter has never heard of.
+///
+/// The ref is not read at all: the caller already has the major it wants to
+/// compare, and it is `majorFromRef` — not this function — that decides whether
+/// a ref names a version. References with no version to compare (SHA pins,
+/// local and `docker://` actions) are still refused up front, because for those
+/// the newest known major says nothing about what the workflow runs.
+pub fn latestMajor(action: ActionRef) ?u16 {
+    if (action.is_local or action.is_docker or action.is_pinned) return null;
+
+    const owner = action.owner orelse return null;
+    const repo = action.repo orelse return null;
+    const path = action.path orelse "";
+
+    var newest: ?u16 = null;
+    for (data.popular_actions) |meta| {
+        if (!std.ascii.eqlIgnoreCase(meta.owner, owner)) continue;
+        if (!std.ascii.eqlIgnoreCase(meta.repo, repo)) continue;
+        if (!std.mem.eql(u8, meta.path, path)) continue;
+        if (newest == null or meta.major > newest.?) newest = meta.major;
+    }
+    return newest;
+}
+
 /// The major version a ref names (`v4`, `v4.2.2`), or null when the ref is a
 /// branch, a SHA, or a tag that is not a plain version (`v4-beta`).
 ///
@@ -169,6 +201,24 @@ test "lookup matches a major version and ignores everything else" {
     try testing.expect(lookup(ActionRef.parse("docker://alpine:3.19")) == null);
     try testing.expect(
         lookup(ActionRef.parse("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683")) == null,
+    );
+}
+
+test "latestMajor answers for a major the table has no entry for (#358)" {
+    // The table carries only the current major of this action.
+    try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v1")));
+    try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v9")));
+    // Several majors: the newest wins, whichever one is referenced.
+    try testing.expectEqual(@as(?u16, 5), latestMajor(ActionRef.parse("actions/checkout@v2")));
+    // Sub-directory actions are their own entries.
+    try testing.expectEqual(@as(?u16, 4), latestMajor(ActionRef.parse("actions/cache/restore@v3")));
+
+    try testing.expectEqual(@as(?u16, null), latestMajor(ActionRef.parse("some-org/unknown@v1")));
+    try testing.expectEqual(@as(?u16, null), latestMajor(ActionRef.parse("./local")));
+    try testing.expectEqual(@as(?u16, null), latestMajor(ActionRef.parse("docker://alpine:3.19")));
+    try testing.expectEqual(
+        @as(?u16, null),
+        latestMajor(ActionRef.parse("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683")),
     );
 }
 
