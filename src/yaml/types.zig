@@ -99,6 +99,10 @@ pub const Scalar = struct {
     /// the `#` and surrounding blanks. Null when the line carries no comment.
     /// SC003 reads the `# v1.2.3` convention next to a SHA-pinned `uses:`.
     line_comment: ?[]const u8 = null,
+    /// A quoted scalar that never met its closing quote, so it ran to the end
+    /// of the file. Its span has no boundary after it: text an autofix writes
+    /// there becomes more quoted content instead of the key it was meant to be.
+    unterminated: bool = false,
 };
 
 /// What one sequence item costs the source text, so an autofix can take it

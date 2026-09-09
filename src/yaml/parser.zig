@@ -724,6 +724,7 @@ pub const Parser = struct {
                 .span = self.spanFromToken(token),
                 .ends_line = ends_line,
                 .line_comment = line_comment,
+                .unterminated = raw[raw.len - 1] != raw[0],
             };
         }
         if (raw.len >= 1 and (raw[0] == '|' or raw[0] == '>')) {
@@ -780,20 +781,6 @@ pub const Parser = struct {
     /// Where an entry's text stops, trailing newline included. This is the
     /// entry's extent alone: whether the entry starts its own line, and so
     /// whether it can be removed as one, is `blockEntryFullSpan`'s question.
-    /// Whether a quoted scalar carries its closing quote. A plain or block
-    /// scalar has none to carry, so it is trivially closed.
-    fn quotedScalarIsClosed(self: *Parser, scalar: Scalar) bool {
-        const quote: u8 = switch (scalar.style) {
-            .single_quoted => '\'',
-            .double_quoted => '"',
-            else => return true,
-        };
-        const end = scalar.span.end_byte;
-        // The span holds both quotes, so anything shorter cannot hold two.
-        if (end > self.source.len or end < scalar.span.start_byte + 2) return false;
-        return self.source[end - 1] == quote;
-    }
-
     fn entryEndByteInclusive(self: *Parser, key: Scalar, value: Node) ?usize {
         if (value == .scalar) {
             const scalar = value.scalar;
@@ -801,7 +788,7 @@ pub const Parser = struct {
             // there is no boundary after it: text appended there becomes more
             // quoted content, and `--fix` appended the same key every round
             // (fuzz).
-            if (!self.quotedScalarIsClosed(scalar)) return null;
+            if (scalar.unterminated) return null;
             // A block scalar that took content ends at the start of the line
             // that closes it, trailing newline included. Scanning on to the
             // next '\n' from there would swallow the next sibling key line.

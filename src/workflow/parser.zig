@@ -1229,7 +1229,10 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             .scalar => |s| {
                 step.uses = types.ActionRef.parse(s.value);
                 step.uses_value_span = s.span;
-                step.uses_value_end_byte = s.span.end_byte;
+                // A quoted `uses:` that never closes swallows everything below
+                // it, so a `with:` block written after it becomes more quoted
+                // text and `--fix` writes it again every round (fuzz).
+                step.uses_value_end_byte = if (s.unterminated) null else s.span.end_byte;
                 step.uses_value_style = s.style;
                 step.uses_value_ends_line = s.ends_line;
                 step.uses_line_comment = s.line_comment;
@@ -2659,6 +2662,30 @@ test "an empty container credentials: does not fail the parse (fuzz)" {
     const wf = try parseWorkflow(alloc, try parser.parse());
     try testing.expectEqualStrings("node:20", wf.jobs[0].container.?.image.?);
     try testing.expect(wf.jobs[0].container.?.credentials == null);
+}
+
+test "an unterminated quoted uses: offers no insertion anchor (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The scalar swallows everything below it, so a `with:` block written after
+    // it becomes more quoted text rather than a key.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: \"actions/checkout@v4\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].steps[0].uses_value_end_byte == null);
+
+    // The same step, closed, keeps its anchor.
+    var closed = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: \"actions/checkout@v4\"\n",
+    );
+    const closed_wf = try parseWorkflow(alloc, try closed.parse());
+    try testing.expect(closed_wf.jobs[0].steps[0].uses_value_end_byte != null);
 }
 
 test "a mapping where a string list belongs does not fail the parse (fuzz)" {
