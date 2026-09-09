@@ -1,0 +1,25 @@
+# bench:forbid undeclared-matrix-key
+name: dynamic matrix include
+on: push
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - name: Build the matrix
+        id: set
+        run: echo 'matrix=[{"runner":"ubuntu"}]' >> "$GITHUB_OUTPUT"
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Test
+        run: echo "on ${{ matrix.runner }}"

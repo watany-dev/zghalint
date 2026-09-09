@@ -502,6 +502,10 @@ pub const MatrixAxis = struct {
     /// How to remove each value, parallel to `values` (SYN018 autofix).
     /// Empty when the parser could offer no stable range.
     value_deletes: []const yaml_types.ItemDelete = &.{},
+    /// The axis value is an expression scalar
+    /// (`include: ${{ fromJSON(...) }}`), so its entries — and the keys an
+    /// `include:` entry adds — exist only at run time (EXPR011).
+    dynamic: bool = false,
 };
 
 pub const Matrix = struct {

@@ -1,0 +1,21 @@
+# bench:forbid unsound-condition
+name: default and ternary values
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        type: string
+        default: stable
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CHANNEL: ${{ inputs.channel || 'stable' }}
+      CONFIG_ARGS: ${{ inputs.channel == 'beta' && '--config beta.json' || '--config release.json' }}
+      SUFFIX: ${{ inputs.channel == 'beta' && ' (beta)' || '' }}
+    steps:
+      - name: Announce
+        run: echo "building $CHANNEL$SUFFIX with $CONFIG_ARGS"

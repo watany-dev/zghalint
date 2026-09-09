@@ -1393,6 +1393,10 @@ fn parseMatrix(allocator: std.mem.Allocator, node: Node) ParseError!?types.Matri
                 .values = s.items,
                 .value_deletes = s.item_deletes,
             },
+            .scalar => |scalar| .{
+                .name = entry.key.value,
+                .dynamic = type_validation.containsExpression(scalar.value),
+            },
             else => .{ .name = entry.key.value },
         });
     }
