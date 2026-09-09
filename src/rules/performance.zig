@@ -93,10 +93,14 @@ fn buildCacheFix(
 
         if (step.with != null) {
             const anchor = step.with_last_entry_end_byte orelse continue;
+            // The existing `with:` keys, not the `uses:` column, decide the
+            // indent: an appended key off their column falls out of the mapping.
+            const with_col = step.with_key_col orelse continue;
+            if (with_col == 0) continue;
             const appended = fix_builder.appendMappingEntry(
                 alloc,
                 anchor,
-                col + 1,
+                with_col - 1,
                 "cache",
                 cache_value,
             ) orelse continue;
@@ -543,6 +547,7 @@ test "PERF001: setup-go with existing with: appends cache entry" {
             .uses_key_col = 9,
             .uses_value_end_byte = 100,
             .with_last_entry_end_byte = 140,
+            .with_key_col = 11,
         },
     };
     const job = Job{ .id = "build", .steps = &steps };
@@ -560,6 +565,37 @@ test "PERF001: setup-go with existing with: appends cache entry" {
     try std.testing.expectEqualStrings("\n          cache: true", fix.edits[0].replacement);
 }
 
+test "PERF001: an off-grid with: block sets the appended entry's indent (fuzz)" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
+    var with = workflow_types.StringMap.init(std.testing.allocator);
+    defer with.deinit();
+    try with.put("go-version", "1.21");
+
+    // The `with:` keys sit at column 10, one left of the column a fresh block
+    // would use. Appending at the `uses:`-derived column would drop the new key
+    // out of the mapping, and the rule would re-add it on every run.
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .with = with,
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+            .with_last_entry_end_byte = 140,
+            .with_key_col = 10,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings("\n         cache: true", fix.edits[0].replacement);
+}
+
 test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key" {
     workspace.set(.{ .go_sum_present = true });
     defer workspace.clear();
@@ -575,6 +611,7 @@ test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key
             .uses_key_col = 9,
             .uses_value_end_byte = 100,
             .with_last_entry_end_byte = 140,
+            .with_key_col = 11,
         },
     };
     const job = Job{ .id = "build", .steps = &steps };

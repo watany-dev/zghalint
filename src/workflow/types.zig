@@ -579,6 +579,11 @@ pub const Step = struct {
     uses_value_ends_line: bool = false,
     /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
     with_last_entry_end_byte: ?usize = null,
+    /// Column of the first `with:` key, which appended entries align with. The
+    /// step's `uses:` column is not a substitute: a `with:` body indented off
+    /// the usual grid would take the appended key out of the mapping, and the
+    /// rule would then re-add it on every run.
+    with_key_col: ?u32 = null,
     /// Span and style of the `run:` scalar. The style is needed to map an
     /// offset inside `run` back to a source line/column (block scalars start
     /// one line below their `|` / `>` indicator).
@@ -682,6 +687,9 @@ pub const Job = struct {
     secrets_args: []const CallArg = &.{},
     /// Column (1-based) at which this job's child keys are indented.
     job_indent: u32 = 0,
+    /// The job body starts on a line of its own rather than on the job id's
+    /// line, which is what an insertion aligned to `job_indent` assumes.
+    body_own_line: bool = true,
     /// Byte position to insert a new `permissions:` entry (after `runs-on:` line).
     permissions_insertion_byte: ?usize = null,
     concurrency_insertion_byte: ?usize = null,
@@ -716,7 +724,9 @@ pub const Workflow = struct {
     unknown_keys: []const schema.UnknownKey = &.{},
     /// Mapping value type mismatches collected during parsing (SYN004).
     type_mismatches: []const type_validation.TypeMismatch = &.{},
-    /// Top-level keys are always at column 1.
+    /// Indentation (0-based) of the top-level keys. Normally 0, but a document
+    /// whose root mapping is written indented needs the inserted entries to
+    /// line up with it or the mapping ends at the insertion.
     top_level_indent: u32 = 0,
     /// Byte position to insert a new top-level `permissions:` entry (after `on:` line).
     permissions_insertion_byte: ?usize = null,

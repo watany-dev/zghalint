@@ -28,7 +28,7 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.timeout_minutes != null or job.timeout_minutes_specified) return;
 
     var fix: ?Fix = null;
-    if (job.span.start_col >= 1) {
+    if (job.body_own_line and job.span.start_col >= 1) {
         const indent: u32 = job.span.start_col - 1;
         if (fix_builder.insertMappingEntryBefore(
             diag_list.fixAllocator(),
@@ -872,6 +872,31 @@ test "BP001: autofix applied to YAML source" {
     const timeout_pos = std.mem.indexOf(u8, result.content, "timeout-minutes: 30").?;
     const runs_on_pos = std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest").?;
     try std.testing.expect(timeout_pos < runs_on_pos);
+}
+
+test "BP001: no fix when the job body opens on the job id's line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `build: runs-on: …` starts the job body mid-line, where an insertion
+    // aligned to the body's column would split the line it lands on.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build: runs-on: ubuntu-latest
+        \\         steps:
+        \\           - run: echo hi
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    checkMissingTimeout(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
 }
 
 test "BP002: detect missing step name" {

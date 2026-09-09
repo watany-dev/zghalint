@@ -89,6 +89,18 @@ fn isOwnLineBlockMapping(parent: Mapping, key: []const u8, body: Mapping) bool {
     return body.entries[0].key.span.start_line > key_span.start_line;
 }
 
+/// True when the entry's value is a mapping that opens on the key's own line
+/// (`on: push:`, or a flow mapping). `full_span` covers the key's line only, so
+/// an insertion anchored at its end byte lands inside the value.
+fn startsInlineMapping(entry: yaml.MappingEntry) bool {
+    const body = switch (entry.value) {
+        .mapping => |m| m,
+        else => return false,
+    };
+    if (body.entries.len == 0) return false;
+    return body.entries[0].key.span.start_line == entry.key.span.start_line;
+}
+
 fn isEmptyContainer(node: Node) bool {
     return switch (node) {
         .mapping => |m| m.entries.len == 0,
@@ -257,9 +269,17 @@ pub fn parseWorkflowTracked(
     for (root.entries) |entry| {
         const name = entry.key.value;
         if (std.mem.eql(u8, name, "on") or std.mem.eql(u8, name, "true")) {
+            if (entry.key.span.start_col >= 1) {
+                workflow.top_level_indent = entry.key.span.start_col - 1;
+            }
+            // A mapping that opens on the key's own line (`on: push:`) leaves
+            // its children outside `full_span`, so an insertion at that anchor
+            // lands inside the trigger rather than after it.
             if (entry.full_span) |fs| {
-                workflow.permissions_insertion_byte = fs.end_byte;
-                workflow.concurrency_insertion_byte = fs.end_byte;
+                if (!startsInlineMapping(entry)) {
+                    workflow.permissions_insertion_byte = fs.end_byte;
+                    workflow.concurrency_insertion_byte = fs.end_byte;
+                }
             }
             break;
         }
@@ -861,6 +881,9 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
 
     var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
+    // `j: runs-on: x` puts the body on the job id's line, where an insertion
+    // aligned to the body's column would land mid-line.
+    job.body_own_line = m.entries.len > 0 and m.entries[0].key.span.start_line > id_span.start_line;
     job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
     job.runs_on = m.getScalar("runs-on");
@@ -915,6 +938,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     for (m.entries) |entry| {
         const name = entry.key.value;
         if (std.mem.eql(u8, name, "runs-on") or std.mem.eql(u8, name, "uses")) {
+            if (startsInlineMapping(entry)) continue;
             if (entry.full_span) |fs| {
                 if (job.permissions_insertion_byte == null) {
                     job.permissions_insertion_byte = fs.end_byte;
@@ -1208,6 +1232,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             switch (with_node) {
                 .mapping => |with_mapping| {
                     if (with_mapping.entries.len > 0) {
+                        step.with_key_col = with_mapping.entries[0].key.span.start_col;
                         const last = with_mapping.entries[with_mapping.entries.len - 1];
                         // Appending after the last entry is only safe when `with:`
                         // is a block mapping (a flow entry has no full_span) and the
