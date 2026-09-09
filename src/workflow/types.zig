@@ -568,6 +568,10 @@ pub const Step = struct {
     if_condition_meta: ?ScalarValueMeta = null,
     /// Span of the step mapping in source YAML (for autofix anchor).
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
+    /// The step opens on a line of its own. `steps: - uses: x` puts it on the
+    /// `steps:` line, where a block insertion aligned to the step's columns
+    /// lands mid-line and outside the step, so the rule keeps re-adding it.
+    own_line: bool = true,
     /// Column of the `uses:` key in source YAML (for autofix indentation).
     uses_key_col: ?u32 = null,
     /// End byte of the `uses:` value in source YAML (insertion point when no `with:` exists).

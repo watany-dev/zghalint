@@ -334,6 +334,9 @@ fn buildEnvEdits(
     step: *const Step,
     subs: []const fix_builder.SubEntry,
 ) ?[]const Edit {
+    // Both shapes below open a block line under the step, which needs the step
+    // to own its own line to begin with.
+    if (!step.own_line) return null;
     if (step.env != null) {
         const after = step.env_last_entry_end_byte orelse return null;
         const col = step.env_key_col orelse return null;

@@ -981,7 +981,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     if (m.get("steps")) |n| {
         try recordEmpty(&empty, ctx.allocator, "steps", n);
         if (!isEmptyContainer(n)) {
-            job.steps = try parseSteps(ctx, n);
+            job.steps = try parseSteps(ctx, n, keyLine(m, "steps"));
             job.step_deletes = switch (n) {
                 .sequence => |seq| seq.item_deletes,
                 else => &.{},
@@ -1112,7 +1112,16 @@ pub fn parseStandaloneStep(allocator: std.mem.Allocator, node: Node) ParseError!
     return parseStep(&ctx, node);
 }
 
-fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
+/// Line the mapping's `name` key sits on, or 0 when it has none: a step whose
+/// span starts on that line shares it with the key that introduces it.
+fn keyLine(m: Mapping, name: []const u8) u32 {
+    for (m.entries) |entry| {
+        if (std.mem.eql(u8, entry.key.value, name)) return entry.key.span.start_line;
+    }
+    return 0;
+}
+
+fn parseSteps(ctx: *ParseContext, node: Node, steps_key_line: u32) ParseError![]const types.Step {
     const seq = switch (node) {
         .sequence => |s| s,
         else => {
@@ -1127,6 +1136,7 @@ fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
             ctx.noteFmt("steps[{d}]", .{i}, "steps", item.getSpan());
             return err;
         };
+        steps[i].own_line = item.getSpan().start_line > steps_key_line;
     }
     return steps;
 }

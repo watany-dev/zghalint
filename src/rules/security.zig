@@ -1900,6 +1900,9 @@ fn buildPersistCredentialsFalseFix(
     safety: diagnostics.FixSafety,
 ) ?diagnostics.Fix {
     const alloc = list.fixAllocator();
+    // Both shapes below open a block line under the step, which needs the step
+    // to own its own line to begin with.
+    if (!step.own_line) return null;
     const col = step.uses_key_col orelse 7;
 
     const has_persist = if (step.with) |w| w.get("persist-credentials") != null else false;
@@ -4683,6 +4686,27 @@ test "SEC015: an off-grid with: block is appended at its own indent (fuzz)" {
     const fixed = try test_support.parseWorkflowSource(alloc, result.content);
     const with = fixed.jobs[0].steps[0].with orelse return error.TestUnexpectedResult;
     try testing.expect(with.get("persist-credentials") != null);
+}
+
+test "SEC015: no fix when the step opens on the steps: line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The step shares its line with `steps:` and the sequence dash, so there is
+    // no column a `with:` block could be opened at.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build: steps: [{uses: actions/checkout@v4}]
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    const step = &wf.jobs[0].steps[0];
+
+    var list = DiagnosticList.init(alloc);
+    try testing.expect(buildPersistCredentialsFalseFix(&list, step, .unsafe) == null);
 }
 
 test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {

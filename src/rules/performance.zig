@@ -88,6 +88,9 @@ fn buildCacheFix(
             if (with.get("cache")) |_| continue;
         }
 
+        // Both shapes below open a block line under the step, which needs the
+        // step to own its own line to begin with.
+        if (!step.own_line) continue;
         const col = step.uses_key_col orelse continue;
         if (col == 0) continue;
 
