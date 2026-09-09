@@ -1,0 +1,23 @@
+# zghalint:forbid BP007
+# PowerShell `$PACK_OUTPUT = npm pack` is assignment, not "variable as command".
+name: pwsh assignment
+on:
+  push:
+    branches: [main]
+concurrency:
+  group: bp007-pwsh
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  smoke:
+    name: Smoke
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Pack and run
+        shell: pwsh
+        run: |
+          $PACK_OUTPUT = npm pack
+          $TARBALL = $PACK_OUTPUT[-1]
+          npx "./$TARBALL" --version

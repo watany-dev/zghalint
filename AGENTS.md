@@ -20,10 +20,12 @@ zig fmt --check src/ build.zig      # Check formatting
 zig fmt src/ build.zig              # Auto-format
 ```
 
-### ベンチ (actionlint / zizmor との三者比較)
+### ベンチ (actionlint / zizmor との三者比較、`--perf` は rival 追加)
 
 週次の `.github/workflows/bench.yml` が回すのと同じ 3 モード。外部ツールの
-導入は `.github/workflows/ci.yml` の `lint` ジョブを参照。
+導入は `.github/workflows/ci.yml` の `lint` ジョブを参照。`--perf` の rival
+(ghalint / octoscan / poutine / action-validator) は
+`scripts/install-perf-rivals.sh`。
 
 ```bash
 zig build                                            # 採点対象のバイナリ
@@ -31,6 +33,7 @@ python3 scripts/bench.py --json /tmp/bench.json      # 採点行列
 python3 scripts/bench_gate.py --json /tmp/bench.json # baseline との比較 (回帰なら非ゼロ)
 python3 scripts/bench_gate.py --json /tmp/bench.json --update  # baseline を更新
 python3 scripts/bench.py --fix                       # autofix の交差検証
+sudo scripts/install-perf-rivals.sh                  # `--perf` の rival
 zig build -Doptimize=ReleaseFast && python3 scripts/bench.py --perf  # 性能
 ```
 
@@ -62,7 +65,7 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - `src/diagnostics.zig` — Diagnostic types, severity, categories
 - `src/util.zig` — Shared helpers (empty-section detection, edit distance)
 - `src/e2e_test.zig` — Fixture-driven E2E tests over `tests/fixtures/e2e/` (real files through parser → rules)
-- `bench/` — actionlint / zizmor との三者比較ベンチ (`scripts/bench.py`。`--perf` で wall time / RSS、`--fix` で autofix 交差検証、コーパス取得は `scripts/fetch-corpus.py`。形式は `bench/README.md`)
+- `bench/` — actionlint / zizmor との三者比較ベンチ (`scripts/bench.py`。`--perf` で wall time / RSS。rival の ghalint / octoscan / poutine / action-validator も測る。`--fix` で autofix 交差検証、コーパス取得は `scripts/fetch-corpus.py`。形式は `bench/README.md`)
 - `scripts/formal/` — SEC ルールの表の抜け漏れを Z3 有界モデル検査で列挙し実バイナリで確認 (`model.py` → `confirm.py`。設計は `docs/design/formal-rule-model.md`)
 - `src/fix/` — Auto-fix engine
   - `engine.zig` — Collect and apply `--fix` / `--fix-unsafe` rewrites in place

@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-08
+最終更新: 2026-09-09
 
 ## 1. 目的
 
@@ -36,6 +36,27 @@ shellcheck が一度も走っていないという状態だった。
 その分を補正している (列番号のみブロック本文相対のまま)。
 
 これにより `# shellcheck disable=SC2086` が初めて実際に機能するようになった。
+
+### 2.2 性能比較に足すツール (`--perf` のみ)
+
+採点行列は actionlint / zizmor の 3 者のままにする。指摘 ID の対応表
+(`DEFAULT_KIND_MAP` と `bench:expect`) がこの 2 ツール向けで、方針リンターや
+スキーマ検証器を同じ kind に載せる作業は parity gap の追跡とは別物になる。
+
+`--perf` にはローカルのワークフロー YAML を lint / scan する CLI を足す。
+導入は `scripts/install-perf-rivals.sh` (Linux x86_64、SHA256 ピン)。PATH に
+無ければ「見つからない」として表に載り、計測は続く。
+
+| ツール | 版 | 何をするか |
+| --- | --- | --- |
+| ghalint | 1.5.6 | セキュリティ方針 (権限、timeout、SHA ピン) |
+| octoscan | 0.1.7 | actionlint ベースの脆弱性スキャナ |
+| poutine | 1.1.6 | CI/CD サプライチェーンスキャナ (OPA)。`--disable-version-check` |
+| action-validator | 0.9.0 | workflow / action の JSON Schema |
+
+載せないもの: frizbee / pinny / scharf / pinact (ピン留め専用)、Scorecard
+(GitHub API)、ggshield (シークレット)、Semgrep / Checkov / super-linter
+(汎用 SAST / 集約)。詳細は `bench/README.md`。
 
 ## 3. 導入時に修正した指摘
 
@@ -479,6 +500,82 @@ fix エンジンは、同一マッピングでリネームが作るキーと挿�
 まとめ、両者で同じ判定にした。回帰ケースは
 `bench/cases/b-trigger-checkout/automerge-dependabot.yml`。
 
+#### G29. `actions/create-github-app-token` が installation の全権限を継承する — 要ルール追加
+
+`bench/cases/d-permissions-secrets/github-app-token-unscoped.yml`。
+
+```yaml
+- uses: actions/create-github-app-token@...
+  with:
+    app-id: ${{ secrets.APP_ID }}
+    private-key: ${{ secrets.PRIVATE_KEY }}
+```
+
+`permission-*` 入力を付けないと、発行されるトークンは GitHub App の
+installation が持つ全スコープを継承する。zizmor は `github-app` として
+指摘する。zghalint には該当ルールが無い。実運用のワークフロー群を三者比較
+したところで 3 件出た。`permission-issues: write` のようにスコープを書いた
+呼び出しは zizmor も黙るので、入力の有無で切れる。
+
+#### G30 (#382). オブジェクト軸の未定義プロパティを EXPR011 が見ない — 要ルール改善
+
+`bench/cases/e-expression/matrix-object-property-undeclared.yml`。
+
+```yaml
+strategy:
+  matrix:
+    platform:
+      - target: x86_64-unknown-linux-gnu
+        arch: x64
+steps:
+  - run: echo "${{ matrix.platform.image }}"
+```
+
+EXPR011 は `matrix.<key>` の第 1 セグメントだけを軸名 / `include:` のキーと
+照合し、一致したら残りのパスを見ない。軸値がマッピングでも、どのセルにも
+無いプロパティへのアクセスは沈黙する。actionlint はオブジェクト型
+`{arch: string; target: string}` に対して `property "image" is not defined`
+を出す。スカラー軸の未定義キーは既存の `matrix-key-undeclared.yml` で取れている。
+
+実運用のワークフロー群を三者比較したところで、軸オブジェクトに無いキーを
+参照する `run:` / `with:` が複数ジョブで出た。セルによってキーが違う場合は
+和集合を宣言済みとみなし、値が式のセルはその軸では沈黙する。
+
+#### G31 (#383). DEP003 が `$/` の自己参照 `uses:` を形式不正にする — 要ルール修正
+
+`bench/cases/g-reusable/self-repository-prefix.yml`。
+
+```yaml
+jobs:
+  call:
+    uses: $/.github/workflows/reusable.yml
+```
+
+`$/.github/workflows/{file}` (ジョブ) と `$/{path}` (ステップ) は、ワークフロー
+自身のリポジトリの実行中コミットを指す自己参照で、`./` と同様に `@ref` を
+付けてはいけない。DEP003 は `$/` をリモート参照の `{owner}` として読み、
+`@ref` が無いので error にする。zizmor は指摘しない。actionlint 1.7.7 も
+形式不正とするが、github.com では正規の構文である。
+
+§4.3 の `self-repository` (zizmor が `./` を `$/` へ書き換えろと勧める指摘)
+は引き続き採用しない。こちらは既に書かれた `$/` を誤って弾く誤検出。
+
+#### G32 (#384). RUNNER002 が `ubuntu-slim` を未知ラベルにする — 要データ更新
+
+`bench/cases/h-practices/ubuntu-slim-runner.yml`。
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-slim
+```
+
+`ubuntu-slim` は GitHub-hosted の 1 vCPU Linux ランナーの公式ラベル。
+`known_labels` に無いため、`ubuntu-` で始まる未知ラベルとして RUNNER002 が
+error を出す。actionlint 1.7.7 も未知とするが、指摘は誤り。`macos-15-intel`
+は `macos-15` の接尾辞として受理される一方、`ubuntu-slim` はどの現行ラベルの
+接尾辞にもならない。表を足すときは現行の公式ラベル一覧と突き合わせる。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -754,7 +851,7 @@ python3 scripts/bench.py --fix
 新規ケースの FN は失敗させない。gate の「新規ケース」表と行列の FN 表に載る
 ので、そこから次の手順で gap にする。
 
-1. FN を §4.1 の次の空き番号 (G26 以降) として起票し、この文書に節を足す。
+1. FN を §4.1 の次の空き番号 (G33 以降) として起票し、この文書に節を足す。
    表題は `#### G<n> (#<issue>). <要約> — 要ルール追加` の形にそろえる。
 2. ルールを実装したら見出しを「対応済み」に変え、§5 のチェックボックスを埋める。
 3. 対応するケースを `tests/fixtures/e2e/` へ昇格させる。bench のケースは
@@ -770,9 +867,37 @@ python3 scripts/bench.py --fix
 
 外部ツールの版は `ci.yml` の `lint` ジョブと `bench.yml` の両方に同じ
 ピン留めで書いてある (actionlint は SHA256、zizmor は
-`.github/lint-requirements.txt`)。版を上げるときは両方を同時に動かし、
+`.github/lint-requirements.txt`)。`--perf` の rival は
+`scripts/install-perf-rivals.sh` にピンする。版を上げるときは両方を同時に動かし、
 上げる前後で `scripts/bench.py` を回して増減を §4 に記録する。数字が動いても
 gate は zghalint の列しか見ないので赤くならない。
+
+### 4.9 2026-09-09 の rival 性能計測
+
+actionlint / zizmor 以外のローカル CLI を `--perf` に足して測った。環境は
+Linux x86_64 / 4 logical CPU、zghalint は `-Doptimize=ReleaseFast`、
+hyperfine 1.18.0 (10 runs / warmup 3)、GNU time、shellcheck 0.9.0。
+rival の版は §2.2。コーパス 33 リポジトリ / 228 ファイル。
+
+| シナリオ | zghalint | 次点 | 最遅 |
+|---|---|---|---|
+| cases (130 ファイル / 2,201 行) | 2.9 ms · 2.0 MiB | ghalint 13.7 ms · 14.8 MiB | action-validator 1.136 s · 7.6 MiB |
+| huge (1 ファイル / 10,035 行) | 9.9 ms · 8.0 MiB | ghalint 27.4 ms · 17.5 MiB | octoscan 866.0 ms · 27.1 MiB |
+| many-small (1,000 ファイル / 89,607 行) | 83.1 ms · 6.6 MiB | ghalint 214.2 ms · 15.3 MiB | poutine 11.820 s · 169.6 MiB |
+
+| シナリオ | zizmor | actionlint | octoscan | poutine | action-validator |
+|---|---|---|---|---|---|
+| cases | 67.1 ms · 34.0 MiB | 117.5 ms · 14.8 MiB | 326.8 ms · 21.1 MiB | 172.4 ms · 50.3 MiB | 1.136 s · 7.6 MiB |
+| huge | 312.3 ms · 42.3 MiB | 774.5 ms · 16.8 MiB | 866.0 ms · 27.1 MiB | 431.8 ms · 65.7 MiB | 76.6 ms · 11.8 MiB |
+| many-small | 1.405 s · 167.6 MiB | 3.871 s · 65.4 MiB | 4.044 s · 73.1 MiB | 11.820 s · 169.6 MiB | 9.452 s · 8.3 MiB |
+
+一番近い rival は ghalint (方針リンター、Go)。wall time で 2.6〜4.7 倍、
+RSS で 2〜7 倍。actionlint / octoscan は shellcheck 子プロセス込み。
+poutine は OPA を内蔵しており many-small で RSS も zizmor 並み。
+action-validator は単一巨大ファイルでは速いが、ファイル数が増えると
+JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定のため未計測。
+
+採点行列には足していない (§2.2)。
 
 ## 5. 次アクション
 
@@ -805,3 +930,7 @@ gate は zghalint の列しか見ないので赤くならない。
 - [x] G25 (#349): `isDependabotFile` をベース名ちょうど `dependabot.yml` に限る
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
+- [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する
+- [ ] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
+- [ ] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
+- [ ] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める

@@ -329,10 +329,24 @@
       "line_matched": 1,
       "violations": 0
     },
+    "d-permissions-secrets/container-credentials-github-actor.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
     "d-permissions-secrets/container-credentials-plaintext.yml": {
       "detected": 1,
       "expected": 1,
       "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "d-permissions-secrets/github-app-token-unscoped.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
       "line_matched": 0,
       "violations": 0
     },
@@ -413,6 +427,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "e-expression/dynamic-matrix-include.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
     "e-expression/env-undefined.yml": {
       "detected": 0,
       "expected": 0,
@@ -469,6 +490,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "e-expression/matrix-object-property-undeclared.yml": {
+      "detected": 0,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
     "e-expression/matrix-without-strategy.yml": {
       "detected": 1,
       "expected": 1,
@@ -516,6 +544,13 @@
       "expected": 1,
       "line_expected": 1,
       "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/value-position-ternary.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
       "violations": 0
     },
     "f-syntax-schema/duplicate-key-case-insensitive.yml": {
@@ -679,6 +714,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "g-reusable/self-repository-prefix.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 1
+    },
     "g-reusable/undeclared-secret": {
       "detected": 2,
       "expected": 2,
@@ -735,6 +777,13 @@
       "line_matched": 2,
       "violations": 0
     },
+    "h-practices/pwsh-assignment.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
     "h-practices/redundant-checkout.yml": {
       "detected": 1,
       "expected": 1,
@@ -762,6 +811,13 @@
       "line_expected": 0,
       "line_matched": 0,
       "violations": 0
+    },
+    "h-practices/ubuntu-slim-runner.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 1
     },
     "i-robustness/bare-dash-sequence-entry.yml": {
       "detected": 1,

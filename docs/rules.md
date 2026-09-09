@@ -43,7 +43,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit` |
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |
 | SEC012 | unredacted-secrets | error | Secrets processed via `toJSON()`/`fromJSON()` bypass masking and may be exposed in logs |
-| SEC013 | hardcoded-container-credentials | error | Container credentials should use GitHub Secrets, not plaintext values |
+| SEC013 | hardcoded-container-credentials | error | Plaintext `username` / `password` in `container.credentials` / `services.*.credentials`. `${{ }}` expressions (including `github.actor` + `secrets.GITHUB_TOKEN`, the documented GHCR login) are not hardcoded |
 | SEC014 | bot-conditions | warning | Bot account checks using `github.actor` are spoofable |
 | SEC015 | artipacked | warning | Checkout with persisted credentials followed by `upload-artifact` can leak `GITHUB_TOKEN` |
 | SEC016 | cache-poisoning | warning | Cache usage in release/deploy workflows risks cache poisoning attacks |
@@ -120,6 +120,14 @@ they are not ref-shaped, so the #138 exclusion does not apply to them.
 Expanding the event as a whole — `toJSON(github.event)` — is a taint source too.
 The root matches only as a whole reference, so server-generated fields such as
 `github.event.number` stay out of scope.
+
+### SEC013 hardcoded-container-credentials
+
+SEC013 reports plaintext `username` / `password` under `jobs.*.container.credentials`
+and `jobs.*.services.*.credentials`. A value that is already a `${{ }}`
+expression is not plaintext: `github.actor` (or `github.repository_owner`)
+with `secrets.GITHUB_TOKEN` / `github.token` is the login GitHub documents for
+GHCR.
 
 ### Refs SEC005 and SEC009 recognize
 
@@ -324,7 +332,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP003 | deprecated-action-version | warning / error | Using a known deprecated action version (warning), or an action declaring a retired `runs.using` runtime (error) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
-| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block |
+| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
 
 ### BP002 missing-step-name

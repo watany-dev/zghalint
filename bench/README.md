@@ -5,6 +5,11 @@
 `docs/design/external-linter-parity.md` の gap 番号として起票するのが目的
 (issue #262)。
 
+性能計測 (`--perf`) は採点とは別に、actionlint / zizmor に加えて
+ghalint / octoscan / poutine / action-validator も同じファイルで測る。
+導入は `scripts/install-perf-rivals.sh`。採点行列に足さないのは、指摘 ID の
+対応表が actionlint / zizmor に紐づいているため。
+
 ```bash
 zig build                                   # 採点対象のバイナリを先に作る
 python3 scripts/bench.py                    # 行列を stdout へ
@@ -17,7 +22,10 @@ python3 scripts/bench.py --fix -o /tmp/fix.md --json /tmp/fix.json
 
 `actionlint` / `zizmor` が PATH になければ、そのツールは採点対象から外れる
 (zghalint だけでも実行できる)。導入手順は `.github/workflows/ci.yml` の
-`lint` ジョブと `.github/lint-requirements.txt` を参照。
+`lint` ジョブと `.github/lint-requirements.txt` を参照。`--perf` の rival
+(ghalint / octoscan / poutine / action-validator) は
+`scripts/install-perf-rivals.sh` (Linux x86_64、SHA256 ピン)。PATH に無い
+rival は「見つからない」として表に載り、計測は続く。
 
 ## 配置
 
@@ -162,6 +170,7 @@ SEC001 の SHA ピン留めは `--offline` では解決できないので、こ�
 ```bash
 zig build -Doptimize=ReleaseFast
 python3 scripts/fetch-corpus.py                     # many-small 用のコーパス
+sudo scripts/install-perf-rivals.sh                 # ghalint / octoscan / poutine / action-validator
 python3 scripts/bench.py --perf                     # Markdown を stdout へ
 python3 scripts/bench.py --perf -o /tmp/perf.md --json /tmp/perf.json
 python3 scripts/bench.py --perf --runs 3 --warmup 1 # 手元での確認用
@@ -181,13 +190,42 @@ python3 scripts/bench.py --perf --runs 3 --warmup 1 # 手元での確認用
 Python から直接 `wait4(2)` で読むと Linux が親プロセスの RSS を子に
 計上するため 15 MiB 前後で床打ちされ、zghalint の実値 (数 MiB) が見えない。
 GNU time が無い環境 (macOS の BSD time を含む) では RSS 列は `–` になる。
-zghalint / actionlint / zizmor はすべて `bench/` の採点と同じフラグ
-(`--offline`, `-no-color`, `--offline --no-progress`) で走らせる。
+zghalint / actionlint / zizmor / action-validator はファイル一覧を argv に渡す。
+ghalint / octoscan / poutine は `.github/workflows/` しか見ないので、同じ
+ファイルをそこに複製してから走らせる (複製は計測に含めない)。octoscan の
+対象はリポジトリルート (`.`) にする — ワークフローディレクトリを渡すと
+actionlint 由来のプロジェクト検出が 0 ファイルになる。poutine は
+起動時に版チェックで GitHub へ行くため `--disable-version-check` を付ける。
+actionlint と octoscan は PATH に shellcheck があれば `run:` ごとに起動する
+— それがデフォルトのコストなので、計測でも外さない。
 
 終了コードは表に載せる。zghalint の 2 は「lint できなかったファイルがある」
 の意味で、パースを拒否した実ファイルがあれば many-small で出る (堅牢性の
 観察点)。#293 の修正以降、`scripts/fetch-corpus.py` が集める 228 件は
 すべてパースを通る。
+
+### 性能比較に足すツール / 足さないツール
+
+GitHub Actions 向けの静的ツールは actionlint / zizmor 以外にもある。`--perf`
+に載せるのは、ローカルのワークフロー YAML を lint / scan する CLI で、起動
+一回で同じファイル集合を処理できるもの。
+
+| ツール | 何をするか | `--perf` |
+|---|---|---|
+| [ghalint](https://github.com/suzuki-shunsuke/ghalint) | セキュリティ方針 (権限、timeout、SHA ピン) | 載せる |
+| [octoscan](https://github.com/synacktiv/octoscan) | actionlint ベースの脆弱性スキャナ | 載せる |
+| [poutine](https://github.com/boostsecurityio/poutine) | CI/CD サプライチェーンスキャナ (OPA) | 載せる |
+| [action-validator](https://github.com/mpalmer/action-validator) | workflow / action の JSON Schema | 載せる |
+| frizbee / pinny / scharf / pinact | 未ピン留め `uses:` を SHA に直す専用 | 載せない (リンターではない) |
+| OpenSSF Scorecard | リポジトリ全体の GitHub API 監査 | 載せない (ネットワーク前提) |
+| ggshield | シークレットスキャン | 載せない |
+| Semgrep | 汎用 SAST。起動が重い | 載せない |
+| Checkov / super-linter | IaC / 多言語の集約 | 載せない |
+
+採点行列 (`scripts/bench.py` の既定モード) は actionlint / zizmor の 3 者のまま。
+指摘 ID の対応表と `bench:expect` ヘッダがこの 2 ツール向けで、ghalint の
+`job_permissions` と octoscan のルール名を同じ kind に載せる作業は parity
+gap の追跡とは別物になる。
 
 network シナリオは `GITHUB_TOKEN` が要る (zghalint は GraphQL 経路でしか
 キャッシュを書かず、zizmor はトークン無しだと黙ってオフラインになる)。
@@ -246,7 +284,8 @@ PR では回さない。
   記録だけ残す。
 
 外部ツールの版は `ci.yml` の `lint` ジョブと同じピン留めにする (actionlint は
-SHA256、zizmor は `.github/lint-requirements.txt`)。上げ方と結果の扱いは
+SHA256、zizmor は `.github/lint-requirements.txt`)。`--perf` の rival は
+`scripts/install-perf-rivals.sh` にピンする。上げ方と結果の扱いは
 `docs/design/external-linter-parity.md` §4.8。
 
 ## ケースを追加する

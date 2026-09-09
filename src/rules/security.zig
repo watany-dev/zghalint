@@ -1009,25 +1009,46 @@ fn runTaintContexts(wf: *const Workflow) RunTaintContexts {
     return out;
 }
 
+/// A fixed-capacity list of context prefixes, in first-appended order.
+///
+/// Holding each context once is what keeps the capacity an upper bound: the
+/// tables below size the buffer by counting each context once, while the loops
+/// that fill it walk `wf.on.events`, where a duplicate `on:` key leaves the
+/// same event twice over — SYN002 reports those keys, it does not drop them.
+/// Appending per occurrence wrote past the end: a panic in Debug, an
+/// out-of-bounds store up to SIGSEGV in ReleaseFast (#366).
+fn ContextSet(comptime capacity: usize) type {
+    return struct {
+        const Self = @This();
+
+        buf: [capacity][]const u8 = undefined,
+        len: usize = 0,
+
+        fn append(self: *Self, context: []const u8) void {
+            for (self.buf[0..self.len]) |existing| {
+                if (std.mem.eql(u8, existing, context)) return;
+            }
+            // Unreachable while the capacity counts every context a caller
+            // may append; a table that outgrew its count drops contexts here
+            // rather than corrupting the stack.
+            if (self.len == capacity) return;
+            self.buf[self.len] = context;
+            self.len += 1;
+        }
+
+        fn slice(self: *const Self) []const []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+}
+
 const max_run_taint_contexts = blk: {
     var n: usize = run_dangerous_contexts.len + bare_inputs_contexts.len;
     for (dispatch_payload_table) |entry| n += entry.contexts.len;
     break :blk n;
 };
 
-const RunTaintContexts = struct {
-    buf: [max_run_taint_contexts][]const u8 = undefined,
-    len: usize = 0,
-
-    fn append(self: *RunTaintContexts, context: []const u8) void {
-        self.buf[self.len] = context;
-        self.len += 1;
-    }
-
-    fn slice(self: *const RunTaintContexts) []const []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+const RunTaintContexts = ContextSet(max_run_taint_contexts);
 
 /// Every context in the table, plus the bare `inputs` root.
 const max_checkout_ref_contexts = blk: {
@@ -1036,22 +1057,7 @@ const max_checkout_ref_contexts = blk: {
     break :blk n;
 };
 
-const CheckoutRefContexts = struct {
-    buf: [max_checkout_ref_contexts][]const u8 = undefined,
-    len: usize = 0,
-
-    fn append(self: *CheckoutRefContexts, context: []const u8) void {
-        for (self.buf[0..self.len]) |existing| {
-            if (std.mem.eql(u8, existing, context)) return;
-        }
-        self.buf[self.len] = context;
-        self.len += 1;
-    }
-
-    fn slice(self: *const CheckoutRefContexts) []const []const u8 {
-        return self.buf[0..self.len];
-    }
-};
+const CheckoutRefContexts = ContextSet(max_checkout_ref_contexts);
 
 /// The `inputs.*` shorthand names whatever started the run: the values a
 /// `workflow_dispatch` actor typed, or the values a caller passed. Analysing
@@ -1496,7 +1502,7 @@ fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) vo
 fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, job_span: Span, list: *DiagnosticList) void {
     const credentials = creds orelse return;
     if (credentials.username) |username| {
-        if (!isSecretsExpression(username)) {
+        if (!isExpressionValue(username)) {
             list.append(.{
                 .rule_id = "SEC013",
                 .severity = .@"error",
@@ -1507,7 +1513,7 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, job_span: Sp
         }
     }
     if (credentials.password) |password| {
-        if (!isSecretsExpression(password)) {
+        if (!isExpressionValue(password)) {
             list.append(.{
                 .rule_id = "SEC013",
                 .severity = .@"error",
@@ -1519,11 +1525,18 @@ fn checkCredentialsForHardcoded(creds: ?workflow_types.Credentials, job_span: Sp
     }
 }
 
-fn isSecretsExpression(value: []const u8) bool {
+/// A value that is already a `${{ }}` expression is not plaintext. SEC013
+/// reports hardcoded credentials, so `github.actor` / `github.token` — the
+/// documented GHCR login — must stay quiet, same as `secrets.*`.
+fn isExpressionValue(value: []const u8) bool {
     const trimmed = std.mem.trim(u8, value, " \t\n\r");
     if (trimmed.len < 5) return false;
-    if (!std.mem.startsWith(u8, trimmed, "${{")) return false;
-    if (!std.mem.endsWith(u8, trimmed, "}}")) return false;
+    return std.mem.startsWith(u8, trimmed, "${{") and std.mem.endsWith(u8, trimmed, "}}");
+}
+
+fn isSecretsExpression(value: []const u8) bool {
+    if (!isExpressionValue(value)) return false;
+    const trimmed = std.mem.trim(u8, value, " \t\n\r");
     const inner = std.mem.trim(u8, trimmed[3 .. trimmed.len - 2], " \t");
     return std.mem.startsWith(u8, inner, "secrets.");
 }
@@ -2502,7 +2515,8 @@ fn containsVarAsCommand(s: []const u8) bool {
         // `${{ }}` is a GitHub expression and `$(...)` a command substitution.
         if (std.mem.startsWith(u8, rest, "${{") or rest[1] == '(') continue;
 
-        const name = if (rest[1] == '{') blk: {
+        const braced = rest[1] == '{';
+        const name = if (braced) blk: {
             const end = 2 + identRunLen(rest[2..]);
             if (end >= rest.len or rest[end] != '}') break :blk "";
             break :blk rest[2..end];
@@ -2510,7 +2524,19 @@ fn containsVarAsCommand(s: []const u8) bool {
             if (!isIdentStart(rest[1])) break :blk "";
             break :blk rest[1 .. 1 + identRunLen(rest[1..])];
         };
-        if (isAllUppercase(name)) return true;
+        if (name.len == 0 or !isAllUppercase(name)) continue;
+
+        // `$NAME = ...` is assignment (PowerShell, and the lookalike in
+        // bash). `$CMD == ...` is still a command with `==` as an argument.
+        const token_end: usize = if (braced) 3 + name.len else 1 + name.len;
+        if (token_end < rest.len) {
+            const after = std.mem.indexOfNone(u8, rest[token_end..], " \t") orelse {
+                return true;
+            };
+            const eq = token_end + after;
+            if (rest[eq] == '=' and (eq + 1 >= rest.len or rest[eq + 1] != '=')) continue;
+        }
+        return true;
     }
     return false;
 }
@@ -3767,6 +3793,52 @@ const pr_target_and_workflow_run_trigger = Trigger{ .events = &[_]EventConfig{
     .{ .event = .workflow_run },
 } };
 
+// A block mapping may repeat a key, and the workflow parser keeps every
+// occurrence, so `on:` can name one event many times over (#366).
+const repeated_dispatch_trigger = Trigger{ .events = &[_]EventConfig{
+    .{ .event = .workflow_dispatch },
+    .{ .event = .workflow_dispatch },
+    .{ .event = .workflow_dispatch },
+    .{ .event = .repository_dispatch },
+    .{ .event = .repository_dispatch },
+    .{ .event = .issue_comment },
+    .{ .event = .issue_comment },
+} };
+
+test "taint tables hold a repeated event once (#366)" {
+    const jobs = [_]Job{.{ .id = "build", .steps = &[_]Step{}, .permissions = Permissions{} }};
+    const wf = Workflow{
+        .name = "CI",
+        .on = repeated_dispatch_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+    };
+
+    const taint = runTaintContexts(&wf);
+    try expectNoRepeat(taint.slice());
+    try testing.expect(containsContext(taint.slice(), "github.event.inputs"));
+    try testing.expect(containsContext(taint.slice(), "github.event.client_payload"));
+    try testing.expect(containsContext(taint.slice(), "inputs"));
+
+    const refs = untrustedRefContexts(&wf);
+    try expectNoRepeat(refs.slice());
+    try testing.expect(containsContext(refs.slice(), "github.event.inputs"));
+    try testing.expect(containsContext(refs.slice(), "github.event.comment.body"));
+}
+
+fn containsContext(contexts: []const []const u8, needle: []const u8) bool {
+    for (contexts) |context| {
+        if (std.mem.eql(u8, context, needle)) return true;
+    }
+    return false;
+}
+
+fn expectNoRepeat(contexts: []const []const u8) !void {
+    for (contexts, 0..) |context, i| {
+        try testing.expect(!containsContext(contexts[0..i], context));
+    }
+}
+
 fn runCheckoutWith(on: Trigger, key: []const u8, value: []const u8) DiagnosticList {
     var with = workflow_types.StringMap.init(testing.allocator);
     defer with.deinit();
@@ -4898,6 +4970,26 @@ test "SEC013: secrets expression credentials (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC013"));
 }
 
+test "SEC013: github.actor and secrets.GITHUB_TOKEN is the GHCR login (no false positive)" {
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "${{ github.actor }}", .password = "${{ secrets.GITHUB_TOKEN }}" },
+    };
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
+test "SEC013: github.token password is an expression (no false positive)" {
+    const container = workflow_types.Container{
+        .image = "node:14",
+        .credentials = .{ .username = "${{ github.repository_owner }}", .password = "${{ github.token }}" },
+    };
+    var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC013"));
+}
+
 test "SEC013: container without credentials (no false positive)" {
     const container = workflow_types.Container{ .image = "node:14" };
     var list = runJob(.{ .id = "build", .container = container, .permissions = Permissions{} });
@@ -4928,6 +5020,12 @@ test "isSecretsExpression: empty string" {
 
 test "isSecretsExpression: non-secrets expression" {
     try testing.expect(!isSecretsExpression("${{ github.actor }}"));
+}
+
+test "isExpressionValue: github.actor and secrets wrap" {
+    try testing.expect(isExpressionValue("${{ github.actor }}"));
+    try testing.expect(isExpressionValue("${{ secrets.GITHUB_TOKEN }}"));
+    try testing.expect(!isExpressionValue("myuser"));
 }
 
 test "SC001: unpinned container image with tag" {
@@ -6326,6 +6424,30 @@ test "BP007: variable as command at line start" {
     var list = runStep(.{ .run = "export CMD=\"malicious\"\n$CMD" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: PowerShell assignment is not a command" {
+    var list = runStep(.{ .run = "$PACK_OUTPUT = npm pack\n$TARBALL = $PACK_OUTPUT[-1]\nnpx \"./$TARBALL\" --version" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: $CMD == still counts as a command" {
+    var list = runStep(.{ .run = "$CMD == foo" });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: assignment without spaces is still assignment" {
+    var list = runStep(.{ .run = "$PACK_OUTPUT=npm pack" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
+}
+
+test "BP007: braced assignment is not a command" {
+    var list = runStep(.{ .run = "${PACK_OUTPUT} = npm pack" });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "BP007"));
 }
 
 test "BP007: no false positive on a variable in a continuation line" {

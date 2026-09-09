@@ -1,6 +1,6 @@
 name: Bench
 
-# PR ごとには回さない。外部ツール 2 本の導入と 100 件超のケース実行で数分
+# PR ごとには回さない。外部ツールの導入と 100 件超のケース実行で数分
 # かかる一方、見たいのは「週をまたいだスコアの動き」だから。手元で確かめたい
 # ときは workflow_dispatch で回す。
 on:
@@ -172,6 +172,12 @@ jobs:
 
       - name: Install zizmor
         run: pip install -r .github/lint-requirements.txt
+
+      # ghalint / octoscan / poutine / action-validator。版は
+      # scripts/install-perf-rivals.sh にピンしてある。採点ジョブには入れない
+      # (指摘 ID の対応表が actionlint / zizmor 向けのため)。
+      - name: Install perf rivals
+        run: sudo ./scripts/install-perf-rivals.sh
 
       # hyperfine が無ければ bench_perf.py は同じ回数の in-process ループに
       # 落ちる。最大 RSS は GNU time でしか取れない (BSD time では列が `–`)。

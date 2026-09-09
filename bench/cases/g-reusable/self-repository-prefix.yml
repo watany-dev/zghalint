@@ -1,0 +1,13 @@
+# bench:forbid obfuscated-uses
+name: build
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  call:
+    permissions:
+      contents: read
+    uses: $/.github/workflows/reusable.yml

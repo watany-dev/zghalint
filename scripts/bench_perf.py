@@ -1,7 +1,9 @@
 """Wall-clock and peak-RSS measurements behind `scripts/bench.py --perf`.
 
-Four scenarios, each run through zghalint, actionlint and zizmor on the same
-machine and the same files:
+Four scenarios on the same machine and the same files. File-list tools
+(zghalint, actionlint, zizmor, action-validator) take the paths as argv.
+Repo tools (ghalint, octoscan, poutine) only look under `.github/workflows/`,
+so the same files are copied there first; that copy is not timed.
 
     cases       every workflow-shaped file under `bench/cases/` in one call
     huge        one synthetic ~10,000-line workflow
@@ -16,6 +18,7 @@ reports for one extra run ("Maximum resident set size"), or unmeasured when
 GNU time is not installed. The network scenario is only reported when the
 network actually answers: an environment that blocks `api.github.com` would
 otherwise post the cost of a failed connection as if it were a fetch.
+A missing rival is recorded as unavailable rather than scored as zero time.
 """
 
 from __future__ import annotations
@@ -69,7 +72,7 @@ def _line_count(cwd: Path, files: list[str]) -> int:
 
 
 def workflow_files(cases_dir: Path) -> list[Path]:
-    """Every case file that all three tools read as a workflow.
+    """Every case file that the file-list tools read as a workflow.
 
     `*.action.yml` (or a bare `action.yml`) and `*.dependabot.yml` are only
     recognised under their staged names (see `bench.py`); passed as-is they
@@ -240,7 +243,22 @@ class Command:
     prepare: list[str] | None = None
 
 
-def tool_commands(zghalint: Path, files: list[str]) -> list[Command]:
+def stage_github_workflows(src_cwd: Path, files: list[str], dest: Path) -> Path:
+    """Copy *files* into `dest/.github/workflows/` with unique names.
+
+    ghalint / octoscan / poutine discover workflows from that layout rather
+    than from an argv list. Flattening keeps GitHub's real one-directory
+    constraint and avoids basename collisions across `bench/cases/` trees.
+    """
+    workflows = dest / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    for index, rel in enumerate(files):
+        shutil.copyfile(src_cwd / rel, workflows / f"{index:04d}-{Path(rel).name}")
+    (dest / ".git").mkdir(exist_ok=True)
+    return dest
+
+
+def file_tool_commands(zghalint: Path, files: list[str]) -> list[Command]:
     env = dict(os.environ)
     return [
         Command(
@@ -254,6 +272,36 @@ def tool_commands(zghalint: Path, files: list[str]) -> list[Command]:
             "zizmor",
             "offline",
             ["zizmor", "--format", "json", "--offline", "--no-progress", *files],
+            env,
+        ),
+        Command("action-validator", "offline", ["action-validator", *files], env),
+    ]
+
+
+def repo_tool_commands() -> list[Command]:
+    """Commands that scan `.github/workflows/` from cwd, not an argv file list."""
+    env = dict(os.environ)
+    return [
+        Command("ghalint", "offline (repo)", ["ghalint", "--log-color", "never", "run"], env),
+        # A workflows-directory target finds 0 files; the project root is cwd.
+        Command(
+            "octoscan",
+            "offline (repo)",
+            ["octoscan", "scan", ".", "--format", "json"],
+            env,
+        ),
+        Command(
+            "poutine",
+            "offline (repo)",
+            [
+                "poutine",
+                "analyze_local",
+                ".",
+                "--disable-version-check",
+                "-q",
+                "-f",
+                "json",
+            ],
             env,
         ),
     ]
@@ -530,7 +578,7 @@ def run_perf(
         if scenario.unavailable is not None:
             skipped[scenario.name] = scenario.unavailable
             continue
-        for cmd in tool_commands(zghalint, scenario.files):
+        for cmd in file_tool_commands(zghalint, scenario.files):
             print(f"  {scenario.name}: {cmd.tool}", file=sys.stderr)
             rows.append(
                 Row(
@@ -538,6 +586,17 @@ def run_perf(
                     cmd.tool,
                     cmd.condition,
                     measure(cmd, scenario.cwd, runs, warmup, hyperfine, rss_tool),
+                )
+            )
+        repo = stage_github_workflows(scenario.cwd, scenario.files, tmp / f"repo-{scenario.name}")
+        for cmd in repo_tool_commands():
+            print(f"  {scenario.name}: {cmd.tool}", file=sys.stderr)
+            rows.append(
+                Row(
+                    scenario.name,
+                    cmd.tool,
+                    cmd.condition,
+                    measure(cmd, repo, runs, warmup, hyperfine, rss_tool),
                 )
             )
 
@@ -569,6 +628,11 @@ def run_perf(
         "zghalint": f"`{zghalint}` {_version([str(zghalint), '--version'])}",
         "actionlint": _version(["actionlint", "-version"]).splitlines()[0],
         "zizmor": _version(["zizmor", "--version"]),
+        "ghalint": _version(["ghalint", "version"]),
+        "octoscan": _version(["octoscan", "-v"]),
+        "poutine": _version(["poutine", "version"]).splitlines()[0],
+        "action-validator": _version(["action-validator", "-V"]),
+        "shellcheck": _shellcheck_version(),
     }
     return PerfReport(scenarios, rows, skipped, environment)
 
@@ -581,6 +645,16 @@ def _version(argv: list[str]) -> str:
     except OSError as exc:
         return f"不明 ({exc})"
     return (proc.stdout or proc.stderr).strip() or "不明"
+
+
+def _shellcheck_version() -> str:
+    text = _version(["shellcheck", "--version"])
+    if text == "未インストール":
+        return text
+    for line in text.splitlines():
+        if line.lower().startswith("version"):
+            return line
+    return text.splitlines()[0]
 
 
 def _seconds(value: float | None) -> str:
@@ -634,9 +708,15 @@ def render_markdown(report: PerfReport) -> str:
         )
     out.append("")
     out.append(
-        "exit は最後の計測実行の終了コード。指摘ありで非ゼロになるのは 3 ツールとも正常 "
-        "(zghalint 1、actionlint 1、zizmor 10〜14)。zghalint の 2 は「一部ファイルを lint "
-        "できなかった」で、`cases` にはパースを拒否する堅牢性ケースが含まれる。"
+        "exit は最後の計測実行の終了コード。指摘ありで非ゼロになるのは各ツール正常 "
+        "(zghalint 1、actionlint 1、zizmor 10〜14、ghalint 1、octoscan 2、"
+        "action-validator 1)。"
+        "poutine は `--fail-on-violation` を付けないので指摘があっても 0。"
+        "zghalint の 2 は「一部ファイルを lint できなかった」で、`cases` には"
+        "パースを拒否する堅牢性ケースが含まれる。"
+        "ghalint / octoscan / poutine は `.github/workflows/` へ複製した同一ファイルを"
+        "スキャンする (argv にファイルを取らないため)。octoscan の対象は"
+        "リポジトリルートで、ワークフローディレクトリを渡すと 0 ファイルになる。"
     )
     out.append("")
 

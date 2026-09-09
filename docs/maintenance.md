@@ -125,6 +125,10 @@
 - action の更新 PR では SHA と `# vX.Y.Z` コメントの両方が書き換わることを確認する
 - PBT の依存は `==` で固定する。Hypothesis はバージョン間で生成戦略と
   シュリンク挙動が変わるため、範囲指定にするとコード変更なしに CI の結果が変わる
+- `--perf` の rival リンター (ghalint / octoscan / poutine / action-validator)
+  は `scripts/install-perf-rivals.sh` の VERSION / SHA256 が一箇所の真。
+  上げるときはチェックサムを取り直し、`bench.yml` の perf ジョブで
+  `scripts/bench.py --perf` を回して §4 に記録する
 
 ## popular actions メタデータの更新
 

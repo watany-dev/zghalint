@@ -15,7 +15,10 @@ tool reports.
     python3 scripts/bench.py --fix          # autofix cross-check (bench_fix.py)
 
 A missing external tool is reported as unavailable rather than scored, so the
-harness stays usable with only zghalint installed.
+harness stays usable with only zghalint installed. `--perf` also times ghalint,
+octoscan, poutine and action-validator when they are on PATH (see
+`scripts/install-perf-rivals.sh`); the scoring matrix stays three tools because
+the kind map is actionlint / zizmor specific.
 
 See `bench/README.md` for the header format.
 """
@@ -155,6 +158,16 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
     "obfuscated-uses": {
         "zghalint": ["DEP003"],
         "zizmor": ["obfuscation"],
+        "actionlint": None,
+    },
+    "obfuscated-command": {
+        "zghalint": ["BP007"],
+        "zizmor": None,
+        "actionlint": None,
+    },
+    "github-app": {
+        "zghalint": None,
+        "zizmor": ["github-app"],
         "actionlint": None,
     },
     "dependabot-cooldown": {
