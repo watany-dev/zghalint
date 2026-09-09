@@ -204,22 +204,32 @@ jobs:
         with:
           subject-path: 'artifacts/zghalint-*'
 
-      - name: Create release
+      # タグに Release が既にあると `gh release create` は失敗し、アセットが
+      # 1 つも付かない Release が残る。`uses: watany-dev/zghalint@<tag>` は
+      # アセットを取りに行くので、それは利用者から見て壊れている (#372)。
+      # 既存なら upload に倒し、再実行でも必ずアセットが揃うようにする。
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           PRERELEASE_FLAG=""
+          PRERELEASE_BOOL=false
           case "$TAG" in
-            *-rc.*) PRERELEASE_FLAG="--prerelease" ;;
+            *-rc.*) PRERELEASE_FLAG="--prerelease"; PRERELEASE_BOOL=true ;;
           esac
 
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --generate-notes \
-            $PRERELEASE_FLAG \
-            artifacts/*
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --prerelease="$PRERELEASE_BOOL"
+            gh release upload "$TAG" artifacts/* --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              $PRERELEASE_FLAG \
+              artifacts/*
+          fi
 
   # 公開後の E2E スモーク。action.yml のダウンロード手順 (アーカイブ取得 →
   # SHA256SUMS 照合 → 展開 → 実行) をそのままなぞり、公開されたアセットが
