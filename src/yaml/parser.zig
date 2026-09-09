@@ -840,6 +840,12 @@ pub const Parser = struct {
                 }
                 if (end_byte < self.source.len) end_byte += 1;
             }
+            // Junk left on the value's line is normally contained by it, so the
+            // newline ends the entry. An opening quote is not: `on:\n ''"` runs
+            // its quoted scalar on to the line below, and an insertion at the
+            // newline landed inside the quotes, where it is text rather than a
+            // key -- so `--fix` added the same key again every round (fuzz).
+            if (self.current.start < end_byte and self.current.end > end_byte) return null;
             return end_byte;
         }
 
@@ -1424,6 +1430,24 @@ test "full_span of a plain scalar entry still covers its whole line" {
         "  runs-on: ubuntu-latest\n",
         entryFullSpanText(source, job, "runs-on").?,
     );
+}
+
+test "an entry whose line opens a quote that closes below has no full_span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `"` after `''` runs to the line below, so the newline after `''` is
+    // inside the quoted scalar rather than after the entry. `--fix` inserted
+    // `permissions:` there and the quotes swallowed it, every round.
+    var parser = Parser.init(alloc, "on:\n ''\"\n\"\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[0].full_span == null);
+
+    // The same line with the quote closed still ends where its newline does.
+    var closed = Parser.init(alloc, "on:\n ''\"x\"\njobs:");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 11), closed_doc.mapping.entries[0].full_span.?.end_byte);
 }
 
 test "full_span end_line follows a multi-line quoted scalar" {
