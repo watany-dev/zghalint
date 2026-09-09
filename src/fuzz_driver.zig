@@ -117,6 +117,19 @@ const builtin_seeds: []const []const u8 = &.{
     "\"on\": push\n'jobs':\n  \"b\":\n    runs-on: ubuntu-latest\n",
     // CRLF throughout: every span the rules report is a byte offset into this.
     "on: push\r\njobs:\r\n  b:\r\n    runs-on: ubuntu-latest\r\n    steps:\r\n      - run: echo hi\r\n",
+    // The trigger surface below `on:`: event filters, a cron schedule, and the
+    // `workflow_run` / `workflow_dispatch` inputs no other seed writes out.
+    "on:\n  push:\n    branches: [main]\n    paths-ignore:\n      - \"docs/**\"\n  pull_request:\n    types: [opened, synchronize]\n    branches-ignore:\n      - wip/**\n  schedule:\n    - cron: \"0 * * * *\"\n  workflow_run:\n    workflows: [\"CI\"]\n    types: [completed]\n  workflow_dispatch:\n    inputs:\n      env:\n        type: choice\n        options: [dev, prod]\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n",
+    // `runs-on:` as a mapping, workflow-level `env` and `concurrency`, and the
+    // status / hash expression functions the `if:` checker keys off.
+    "name: w\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: true\nenv:\n  A: 1\non: push\njobs:\n  b:\n    runs-on:\n      group: my-group\n      labels: [self-hosted, linux]\n    if: always() && contains(github.event.head_commit.message, 'x')\n    steps:\n      - uses: actions/cache@v4\n        with:\n          key: ${{ runner.os }}-${{ hashFiles('**/lock') }}\n          path: |\n            a\n            b\n",
+    // A reusable workflow called with `with:` and named secrets, plus the job
+    // `needs` / `outputs` wiring between the two.
+    "on: push\njobs:\n  a:\n    uses: o/r/.github/workflows/w.yml@v1\n    with:\n      x: 1\n    secrets:\n      T: ${{ secrets.T }}\n  b:\n    needs: [a]\n    if: ${{ failure() || needs.a.result == 'success' }}\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker://alpine:3\n        with:\n          entrypoint: /bin/sh\n          args: -c echo\n",
+    // `action.yml` shapes the composite seed misses: a node runner with pre /
+    // post hooks, a docker runner, outputs and branding.
+    "name: a\ndescription: d\nbranding:\n  icon: activity\n  color: blue\ninputs:\n  x:\n    description: d\n    default: \"1\"\noutputs:\n  o:\n    description: d\n    value: ${{ steps.s.outputs.v }}\nruns:\n  using: node20\n  main: dist/index.js\n  pre: dist/pre.js\n  post: dist/post.js\n",
+    "name: a\ndescription: d\nruns:\n  using: docker\n  image: Dockerfile\n  args:\n    - ${{ inputs.x }}\n  env:\n    A: 1\n",
 };
 
 /// Tokens spliced in by the mutator. Anything a rule or the fix builder keys
@@ -160,6 +173,18 @@ const dictionary: []const []const u8 = &.{
     // carriage return, and a colon with no space after it.
     "!!str",               "!!map",                           "!tag",                            "%YAML 1.2",
     "? ",                  "\r",                              ":x",                              " \n",
+    // The trigger filters, the `runs-on:` mapping form and the expression
+    // functions the new seeds introduce.
+    "branches:",           "branches-ignore:",                "paths:",                          "paths-ignore:",
+    "tags:",               "types:",                          "schedule:",                       "cron:",
+    "workflows:",          "group:",                          "labels:",                         "cancel-in-progress:",
+    "always()",            "failure()",                       "success()",                       "cancelled()",
+    "hashFiles(",          "contains(",                       "startsWith(",                     "runner.os",
+    "github.workflow",
+    // `action.yml` runners and their hooks.
+        "using: node20",                   "using: docker",                   "main:",
+    "pre:",                "post:",                           "image:",                          "args:",
+    "entrypoint:",         "branding:",
 };
 
 const Mutator = struct {
