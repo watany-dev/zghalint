@@ -1,0 +1,18 @@
+# `with:` written with its first entry on the key's own line is not a block
+# mapping anything can be appended to: the inserted entry is not read back, so
+# SEC018 re-fired and stacked another line on every round (#370). No fix is
+# offered here, which the `.fixed-unsafe` sibling pins.
+# zghalint:expect SEC018@17 SEC001
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: sec018-with-not-a-block-mapping
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with: fetch-depth: 0

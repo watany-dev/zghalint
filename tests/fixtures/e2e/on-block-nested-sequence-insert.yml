@@ -1,0 +1,17 @@
+# The `on:` block ends after the nested value of its last sequence item, not at
+# that item's last key. Getting it wrong dropped the SEC007 insertion
+# inside the block and left the file unparseable (#368).
+# zghalint:expect SEC007
+on:
+  schedule:
+    - cron: "0 0 * * *"
+      extra:
+        - a
+        - b
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Greet
+        run: echo hi

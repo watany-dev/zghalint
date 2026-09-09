@@ -35,6 +35,15 @@ compares. A `<fixture>.yml.fixed-unsafe` sibling does the same for
 rewrites, which is the half a wrong byte range would otherwise get wrong
 silently. Fixtures without such a sibling are unaffected.
 
+## Invariants checked on every fixture
+
+Two checks run on all fixtures, with no directive needed:
+
+- **Span ordering** — no diagnostic may end before it starts (#367).
+- **Fix convergence** — `--fix` and `--fix-unsafe` must reach a fixed point:
+  re-running them on their own output leaves the file alone. A fix whose
+  rewrite is not read back the way it was meant re-fires forever (#369, #370).
+
 ## Fixtures
 
 | File | Purpose |
@@ -87,6 +96,10 @@ silently. Fixtures without such a sibling are unaffected.
 | `clean.yml` | A well-formed workflow: nothing may fire |
 | `rename-fix-schema.yml` | #323: every did-you-mean rename on schema keys and values, with its `--fix` result pinned |
 | `rename-fix-contexts.yml` | #323: the same for the `needs` / `inputs` / `secrets` expression contexts |
+| `merge-key-job-span.yml` | #367 repro: a job built from `<<:` must report a forward span |
+| `on-block-nested-sequence-insert.yml` | #368 repro: the SEC007 insertion lands after the `on:` block, not inside a nested sequence item |
+| `expr010-rename-invalid-id.yml` | #369 repro: a step id that is not a path identifier gets no rename fix |
+| `sec018-with-not-a-block-mapping.yml` | #370 repro: `with:` that is not a block mapping gets no persist-credentials fix |
 
 Network-backed rules (SC003–SC006, SC008) stay offline in tests, so fixtures
 only exercise local analysis.

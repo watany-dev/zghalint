@@ -54,7 +54,24 @@ pub fn pathSegmentFix(
     new_segment: []const u8,
 ) ?Fix {
     const segment = segmentSpan(path_span, path, segment_index) orelse return null;
+    // The replacement is written back into an expression, so it has to survive
+    // being lexed as a path segment. A candidate carrying anything else -- a
+    // step id such as `a>b` -- would be read back as a shorter path plus a
+    // remainder, the same diagnostic would fire again with a fresh candidate,
+    // and every `--fix` round would grow the expression (#369).
+    if (!isPathIdentifier(new_segment)) return null;
     return tokenFix(list, segment.span, segment.text, new_segment);
+}
+
+/// The identifier grammar an expression path segment accepts: a leading letter
+/// or underscore, then letters, digits, `_` or `-`.
+fn isPathIdentifier(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
+    for (name[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') return false;
+    }
+    return true;
 }
 
 const SegmentSpan = struct {
@@ -151,4 +168,22 @@ test "tokenFix returns null for a span that is not the token" {
     defer list.deinit();
 
     try testing.expect(tokenFix(&list, pathSpan(0, 40), "pusg", "push") == null);
+}
+
+test "isPathIdentifier accepts only expression-safe segments" {
+    try testing.expect(isPathIdentifier("build"));
+    try testing.expect(isPathIdentifier("_build-2"));
+    try testing.expect(!isPathIdentifier(""));
+    try testing.expect(!isPathIdentifier("2build"));
+    try testing.expect(!isPathIdentifier("a>b"));
+    try testing.expect(!isPathIdentifier("a b"));
+    try testing.expect(!isPathIdentifier("a.b"));
+}
+
+test "pathSegmentFix declines a candidate that is not a path identifier" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+
+    const path = "steps.b";
+    try testing.expect(pathSegmentFix(&list, pathSpan(40, path.len), path, 1, "a>b") == null);
 }
