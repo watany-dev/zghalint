@@ -600,19 +600,39 @@ fn checkHardcodedSecrets(step: *const Step, list: *DiagnosticList) void {
     forEachStepScalar(step, .{}, list, scan);
 }
 
-fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+/// The distinct first bytes of `secret_prefixes`, so one `indexOfAny` sweep
+/// finds every position worth comparing instead of one `indexOf` per prefix.
+const secret_prefix_heads = blk: {
+    var heads: []const u8 = &.{};
     for (secret_prefixes) |prefix| {
-        if (std.mem.indexOf(u8, s, prefix)) |offset| {
-            list.append(.{
-                .rule_id = "SEC003",
-                .severity = .@"error",
-                .message = "potential hardcoded secret detected",
-                .span = anchor.at(s, offset, prefix.len),
-                .fix_hint = "use a GitHub secret (secrets.YOUR_SECRET) instead of hardcoding credentials",
-            }) catch return;
-            return; // One diagnostic per string is enough
+        if (std.mem.indexOfScalar(u8, heads, prefix[0]) == null) heads = heads ++ [_]u8{prefix[0]};
+    }
+    break :blk heads;
+};
+
+/// One diagnostic per string, at the earliest prefix occurrence.
+fn checkStringForSecrets(s: []const u8, anchor: Anchor, list: *DiagnosticList) void {
+    const hit = findSecretPrefix(s) orelse return;
+    list.append(.{
+        .rule_id = "SEC003",
+        .severity = .@"error",
+        .message = "potential hardcoded secret detected",
+        .span = anchor.at(s, hit.offset, hit.prefix.len),
+        .fix_hint = "use a GitHub secret (secrets.YOUR_SECRET) instead of hardcoding credentials",
+    }) catch return;
+}
+
+const SecretHit = struct { offset: usize, prefix: []const u8 };
+
+/// The earliest occurrence of any `secret_prefixes` entry in `s`.
+fn findSecretPrefix(s: []const u8) ?SecretHit {
+    var pos: usize = 0;
+    while (std.mem.indexOfAnyPos(u8, s, pos, secret_prefix_heads)) |offset| : (pos = offset + 1) {
+        for (secret_prefixes) |prefix| {
+            if (std.mem.startsWith(u8, s[offset..], prefix)) return .{ .offset = offset, .prefix = prefix };
         }
     }
+    return null;
 }
 
 fn checkExcessivePermissions(wf: *const Workflow, list: *DiagnosticList) void {
@@ -3280,6 +3300,25 @@ test "SEC003: sk-test_ pattern detected" {
     var list = runStep(.{ .run = "export KEY=sk-test_abcdefg" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC003"));
+}
+
+test "findSecretPrefix reports the earliest prefix in the string" {
+    const hit = findSecretPrefix("echo AKIAIOSFODNN7EXAMPLE ghp_abcdefghijklmnop") orelse return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 5), hit.offset);
+    try testing.expectEqualStrings("AKIA", hit.prefix);
+
+    const at_end = findSecretPrefix("token=xoxp-1") orelse return error.TestExpectedNonNull;
+    try testing.expectEqual(@as(usize, 6), at_end.offset);
+    try testing.expectEqualStrings("xoxp-", at_end.prefix);
+}
+
+test "findSecretPrefix skips head bytes that do not start a prefix" {
+    try testing.expectEqual(@as(?SecretHit, null), findSecretPrefix("git status && say Ask sk-later xox-not gh_"));
+    try testing.expectEqual(@as(?SecretHit, null), findSecretPrefix(""));
+}
+
+test "secret_prefix_heads holds each first byte once" {
+    try testing.expectEqualStrings("gAsx", secret_prefix_heads);
 }
 
 test "SEC004: write-all at workflow level" {
