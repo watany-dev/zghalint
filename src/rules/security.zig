@@ -130,9 +130,9 @@ const ExprIter = struct {
     pos: usize = 0,
 
     fn next(self: *ExprIter) ?ExprSpan {
-        while (std.mem.indexOfPos(u8, self.s, self.pos, "${{")) |open| {
+        while (findExprOpen(self.s, self.pos)) |open| {
             const inner_start = open + 3;
-            const close = std.mem.indexOfPos(u8, self.s, inner_start, "}}") orelse {
+            const close = findExprClose(self.s, inner_start) orelse {
                 self.pos = self.s.len;
                 return null;
             };
@@ -145,6 +145,25 @@ const ExprIter = struct {
         return null;
     }
 };
+
+/// `indexOfPos` with a needle this short compares byte by byte, while
+/// `indexOfScalarPos` is vectorised; `$` is rare in a `run:` body, so hopping
+/// between candidates and checking the two bytes after each is much cheaper.
+fn findExprOpen(s: []const u8, start: usize) ?usize {
+    var pos = start;
+    while (std.mem.indexOfScalarPos(u8, s, pos, '$')) |i| : (pos = i + 1) {
+        if (std.mem.startsWith(u8, s[i..], "${{")) return i;
+    }
+    return null;
+}
+
+fn findExprClose(s: []const u8, start: usize) ?usize {
+    var pos = start;
+    while (std.mem.indexOfScalarPos(u8, s, pos, '}')) |i| : (pos = i + 1) {
+        if (i + 1 < s.len and s[i + 1] == '}') return i;
+    }
+    return null;
+}
 
 fn findExpr(s: []const u8, comptime pred: fn ([]const u8) bool) ?ExprMatch {
     var it: ExprIter = .{ .s = s };
@@ -6388,6 +6407,18 @@ test "ExprIter: a run of unclosed ${{ is scanned once" {
     const first = it2.next() orelse return error.TestExpectedNonNull;
     try testing.expectEqualStrings(" a ${{ github.event.issue.title ", first.inner);
     try testing.expect(it2.next() == null);
+}
+
+test "ExprIter: a lone $ or } is stepped over, not treated as a delimiter" {
+    var it: ExprIter = .{ .s = "echo $HOME ${VAR} } ${{ a } b }} ${{" };
+    const first = it.next() orelse return error.TestExpectedNonNull;
+    try testing.expectEqualStrings(" a } b ", first.inner);
+    try testing.expectEqual(@as(usize, 20), first.match.offset);
+    try testing.expectEqual(@as(usize, 12), first.match.len);
+    try testing.expect(it.next() == null);
+
+    var none: ExprIter = .{ .s = "$ { { a } }" };
+    try testing.expect(none.next() == null);
 }
 
 test "containsCurlWgetPipeShell: long input with many pipes stays linear" {
