@@ -62,7 +62,15 @@ fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
 /// of its own, so the CLI runs this on the YAML document before parsing and
 /// reports SYN020 instead. Returns whether the document was empty.
 pub fn lintEmptyWorkflow(root: Node, list: *DiagnosticList) bool {
-    if (!isEmptyDocument(root)) return false;
+    const empty = switch (root) {
+        .null_value => true,
+        .scalar => |s| std.mem.trim(u8, s.value, " \t\r\n").len == 0,
+        .mapping => |m| m.entries.len == 0,
+        // A root sequence has content, just not the shape a workflow takes;
+        // the workflow parser reports that as a type error.
+        .sequence => false,
+    };
+    if (!empty) return false;
     list.append(.{
         .rule_id = "SYN020",
         .severity = .@"error",
@@ -74,17 +82,6 @@ pub fn lintEmptyWorkflow(root: Node, list: *DiagnosticList) bool {
         .fix_hint = "delete the file, or give it \"on\" and \"jobs\"",
     }) catch {};
     return true;
-}
-
-/// A root sequence is not empty in this sense: it has content, just not the
-/// shape a workflow takes, and the parser reports that as a type error.
-fn isEmptyDocument(root: Node) bool {
-    return switch (root) {
-        .null_value => true,
-        .scalar => |s| std.mem.trim(u8, s.value, " \t\r\n").len == 0,
-        .mapping => |m| m.entries.len == 0,
-        .sequence => false,
-    };
 }
 
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
