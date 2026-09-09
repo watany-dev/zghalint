@@ -12,7 +12,9 @@ pub fn build(b: *std.Build) void {
 
     // Strip debug info from Release-mode distribution binaries.
     // Debug keeps symbols for local development; tests retain debug info for stack traces / kcov.
-    const strip_release: ?bool = if (optimize == .Debug) null else true;
+    // `-Dstrip=false` keeps symbols in a Release build for profilers (callgrind, perf).
+    const strip_release: ?bool = b.option(bool, "strip", "Strip debug info (default: true in Release modes)") orelse
+        (if (optimize == .Debug) null else true);
 
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/lib.zig"),
