@@ -881,7 +881,10 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     // The id is the only span such a job has, and a rule reporting it needs a
     // real line: a default span put BP001 at line 0 (fuzz).
     if (node == .null_value or !type_validation.checkMapping(node, "job", ctx.type_mismatches, ctx.allocator)) {
-        return types.Job{ .id = id, .id_span = id_span, .span = id_span };
+        // No body means no block to insert an entry into: anchoring on the id
+        // put `timeout-minutes: 30` on the `jobs:` line, and every pass added
+        // another one (fuzz).
+        return types.Job{ .id = id, .id_span = id_span, .span = id_span, .body_own_line = false };
     }
     const m = node.mapping;
 
@@ -3527,6 +3530,8 @@ test "a job id with nothing under it does not fail the parse (fuzz)" {
     try testing.expectEqual(@as(usize, 0), wf.type_mismatches.len);
     // Rules report the job at this span, and line 0 is not a place in a file.
     try testing.expectEqual(@as(u32, 3), wf.jobs[0].span.start_line);
+    // There is no body to insert an entry into.
+    try testing.expect(!wf.jobs[0].body_own_line);
 }
 
 test "parseWorkflowTracked reports the line of an invalid trigger" {
