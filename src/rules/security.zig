@@ -2174,6 +2174,15 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
 /// The pattern only needs to be a prefix of the reference, because everything
 /// below an untrusted node is untrusted too.
 fn pathMatchesPattern(path: ContextPath, pattern: []const u8) bool {
+    // Most references in a real workflow are `steps.*`, `matrix.*` or a
+    // function name, and most patterns are `github.*`: comparing the first
+    // byte of the root rejects those pairs without splitting the pattern.
+    if (path.len > 0 and path.segments[0].len > 0 and pattern.len > 0 and
+        pattern[0] != '*' and !std.mem.eql(u8, path.segments[0], wildcard_segment) and
+        std.ascii.toLower(path.segments[0][0]) != std.ascii.toLower(pattern[0]))
+    {
+        return false;
+    }
     var it = std.mem.splitScalar(u8, pattern, '.');
     var idx: usize = 0;
     while (it.next()) |pat_seg| : (idx += 1) {
@@ -6419,6 +6428,14 @@ test "ExprIter: a lone $ or } is stepped over, not treated as a delimiter" {
 
     var none: ExprIter = .{ .s = "$ { { a } }" };
     try testing.expect(none.next() == null);
+}
+
+test "pathMatchesPattern: the root fast reject keeps case-insensitive and wildcard matches" {
+    try testing.expect(pathMatchesPattern(parseContextPath("GitHub.Event.Issue.Title", 0), "github.event.issue.title"));
+    try testing.expect(pathMatchesPattern(parseContextPath("github.event.commits[0].message", 0), "github.event.commits"));
+    try testing.expect(!pathMatchesPattern(parseContextPath("steps.meta.outputs.github", 0), "github.event"));
+    try testing.expect(!pathMatchesPattern(parseContextPath("hithub.event", 0), "github.event"));
+    try testing.expect(pathMatchesPattern(parseContextPath("matrix.os", 0), "*.os"));
 }
 
 test "containsCurlWgetPipeShell: long input with many pipes stays linear" {
