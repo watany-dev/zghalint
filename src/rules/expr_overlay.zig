@@ -15,6 +15,7 @@ const std = @import("std");
 const t = @import("expr_type.zig");
 const yaml_types = @import("../yaml/types.zig");
 const workflow_types = @import("../workflow/types.zig");
+const type_validation = @import("../workflow/type_validation.zig");
 
 const Type = t.Type;
 const TypeRef = t.TypeRef;
@@ -122,7 +123,15 @@ pub fn hasUnknowableKeys(job: *const Job) bool {
     const matrix = strategy.matrix orelse return true;
 
     for (matrix.axes) |axis| {
-        if (std.mem.eql(u8, axis.name, "include") and axis.dynamic) return true;
+        if (!std.mem.eql(u8, axis.name, "include")) continue;
+        if (axis.dynamic) return true;
+        for (axis.values) |value| {
+            const scalar = switch (value) {
+                .scalar => |sc| sc,
+                else => continue,
+            };
+            if (type_validation.containsExpression(scalar.value)) return true;
+        }
     }
     return false;
 }

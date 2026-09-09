@@ -312,6 +312,22 @@ test "EXPR011: a dynamic include silences the rule for the whole job" {
     );
 }
 
+test "EXPR011: an include entry built by an expression silences the rule" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      matrix:
+        \\        os: [ubuntu-latest]
+        \\        include:
+        \\          - ${{ fromJSON(needs.setup.outputs.entry) }}
+        \\    steps:
+        \\      - run: echo "${{ matrix.runner }}"
+    );
+}
+
 test "EXPR011: a dynamic exclude leaves the declared keys checkable" {
     try expectMessage(
         \\on: push
