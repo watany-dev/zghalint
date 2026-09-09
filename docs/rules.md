@@ -283,6 +283,19 @@ Detect supply chain risks in action and container image references.
 `myorg/chekout` のような別 owner の fork は対象外。候補の置き換えは作者の意図を
 先取りするため、autofix は付けない。
 
+### SC003 が SHA ピンのバージョンを読む場所
+
+SHA ピンはバージョンを隠すため、`uses:` 行の末尾コメント `# v1.2.3` を版として
+semver 判定する。SEC001 の autofix も、ほかのピン止めツールもこの位置に書く慣習
+であり、Dependabot / Renovate が読む位置でもある。`# v1.2.3 (2024-01-01)` のよう
+に続きがある場合は先頭語だけを見る。
+
+コメントが無い、または版として読めない場合は「脆弱と断定できない」ので severity
+を info に落とし、コメントを足すよう促す hint に差し替える。SEC001 が SHA ピンを
+求めている以上、既に修正済みのバージョンにピンした利用者を warning で罰しては
+ならない。ただしバージョン範囲を持たない advisory（全バージョンが対象）は、版が
+分からなくても該当するため warning のままにする。
+
 ### SEC001 / SC006 の SHA ピン止め autofix
 
 prefetch（`src/rules/prefetch.zig`）がタグの指すコミットを取得できた場合、

@@ -37,7 +37,9 @@
   拾わない。読み込み後は `next_https_rescan_certs` を下ろし、初回 HTTPS
   の rescan がカスタム CA を消さないようにする。
 - GitHub API に届かなかったときは `note: … skipped (github api unreachable;
-  check HTTPS_PROXY / SSL_CERT_FILE)` を出す。
+  check HTTPS_PROXY / SSL_CERT_FILE)` を出す。ただし一部のステップだけ届いて
+  指摘を出したルールは `partly checked` の行に分ける。指摘があるのに
+  「skipped」と書くと、同じ実行の JSON / terminal 出力と食い違う (#372)。
 
 ### 2.2 GraphQL バッチ
 
