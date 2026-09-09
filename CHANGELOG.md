@@ -71,6 +71,10 @@ still be renumbered before 1.0.
 
 ### Added
 
+- `zig build -Dalloc-stats` and `python3 scripts/bench.py --alloc` report
+  process startup, allocator counts, peak heap vs RSS, per-phase cost, and
+  `strace -c`. The instrumented binary is not comparable with `--perf`. See
+  `docs/design/alloc-profile.md`.
 - `install.sh`: a `curl -fsSL .../install.sh | sh` installer. It resolves the
   platform, downloads the matching release archive, verifies it against the
   release's `SHA256SUMS`, and places the binary in `<prefix>/bin` (`/usr/local`

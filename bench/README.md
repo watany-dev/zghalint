@@ -269,6 +269,7 @@ python3 scripts/bench.py --alloc --runs 3 --warmup 1
 表は wall / RSS、alloc 回数とサイズ階級、フェーズ別 (read / yaml / workflow /
 rules / copy)、`strace -c` の上位 syscall。peak heap / RSS はライブなヒープが
 プロセス RSS の何割かを示す — 残りはバイナリとアロケータのキャッシュ。
+読み方とボトルネックは `docs/design/alloc-profile.md`。
 
 ## baseline との比較 (`scripts/bench_gate.py`)
 

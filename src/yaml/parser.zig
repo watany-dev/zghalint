@@ -279,7 +279,17 @@ pub const Parser = struct {
             }
         }
 
-        return merged.toOwnedSlice(self.allocator) catch ParseError.OutOfMemory;
+        return takeSlice(MappingEntry, &merged);
+    }
+
+    /// Hand the list's buffer to the caller without shrinking it. On an
+    /// arena, `toOwnedSlice` usually fails to remap (the buffer is not the
+    /// most recent allocation) and copies the items onto a second buffer,
+    /// doubling collection storage for the rest of the file.
+    fn takeSlice(comptime T: type, list: *std.ArrayList(T)) []T {
+        const items = list.items;
+        list.* = .{};
+        return items;
     }
 
     fn mergeMappingInto(self: *Parser, merged: *std.ArrayList(MappingEntry), source: Mapping) ParseError!void {
@@ -349,7 +359,7 @@ pub const Parser = struct {
             break;
         }
 
-        const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const parsed_entries = takeSlice(MappingEntry, &entries);
         const owned_entries = try self.applyMergeKeys(parsed_entries);
         const span = if (owned_entries.len > 0)
             Span{
@@ -415,8 +425,8 @@ pub const Parser = struct {
         if (self.anchors_seen != anchors_before) deletable = false;
         if (!deletable) deletes.clearRetainingCapacity();
 
-        const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
-        const owned_deletes = deletes.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const owned_items = takeSlice(Node, &items);
+        const owned_deletes = takeSlice(types.ItemDelete, &deletes);
         const span = Span.point(
             if (owned_items.len > 0) owned_items[0].getSpan().start_line else self.current.line,
             seq_indent,
@@ -483,7 +493,7 @@ pub const Parser = struct {
             self.advance();
         }
 
-        const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const parsed_entries = takeSlice(MappingEntry, &entries);
         const owned_entries = try self.applyMergeKeys(parsed_entries);
         return Node{ .mapping = .{ .entries = owned_entries, .span = start_span } };
     }
@@ -520,7 +530,7 @@ pub const Parser = struct {
             self.advance();
         }
 
-        const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        const owned_items = takeSlice(Node, &items);
         const owned_deletes = if (self.anchors_seen != anchors_before or self.comments_seen != comments_before)
             &[_]types.ItemDelete{}
         else

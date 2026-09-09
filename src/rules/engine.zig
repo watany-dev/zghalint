@@ -37,13 +37,18 @@ pub const Engine = struct {
                 check_fn(workflow, &list);
             }
 
+            // Workflow-only rules (EXPR, SYN00x, …) already walked jobs
+            // internally, or do not care about them. Skipping the inner loops
+            // keeps huge files from paying O(rules × jobs × steps) dispatch.
+            if (rule.check_job == null and rule.check_step == null) continue;
+
             for (workflow.jobs) |*job| {
                 if (rule.check_job) |check_fn| {
                     check_fn(job, &list);
                 }
 
-                for (job.steps) |*step| {
-                    if (rule.check_step) |check_fn| {
+                if (rule.check_step) |check_fn| {
+                    for (job.steps) |*step| {
                         check_fn(step, &list);
                     }
                 }
@@ -358,6 +363,23 @@ test "engine with empty rules" {
 test "engine with empty workflow" {
     const engine = Engine.init(&test_rules);
     const wf = Workflow{ .name = "Empty", .on = test_support.empty_trigger, .jobs = &.{} };
+    var list = engine.run(std.testing.allocator, &wf);
+    defer list.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
+}
+
+test "engine runs a workflow-only rule on a workflow that has jobs" {
+    const only_wf = [_]Rule{test_rules[0]};
+    const engine = Engine.init(&only_wf);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps },
+    };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
     var list = engine.run(std.testing.allocator, &wf);
     defer list.deinit();
 
