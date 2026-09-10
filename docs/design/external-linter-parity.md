@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-09
+最終更新: 2026-09-10
 
 ## 1. 目的
 
@@ -661,6 +661,40 @@ zizmor は tag-push を公開ワークフローとして `cache-poisoning` を�
 setup action) を直しても、この判定は残る。`on: push` のブランチだけ
 (タグ無し) は対象外のままにする。
 
+#### G38 (#424). コンテキストパスの数値ブラケットアクセスを式エラーにする (FP) — 要パーサ修正
+
+`bench/cases/e-expression/numeric-bracket-index.yml`。
+
+```yaml
+run: echo "${{ github.event.workflow_run.pull_requests[0].number }}"
+```
+
+GitHub Actions の式は配列への数値インデックス (`[0]`) を正規の構文として
+受け付ける。`parseContextAccess` はブラケット内を string literal だけ許可し、
+`expected string in bracket access` (EXPR001) を出す。関数結果への `[0]` は
+G9 で postfix の `index_access` として読めるようになっており、コンテキスト
+パス側だけが残っている。actionlint は沈黙する。`.number` はサーバ生成の
+整数なので SEC002 が発火しないのは正しい。
+
+実運用のワークフロー群を三者比較したところ、`workflow_run.pull_requests[0]`
+を `run:` に展開する形で zghalint だけが EXPR001 を出した。
+
+#### G39 (#425). ローカル `uses:` のパスセグメント先頭の `@` を ref と誤認する (FP) — 要ルール修正
+
+`bench/cases/c-supply-chain/local-scoped-path.yml`。
+
+```yaml
+- uses: ./tools/@scope/tool
+```
+
+DEP003 はローカル参照 (`./` / `$/`) に `@` が 1 文字でもあれば `@ref` 付きと
+みなす。GitHub はローカル action に ref を付けられない一方、パスセグメントの
+名前として `@scope` は存在する。actionlint / zizmor は形式不正としない。
+`./my-action@v1` のようにセグメント途中の `@` は今までどおり形式不正でよい。
+
+実運用のワークフロー群を三者比較したところ、ローカル composite を
+`./tools/@scope/...` から呼ぶ形で zghalint だけが DEP003 を出した。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -1043,3 +1077,5 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] G33 (#386): SEC016 の対象に `on.push.tags` を含める
 - [x] G34 (#375): BP007 を `bash <(curl ...)` のプロセス置換にも反応させる
 - [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える
+- [ ] G38 (#424): コンテキストパスの数値ブラケット (`[0]`) を式として受理する
+- [ ] G39 (#425): ローカル `uses:` の `@` がパスセグメント先頭のときだけディレクトリ名として扱う
