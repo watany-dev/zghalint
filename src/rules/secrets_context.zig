@@ -29,10 +29,18 @@ fn nameEql(a: []const u8, b: []const u8) bool {
     return std.ascii.eqlIgnoreCase(a, b);
 }
 
+const Declared = struct {
+    /// In source order, for the suggestions.
+    names: []const []const u8,
+    /// The same names, for the lookups.
+    set: util.IgnoreCaseMap(void),
+};
+
 /// The declared names, or null when this workflow's secret set is open and
 /// nothing can be checked.
-fn collectSecrets(wf: *const Workflow, alloc: std.mem.Allocator) ?[]const []const u8 {
+fn collectSecrets(wf: *const Workflow, alloc: std.mem.Allocator) ?Declared {
     var names: std.ArrayList([]const u8) = .empty;
+    var set: util.IgnoreCaseMap(void) = .empty;
     var declared = false;
 
     for (wf.on.events) |event| {
@@ -42,19 +50,25 @@ fn collectSecrets(wf: *const Workflow, alloc: std.mem.Allocator) ?[]const []cons
         if (event.workflow_call_secrets.len == 0) continue;
         declared = true;
         for (event.workflow_call_secrets) |secret| {
-            for (names.items) |seen| {
-                if (nameEql(seen, secret.name)) break;
-            } else names.append(alloc, secret.name) catch return null;
+            const slot = set.getOrPut(alloc, secret.name) catch return null;
+            if (slot.found_existing) continue;
+            names.append(alloc, secret.name) catch return null;
         }
     }
     if (!declared) return null;
 
-    for (builtin_secrets) |builtin| names.append(alloc, builtin) catch return null;
-    return names.toOwnedSlice(alloc) catch null;
+    for (builtin_secrets) |builtin| {
+        names.append(alloc, builtin) catch return null;
+        set.put(alloc, builtin, {}) catch return null;
+    }
+    return .{
+        .names = names.toOwnedSlice(alloc) catch return null,
+        .set = set,
+    };
 }
 
 const Resolver = struct {
-    declared: []const []const u8,
+    declared: Declared,
     /// Backs the expression parse trees; diagnostic messages are allocated
     /// from the list's own arena instead.
     alloc: std.mem.Allocator,
@@ -68,15 +82,13 @@ const Resolver = struct {
         // `secrets` alone (`toJSON(secrets)`) and computed keys
         // (`secrets[matrix.name]`) carry no name to resolve.
         const name = identSegment(iter.next()) orelse return;
-        for (self.declared) |declared| {
-            if (nameEql(declared, name)) return;
-        }
+        if (self.declared.set.contains(name)) return;
         self.report(path, name, span);
     }
 
     fn report(self: Resolver, path: []const u8, name: []const u8, span: Span) void {
         const alloc = self.list.fixAllocator();
-        const suggestion = util.didYouMean(name, self.declared);
+        const suggestion = util.didYouMean(name, self.declared.names);
         const suffix = if (suggestion) |s|
             std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
         else

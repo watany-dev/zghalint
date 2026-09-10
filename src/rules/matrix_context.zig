@@ -46,6 +46,9 @@ const Key = struct {
     name: []const u8,
     /// Property names the key's values carry, as the union over every cell.
     props: std.ArrayList([]const u8) = .empty,
+    /// The same names, for the lookups; `props` keeps the source order the
+    /// suggestions are ranked in.
+    prop_set: util.IgnoreCaseMap(void) = .empty,
     /// True once a value is seen that is not an inspectable mapping — a scalar
     /// axis, an axis built at run time, an expression key. The properties then
     /// cannot be enumerated, so `matrix.<key>.<prop>` stays unchecked.
@@ -56,12 +59,32 @@ const Keys = struct {
     entries: []Key,
     /// The same names as a flat slice, for `util.didYouMean`.
     names: []const []const u8,
+    /// Name to its index in `entries`.
+    positions: util.IgnoreCaseMap(usize),
 
     fn find(self: Keys, name: []const u8) ?*const Key {
-        for (self.entries) |*key| {
-            if (keyEql(key.name, name)) return key;
-        }
-        return null;
+        const index = self.positions.get(name) orelse return null;
+        return &self.entries[index];
+    }
+};
+
+/// Declared keys under construction: the list keeps source order, the map
+/// finds an existing entry without scanning the list.
+const KeyList = struct {
+    items: std.ArrayList(Key) = .empty,
+    positions: util.IgnoreCaseMap(usize) = .empty,
+
+    /// The existing entry for `name`, or a fresh one appended in source
+    /// order. Null only when the entry could not be allocated.
+    fn upsert(self: *KeyList, alloc: std.mem.Allocator, name: []const u8) ?*Key {
+        const slot = self.positions.getOrPut(alloc, name) catch return null;
+        if (slot.found_existing) return &self.items.items[slot.value_ptr.*];
+        self.items.append(alloc, .{ .name = name }) catch {
+            self.positions.removeByPtr(slot.key_ptr);
+            return null;
+        };
+        slot.value_ptr.* = self.items.items.len - 1;
+        return &self.items.items[slot.value_ptr.*];
     }
 };
 
@@ -73,10 +96,10 @@ fn collectKeys(job: *const Job, alloc: std.mem.Allocator) ?Keys {
     if (!strategy.matrix_key_present) return null;
     const matrix = strategy.matrix orelse return null;
 
-    var keys: std.ArrayList(Key) = .empty;
+    var keys = KeyList{};
     for (matrix.axes) |axis| {
         if (!isMetaAxis(axis.name)) {
-            const key = upsert(&keys, alloc, axis.name) orelse continue;
+            const key = keys.upsert(alloc, axis.name) orelse continue;
             // An axis whose values the parser could not inspect
             // (`os: ${{ fromJSON(...) }}`) still declares its name.
             if (axis.dynamic or axis.values.len == 0) key.unknowable = true;
@@ -90,28 +113,19 @@ fn collectKeys(job: *const Job, alloc: std.mem.Allocator) ?Keys {
                 else => continue,
             };
             for (entry.entries) |kv| {
-                const key = upsert(&keys, alloc, kv.key.value) orelse continue;
+                const key = keys.upsert(alloc, kv.key.value) orelse continue;
                 absorb(key, alloc, kv.value);
             }
         }
     }
 
     var names: std.ArrayList([]const u8) = .empty;
-    for (keys.items) |key| names.append(alloc, key.name) catch return null;
+    for (keys.items.items) |key| names.append(alloc, key.name) catch return null;
     return .{
-        .entries = keys.toOwnedSlice(alloc) catch return null,
+        .entries = keys.items.toOwnedSlice(alloc) catch return null,
         .names = names.toOwnedSlice(alloc) catch return null,
+        .positions = keys.positions,
     };
-}
-
-/// The existing entry for `name`, or a fresh one appended in source order.
-/// Null only when the entry could not be allocated.
-fn upsert(keys: *std.ArrayList(Key), alloc: std.mem.Allocator, name: []const u8) ?*Key {
-    for (keys.items) |*key| {
-        if (keyEql(key.name, name)) return key;
-    }
-    keys.append(alloc, .{ .name = name }) catch return null;
-    return &keys.items[keys.items.len - 1];
 }
 
 /// Folds one cell of a key into what is known about its properties. Anything
@@ -130,15 +144,17 @@ fn absorb(key: *Key, alloc: std.mem.Allocator, value: yaml_types.Node) void {
             key.unknowable = true;
             continue;
         }
-        appendUnique(&key.props, alloc, kv.key.value);
+        appendUniqueProp(key, alloc, kv.key.value);
     }
 }
 
-fn appendUnique(keys: *std.ArrayList([]const u8), alloc: std.mem.Allocator, name: []const u8) void {
-    for (keys.items) |seen| {
-        if (keyEql(seen, name)) return;
-    }
-    keys.append(alloc, name) catch return;
+fn appendUniqueProp(key: *Key, alloc: std.mem.Allocator, name: []const u8) void {
+    const slot = key.prop_set.getOrPut(alloc, name) catch return;
+    if (slot.found_existing) return;
+    key.props.append(alloc, name) catch {
+        key.prop_set.removeByPtr(slot.key_ptr);
+        return;
+    };
 }
 
 const Resolver = struct {
@@ -171,9 +187,7 @@ const Resolver = struct {
         // cell is a mapping, so the key set is the union of what they carry.
         if (entry.unknowable or entry.props.items.len == 0) return;
         const prop = identSegment(iter.next()) orelse return;
-        for (entry.props.items) |name| {
-            if (keyEql(name, prop)) return;
-        }
+        if (entry.prop_set.contains(prop)) return;
         self.reportUnknownProperty(path, entry, prop, span);
     }
 

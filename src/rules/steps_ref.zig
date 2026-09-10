@@ -30,34 +30,34 @@ const Span = spans.Span;
 /// (DEP004 / DEP005 own that).
 const step_properties = [_][]const u8{ "outputs", "conclusion", "outcome" };
 
-const DefinedStep = struct {
-    id: []const u8,
-    /// Index of the *first* step carrying this id. Duplicate ids are SYN006's
-    /// finding; resolving to the earliest one keeps this rule from piling a
-    /// second, order-based complaint on top of it.
-    index: usize,
-};
+/// Step id to the index of the *first* step carrying it. Duplicate ids are
+/// SYN006's finding; resolving to the earliest one keeps this rule from
+/// piling a second, order-based complaint on top of it. Ids match
+/// case-insensitively because GitHub resolves expression paths that way
+/// (`steps.Setup` reaches a step with `id: setup`).
+const DefinedSteps = util.IgnoreCaseMap(usize);
 
-/// Step IDs are matched case-insensitively because GitHub resolves
-/// expression paths that way (`steps.Setup` reaches a step with `id: setup`).
-fn idEql(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
-fn collectStepIds(job: *const Job, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
+/// Fills `defined`, and `ids` with the same ids in source order for the
+/// suggestions.
+fn collectStepIds(
+    job: *const Job,
+    defined: *DefinedSteps,
+    ids: *std.ArrayList([]const u8),
+    alloc: std.mem.Allocator,
+) void {
+    defined.ensureTotalCapacity(alloc, std.math.cast(u32, job.steps.len) orelse return) catch return;
     for (job.steps, 0..) |step, index| {
         const id = step.id orelse continue;
         if (id.len == 0) continue;
-        for (buf.items) |seen| {
-            if (idEql(seen.id, id)) break;
-        } else {
-            buf.append(alloc, .{ .id = id, .index = index }) catch return;
-        }
+        const slot = defined.getOrPutAssumeCapacity(id);
+        if (slot.found_existing) continue;
+        slot.value_ptr.* = index;
+        ids.append(alloc, id) catch return;
     }
 }
 
 const Resolver = struct {
-    defined: []const DefinedStep,
+    defined: *const DefinedSteps,
     /// Suggestion candidates. A step declared later cannot be the intended
     /// target either, but it is still the likeliest typo source, so it stays
     /// in the list.
@@ -69,11 +69,9 @@ const Resolver = struct {
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
-    fn find(self: Resolver, id: []const u8) ?DefinedStep {
-        for (self.defined) |candidate| {
-            if (idEql(candidate.id, id)) return candidate;
-        }
-        return null;
+    /// Index of the first step declaring `id`.
+    fn find(self: Resolver, id: []const u8) ?usize {
+        return self.defined.get(id);
     }
 
     /// The hook `expr_scan` calls for every context access it finds.
@@ -181,11 +179,11 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
         appendUnknownStep(res, path, id, span);
         return;
     };
-    if (target.index == res.current) {
+    if (target == res.current) {
         appendSelfReference(res, id, span);
         return;
     }
-    if (target.index > res.current) {
+    if (target > res.current) {
         appendForwardReference(res, id, span);
         return;
     }
@@ -207,17 +205,15 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var defined: std.ArrayList(DefinedStep) = .empty;
-    collectStepIds(job, &defined, alloc);
-
+    var defined: DefinedSteps = .empty;
     var ids: std.ArrayList([]const u8) = .empty;
-    for (defined.items) |entry| ids.append(alloc, entry.id) catch return;
+    collectStepIds(job, &defined, &ids, alloc);
 
     // A job where no step carries an `id:` is not skipped: there every
     // `steps.<id>` reference is certainly undefined.
     for (job.steps, 0..) |*step, index| {
         expr_scan.scanStep(Resolver{
-            .defined = defined.items,
+            .defined = &defined,
             .ids = ids.items,
             .current = index,
             .alloc = alloc,

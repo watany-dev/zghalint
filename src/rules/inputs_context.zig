@@ -30,7 +30,10 @@ fn nameEql(a: []const u8, b: []const u8) bool {
 }
 
 const Declared = struct {
+    /// In source order, for the suggestions.
     names: []const []const u8,
+    /// The same names, for the lookups.
+    set: util.IgnoreCaseMap(void),
     /// False when the workflow has neither `workflow_dispatch` nor
     /// `workflow_call`: then `inputs` itself does not exist, which is a
     /// different finding from an undeclared name.
@@ -42,17 +45,18 @@ const Declared = struct {
 /// one of them is valid.
 fn collectInputs(wf: *const Workflow, alloc: std.mem.Allocator) Declared {
     var names: std.ArrayList([]const u8) = .empty;
+    var set: util.IgnoreCaseMap(void) = .empty;
     var available = false;
 
     for (wf.on.events) |event| {
         switch (event.event) {
             .workflow_call => {
                 available = true;
-                for (event.workflow_call_inputs) |input| appendUnique(&names, alloc, input.name);
+                for (event.workflow_call_inputs) |input| appendUnique(&names, &set, alloc, input.name);
             },
             .workflow_dispatch => {
                 available = true;
-                for (event.workflow_dispatch_inputs) |input| appendUnique(&names, alloc, input.name);
+                for (event.workflow_dispatch_inputs) |input| appendUnique(&names, &set, alloc, input.name);
             },
             else => {},
         }
@@ -60,15 +64,23 @@ fn collectInputs(wf: *const Workflow, alloc: std.mem.Allocator) Declared {
 
     return .{
         .names = names.toOwnedSlice(alloc) catch &.{},
+        .set = set,
         .available = available,
     };
 }
 
-fn appendUnique(names: *std.ArrayList([]const u8), alloc: std.mem.Allocator, name: []const u8) void {
-    for (names.items) |seen| {
-        if (nameEql(seen, name)) return;
-    }
-    names.append(alloc, name) catch return;
+fn appendUnique(
+    names: *std.ArrayList([]const u8),
+    set: *util.IgnoreCaseMap(void),
+    alloc: std.mem.Allocator,
+    name: []const u8,
+) void {
+    const slot = set.getOrPut(alloc, name) catch return;
+    if (slot.found_existing) return;
+    names.append(alloc, name) catch {
+        set.removeByPtr(slot.key_ptr);
+        return;
+    };
 }
 
 const Resolver = struct {
@@ -91,9 +103,7 @@ const Resolver = struct {
         // `inputs` alone (`toJSON(inputs)`) and computed keys
         // (`inputs[matrix.key]`) carry no name to resolve.
         const name = identSegment(iter.next()) orelse return;
-        for (self.declared.names) |declared| {
-            if (nameEql(declared, name)) return;
-        }
+        if (self.declared.set.contains(name)) return;
         self.reportUnknownInput(path, name, span);
     }
 

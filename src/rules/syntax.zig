@@ -147,28 +147,53 @@ fn walkDuplicateKeys(
 }
 
 fn reportDuplicateKey(
-    earlier_entries: []const yaml_types.MappingEntry,
+    earlier: yaml_types.MappingEntry,
     entry: yaml_types.MappingEntry,
     section: []const u8,
     list: *DiagnosticList,
 ) void {
-    for (earlier_entries) |earlier| {
-        if (!std.ascii.eqlIgnoreCase(earlier.key.value, entry.key.value)) continue;
-        const message = std.fmt.allocPrint(
-            list.fixAllocator(),
-            "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
-            .{ entry.key.value, section, earlier.key.span.start_line, earlier.key.span.start_col },
-        ) catch return;
+    const message = std.fmt.allocPrint(
+        list.fixAllocator(),
+        "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
+        .{ entry.key.value, section, earlier.key.span.start_line, earlier.key.span.start_col },
+    ) catch return;
 
-        list.append(.{
-            .rule_id = "SYN002",
-            .severity = .@"error",
-            .message = message,
-            .span = entry.key.span,
-            .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
-        }) catch return;
-        return;
+    list.append(.{
+        .rule_id = "SYN002",
+        .severity = .@"error",
+        .message = message,
+        .span = entry.key.span,
+        .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
+    }) catch return;
+}
+
+/// Room for `count` case-insensitive keys, or false when the table could not
+/// be allocated and the caller has to fall back to scanning.
+fn reserveIgnoreCase(map: *util.IgnoreCaseMap(usize), alloc: std.mem.Allocator, count: usize) bool {
+    const capacity = std.math.cast(u32, count) orelse return false;
+    map.ensureTotalCapacity(alloc, capacity) catch return false;
+    return true;
+}
+
+/// Index of the first earlier sibling whose key equals entry `i`'s, ignoring
+/// case. `seen` maps each key to its first index and is filled in as the
+/// walk goes; without it the earlier siblings are scanned instead.
+fn firstSameKey(
+    seen: ?*util.IgnoreCaseMap(usize),
+    entries: []const yaml_types.MappingEntry,
+    i: usize,
+) ?usize {
+    const key = entries[i].key.value;
+    if (seen) |map| {
+        const slot = map.getOrPutAssumeCapacity(key);
+        if (slot.found_existing) return slot.value_ptr.*;
+        slot.value_ptr.* = i;
+        return null;
     }
+    for (entries[0..i], 0..) |earlier, j| {
+        if (std.ascii.eqlIgnoreCase(earlier.key.value, key)) return j;
+    }
+    return null;
 }
 
 fn checkMapping(
@@ -178,8 +203,24 @@ fn checkMapping(
     list: *DiagnosticList,
 ) void {
     const report = !isSameEntries(mapping.entries, skip);
+
+    // Each key's first entry, so a repeat points back at it without a rescan
+    // of every earlier sibling on every entry.
+    var first_by_key: util.IgnoreCaseMap(usize) = .empty;
+    defer first_by_key.deinit(list.allocator);
+    const seen: ?*util.IgnoreCaseMap(usize) = if (report and
+        mapping.entries.len >= 2 and
+        reserveIgnoreCase(&first_by_key, list.allocator, mapping.entries.len))
+        &first_by_key
+    else
+        null;
+
     for (mapping.entries, 0..) |entry, i| {
-        if (report) reportDuplicateKey(mapping.entries[0..i], entry, section, list);
+        if (report) {
+            if (firstSameKey(seen, mapping.entries, i)) |first| {
+                reportDuplicateKey(mapping.entries[first], entry, section, list);
+            }
+        }
 
         const child_section = sectionForMappingChild(section, entry.key.value, entry.value);
         walkDuplicateKeys(entry.value, child_section, entry.key.value, skip, list);
@@ -361,21 +402,29 @@ fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
 }
 
 fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
+    if (job.steps.len < 2) return;
+
+    // Each ID's first step, so every later occurrence points back at it.
+    var first_by_id: util.IgnoreCaseMap(usize) = .empty;
+    defer first_by_id.deinit(list.allocator);
+    if (!reserveIgnoreCase(&first_by_id, list.allocator, job.steps.len)) return;
+
     for (job.steps, 0..) |*step, i| {
         const step_id = step.id orelse continue;
-        for (job.steps[0..i]) |*prior_step| {
-            const prior_id = prior_step.id orelse continue;
-            if (!std.ascii.eqlIgnoreCase(prior_id, step_id)) continue;
-            reportDuplicateId(
-                list,
-                step_id,
-                (prior_step.id_value_span orelse prior_step.span).start_line,
-                (step.id_value_span orelse step.span),
-                step_id_dup_fmt,
-                "use a unique step ID within the job",
-            );
-            break;
+        const slot = first_by_id.getOrPutAssumeCapacity(step_id);
+        if (!slot.found_existing) {
+            slot.value_ptr.* = i;
+            continue;
         }
+        const prior_step = &job.steps[slot.value_ptr.*];
+        reportDuplicateId(
+            list,
+            step_id,
+            (prior_step.id_value_span orelse prior_step.span).start_line,
+            (step.id_value_span orelse step.span),
+            step_id_dup_fmt,
+            "use a unique step ID within the job",
+        );
     }
 }
 
@@ -482,31 +531,113 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
-/// Removes every repeat of `value` from index `first_repeat` on. Attaching one
-/// fix that covers them all — rather than one per diagnostic — is what keeps a
-/// value written three times fixable in a single run: `fix.engine` drops a fix
-/// whose edits overlap another's, and in `[a, a, a]` the ranges of the second
-/// and third item do overlap.
+/// Removes every value at `indices`. Attaching one fix that covers them all —
+/// rather than one per diagnostic — is what keeps a value written three times
+/// fixable in a single run: `fix.engine` drops a fix whose edits overlap
+/// another's, and in `[a, a, a]` the ranges of the second and third item do
+/// overlap.
 fn buildDuplicateMatrixFix(
     alloc: std.mem.Allocator,
     axis: workflow_types.MatrixAxis,
-    value: yaml_types.Node,
-    first_repeat: usize,
+    indices: []const usize,
 ) ?diagnostics_mod.Fix {
-    if (axis.value_deletes.len != axis.values.len) return null;
-
-    var indices = std.ArrayList(usize).empty;
-    for (axis.values[first_repeat..], first_repeat..) |later, i| {
-        if (!later.eql(value)) continue;
-        indices.append(alloc, i) catch return null;
-    }
-
-    const edits = fix_builder.deleteSequenceItems(alloc, axis.value_deletes, indices.items) orelse return null;
+    const edits = fix_builder.deleteSequenceItems(alloc, axis.value_deletes, indices) orelse return null;
     return .{
         .description = "remove the duplicated matrix value",
         .safety = .safe,
         .edits = edits,
     };
+}
+
+/// What a repeated matrix value points back at.
+const MatrixRepeat = struct {
+    /// Index of the first value equal to this one.
+    prior: usize,
+    /// True for the second occurrence, the one that carries the fix.
+    first_repeat: bool,
+};
+
+/// Where each distinct scalar of an axis occurs, so a repeat resolves to its
+/// first occurrence and the fix can list every later one without rescanning
+/// the axis. Scalars compare by their exact text, as `Node.eql` does.
+const ScalarChain = struct {
+    const Ends = struct { first: usize, last: usize };
+
+    ends: std.StringHashMapUnmanaged(Ends) = .empty,
+    /// `next[i]` is the index of the next value equal to `values[i]`, or
+    /// `values.len` when there is none.
+    next: []usize = &.{},
+
+    fn build(alloc: std.mem.Allocator, values: []const Node) ?ScalarChain {
+        var chain = ScalarChain{};
+        chain.next = alloc.alloc(usize, values.len) catch return null;
+        @memset(chain.next, values.len);
+        const capacity = std.math.cast(u32, values.len) orelse {
+            chain.deinit(alloc);
+            return null;
+        };
+        chain.ends.ensureTotalCapacity(alloc, capacity) catch {
+            chain.deinit(alloc);
+            return null;
+        };
+        for (values, 0..) |value, i| {
+            const text = switch (value) {
+                .scalar => |s| s.value,
+                else => continue,
+            };
+            const slot = chain.ends.getOrPutAssumeCapacity(text);
+            if (slot.found_existing) {
+                chain.next[slot.value_ptr.last] = i;
+                slot.value_ptr.last = i;
+            } else {
+                slot.value_ptr.* = .{ .first = i, .last = i };
+            }
+        }
+        return chain;
+    }
+
+    fn deinit(self: *ScalarChain, alloc: std.mem.Allocator) void {
+        self.ends.deinit(alloc);
+        alloc.free(self.next);
+    }
+
+    fn repeatOf(self: ScalarChain, text: []const u8, i: usize) ?MatrixRepeat {
+        const ends = self.ends.get(text) orelse return null;
+        if (ends.first == i) return null;
+        return .{ .prior = ends.first, .first_repeat = self.next[ends.first] == i };
+    }
+
+    /// Index `i` and every later value equal to it, in source order.
+    fn indicesFrom(self: ScalarChain, alloc: std.mem.Allocator, i: usize) ?[]const usize {
+        var indices = std.ArrayList(usize).empty;
+        var j = i;
+        while (j < self.next.len) : (j = self.next[j]) {
+            indices.append(alloc, j) catch return null;
+        }
+        return indices.items;
+    }
+};
+
+/// Sequences and mappings have no text to hash, and are rare enough as
+/// matrix values that comparing each against the earlier ones is fine.
+fn structuralRepeat(values: []const Node, i: usize) ?MatrixRepeat {
+    var prior: ?usize = null;
+    var count: usize = 0;
+    for (values[0..i], 0..) |earlier, j| {
+        if (!earlier.eql(values[i])) continue;
+        if (prior == null) prior = j;
+        count += 1;
+    }
+    return .{ .prior = prior orelse return null, .first_repeat = count == 1 };
+}
+
+fn structuralIndicesFrom(alloc: std.mem.Allocator, values: []const Node, i: usize) ?[]const usize {
+    var indices = std.ArrayList(usize).empty;
+    for (values[i..], i..) |later, j| {
+        if (!later.eql(values[i])) continue;
+        indices.append(alloc, j) catch return null;
+    }
+    return indices.items;
 }
 
 /// A repeated matrix value produces no new combination, so the extra entry
@@ -516,44 +647,48 @@ fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
     const alloc = list.fixAllocator();
 
     for (matrix.axes) |axis| {
+        if (axis.values.len < 2) continue;
+        var chain = ScalarChain.build(list.allocator, axis.values) orelse return;
+        defer chain.deinit(list.allocator);
+
         for (axis.values, 0..) |value, i| {
-            var prior_count: usize = 0;
-            for (axis.values[0..i]) |earlier| {
-                if (earlier.eql(value)) prior_count += 1;
-            }
-            for (axis.values[0..i]) |prior| {
-                if (!value.eql(prior)) continue;
+            const repeat = (switch (value) {
+                .scalar => |s| chain.repeatOf(s.value, i),
+                else => structuralRepeat(axis.values, i),
+            }) orelse continue;
 
-                // Only a scalar has text worth quoting back: `include` and
-                // `exclude` entries are mappings.
-                const noun: []const u8 = if (value == .scalar) "value" else "entry";
-                const quoted = switch (value) {
-                    .scalar => |s| std.fmt.allocPrint(alloc, " \"{s}\"", .{s.value}) catch "",
-                    else => "",
+            // Only a scalar has text worth quoting back: `include` and
+            // `exclude` entries are mappings.
+            const noun: []const u8 = if (value == .scalar) "value" else "entry";
+            const quoted = switch (value) {
+                .scalar => |s| std.fmt.allocPrint(alloc, " \"{s}\"", .{s.value}) catch "",
+                else => "",
+            };
+            const prior_span = axis.values[repeat.prior].getSpan();
+
+            // Only the first repeat carries the fix; it already removes the
+            // ones the later diagnostics point at.
+            var fix: ?diagnostics_mod.Fix = null;
+            if (repeat.first_repeat and axis.value_deletes.len == axis.values.len) {
+                const indices = switch (value) {
+                    .scalar => chain.indicesFrom(alloc, i),
+                    else => structuralIndicesFrom(alloc, axis.values, i),
                 };
-                const prior_span = prior.getSpan();
-
-                // Only the first repeat carries the fix; it already removes the
-                // ones the later diagnostics point at.
-                const fix: ?diagnostics_mod.Fix = if (prior_count == 1)
-                    buildDuplicateMatrixFix(alloc, axis, value, i)
-                else
-                    null;
-
-                list.append(.{
-                    .rule_id = "SYN018",
-                    .severity = .warning,
-                    .message = std.fmt.allocPrint(
-                        alloc,
-                        "duplicate {s}{s} is found in matrix \"{s}\". the same {s} is at line {d}, col {d}",
-                        .{ noun, quoted, axis.name, noun, prior_span.start_line, prior_span.start_col },
-                    ) catch "duplicate value is found in matrix",
-                    .span = value.getSpan(),
-                    .fix_hint = "remove the repeated value; it produces no combination the earlier one does not",
-                    .fix = fix,
-                }) catch return;
-                break;
+                if (indices) |found| fix = buildDuplicateMatrixFix(alloc, axis, found);
             }
+
+            list.append(.{
+                .rule_id = "SYN018",
+                .severity = .warning,
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "duplicate {s}{s} is found in matrix \"{s}\". the same {s} is at line {d}, col {d}",
+                    .{ noun, quoted, axis.name, noun, prior_span.start_line, prior_span.start_col },
+                ) catch "duplicate value is found in matrix",
+                .span = value.getSpan(),
+                .fix_hint = "remove the repeated value; it produces no combination the earlier one does not",
+                .fix = fix,
+            }) catch return;
         }
     }
 }
