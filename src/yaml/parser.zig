@@ -156,12 +156,23 @@ pub const Parser = struct {
             return self.parseBlockSequence();
         }
 
-        if (self.current.kind == .flow_mapping_start) {
-            return self.parseFlowMapping();
-        }
-
-        if (self.current.kind == .flow_sequence_start) {
-            return self.parseFlowSequence();
+        if (self.current.kind == .flow_mapping_start or self.current.kind == .flow_sequence_start) {
+            const open_col = self.current.column;
+            const node = if (self.current.kind == .flow_mapping_start)
+                try self.parseFlowMapping()
+            else
+                try self.parseFlowSequence();
+            // A collection nothing closes claims only its own lines, so keys
+            // written below it at the same indent are the block mapping the
+            // value should have been. Leaving them as junk made them appear
+            // only once an insertion pushed the `{` out of value position, so
+            // `--fix` changed which keys the file had (fuzz).
+            if (unclosedFlow(node)) {
+                if (self.nextSiblingKey(open_col, min_indent)) |key| {
+                    return self.parseBlockMapping(key, min_indent);
+                }
+            }
+            return node;
         }
 
         if (self.current.kind == .scalar) {
@@ -480,9 +491,19 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance();
 
+        const open_line = self.current.line;
+        const open_indent = self.lineIndentAt(start_span.start_byte);
+
         while (self.current.kind != .flow_mapping_end and self.current.kind != .eof) {
             self.skipNewlinesAndComments();
             if (self.current.kind == .flow_mapping_end) break;
+
+            // A flow mapping continued on later lines is written indented past
+            // the line it opened on. A line that is not is block content, and
+            // taking it made `{f: '')` swallow the `steps:` below it -- until an
+            // insertion above pushed the `{` out of value position, and the key
+            // reappeared (fuzz).
+            if (self.current.line != open_line and self.lineIndentAt(self.current.start) <= open_indent) break;
 
             if (self.current.kind != .scalar) break;
             const key_token = self.current;
@@ -679,6 +700,16 @@ pub const Parser = struct {
     fn endsBlockMapping(kind: TokenKind) bool {
         return switch (kind) {
             .scalar, .sequence_entry, .document_start, .document_end => true,
+            else => false,
+        };
+    }
+
+    /// A flow collection the source never closed. Its text stops nowhere, so
+    /// the lines below it belong to whatever wrote them, not to it.
+    fn unclosedFlow(node: Node) bool {
+        return switch (node) {
+            .mapping => |m| m.flow and m.close_byte == null,
+            .sequence => |s| s.flow and s.close_byte == null,
             else => false,
         };
     }
@@ -1106,6 +1137,14 @@ pub const Parser = struct {
         while (end < self.source.len and self.source[end] != '\n') end += 1;
         if (end < self.source.len and self.source[end] == '\n') end += 1;
         return end;
+    }
+
+    /// The number of leading spaces on the line holding `at`.
+    fn lineIndentAt(self: *Parser, at: usize) u32 {
+        const line_start = self.lineStartByte(at);
+        var indent: u32 = 0;
+        while (line_start + indent < at and self.source[line_start + indent] == ' ') indent += 1;
+        return indent;
     }
 
     fn lineStartByte(self: *Parser, byte_offset: usize) usize {
@@ -1584,6 +1623,27 @@ test "a scalar entry's extent covers the lines indented under it (fuzz)" {
     var plain = Parser.init(alloc, "on: push\njobs:");
     const plain_doc = try plain.parse();
     try std.testing.expectEqual(@as(usize, 9), plain_doc.mapping.entries[0].extent_end.?);
+}
+
+test "an unclosed flow mapping takes no line at its own indent (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `{f: '')` never closes, so it read `steps:` as one of its own keys and the
+    // job lost it. An insertion above the `{` moved it out of value position,
+    // where the same line is skipped instead -- so `--fix` changed which keys
+    // the file had and broke the workflow parse.
+    var parser = Parser.init(alloc, "on: \njobs:\n h:\n    {f: '')\n    steps: ");
+    const doc = try parser.parse();
+    const job = doc.mapping.entries[1].value.mapping.entries[0].value;
+    try std.testing.expectEqual(@as(usize, 1), job.mapping.entries.len);
+    try std.testing.expectEqualStrings("steps", job.mapping.entries[0].key.value);
+
+    // A continuation indented past the opening line still belongs to it.
+    var wrapped = Parser.init(alloc, "on: {push: ,\n  pull_request: }\njobs:");
+    const wrapped_doc = try wrapped.parse();
+    try std.testing.expectEqual(@as(usize, 2), wrapped_doc.mapping.entries[0].value.mapping.entries.len);
 }
 
 test "an empty block scalar ends on its own header line (fuzz)" {
