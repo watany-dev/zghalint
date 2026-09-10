@@ -2809,7 +2809,6 @@ test "a dropped line under on: offers no insertion anchor (fuzz)" {
     try testing.expect(wf.permissions_insertion_byte == null);
     try testing.expect(wf.concurrency_insertion_byte == null);
 
-    // Nothing dropped under `on:`, so the anchor stands.
     var plain = yaml_parser_mod.Parser.init(alloc, "on:\n  push:\njobs:\n");
     const plain_wf = try parseWorkflow(alloc, try plain.parse());
     try testing.expect(plain_wf.permissions_insertion_byte != null);
