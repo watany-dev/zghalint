@@ -864,7 +864,12 @@ pub const Parser = struct {
             // insertion at the newline became quoted text rather than a key, so
             // `--fix` added the same key again every round (fuzz).
             if (self.current.start < end_byte and self.current.end > end_byte) return null;
-            return end_byte;
+            // A scalar value ends on its own line, but lines below it indented
+            // past the key still belong to the entry. `on: push\n  <: *c` put
+            // the alias line after the inserted `concurrency:` block, which
+            // adopted it and turned a tolerated stray line into a parse error
+            // (fuzz).
+            return self.extendOverIndentedTail(end_byte, key.span.start_col, key.span.start_byte);
         }
 
         // An empty or null value has no body: end at the key's own line. The
@@ -1475,6 +1480,25 @@ test "an entry whose line opens a quote that closes below has no full_span (fuzz
     var closed = Parser.init(alloc, "on:\n ''\"x\"\njobs:");
     const closed_doc = try closed.parse();
     try std.testing.expectEqual(@as(usize, 11), closed_doc.mapping.entries[0].full_span.?.end_byte);
+}
+
+test "a scalar entry's extent covers the lines indented under it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The parser tolerates `  <: *c` under `on: push` and holds no node for it.
+    // Anchoring an insertion at the end of the `on:` line put the inserted
+    // `concurrency:` block above the stray line, which then read as one of its
+    // entries and made the undefined alias a parse error.
+    var parser = Parser.init(alloc, "on: push\n  <: *c\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 17), doc.mapping.entries[0].extent_end.?);
+
+    // A sibling at the same indent is not part of the entry.
+    var plain = Parser.init(alloc, "on: push\njobs:");
+    const plain_doc = try plain.parse();
+    try std.testing.expectEqual(@as(usize, 9), plain_doc.mapping.entries[0].extent_end.?);
 }
 
 test "an entry's extent stops at the next sibling key (fuzz)" {
