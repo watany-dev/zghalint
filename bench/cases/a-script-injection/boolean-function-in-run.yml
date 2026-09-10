@@ -1,0 +1,18 @@
+# Boolean-returning functions expand to true/false; the untrusted
+# argument never reaches the shell.
+# bench:forbid template-injection
+name: build
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Skip unless the title starts with a prefix
+        run: |
+          if [ "${{ startsWith(github.event.issue.title, 'fix') }}" != "true" ]; then
+            echo skip
+          fi

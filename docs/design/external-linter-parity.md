@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-09
+最終更新: 2026-09-10
 
 ## 1. 目的
 
@@ -568,8 +568,10 @@ zizmor も指摘しないので parity gap ではないが、2 経路の隙間�
 `permission-*` 入力を付けないと、発行されるトークンは GitHub App の
 installation が持つ全スコープを継承する。zizmor は `github-app` として
 指摘する。zghalint には該当ルールが無い。実運用のワークフロー群を三者比較
-したところで 3 件出た。`permission-issues: write` のようにスコープを書いた
-呼び出しは zizmor も黙るので、入力の有無で切れる。
+したところで 3 件出た。別の実運用ワークフロー群でも同じ形が 6 件出た
+（`permission-*` 無し、`client-id` / `private-key` のみ）。
+`permission-issues: write` のようにスコープを書いた呼び出しは zizmor も
+黙るので、入力の有無で切れる。既存の bench ケースで足りる。
 
 #### G30 (#382). オブジェクト軸の未定義プロパティを EXPR011 が見ない — 対応済み
 
@@ -660,6 +662,27 @@ zizmor は tag-push を公開ワークフローとして `cache-poisoning` を�
 `build` 系のままキャッシュしている形が出た。G1 (既定でキャッシュする
 setup action) を直しても、この判定は残る。`on: push` のブランチだけ
 (タグ無し) は対象外のままにする。
+
+#### G36 (#419). SEC002 が真偽値関数の結果を `run:` へ展開しても発火する (FP) — 要ルール修正
+
+`bench/cases/a-script-injection/boolean-function-in-run.yml`。
+
+```yaml
+run: |
+  if [ "${{ startsWith(github.event.issue.title, 'fix') }}" != "true" ]; then
+    echo skip
+  fi
+```
+
+`startsWith` / `endsWith` / `contains` は真偽値を返し、シェルへ届くのは
+`true` / `false` だけである。汚染源は関数の引数に閉じているので、SEC006 が
+`if:` を注射ではないと切り分けているのと同じ理由で、SEC002 の対象ではない。
+`containsAnyContext` はパスがどの関数の中にあるかを見ないため、引数に
+汚染源があれば発火する。zizmor / actionlint は沈黙する。
+
+実運用のワークフロー群を三者比較したところ、汚染された `env:` を
+`startsWith(...)` に渡して `run:` の分岐に使う形で zghalint だけが
+SEC002 を出した。
 
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
@@ -1043,3 +1066,4 @@ JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定�
 - [x] G33 (#386): SEC016 の対象に `on.push.tags` を含める
 - [x] G34 (#375): BP007 を `bash <(curl ...)` のプロセス置換にも反応させる
 - [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える
+- [ ] G36 (#419): SEC002 を真偽値関数 (`startsWith` / `endsWith` / `contains`) の結果では沈黙させる
