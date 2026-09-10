@@ -275,8 +275,12 @@ pub fn parseWorkflowTracked(
             // A mapping that opens on the key's own line (`on: push:`) leaves
             // its children outside `full_span`, so an insertion at that anchor
             // lands inside the trigger rather than after it.
+            // Lines the parser dropped under `on:` sit past its `full_span` but
+            // inside its extent. A `>` there swallowed the rest of the file,
+            // and the inserted `permissions:` line ended the scalar early --
+            // the `<: *b` it had been holding became an undefined alias (fuzz).
             if (entry.full_span) |fs| {
-                if (!startsInlineMapping(entry)) {
+                if (!startsInlineMapping(entry) and !entry.has_indented_tail) {
                     workflow.permissions_insertion_byte = fs.end_byte;
                     workflow.concurrency_insertion_byte = fs.end_byte;
                 }
@@ -2769,6 +2773,26 @@ test "a service holding a sequence is a type error, not a parse failure (fuzz)" 
     var scalar = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n b:\n  services: x\n");
     const scalar_wf = try parseWorkflow(alloc, try scalar.parse());
     try testing.expectEqual(@as(usize, 0), scalar_wf.jobs[0].services.len);
+}
+
+test "a dropped line under on: offers no insertion anchor (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `>` holds the rest of the file, so a `permissions:` line inserted at
+    // the end of the `on:` block ends the scalar early and the `<: *b` it had
+    // been holding becomes an undefined alias.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on: &c\n  l:\n  >\n   \n<: *b\njobs:");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.permissions_insertion_byte == null);
+    try testing.expect(wf.concurrency_insertion_byte == null);
+
+    // Nothing dropped under `on:`, so the anchor stands.
+    var plain = yaml_parser_mod.Parser.init(alloc, "on:\n  push:\njobs:\n");
+    const plain_wf = try parseWorkflow(alloc, try plain.parse());
+    try testing.expect(plain_wf.permissions_insertion_byte != null);
 }
 
 test "an event whose only key sits above a dropped line offers no removal range (fuzz)" {
