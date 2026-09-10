@@ -406,6 +406,10 @@ SSL_CERT_FILE)」と出る。fail-fast で早く諦めても bit の立ち方は
   `NetworkUnreachable` が返る。修正前はこのテストが終わらない。Windows は
   shutdown で読み待ちが解けず約 2 分かかるので skip する（§3 の Windows の項）。
 - 即拒否される接続先（bind して閉じた port）は予算を待たず 1 s 以内に返る。
+  Windows だけ上限を 4 s にする。閉じたばかりの listener の port への SYN は
+  RST ではなく黙って捨てられ、RST は再送分の待ちの後に届く（CI 実測で 1 s 超）。
+  予算を待ち切った場合も同じエラーが返るので、上限が 5 s の予算を割っていれば
+  fail-fast の判定としては足りる。
 - `BoundedBody` の上限超過は `FetchFailed` で、不達フラグは立たない。
 - `std.testing.io` は `Io.Threaded` で signal handler を持つので、
   キャンセルの経路はテストでも本番と同じ。

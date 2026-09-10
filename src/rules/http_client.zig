@@ -707,7 +707,14 @@ test "fetch: a refused connection fails at once instead of waiting out the budge
     defer engine.clearNetworkDeadline();
     const t0 = std.Io.Clock.awake.now(runtime.io());
     try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = url } }));
-    try testing.expect(elapsedSince(t0) < std.time.ns_per_s);
+    // A refused connect on Windows loopback is not immediate: the SYN to a port
+    // whose listener was just closed is dropped rather than reset, so the RST
+    // only arrives on a retransmit (measured over a second in CI). The bound
+    // there just has to stay under the 5s budget -- a request that waited the
+    // budget out would report the same error, so only the timing tells them
+    // apart.
+    const fail_fast_limit: u64 = if (builtin.os.tag == .windows) 4 * std.time.ns_per_s else std.time.ns_per_s;
+    try testing.expect(elapsedSince(t0) < fail_fast_limit);
     try testing.expect(isNetworkUnreachable());
 }
 

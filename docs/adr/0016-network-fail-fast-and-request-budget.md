@@ -146,6 +146,9 @@ upstream への報告と、zghalint 側で `connectProxied` 相当を持つか�
 - `std.http.Client.FetchError` のメンバーが増減すると `classify` の `switch`
   が網羅性エラーで気付かせる。列挙し忘れは `FetchFailed`（短絡しない）に
   倒れる。
+- Windows の接続拒否は即時ではない。閉じたばかりの port への loopback SYN が
+  捨てられ RST が再送待ちの後に届くため、結合テストの上限だけ Windows で 4 s に
+  緩める（予算 5 s は割るので fail-fast の判定は残る）。
 - Windows では HTTPS_PROXY 経由の無応答プロキシだけ 1 本目に約 2 分かかる
   （D4 の Windows の項）。sticky フラグにより 2 本目以降は接続しないので
   実行全体では 1 回だけである。結合テストのうちこの形だけ Windows で skip する。
