@@ -1,6 +1,6 @@
 # 0016. ネットワーク不達時の fail-fast とリクエスト予算
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-10
 - Deciders: issue #402（設計書 `docs/design/network-fail-fast-design.md`）
 
@@ -72,6 +72,16 @@ Zig 0.16 の std には使える timeout が無い。`ConnectTcpOptions.timeout`
 `ReadFailed` を返すこと、即応答する接続先は予算を待たないこと、打ち切った
 後も同じクライアントを再利用できることを確認した。
 
+ただしキャンセルだけでは HTTPS_PROXY 環境で止まらない。
+`std.http.Client.connectProxied` は CONNECT 応答待ちの `error.Canceled` を
+`TunnelNotSupported` に畳んでプロキシへ張り直し、`Io.Threaded` のキャンセルは
+1 度承認されると以後の syscall に届かないため、2 本目の `readv` が永久に
+ブロックし `Future.cancel` も返らない。そこで予算切れ時は `Future.cancel` と
+並行して reaper タスクを起こし、fetch が返るまで `connection_pool.used` の
+全 socket を `shutdown` して EOF を強制する。キャンセルは DNS 解決と
+`connect()` 待ちを、shutdown は接続済み socket の読み待ちを担う。reaper は
+予算切れのときだけ動く。
+
 `Io.concurrent` が使えない `Io` 実装では従来どおり予算なしで待つ。
 
 ### D5. 予算は「全体の残り」と「1 本の上限 5 s」の小さい方
@@ -113,7 +123,9 @@ upstream への報告と、zghalint 側で `connectProxied` 相当を持つか�
 ## Consequences
 
 - API 不達時の所要時間は「1 本目の予算（最大 5 s）+ lint 本体」になり、
-  0.15.2 の 6.2 s を下回る見込み。2 本目以降は接続を試みない。
+  0.15.2 の 6.2 s を下回る。2 本目以降は接続を試みない。実測（79 ファイル、
+  ReleaseFast、ローカルプロキシ経由）: accept 後 6 s で切るプロキシで
+  12.0 s → 5.0 s、無応答のプロキシで 12 s 超 → 5.0 s、接続拒否は 0.02 s。
 - `http_client.FetchError` に `NetworkUnreachable` が増え、
   `graphql.GraphQlError` もこれを通す。呼び出し側の `catch` は網羅 switch
   でなければ変更不要。

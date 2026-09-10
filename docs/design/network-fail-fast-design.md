@@ -203,7 +203,12 @@ Zig 0.16 の std には使える timeout が無い。
 
 キャンセルだけが動く。fetch を `Io.concurrent` のタスクに載せ、呼び出し側は
 `Io.Event.waitTimeout` で「完了か予算切れの早い方」を待ち、予算切れなら
-`Future.cancel` で打ち切る。
+`Future.cancel` で打ち切る。ただしキャンセルだけでは足りない（後述の
+「CONNECT 応答待ちの握りつぶし」）ので、同時に使用中 socket の `shutdown`
+も走らせる。
+
+以下は骨子（実装は `src/rules/http_client.zig` の `BudgetedFetch` /
+`fetchWithBudget` / `abortFetch`）。
 
 ```zig
 // src/rules/http_client.zig
@@ -229,8 +234,8 @@ fn fetchWithBudget(opts: std.http.Client.FetchOptions, budget: std.Io.Timeout) s
     while (!slot.done.isSet()) {
         slot.done.waitTimeout(io, deadline) catch |err| switch (err) {
             error.Timeout => if (deadline.toDurationFromNow(io).?.raw.nanoseconds <= 0) {
-                fut.cancel(io); // ブロック中の readv / connect を SIGIO で起こす
-                return error.Timeout; // → classify で NetworkUnreachable
+                abortFetch(io, &fut, &slot); // cancel + 使用中 socket の shutdown
+                return slot.result catch error.Timeout; // → classify で NetworkUnreachable
             },
             error.Canceled => unreachable, // 呼び出し側はタスクではない
         };
@@ -256,6 +261,37 @@ fn fetchWithBudget(opts: std.http.Client.FetchOptions, budget: std.Io.Timeout) s
 `posixConnect` にも `INTR → checkCancel` があるので、SYN が黒穴に落ちる
 接続待ちも同じ経路で打ち切れる。DNS 解決（`netLookupFallible`）は
 `Io.Queue` 経由でキャンセル点を持つが、実測はしていない（§未決事項）。
+
+#### CONNECT 応答待ちの握りつぶしと socket shutdown
+
+実バイナリを HTTPS_PROXY 経由で応答しないプロキシに向けると、上の実装は
+永久に終わらなかった（gdb: メインは `Future.cancel` →
+`waitForCancelWithSignaling` の futex、タスクは `Request.receiveHead` の
+`readv`）。原因は 2 つの std の性質の組み合わせ。
+
+1. `std.http.Client.connectProxied` は CONNECT の `receiveHead` が失敗すると
+   原因を見ずに `TunnelNotSupported` に畳み、`connect` はプロキシへ**張り直して**
+   平文プロキシとして GET を送る。`error.Canceled` もここで消える。
+2. `Io.Threaded` のキャンセルは 1 回きり。`Syscall.checkCancel` が
+   `.canceled` に遷移した後の syscall は割り込まれず、
+   `signalCanceledSyscall` も `.blocked_canceling` 以外には送らない。
+
+つまり SIGIO は 1 本目の `readv` を起こすが、その結果を std が飲み込んで
+2 本目の接続を張り、2 本目の `readv` にはもう届かない。`Future.cancel` は
+2 本目が返るまで待つので、呼び出し側ごと固まる。
+
+対策は `abortFetch`: `Future.cancel` と並行して reaper タスクを 1 本起こし、
+タスクの `done` が立つまで 10 ms ごとに `connection_pool.used` の全 socket を
+`Stream.shutdown(.both)` する。ブロック中の `readv` は EOF で返り、std は
+shutdown 済みの接続をプールに戻さない（`closing`）。2 本目の接続も
+`addUsed` された時点で次の周回で切られるので、有限回で収束する。
+`Future.cancel` は DNS 解決と `connect()` 待ち（socket がまだプールに無い
+局面）を引き続き担う。reaper は予算切れのときだけ動くので成功経路のコストは
+変わらない。
+
+`pool.used` の走査は `pool.mutex` の下で行う。`release` は同じ mutex の下で
+`used` から外してから `destroy` するので、走査中に見えた接続が同時に閉じられて
+fd が使い回されることはない。
 
 ### 4. 予算の導き方
 
@@ -337,9 +373,14 @@ SSL_CERT_FILE)」と出る。fail-fast で早く諦めても bit の立ち方は
 応答しないサーバをテスト内に立てる。
 
 - 予算 200 ms で `fetch` が 200 ms 前後で `NetworkUnreachable` を返す
-  （経過時間は 150 ms〜1 s の範囲で検査。CI の負荷でぶれるので上限は緩く）。
+  （経過時間は 150 ms〜2 s の範囲で検査。CI の負荷でぶれるので上限は緩く）。
 - 続けて同じ URL を `fetch` すると **接続せずに** 即 `NetworkUnreachable`
   （経過時間 < 50 ms）。fail-fast の本体。
+- 同じサーバを `HTTPS_PROXY` に据えて https URL を `fetch` する。CONNECT の
+  握りつぶし → 張り直し → 2 本目の shutdown を通り、予算 200 ms で 2 s 以内に
+  `NetworkUnreachable` が返る。修正前はこのテストが終わらない。
+- 即拒否される接続先（bind して閉じた port）は予算を待たず 1 s 以内に返る。
+- `BoundedBody` の上限超過は `FetchFailed` で、不達フラグは立たない。
 - `std.testing.io` は `Io.Threaded` で signal handler を持つので、
   キャンセルの経路はテストでも本番と同じ。
 
@@ -348,6 +389,15 @@ SSL_CERT_FILE)」と出る。fail-fast で早く諦めても bit の立ち方は
 - `bench/` のコーパス 80 ファイルで issue の再現手順を回し、不達時に
   「1 本目の予算 (5 s) + α」で終わることを手動で確認する。目標は 0.15.2 の
   6.2 s を下回ること。
+- 実測（`tests/fixtures/e2e` 79 ファイル、`--no-cache --format json`、
+  ReleaseFast、`GITHUB_TOKEN` ダミー、ローカルプロキシを `HTTPS_PROXY` に
+  指定）。診断数 287 は変更前後で同じ。
+
+  | プロキシの挙動 | 変更前 (8e70966) | 変更後 |
+  |---|---|---|
+  | accept 後 6 s で切断 | 12.0 s | 5.0 s |
+  | accept 後ずっと無応答 | 12.0 s 超（切断待ち） | 5.0 s |
+  | 接続拒否 (`127.0.0.1:1`) | 0.03 s | 0.02 s |
 - 成功経路の所要時間とリクエスト数（23 本、1 接続）が変わらないことを
   `scripts/bench.py --perf` で確認する。`Io.concurrent` のスレッド生成が
   1 リクエストあたりに乗るが、TLS 往復に比べて無視できる。
@@ -371,6 +421,8 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - **std の proxy トンネル不具合**: 非スコープだが、HTTPS_PROXY 環境では
   本設計が入っても「毎回 5 s 待って諦める」動作になる。upstream 修正か
   zghalint 側の `connectProxied` 相当の実装かは別 issue で判断する。
+  `connectProxied` が `error.Canceled` を握りつぶす点も同じ箇所なので、
+  upstream に報告する際はあわせて挙げる。
 
 ## 関連
 
