@@ -1152,7 +1152,12 @@ fn parseSteps(ctx: *ParseContext, node: Node, steps_key_line: u32) ParseError![]
             ctx.noteFmt("steps[{d}]", .{i}, "steps", item.getSpan());
             return err;
         };
-        steps[i].own_line = item.getSpan().start_line > steps_key_line;
+        // A step written as `{uses: x}` has no block line to insert into: an
+        // insertion anchored inside the braces is flow text, not a `with:`
+        // block, and it left the step holding a scalar where a mapping belonged
+        // (fuzz).
+        steps[i].own_line = item.getSpan().start_line > steps_key_line and
+            !(item == .mapping and item.mapping.flow);
     }
     return steps;
 }
@@ -3452,6 +3457,26 @@ test "a job body flush with its id does not count as own-line (fuzz)" {
 
     try testing.expectEqual(@as(usize, 1), wf.jobs.len);
     try testing.expect(!wf.jobs[0].body_own_line);
+}
+
+test "a step written as a flow mapping does not count as own-line (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // SEC001's fix inserted a block `with:` inside the braces, which the next
+    // parse read as the step's scalar value and broke the workflow parse.
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  b:\n    runs-on: x\n    steps:\n      - {uses: actions/checkout@v4}\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].steps.len);
+    try testing.expect(!wf.jobs[0].steps[0].own_line);
+
+    // A block step on its own line still takes one.
+    var block = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  b:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@v4\n");
+    const block_wf = try parseWorkflow(alloc, try block.parse());
+    try testing.expect(block_wf.jobs[0].steps[0].own_line);
 }
 
 test "a job body indented past its id counts as own-line" {
