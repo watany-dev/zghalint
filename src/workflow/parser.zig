@@ -1622,10 +1622,11 @@ fn parseServices(
     node: Node,
     mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
 ) ParseError![]const types.Service {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
+    // A `services:` holding anything but a mapping is a type error SYN004
+    // reports. Failing the whole workflow parse over it dropped every other
+    // diagnostic in the file (fuzz).
+    if (!type_validation.checkMapping(node, "services", mismatches, allocator)) return &.{};
+    const m = node.mapping;
 
     const services = try allocator.alloc(types.Service, m.entries.len);
     for (m.entries, 0..) |entry, i| {
@@ -1651,7 +1652,13 @@ fn parseServices(
             // reported as an empty section; failing the whole workflow parse
             // over it dropped every other diagnostic too (fuzz).
             .null_value => services[i] = .{ .name = entry.key.value },
-            else => return error.InvalidValue,
+            // A service holding a sequence names no image either. SYN001's
+            // rename reaches this: `erices:` became `services:` without
+            // changing what was written under it (fuzz).
+            else => {
+                _ = type_validation.checkMapping(entry.value, "services", mismatches, allocator);
+                services[i] = .{ .name = entry.key.value };
+            },
         }
     }
     return services;
@@ -2742,6 +2749,26 @@ test "a uses: with dropped lines under it offers no insertion anchor (fuzz)" {
     );
     const plain_wf = try parseWorkflow(alloc, try plain.parse());
     try testing.expect(plain_wf.jobs[0].steps[0].uses_value_end_byte != null);
+}
+
+test "a service holding a sequence is a type error, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // SYN001's rename reaches this: `erices:` became `services:` without
+    // changing what was written under it, and the whole workflow stopped
+    // parsing where it had linted a moment before.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n b: services:\n     b: -\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].services.len);
+    try testing.expectEqualStrings("b", wf.jobs[0].services[0].name);
+
+    // A `services:` that is not a mapping at all is the same kind of error.
+    var scalar = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n b:\n  services: x\n");
+    const scalar_wf = try parseWorkflow(alloc, try scalar.parse());
+    try testing.expectEqual(@as(usize, 0), scalar_wf.jobs[0].services.len);
 }
 
 test "an event whose only key sits above a dropped line offers no removal range (fuzz)" {
