@@ -223,6 +223,12 @@ fn classify(err: std.http.Client.FetchError) FetchError {
         error.Canceled,
         error.HttpConnectionClosing,
         error.HttpRequestTruncated,
+        // An OS error std has no mapping for. Every such error inside a fetch
+        // comes from a socket, resolver or TLS syscall, so it is a transport
+        // failure. Windows relies on this: `netConnectIpWindows` and
+        // `netReadWindows` pass every AFD status but `INSUFFICIENT_RESOURCES`
+        // through `unexpectedStatus`, so even a refused connection arrives here.
+        error.Unexpected,
         => error.NetworkUnreachable,
         else => error.FetchFailed,
     };
@@ -467,6 +473,7 @@ test "classify: transport failures are NetworkUnreachable, the rest FetchFailed"
         error.NetworkUnreachable,      error.NetworkDown,           error.Timeout,
         error.TlsInitializationFailed, error.ReadFailed,            error.WriteFailed,
         error.Canceled,                error.HttpConnectionClosing, error.HttpRequestTruncated,
+        error.Unexpected,
     };
     inline for (transport) |err| {
         try testing.expectEqual(@as(FetchError, error.NetworkUnreachable), classify(err));
