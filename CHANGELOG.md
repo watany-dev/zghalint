@@ -48,6 +48,21 @@ still be renumbered before 1.0.
 
 ### Fixed
 
+- A `steps:` holding a mapping instead of a sequence no longer aborts the
+  workflow parse and silences every diagnostic in the file. It now reports
+  SYN004 and parsing continues, the same treatment `services:` and
+  `credentials:` already had. A file that was previously silent can now report.
+- Insertion auto-fixes (SEC007, BP005, SEC015, PERF001) no longer place a line
+  at a column the surrounding mapping does not use. `Workflow.top_level_indent`
+  was declared but never assigned, so a workflow whose root mapping is indented
+  had `permissions:` inserted at column 0, ending the mapping and dropping
+  `jobs:` out of the document. `with:` additions took their column from `uses:`
+  rather than from the existing children, so a repeated `--fix-unsafe` appended
+  `persist-credentials: false` once per run.
+- Insertion auto-fixes emit no fix at all, rather than a broken rewrite, when
+  the anchor would land inside a quoted or block scalar, on a line the parser
+  dropped, or in a mapping that starts on its key's own line (`on: push:`).
+  The diagnostics themselves are unchanged.
 - An empty `permissions:` or `concurrency:` no longer aborts the workflow parse
   and silences every diagnostic in the file. Both sections now report SYN003
   and parsing continues, so a `--fix` rename that produces one of them (for
