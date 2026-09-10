@@ -318,7 +318,7 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
         .mapping => |m| {
             const events = try allocator.alloc(types.EventConfig, m.entries.len);
             for (m.entries, 0..) |entry, i| {
-                events[i] = try parseEventConfig(allocator, entry.key.value, entry.value);
+                events[i] = try parseEventConfig(allocator, entry.key.value, entry.value, entry.has_indented_tail);
                 events[i].name_span = entry.key.span;
             }
             return .{ .events = events };
@@ -327,7 +327,10 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
     }
 }
 
-fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) ParseError!types.EventConfig {
+/// `has_tail` says the parser dropped lines under this event's key. They sit
+/// inside the event's extent but hold no node, so emptying the mapping lets the
+/// next parse read one as the event's value (fuzz).
+fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node, has_tail: bool) ParseError!types.EventConfig {
     const event_type = types.EventType.fromString(name);
     var config = types.EventConfig{ .event = event_type, .name = name };
 
@@ -336,7 +339,7 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
             return config;
         },
         .mapping => |m| {
-            config.config_keys = try collectEventConfigKeys(allocator, m);
+            config.config_keys = try collectEventConfigKeys(allocator, m, has_tail);
             config.types_key_span = m.getKeySpan("types");
             config.activity_types = try parseActivityTypes(allocator, m.get("types"));
 
@@ -635,10 +638,18 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
     };
 }
 
-fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping) ParseError![]const types.EventConfigKey {
+fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping, has_tail: bool) ParseError![]const types.EventConfigKey {
     const keys = try allocator.alloc(types.EventConfigKey, m.entries.len);
+    // Removing the last key leaves the event without a value, and a dropped
+    // line below becomes one: `*r` under an emptied `workflow_call:` turned
+    // into an undefined alias and the whole file stopped parsing (fuzz).
+    const empties = has_tail and m.entries.len == 1;
     for (m.entries, 0..) |entry, i| {
-        keys[i] = .{ .name = entry.key.value, .span = entry.key.span, .full_span = entry.full_span };
+        keys[i] = .{
+            .name = entry.key.value,
+            .span = entry.key.span,
+            .full_span = if (empties) null else entry.full_span,
+        };
     }
     return keys;
 }
@@ -2733,6 +2744,24 @@ test "a uses: with dropped lines under it offers no insertion anchor (fuzz)" {
     try testing.expect(plain_wf.jobs[0].steps[0].uses_value_end_byte != null);
 }
 
+test "an event whose only key sits above a dropped line offers no removal range (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `*r` holds no node, but removing `x:` empties the event and the next parse
+    // reads the alias as its value, where it has no anchor to resolve.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on:\n workflow_call:\n    x:\n  *r \njobs:\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.on.events[0].config_keys[0].full_span == null);
+
+    // Nothing dropped under the key, so the range stands.
+    var plain = yaml_parser_mod.Parser.init(alloc, "on:\n workflow_call:\n    x:\njobs:\n");
+    const plain_wf = try parseWorkflow(alloc, try plain.parse());
+    try testing.expect(plain_wf.on.events[0].config_keys[0].full_span != null);
+}
+
 test "an unterminated quoted uses: offers no insertion anchor (fuzz)" {
     const yaml_parser_mod = @import("../yaml/parser.zig");
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2929,7 +2958,7 @@ test "parseEventConfig with null value (empty event)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const config = try parseEventConfig(arena.allocator(), "push", .{ .null_value = mkSpan() });
+    const config = try parseEventConfig(arena.allocator(), "push", .{ .null_value = mkSpan() }, false);
     try testing.expectEqual(types.EventType.push, config.event);
 }
 
@@ -3246,7 +3275,7 @@ test "parseEventConfig with scalar (unknown event)" {
     defer arena.deinit();
 
     // A scalar value for an event config (e.g. `push: true`) is valid but does nothing
-    const config = try parseEventConfig(arena.allocator(), "push", mkScalar("true"));
+    const config = try parseEventConfig(arena.allocator(), "push", mkScalar("true"), false);
     try testing.expectEqual(types.EventType.push, config.event);
 }
 
