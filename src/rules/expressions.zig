@@ -1200,6 +1200,7 @@ pub fn findAndValidateExpressionsEnv(
     env: *const expr_check.TypeEnv,
     use: ExprUse,
 ) void {
+    var cursor = anchor.cursor(text);
     var pos: usize = 0;
     while (pos + 2 < text.len) {
         if (text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{') {
@@ -1209,7 +1210,7 @@ pub fn findAndValidateExpressionsEnv(
                 const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
                 const leading_trim = std.mem.findNone(u8, expr_content, " \t\n\r") orelse 0;
                 const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
-                const expr_span = anchor.at(text, pos, expr_start + end_offset + 2 - pos);
+                const expr_span = cursor.at(pos, expr_start + end_offset + 2 - pos);
                 validateExpressionEnv(allocator, trimmed, expr_span, list, expr_base_byte, env, use);
                 pos = expr_start + end_offset + 2;
             } else {
@@ -1217,7 +1218,7 @@ pub fn findAndValidateExpressionsEnv(
                     .rule_id = "EXPR001",
                     .severity = .@"error",
                     .message = "unclosed expression: missing }}",
-                    .span = anchor.at(text, pos, text.len - pos),
+                    .span = cursor.at(pos, text.len - pos),
                 }) catch return;
                 return;
             }
@@ -1232,6 +1233,7 @@ pub fn findAndValidateExpressionsEnv(
 /// `visitor` receives the trimmed expression and its span via
 /// `onExpression(expr, span)`. Unterminated `${{` is left to EXPR001.
 pub fn forEachExpression(text: []const u8, anchor: Anchor, visitor: anytype) void {
+    var cursor = anchor.cursor(text);
     var pos: usize = 0;
     while (pos + 2 < text.len) {
         if (!(text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{')) {
@@ -1243,7 +1245,7 @@ pub fn forEachExpression(text: []const u8, anchor: Anchor, visitor: anytype) voi
         const expr_content = text[expr_start .. expr_start + end_offset];
         const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
         if (trimmed.len != 0) {
-            visitor.onExpression(trimmed, anchor.at(text, pos, expr_start + end_offset + 2 - pos));
+            visitor.onExpression(trimmed, cursor.at(pos, expr_start + end_offset + 2 - pos));
         }
         pos = expr_start + end_offset + 2;
     }

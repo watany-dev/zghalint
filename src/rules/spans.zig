@@ -70,12 +70,38 @@ pub const Anchor = struct {
         return self.scalar orelse self.fallback;
     }
 
+    /// One-off resolution of `value[offset..][0..len]`. A loop that reports
+    /// several positions in the same scalar should go through `cursor`, which
+    /// does not re-walk the value from its first byte for each of them.
     pub fn at(self: Anchor, value: []const u8, offset: usize, len: usize) Span {
-        const token = self.scalar orelse return self.fallback;
+        var c = self.cursor(value);
+        return c.at(offset, len);
+    }
+
+    pub fn cursor(self: Anchor, value: []const u8) Cursor {
+        return .{ .anchor = self, .value = value };
+    }
+};
+
+/// Resolves offsets in one scalar to spans, remembering the last position so
+/// a front-to-back scan advances from there. A scan that reports every match
+/// in a `run:` block would otherwise re-count the newlines before each one,
+/// making the block cost O(matches × length).
+pub const Cursor = struct {
+    anchor: Anchor,
+    value: []const u8,
+    /// Offset into `value` that `pos` describes.
+    offset: usize = 0,
+    /// Null until the first resolution, which is when the origin is needed.
+    pos: ?Pos = null,
+
+    pub fn at(self: *Cursor, offset: usize, len: usize) Span {
+        const token = self.anchor.scalar orelse return self.anchor.fallback;
+        const value = self.value;
         const start_off = @min(offset, value.len);
         const end_off = @min(start_off + len, value.len);
 
-        const content_start_byte = contentStartByte(token, self.style, value);
+        const content_start_byte = contentStartByte(token, self.anchor.style, value);
         // An alias (`*name`) carries the anchored node's text under the alias's
         // own two-byte token, so an offset into the value is not an offset into
         // the source. Report the token whole rather than a position past the end
@@ -84,8 +110,7 @@ pub const Anchor = struct {
         const token_has_extent = token.end_byte > token.start_byte;
         if (token_has_extent and content_start_byte + value.len > token.end_byte) return token;
 
-        const origin = contentOrigin(token, self.style);
-        const start = advance(origin.line, origin.col, value[0..start_off]);
+        const start = self.positionAt(start_off);
         const end = advance(start.line, start.col, value[start_off..end_off]);
 
         return .{
@@ -96,6 +121,24 @@ pub const Anchor = struct {
             .start_byte = content_start_byte + start_off,
             .end_byte = content_start_byte + end_off,
         };
+    }
+
+    /// Walks forward from the remembered position when `offset` is at or past
+    /// it, and from the origin otherwise, so an out-of-order request is merely
+    /// slower, never wrong.
+    fn positionAt(self: *Cursor, offset: usize) Pos {
+        const from: Pos, const from_off: usize = if (self.pos) |pos|
+            if (self.offset <= offset) .{ pos, self.offset } else .{ self.origin(), 0 }
+        else
+            .{ self.origin(), 0 };
+        const pos = advance(from.line, from.col, self.value[from_off..offset]);
+        self.pos = pos;
+        self.offset = offset;
+        return pos;
+    }
+
+    fn origin(self: *const Cursor) Pos {
+        return contentOrigin(self.anchor.scalar.?, self.anchor.style);
     }
 };
 
@@ -111,6 +154,43 @@ fn advance(line: u32, col: u32, text: []const u8) Pos {
         }
     }
     return .{ .line = l, .col = c };
+}
+
+test "Cursor resolves the same spans as Anchor.at, in any order" {
+    const value = "  echo one\n  echo ${{ a }}\n  echo ${{ b }} ${{ c }}\n";
+    const token = Span{
+        .start_line = 6,
+        .start_col = 12,
+        .end_line = 9,
+        .end_col = 1,
+        .start_byte = 50,
+        .end_byte = 50 + 6 + value.len,
+    };
+    const a = Anchor.fromMeta(.{ .value_span = token, .style = .literal }, Span.point(1, 1, 0));
+    var cursor = a.cursor(value);
+
+    const offsets = [_]usize{ 0, 18, 32, 41, 41, 18, value.len };
+    for (offsets) |offset| {
+        const expected = a.at(value, offset, 3);
+        const got = cursor.at(offset, 3);
+        try std.testing.expectEqual(expected.start_line, got.start_line);
+        try std.testing.expectEqual(expected.start_col, got.start_col);
+        try std.testing.expectEqual(expected.end_line, got.end_line);
+        try std.testing.expectEqual(expected.end_col, got.end_col);
+        try std.testing.expectEqual(expected.start_byte, got.start_byte);
+        try std.testing.expectEqual(expected.end_byte, got.end_byte);
+    }
+    // The cursor followed the last request rather than starting over.
+    try std.testing.expectEqual(@as(usize, value.len), cursor.offset);
+    try std.testing.expectEqual(@as(u32, 10), cursor.pos.?.line);
+}
+
+test "Cursor without a scalar span falls back like Anchor.at" {
+    var cursor = (Anchor{ .fallback = Span.point(4, 7, 30) }).cursor("echo hi");
+    const s = cursor.at(5, 2);
+    try std.testing.expectEqual(@as(u32, 4), s.start_line);
+    try std.testing.expectEqual(@as(usize, 30), s.start_byte);
+    try std.testing.expectEqual(@as(?Pos, null), cursor.pos);
 }
 
 test "Anchor.at without a scalar span falls back to the step span" {

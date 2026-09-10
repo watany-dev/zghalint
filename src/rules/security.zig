@@ -2101,6 +2101,7 @@ fn checkTyposquatAction(step: *const Step, list: *DiagnosticList) void {
 /// point with its own source location.
 fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList, fix: ?Fix) void {
     var first = true;
+    var cursor = anchor.cursor(s);
     var it: ExprIter = .{ .s = s };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
@@ -2108,7 +2109,7 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, 
             .rule_id = rule_id,
             .severity = severity,
             .message = message,
-            .span = anchor.at(s, e.match.offset, e.match.len),
+            .span = cursor.at(e.match.offset, e.match.len),
             .fix_hint = fix_hint,
             .fix = if (first) fix else null,
         }) catch return;

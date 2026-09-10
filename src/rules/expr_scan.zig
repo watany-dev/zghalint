@@ -19,14 +19,16 @@ const Job = workflow_types.Job;
 const Step = workflow_types.Step;
 const Span = spans.Span;
 const Anchor = spans.Anchor;
+const Cursor = spans.Cursor;
 const ExprNode = expressions.ExprNode;
 
 fn Walk(comptime Visitor: type) type {
     return struct {
         visitor: Visitor,
-        text: []const u8,
-        anchor: Anchor,
-        /// Offset of the expression source inside `text`, so a node's
+        /// Positions inside the scalar holding the expression, shared across
+        /// every expression of that scalar so each one resolves from the last.
+        cursor: *Cursor,
+        /// Offset of the expression source inside the scalar, so a node's
         /// expression-relative byte range maps back to a file position.
         expr_offset: usize,
 
@@ -43,7 +45,7 @@ fn Walk(comptime Visitor: type) type {
         fn spanOf(self: Self, node: *const ExprNode) Span {
             const start = self.expr_offset + node.start_byte;
             const len = if (node.end_byte > node.start_byte) node.end_byte - node.start_byte else 0;
-            return self.anchor.at(self.text, start, len);
+            return self.cursor.at(start, len);
         }
 
         fn walk(self: Self, node: *const ExprNode) void {
@@ -67,13 +69,12 @@ fn Walk(comptime Visitor: type) type {
 }
 
 /// A parse failure is EXPR001's finding; the contextual rules stay silent on it.
-fn scanExpression(visitor: anytype, text: []const u8, anchor: Anchor, expr_offset: usize, expr: []const u8) void {
+fn scanExpression(visitor: anytype, cursor: *Cursor, expr_offset: usize, expr: []const u8) void {
     var parser = expressions.ExprParser.init(visitor.alloc, expr);
     const node = parser.parse() catch return;
     const walk = Walk(@TypeOf(visitor)){
         .visitor = visitor,
-        .text = text,
-        .anchor = anchor,
+        .cursor = cursor,
         .expr_offset = expr_offset,
     };
     walk.walk(&node);
@@ -81,6 +82,7 @@ fn scanExpression(visitor: anytype, text: []const u8, anchor: Anchor, expr_offse
 
 /// Scans every `${{ }}` block embedded in `text`.
 pub fn scanText(visitor: anytype, text: []const u8, anchor: Anchor) void {
+    var cursor = anchor.cursor(text);
     var pos: usize = 0;
     while (pos + 2 < text.len) {
         if (!(text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{')) {
@@ -94,7 +96,7 @@ pub fn scanText(visitor: anytype, text: []const u8, anchor: Anchor) void {
 
         const leading = std.mem.findNone(u8, content, " \t\n\r") orelse continue;
         const trimmed = std.mem.trim(u8, content, " \t\n\r");
-        scanExpression(visitor, text, anchor, expr_start + leading, trimmed);
+        scanExpression(visitor, &cursor, expr_start + leading, trimmed);
     }
 }
 
@@ -115,7 +117,8 @@ pub fn scanCondition(
     const trimmed = std.mem.trim(u8, value, " \t\n\r");
     if (trimmed.len == 0) return;
     const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(value.ptr);
-    scanExpression(visitor, value, anchor, leading, trimmed);
+    var cursor = anchor.cursor(value);
+    scanExpression(visitor, &cursor, leading, trimmed);
 }
 
 pub fn scanScalarMap(

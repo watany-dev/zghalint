@@ -286,6 +286,7 @@ pub fn buildFix(
     var binding_count: usize = 0;
     var edits = std.ArrayList(Edit).empty;
     defer edits.deinit(alloc);
+    var cursor = spans.runAnchor(step).cursor(run);
 
     for (occs.slice()) |occ| {
         if (occ.offset + occ.len > run.len) return null;
@@ -310,7 +311,7 @@ pub fn buildFix(
         }
 
         const ref = reference(alloc, shell, name.?, state) orelse return null;
-        const span = spans.runAnchor(step).at(run, occ.offset, occ.len);
+        const span = cursor.at(occ.offset, occ.len);
         edits.append(alloc, .{
             .start_byte = span.start_byte,
             .end_byte = span.end_byte,

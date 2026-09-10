@@ -679,6 +679,7 @@ fn buildDeprecatedCommandFix(
     var edits = std.ArrayList(diagnostics_mod.Edit).empty;
     defer edits.deinit(alloc);
 
+    var cursor = anchor.cursor(script);
     var offset: usize = 0;
     var continued = false;
     while (offset < script.len) {
@@ -693,7 +694,7 @@ fn buildDeprecatedCommandFix(
         if (was_continued) continue;
         const rewrite = rewriteWorkflowCommandLine(alloc, line, cmd) orelse continue;
 
-        const span = anchor.at(script, line_start + rewrite.start, rewrite.end - rewrite.start);
+        const span = cursor.at(line_start + rewrite.start, rewrite.end - rewrite.start);
         edits.append(alloc, .{
             .start_byte = span.start_byte,
             .end_byte = span.end_byte,
