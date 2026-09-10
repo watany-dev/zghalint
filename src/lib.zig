@@ -45,6 +45,7 @@ pub const rules = struct {
     pub const syntax = @import("rules/syntax.zig");
     pub const composite_steps = @import("rules/composite_steps.zig");
     pub const local_action = @import("rules/local_action.zig");
+    pub const called_workflow = @import("rules/called_workflow.zig");
 };
 
 pub const fix = struct {

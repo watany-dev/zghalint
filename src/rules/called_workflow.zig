@@ -2,9 +2,14 @@
 //! that validate a call against the workflow it calls (RW002-RW004).
 //!
 //! Only a local call (`./.github/workflows/x.yml`) names a file zghalint can
-//! open; a call into another repository is never checked. Nothing parsed here
-//! outlives the caller's arena, and every diagnostic still points into the
-//! *calling* file, so the called workflow only ever contributes names.
+//! open; a call into another repository is never checked. Every diagnostic
+//! still points into the *calling* file, so the called workflow only ever
+//! contributes names.
+//!
+//! Four rules ask for the interface of every calling job, and the same
+//! reusable workflow is typically called from many jobs and files, so the
+//! CLI turns on a process-wide cache (`initCache`) that parses each called
+//! file once. Without the cache, `load` parses into the caller's arena.
 //!
 //! The called file is read but never followed: a workflow that calls itself,
 //! or a pair that call each other, is parsed once per call and never recursed
@@ -24,8 +29,38 @@ pub const Interface = struct {
 };
 
 /// Test seam: when set, sources come from memory instead of the filesystem, so
-/// the rules can be tested without laying out a repository on disk.
-pub var source_override: ?*const fn (path: []const u8) ?[]const u8 = null;
+/// the rules can be tested without laying out a repository on disk. Set it
+/// through `overrideSource`, which also drops what the cache read before.
+var source_override: ?*const fn (path: []const u8) ?[]const u8 = null;
+
+pub fn overrideSource(lookup: ?*const fn (path: []const u8) ?[]const u8) void {
+    source_override = lookup;
+    if (cache) |*c| c.clear();
+}
+
+/// Interfaces by repository-relative path. A null entry remembers that the
+/// file could not be read or parsed, so a call into a missing workflow is
+/// not retried per calling job either.
+const Cache = struct {
+    arena: std.heap.ArenaAllocator,
+    entries: std.StringHashMapUnmanaged(?Interface) = .empty,
+
+    fn clear(self: *Cache) void {
+        self.entries = .empty;
+        _ = self.arena.reset(.retain_capacity);
+    }
+};
+
+var cache: ?Cache = null;
+
+pub fn initCache(backing_allocator: std.mem.Allocator) void {
+    cache = .{ .arena = std.heap.ArenaAllocator.init(backing_allocator) };
+}
+
+pub fn deinitCache() void {
+    if (cache) |*c| c.arena.deinit();
+    cache = null;
+}
 
 /// GitHub caps a workflow file well below this; anything larger is not a
 /// workflow whose interface is worth reading.
@@ -68,6 +103,19 @@ fn readSource(arena: std.mem.Allocator, rel_path: []const u8) ?[]const u8 {
 /// the caller-side rules: a call zghalint cannot see is never a finding.
 pub fn load(arena: std.mem.Allocator, uses: []const u8) ?Interface {
     const rel = localPath(uses) orelse return null;
+    const c = &(cache orelse return parse(arena, rel));
+    if (c.entries.get(rel)) |cached| return cached;
+
+    const cache_alloc = c.arena.allocator();
+    const iface = parse(cache_alloc, rel);
+    // The key is duped because `uses` belongs to the calling workflow's
+    // arena; on OOM the parse is simply repeated next time.
+    const key = cache_alloc.dupe(u8, rel) catch return iface;
+    c.entries.put(cache_alloc, key, iface) catch {};
+    return iface;
+}
+
+fn parse(arena: std.mem.Allocator, rel: []const u8) ?Interface {
     const source = readSource(arena, rel) orelse return null;
 
     var parser = yaml_parser.Parser.init(arena, source);
@@ -129,8 +177,8 @@ test "load returns the workflow_call interface of the called file" {
         \\      - run: echo ok
         \\
     ;
-    source_override = &testLookup;
-    defer source_override = null;
+    overrideSource(&testLookup);
+    defer overrideSource(null);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -155,8 +203,8 @@ test "load returns null for a workflow without workflow_call" {
         \\      - run: echo ok
         \\
     ;
-    source_override = &testLookup;
-    defer source_override = null;
+    overrideSource(&testLookup);
+    defer overrideSource(null);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -165,12 +213,59 @@ test "load returns null for a workflow without workflow_call" {
 }
 
 test "load returns null for an unreadable call" {
-    source_override = &testLookup;
-    defer source_override = null;
+    overrideSource(&testLookup);
+    defer overrideSource(null);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
     try testing.expect(load(arena.allocator(), "./.github/workflows/missing.yml") == null);
     try testing.expect(load(arena.allocator(), "octo/repo/.github/workflows/ci.yml@v1") == null);
+}
+
+var counting_reads: usize = 0;
+
+fn countingLookup(path: []const u8) ?[]const u8 {
+    counting_reads += 1;
+    return testLookup(path);
+}
+
+test "load reads each called workflow once while the cache is active" {
+    test_source =
+        \\on:
+        \\  workflow_call:
+        \\    inputs:
+        \\      version:
+        \\        type: string
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    ;
+    initCache(testing.allocator);
+    defer deinitCache();
+    counting_reads = 0;
+    overrideSource(&countingLookup);
+    defer overrideSource(null);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const first = load(arena.allocator(), "./.github/workflows/reusable.yml").?;
+    const second = load(arena.allocator(), "./.github/workflows/reusable.yml").?;
+    try testing.expectEqualStrings("version", first.inputs[0].name);
+    try testing.expectEqualStrings("version", second.inputs[0].name);
+    try testing.expectEqual(@as(usize, 1), counting_reads);
+
+    // A missing file is remembered as missing.
+    try testing.expect(load(arena.allocator(), "./.github/workflows/missing.yml") == null);
+    try testing.expect(load(arena.allocator(), "./.github/workflows/missing.yml") == null);
+    try testing.expectEqual(@as(usize, 2), counting_reads);
+
+    // Changing the source drops what was read under the old one.
+    overrideSource(&countingLookup);
+    _ = load(arena.allocator(), "./.github/workflows/reusable.yml").?;
+    try testing.expectEqual(@as(usize, 3), counting_reads);
 }

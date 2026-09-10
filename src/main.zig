@@ -757,9 +757,13 @@ pub fn main(init: std.process.Init) !u8 {
         // `uses: ./path` against the repository root. Disk only, so this stays
         // active under --quick / --offline.
         zghalint.rules.local_action.init(allocator, root);
+        // RW002-RW005 read the called workflow of every `uses: ./...` job;
+        // the cache parses each called file once per run.
+        zghalint.rules.called_workflow.initCache(allocator);
     }
     defer zghalint.workspace.clear();
     defer zghalint.rules.local_action.deinit();
+    defer zghalint.rules.called_workflow.deinitCache();
 
     // RUNNER002 cannot enumerate a self-hosted fleet, so the user's own labels
     // come from `runner.labels` in .zghalint.yml.

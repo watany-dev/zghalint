@@ -704,8 +704,8 @@ fn runCallInputCheck(arena: std.mem.Allocator, source: []const u8, list: *Diagno
 
 test "RW002: a missing required input is reported" {
     called_source = required_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -730,8 +730,8 @@ test "RW002: a missing required input is reported" {
 
 test "RW002: a passed required input is accepted" {
     called_source = required_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -754,8 +754,8 @@ test "RW002: a passed required input is accepted" {
 
 test "RW002: a remote call is not checked" {
     called_source = required_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -790,8 +790,8 @@ test "RW002: a required input with a default is not demanded" {
         \\      - run: echo ok
         \\
     ;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -812,8 +812,8 @@ test "RW002: a required input with a default is not demanded" {
 
 test "RW002: a non-scalar `with:` value still counts as passed" {
     called_source = required_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     // `version` holds a sequence, which the value map drops; only `with_keys`
     // still sees the key, and the call did pass it.
@@ -862,8 +862,8 @@ fn runCallInputValueCheck(arena: std.mem.Allocator, source: []const u8, list: *D
 
 test "RW003: an unknown input is reported with a suggestion" {
     called_source = typed_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -889,8 +889,8 @@ test "RW003: an unknown input is reported with a suggestion" {
 
 test "RW003: the suggestion is applied as a rename of the with: key" {
     called_source = typed_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -917,8 +917,8 @@ test "RW003: the suggestion is applied as a rename of the with: key" {
 
 test "RW003: an unknown input without a near name falls back to a generic hint" {
     called_source = typed_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -942,8 +942,8 @@ test "RW003: an unknown input without a near name falls back to a generic hint" 
 
 test "RW003: a value that does not match the declared type is reported" {
     called_source = typed_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -969,8 +969,8 @@ test "RW003: a value that does not match the declared type is reported" {
 
 test "RW003: matching values and expressions are accepted" {
     called_source = typed_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -995,8 +995,8 @@ test "RW003: matching values and expressions are accepted" {
 
 test "RW003: an expression value is not type-checked" {
     called_source = typed_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1019,8 +1019,8 @@ test "RW003: an expression value is not type-checked" {
 
 test "RW003: a remote call is not checked" {
     called_source = typed_input_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1055,8 +1055,8 @@ test "RW003: an input without a declared type is not type-checked" {
         \\      - run: echo ok
         \\
     ;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1100,8 +1100,8 @@ fn runCallSecretCheck(arena: std.mem.Allocator, source: []const u8, list: *Diagn
 
 test "RW004: a missing required secret and an unknown secret are reported" {
     called_source = secret_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1128,8 +1128,8 @@ test "RW004: a missing required secret and an unknown secret are reported" {
 
 test "RW004: a call passing every required secret is accepted" {
     called_source = secret_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1152,8 +1152,8 @@ test "RW004: a call passing every required secret is accepted" {
 
 test "RW004: secrets inherit skips every check" {
     called_source = secret_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1175,8 +1175,8 @@ test "RW004: secrets inherit skips every check" {
 
 test "RW004: an absent secrets key still reports a missing required secret" {
     called_source = secret_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1210,8 +1210,8 @@ test "RW004: a called workflow declaring no secrets is not checked" {
         \\      - run: echo ok
         \\
     ;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1234,8 +1234,8 @@ test "RW004: a called workflow declaring no secrets is not checked" {
 
 test "RW004: a remote call is not checked" {
     called_source = secret_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1258,8 +1258,8 @@ test "RW004: a remote call is not checked" {
 
 test "RW004: a near-miss secret name carries a suggestion" {
     called_source = secret_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\on: push
@@ -1378,8 +1378,8 @@ const output_workflow =
 
 test "RW005: a caller referencing an undeclared output of a called workflow is reported" {
     called_source = output_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     try expectOutputDiagnostics(
         \\on: push
@@ -1397,8 +1397,8 @@ test "RW005: a caller referencing an undeclared output of a called workflow is r
 
 test "RW005: a caller referencing a declared output is accepted" {
     called_source = output_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     try expectOutputDiagnostics(
         \\on: push
@@ -1416,8 +1416,8 @@ test "RW005: a caller referencing a declared output is accepted" {
 
 test "RW005: a caller of an unreadable or remote workflow is not checked" {
     called_source = output_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     try expectOutputDiagnostics(
         \\on: push
@@ -1452,8 +1452,8 @@ test "RW005: outputs of a plain job are left to EXPR012" {
 
 test "RW005: a job the caller does not need is left to EXPR012" {
     called_source = output_workflow;
-    called_workflow.source_override = &calledLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
 
     try expectOutputDiagnostics(
         \\on: push
