@@ -89,6 +89,18 @@ fn isOwnLineBlockMapping(parent: Mapping, key: []const u8, body: Mapping) bool {
     return body.entries[0].key.span.start_line > key_span.start_line;
 }
 
+/// True when the entry's value is a mapping that opens on the key's own line
+/// (`on: push:`, or a flow mapping). `full_span` covers the key's line only, so
+/// an insertion anchored at its end byte lands inside the value.
+fn startsInlineMapping(entry: yaml.MappingEntry) bool {
+    const body = switch (entry.value) {
+        .mapping => |m| m,
+        else => return false,
+    };
+    if (body.entries.len == 0) return false;
+    return body.entries[0].key.span.start_line == entry.key.span.start_line;
+}
+
 fn isEmptyContainer(node: Node) bool {
     return switch (node) {
         .mapping => |m| m.entries.len == 0,
@@ -257,9 +269,21 @@ pub fn parseWorkflowTracked(
     for (root.entries) |entry| {
         const name = entry.key.value;
         if (std.mem.eql(u8, name, "on") or std.mem.eql(u8, name, "true")) {
+            if (entry.key.span.start_col >= 1) {
+                workflow.top_level_indent = entry.key.span.start_col - 1;
+            }
+            // A mapping that opens on the key's own line (`on: push:`) leaves
+            // its children outside `full_span`, so an insertion at that anchor
+            // lands inside the trigger rather than after it.
+            // Lines the parser dropped under `on:` sit past its `full_span` but
+            // inside its extent. A `>` there swallowed the rest of the file,
+            // and the inserted `permissions:` line ended the scalar early --
+            // the `<: *b` it had been holding became an undefined alias (fuzz).
             if (entry.full_span) |fs| {
-                workflow.permissions_insertion_byte = fs.end_byte;
-                workflow.concurrency_insertion_byte = fs.end_byte;
+                if (!startsInlineMapping(entry) and !entry.has_indented_tail) {
+                    workflow.permissions_insertion_byte = fs.end_byte;
+                    workflow.concurrency_insertion_byte = fs.end_byte;
+                }
             }
             break;
         }
@@ -298,7 +322,7 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
         .mapping => |m| {
             const events = try allocator.alloc(types.EventConfig, m.entries.len);
             for (m.entries, 0..) |entry, i| {
-                events[i] = try parseEventConfig(allocator, entry.key.value, entry.value);
+                events[i] = try parseEventConfig(allocator, entry.key.value, entry.value, entry.has_indented_tail);
                 events[i].name_span = entry.key.span;
             }
             return .{ .events = events };
@@ -307,7 +331,10 @@ fn parseTrigger(allocator: std.mem.Allocator, node: Node) ParseError!types.Trigg
     }
 }
 
-fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) ParseError!types.EventConfig {
+/// `has_tail` says the parser dropped lines under this event's key. They sit
+/// inside the event's extent but hold no node, so emptying the mapping lets the
+/// next parse read one as the event's value (fuzz).
+fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node, has_tail: bool) ParseError!types.EventConfig {
     const event_type = types.EventType.fromString(name);
     var config = types.EventConfig{ .event = event_type, .name = name };
 
@@ -316,7 +343,7 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node) 
             return config;
         },
         .mapping => |m| {
-            config.config_keys = try collectEventConfigKeys(allocator, m);
+            config.config_keys = try collectEventConfigKeys(allocator, m, has_tail);
             config.types_key_span = m.getKeySpan("types");
             config.activity_types = try parseActivityTypes(allocator, m.get("types"));
 
@@ -615,10 +642,18 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
     };
 }
 
-fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping) ParseError![]const types.EventConfigKey {
+fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping, has_tail: bool) ParseError![]const types.EventConfigKey {
     const keys = try allocator.alloc(types.EventConfigKey, m.entries.len);
+    // Removing the last key leaves the event without a value, and a dropped
+    // line below becomes one: `*r` under an emptied `workflow_call:` turned
+    // into an undefined alias and the whole file stopped parsing (fuzz).
+    const empties = has_tail and m.entries.len == 1;
     for (m.entries, 0..) |entry, i| {
-        keys[i] = .{ .name = entry.key.value, .span = entry.key.span, .full_span = entry.full_span };
+        keys[i] = .{
+            .name = entry.key.value,
+            .span = entry.key.span,
+            .full_span = if (empties) null else entry.full_span,
+        };
     }
     return keys;
 }
@@ -835,13 +870,14 @@ fn parseEventFilter(allocator: std.mem.Allocator, m: Mapping) ParseError!types.E
 }
 
 fn parseJobs(ctx: *ParseContext, node: Node) ParseError![]const types.Job {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => {
-            ctx.note("jobs", node.getSpan());
-            return error.InvalidValue;
-        },
-    };
+    // A `jobs:` holding a scalar is a type error SYN004 reports. Failing the
+    // parse over it threw away every other diagnostic in the file, and an
+    // inserted `permissions:` line was enough to turn a linted file into an
+    // unlintable one (fuzz).
+    if (!type_validation.checkMapping(node, "jobs", ctx.type_mismatches, ctx.allocator)) {
+        return &.{};
+    }
+    const m = node.mapping;
 
     const jobs = try ctx.allocator.alloc(types.Job, m.entries.len);
     for (m.entries, 0..) |entry, i| {
@@ -854,13 +890,30 @@ fn parseJobs(ctx: *ParseContext, node: Node) ParseError![]const types.Job {
 }
 
 fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) ParseError!types.Job {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
+    // A job id with nothing under it is an unfinished workflow, and one holding
+    // a scalar is a type error SYN004 reports. Failing the parse over either
+    // made every other diagnostic in the file disappear (fuzz).
+    // The id is the only span such a job has, and a rule reporting it needs a
+    // real line: a default span put BP001 at line 0 (fuzz).
+    if (node == .null_value or !type_validation.checkMapping(node, "job", ctx.type_mismatches, ctx.allocator)) {
+        // No body means no block to insert an entry into: anchoring on the id
+        // put `timeout-minutes: 30` on the `jobs:` line, and every pass added
+        // another one (fuzz).
+        return types.Job{ .id = id, .id_span = id_span, .span = id_span, .body_own_line = false };
+    }
+    const m = node.mapping;
 
     var job = types.Job{ .id = id, .id_span = id_span };
     job.span = m.span;
+    job.entry_count = m.entries.len;
+    // `j: runs-on: x` puts the body on the job id's line, where an insertion
+    // aligned to the body's column would land mid-line. A body that is not
+    // indented past the id is no better: `e{up: :` followed by `d:` at the id's
+    // own column parses as a body here, but an insertion aligned to it reads
+    // back as another job (fuzz).
+    job.body_own_line = m.entries.len > 0 and
+        m.entries[0].key.span.start_line > id_span.start_line and
+        m.entries[0].key.span.start_col > id_span.start_col;
     job.job_indent = m.span.start_col;
     job.name = m.getScalar("name");
     job.runs_on = m.getScalar("runs-on");
@@ -915,6 +968,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     for (m.entries) |entry| {
         const name = entry.key.value;
         if (std.mem.eql(u8, name, "runs-on") or std.mem.eql(u8, name, "uses")) {
+            if (startsInlineMapping(entry)) continue;
             if (entry.full_span) |fs| {
                 if (job.permissions_insertion_byte == null) {
                     job.permissions_insertion_byte = fs.end_byte;
@@ -957,7 +1011,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     if (m.get("steps")) |n| {
         try recordEmpty(&empty, ctx.allocator, "steps", n);
         if (!isEmptyContainer(n)) {
-            job.steps = try parseSteps(ctx, n);
+            job.steps = try parseSteps(ctx, n, keyLine(m, "steps"));
             job.step_deletes = switch (n) {
                 .sequence => |seq| seq.item_deletes,
                 else => &.{},
@@ -993,6 +1047,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         try recordEmpty(&empty, ctx.allocator, "strategy", n);
         if (!isEmptyContainer(n)) {
             job.strategy = try parseStrategy(ctx, n);
+            job.strategy.?.entry_span = m.getFullSpan("strategy");
             switch (n) {
                 .mapping => |sm| {
                     if (sm.get("matrix")) |matrix_node| {
@@ -1020,13 +1075,13 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
     if (m.get("container")) |n| {
         try recordEmpty(&empty, ctx.allocator, "container", n);
         if (!isEmptyContainer(n)) {
-            job.container = try parseContainer(ctx.allocator, n);
+            job.container = try parseContainer(ctx.allocator, n, ctx.type_mismatches);
         }
     }
     if (m.get("services")) |n| {
         try recordEmpty(&empty, ctx.allocator, "services", n);
         if (!isEmptyContainer(n)) {
-            job.services = try parseServices(ctx.allocator, n);
+            job.services = try parseServices(ctx.allocator, n, ctx.type_mismatches);
         }
     }
     if (m.get("outputs")) |n| {
@@ -1088,12 +1143,24 @@ pub fn parseStandaloneStep(allocator: std.mem.Allocator, node: Node) ParseError!
     return parseStep(&ctx, node);
 }
 
-fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
+/// Line the mapping's `name` key sits on, or 0 when it has none: a step whose
+/// span starts on that line shares it with the key that introduces it.
+fn keyLine(m: Mapping, name: []const u8) u32 {
+    for (m.entries) |entry| {
+        if (std.mem.eql(u8, entry.key.value, name)) return entry.key.span.start_line;
+    }
+    return 0;
+}
+
+fn parseSteps(ctx: *ParseContext, node: Node, steps_key_line: u32) ParseError![]const types.Step {
     const seq = switch (node) {
         .sequence => |s| s,
+        // A `steps:` holding something else is a type error, not a reason to
+        // drop every other diagnostic in the file. A merge key folded a mapping
+        // into it and SEC010's rewrite made the whole parse fail (fuzz).
         else => {
-            ctx.note("steps", node.getSpan());
-            return error.InvalidValue;
+            _ = type_validation.checkSequence(node, "steps", ctx.type_mismatches, ctx.allocator);
+            return &.{};
         },
     };
 
@@ -1103,8 +1170,29 @@ fn parseSteps(ctx: *ParseContext, node: Node) ParseError![]const types.Step {
             ctx.noteFmt("steps[{d}]", .{i}, "steps", item.getSpan());
             return err;
         };
+        // A step written as `{uses: x}` has no block line to insert into: an
+        // insertion anchored inside the braces is flow text, not a `with:`
+        // block, and it left the step holding a scalar where a mapping belonged
+        // (fuzz).
+        steps[i].own_line = item.getSpan().start_line > steps_key_line and
+            !(item == .mapping and item.mapping.flow);
     }
     return steps;
+}
+
+/// True when a block scalar would claim a sibling key written below it. YAML
+/// takes the content indentation from the first non-empty line, so a scalar with
+/// none is still open and swallows whatever comes next. A scalar whose content
+/// sits no further right than its own key is under-indented and swallows a
+/// sibling too. `key_column` is 1-based, as spans are.
+fn blockScalarIndentationOpen(value: []const u8, key_column: u32) bool {
+    if (std.mem.indexOfScalar(u8, value, '\n') == null) return true;
+    var lines = std.mem.splitScalar(u8, value, '\n');
+    while (lines.next()) |line| {
+        const indent = std.mem.indexOfNone(u8, line, " \t") orelse continue;
+        return indent < key_column;
+    }
+    return true;
 }
 
 fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
@@ -1133,6 +1221,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     step.run = m.getScalar("run");
     if (m.get("shell")) |n| {
+        step.shell_key_present = true;
         switch (n) {
             .scalar => |s| {
                 step.shell = s.value;
@@ -1150,14 +1239,20 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     }
     for (m.entries) |entry| {
         if (!std.mem.eql(u8, entry.key.value, "run")) continue;
+        // A block scalar whose indentation is still open swallows the line
+        // below it as content, so a key inserted there is not a key at all
+        // and --fix appends it again every round (fuzz).
+        var indentation_open = false;
         switch (entry.value) {
             .scalar => |s| {
                 step.run_meta = .{ .value_span = s.span, .style = s.style };
+                indentation_open = (s.style == .literal or s.style == .folded) and
+                    blockScalarIndentationOpen(s.value, entry.key.span.start_col);
             },
             else => {},
         }
         if (entry.full_span) |fs| {
-            step.shell_insertion_byte = fs.end_byte;
+            if (!indentation_open) step.shell_insertion_byte = fs.end_byte;
         }
         break;
     }
@@ -1167,7 +1262,17 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             .scalar => |s| {
                 step.uses = types.ActionRef.parse(s.value);
                 step.uses_value_span = s.span;
-                step.uses_value_end_byte = s.span.end_byte;
+                // A quoted `uses:` that never closes swallows everything below
+                // it, so a `with:` block written after it becomes more quoted
+                // text and `--fix` writes it again every round (fuzz).
+                // Lines the parser dropped under `uses:` sit below the value
+                // but inside the entry, so a `with:` block written at the
+                // value's end adopts them: a stray `<: *g` became a real merge
+                // key and the alias had no anchor to resolve (fuzz).
+                step.uses_value_end_byte = if (s.unterminated or m.hasIndentedTail("uses"))
+                    null
+                else
+                    s.span.end_byte;
                 step.uses_value_style = s.style;
                 step.uses_value_ends_line = s.ends_line;
                 step.uses_line_comment = s.line_comment;
@@ -1200,14 +1305,20 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     var empty = std.ArrayList(types.EmptySection).empty;
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
+        step.with_key_present = true;
         try recordEmpty(&empty, ctx.allocator, "with", with_node);
-        if (!isEmptyContainer(with_node)) {
+        // `with: 4` is a type error SYN004 reports, not a reason to give up on
+        // the whole file (fuzz).
+        if (!isEmptyContainer(with_node) and
+            type_validation.checkMapping(with_node, "with", ctx.type_mismatches, ctx.allocator))
+        {
             const parsed_with = try parseStringMapWithMeta(ctx.allocator, with_node);
             step.with = parsed_with.values;
             step.with_meta = parsed_with.meta;
             switch (with_node) {
                 .mapping => |with_mapping| {
                     if (with_mapping.entries.len > 0) {
+                        step.with_key_col = with_mapping.entries[0].key.span.start_col;
                         const last = with_mapping.entries[with_mapping.entries.len - 1];
                         // Appending after the last entry is only safe when `with:`
                         // is a block mapping (a flow entry has no full_span) and the
@@ -1226,8 +1337,11 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         }
     }
     if (m.get("env")) |n| {
+        step.env_key_present = true;
         try recordEmpty(&empty, ctx.allocator, "env", n);
-        if (!isEmptyContainer(n)) {
+        if (!isEmptyContainer(n) and
+            type_validation.checkMapping(n, "env", ctx.type_mismatches, ctx.allocator))
+        {
             const parsed = try parseStringMapWithMeta(ctx.allocator, n);
             step.env = parsed.values;
             step.env_meta = parsed.meta;
@@ -1381,12 +1495,16 @@ fn parseConcurrency(ctx: *ParseContext, node: Node) ParseError!types.Concurrency
 }
 
 fn parseStrategy(ctx: *ParseContext, node: Node) ParseError!types.Strategy {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
+    // A `strategy:` holding a scalar is a type error SYN004 reports, not a reason
+    // to fail the whole workflow parse: removing `fail-fast` left the junk line
+    // below it as the section's value, so a file that linted a moment before
+    // stopped parsing (fuzz).
+    if (!type_validation.checkMapping(node, "strategy", ctx.type_mismatches, ctx.allocator)) {
+        return types.Strategy{};
+    }
+    const m = node.mapping;
 
-    var strategy = types.Strategy{};
+    var strategy = types.Strategy{ .entry_count = m.entries.len };
     for (m.entries) |entry| {
         if (std.mem.eql(u8, entry.key.value, "fail-fast")) {
             if (type_validation.checkBool(
@@ -1465,18 +1583,29 @@ fn parseSecretsConfig(allocator: std.mem.Allocator, node: Node) ParseError!types
     }
 }
 
-fn parseCredentials(node: Node) ParseError!types.Credentials {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
+fn parseCredentials(
+    allocator: std.mem.Allocator,
+    node: Node,
+    mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
+) ParseError!?types.Credentials {
+    // A `credentials:` written with nothing under it carries no username and no
+    // password, and one holding a scalar is a type error SYN004 reports.
+    // Rejecting either failed the whole workflow parse over one section, so
+    // every other rule went unreported (fuzz).
+    if (node == .null_value) return null;
+    if (!type_validation.checkMapping(node, "credentials", mismatches, allocator)) return null;
+    const m = node.mapping;
     return .{
         .username = m.getScalar("username"),
         .password = m.getScalar("password"),
     };
 }
 
-fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Container {
+fn parseContainer(
+    allocator: std.mem.Allocator,
+    node: Node,
+    mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
+) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
             return .{ .image = s.value };
@@ -1484,7 +1613,10 @@ fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Con
         .mapping => |m| {
             return .{
                 .image = m.getScalar("image"),
-                .credentials = if (m.get("credentials")) |n| try parseCredentials(n) else null,
+                .credentials = if (m.get("credentials")) |n|
+                    try parseCredentials(allocator, n, mismatches)
+                else
+                    null,
                 .env_keys = if (m.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
             };
         },
@@ -1492,11 +1624,16 @@ fn parseContainer(allocator: std.mem.Allocator, node: Node) ParseError!types.Con
     }
 }
 
-fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const types.Service {
-    const m = switch (node) {
-        .mapping => |m| m,
-        else => return error.InvalidValue,
-    };
+fn parseServices(
+    allocator: std.mem.Allocator,
+    node: Node,
+    mismatches: ?*std.ArrayList(type_validation.TypeMismatch),
+) ParseError![]const types.Service {
+    // A `services:` holding anything but a mapping is a type error SYN004
+    // reports. Failing the whole workflow parse over it dropped every other
+    // diagnostic in the file (fuzz).
+    if (!type_validation.checkMapping(node, "services", mismatches, allocator)) return &.{};
+    const m = node.mapping;
 
     const services = try allocator.alloc(types.Service, m.entries.len);
     for (m.entries, 0..) |entry, i| {
@@ -1505,7 +1642,10 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                 services[i] = .{
                     .name = entry.key.value,
                     .image = vm.getScalar("image"),
-                    .credentials = if (vm.get("credentials")) |n| try parseCredentials(n) else null,
+                    .credentials = if (vm.get("credentials")) |n|
+                        try parseCredentials(allocator, n, mismatches)
+                    else
+                        null,
                     .env_keys = if (vm.get("env")) |n| try parseEnvKeys(allocator, n) else &.{},
                 };
             },
@@ -1515,7 +1655,17 @@ fn parseServices(allocator: std.mem.Allocator, node: Node) ParseError![]const ty
                     .image = s.value,
                 };
             },
-            else => return error.InvalidValue,
+            // A service written with nothing under it names no image. It is
+            // reported as an empty section; failing the whole workflow parse
+            // over it dropped every other diagnostic too (fuzz).
+            .null_value => services[i] = .{ .name = entry.key.value },
+            // A service holding a sequence names no image either. SYN001's
+            // rename reaches this: `erices:` became `services:` without
+            // changing what was written under it (fuzz).
+            else => {
+                _ = type_validation.checkMapping(entry.value, "services", mismatches, allocator);
+                services[i] = .{ .name = entry.key.value };
+            },
         }
     }
     return services;
@@ -1617,19 +1767,25 @@ const ParsedStringArray = struct {
 
 fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseError!ParsedStringArray {
     switch (node) {
+        // An entry that is not a scalar is not a string zghalint can read, but
+        // the list around it still is: `needs: [\n` parses as a sequence
+        // holding one empty item, and rejecting it used to make the whole file
+        // unlintable (fuzz).
         .sequence => |seq| {
             const values = try allocator.alloc([]const u8, seq.items.len);
             const spans = try allocator.alloc(yaml.Span, seq.items.len);
-            for (seq.items, 0..) |item, i| {
+            var len: usize = 0;
+            for (seq.items) |item| {
                 switch (item) {
                     .scalar => |s| {
-                        values[i] = s.value;
-                        spans[i] = s.span;
+                        values[len] = s.value;
+                        spans[len] = s.span;
+                        len += 1;
                     },
-                    else => return error.InvalidValue,
+                    else => {},
                 }
             }
-            return .{ .values = values, .spans = spans };
+            return .{ .values = values[0..len], .spans = spans[0..len] };
         },
         .scalar => |s| {
             const values = try allocator.alloc([]const u8, 1);
@@ -1638,7 +1794,13 @@ fn parseStringArrayWithSpans(allocator: std.mem.Allocator, node: Node) ParseErro
             spans[0] = s.span;
             return .{ .values = values, .spans = spans };
         },
-        else => return error.InvalidValue,
+        // `needs:` left empty is a list of nothing, not a broken workflow.
+        // Rejecting it used to make the whole file unlintable (fuzz).
+        .null_value => return .{ .values = &.{}, .spans = &.{} },
+        // A mapping holds no strings either. `branches: l:` puts two keys on
+        // one line, and rejecting it failed the whole workflow parse, so every
+        // other diagnostic on the file went unreported (fuzz).
+        .mapping => return .{ .values = &.{}, .spans = &.{} },
     }
 }
 
@@ -2557,6 +2719,244 @@ test "parseJob with container as scalar" {
     try testing.expect(job.container.?.credentials == null);
 }
 
+test "an empty container credentials: does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    container:\n      image: node:20\n      credentials:\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqualStrings("node:20", wf.jobs[0].container.?.image.?);
+    try testing.expect(wf.jobs[0].container.?.credentials == null);
+}
+
+test "a uses: with dropped lines under it offers no insertion anchor (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `<: *g` line holds no node, but a `with:` block written at the value's
+    // end adopts it, and the merge key's alias has no anchor to resolve.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: actions/checkout@v4\n       <: *g\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].steps[0].uses_value_end_byte == null);
+
+    // Nothing under the value, so the anchor stands.
+    var plain = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: actions/checkout@v4\n",
+    );
+    const plain_wf = try parseWorkflow(alloc, try plain.parse());
+    try testing.expect(plain_wf.jobs[0].steps[0].uses_value_end_byte != null);
+}
+
+test "a service holding a sequence is a type error, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // SYN001's rename reaches this: `erices:` became `services:` without
+    // changing what was written under it, and the whole workflow stopped
+    // parsing where it had linted a moment before.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n b: services:\n     b: -\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].services.len);
+    try testing.expectEqualStrings("b", wf.jobs[0].services[0].name);
+
+    // A `services:` that is not a mapping at all is the same kind of error.
+    var scalar = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n b:\n  services: x\n");
+    const scalar_wf = try parseWorkflow(alloc, try scalar.parse());
+    try testing.expectEqual(@as(usize, 0), scalar_wf.jobs[0].services.len);
+}
+
+test "steps holding a mapping is a type mismatch, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  j:\n    steps:\n      a: b\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].steps.len);
+
+    var found = false;
+    for (wf.type_mismatches) |tm| {
+        if (std.mem.eql(u8, tm.field, "steps")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "a dropped line under on: offers no insertion anchor (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `>` holds the rest of the file, so a `permissions:` line inserted at
+    // the end of the `on:` block ends the scalar early and the `<: *b` it had
+    // been holding becomes an undefined alias.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on: &c\n  l:\n  >\n   \n<: *b\njobs:");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.permissions_insertion_byte == null);
+    try testing.expect(wf.concurrency_insertion_byte == null);
+
+    var plain = yaml_parser_mod.Parser.init(alloc, "on:\n  push:\njobs:\n");
+    const plain_wf = try parseWorkflow(alloc, try plain.parse());
+    try testing.expect(plain_wf.permissions_insertion_byte != null);
+}
+
+test "an event whose only key sits above a dropped line offers no removal range (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `*r` holds no node, but removing `x:` empties the event and the next parse
+    // reads the alias as its value, where it has no anchor to resolve.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on:\n workflow_call:\n    x:\n  *r \njobs:\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.on.events[0].config_keys[0].full_span == null);
+
+    // Nothing dropped under the key, so the range stands.
+    var plain = yaml_parser_mod.Parser.init(alloc, "on:\n workflow_call:\n    x:\njobs:\n");
+    const plain_wf = try parseWorkflow(alloc, try plain.parse());
+    try testing.expect(plain_wf.on.events[0].config_keys[0].full_span != null);
+}
+
+test "an unterminated quoted uses: offers no insertion anchor (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The scalar swallows everything below it, so a `with:` block written after
+    // it becomes more quoted text rather than a key.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: \"actions/checkout@v4\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].steps[0].uses_value_end_byte == null);
+
+    // The same step, closed, keeps its anchor.
+    var closed = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: \"actions/checkout@v4\"\n",
+    );
+    const closed_wf = try parseWorkflow(alloc, try closed.parse());
+    try testing.expect(closed_wf.jobs[0].steps[0].uses_value_end_byte != null);
+}
+
+test "a mapping where a string list belongs does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `branches: l:` puts two keys on one line, so `branches` holds a mapping.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on:\n push:\n  branches: l:\njobs:\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 0), wf.on.events[0].filter.?.branches.values.len);
+}
+
+test "a mistyped with:/env: still counts as a key in source (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `with: 4` is a type mismatch, not a mapping, so `with` stays null. A fix
+    // reading that as "no `with:` in source" would insert a second one.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: a/b@v1\n        with: 4\n        env: 4\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    const step = wf.jobs[0].steps[0];
+    try testing.expect(step.with == null);
+    try testing.expect(step.with_key_present);
+    try testing.expect(step.env == null);
+    try testing.expect(step.env_key_present);
+}
+
+test "a service with nothing under it does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    services:\n      redis:\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqualStrings("redis", wf.jobs[0].services[0].name);
+    try testing.expect(wf.jobs[0].services[0].image == null);
+}
+
+test "a credentials: holding a scalar does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `--fix` can rename a typo into `credentials:` while the value below it is
+    // still a scalar. Failing the parse dropped every other diagnostic in the
+    // file, so the round-trip never converged.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    container:\n      image: node:20\n      credentials: u\n    steps:\n      - run: echo\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].container.?.credentials == null);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("credentials", wf.type_mismatches[0].field);
+}
+
+test "a jobs: holding a scalar does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Inserting a `permissions:` line above it changed which `jobs:` the parse
+    // reached, and the one it landed on carried a scalar. Failing there made a
+    // file that had linted a pass earlier unlintable.
+    var parser = yaml_parser_mod.Parser.init(alloc, "on:\n  x:\njobs: }\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 0), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("jobs", wf.type_mismatches[0].field);
+}
+
+test "a strategy: holding a scalar does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Removing `fail-fast` under `--fix-unsafe` left the junk line below it as
+    // the section's value. Failing the parse there made the file unlintable
+    // after a pass that had linted it fine.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n b:\n  strategy: 2\n  x:\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].strategy == null or wf.jobs[0].strategy.?.entry_count == 0);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("strategy", wf.type_mismatches[0].field);
+}
+
 test "parseJob with container credentials" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2628,7 +3028,7 @@ test "parseEventConfig with null value (empty event)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const config = try parseEventConfig(arena.allocator(), "push", .{ .null_value = mkSpan() });
+    const config = try parseEventConfig(arena.allocator(), "push", .{ .null_value = mkSpan() }, false);
     try testing.expectEqual(types.EventType.push, config.event);
 }
 
@@ -2945,7 +3345,7 @@ test "parseEventConfig with scalar (unknown event)" {
     defer arena.deinit();
 
     // A scalar value for an event config (e.g. `push: true`) is valid but does nothing
-    const config = try parseEventConfig(arena.allocator(), "push", mkScalar("true"));
+    const config = try parseEventConfig(arena.allocator(), "push", mkScalar("true"), false);
     try testing.expectEqual(types.EventType.push, config.event);
 }
 
@@ -2957,7 +3357,7 @@ test "parseServices with scalar image" {
         .{ .key = mkScalarS("redis"), .value = mkScalar("redis:6"), .span = mkSpan() },
     };
 
-    const services = try parseServices(arena.allocator(), mkMapping(&entries));
+    const services = try parseServices(arena.allocator(), mkMapping(&entries), null);
     try testing.expectEqual(@as(usize, 1), services.len);
     try testing.expectEqualStrings("redis", services[0].name);
     try testing.expectEqualStrings("redis:6", services[0].image.?);
@@ -3101,6 +3501,127 @@ test "a CRLF workflow parses like its LF twin" {
     try testing.expectEqualStrings("actions/checkout@v4", wf.jobs[0].steps[0].uses.?.raw);
 }
 
+test "an empty needs: leaves the workflow parseable (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  d:\n    needs:\n    runs-on: ubuntu-latest\n    steps: []\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].needs.len);
+}
+
+test "an empty run: block scalar offers no shell insertion point (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const head = "on: push\njobs:\n  d:\n    runs-on: windows-latest\n    steps:\n      - run: |";
+
+    var empty = yaml_parser_mod.Parser.init(alloc, head ++ "\n");
+    const wf_empty = try parseWorkflow(alloc, try empty.parse());
+    try testing.expect(wf_empty.jobs[0].steps[0].shell_insertion_byte == null);
+
+    // Blank lines do not fix the indentation either: the first non-empty line
+    // does, and this scalar still has none.
+    var blank = yaml_parser_mod.Parser.init(alloc, head ++ "\n\n");
+    const wf_blank = try parseWorkflow(alloc, try blank.parse());
+    try testing.expect(wf_blank.jobs[0].steps[0].shell_insertion_byte == null);
+
+    // Content no further right than the `run` key is under-indented, so a
+    // sibling key written below it lands inside the scalar too.
+    var shallow = yaml_parser_mod.Parser.init(alloc, head ++ "\n  echo hi\n");
+    const wf_shallow = try parseWorkflow(alloc, try shallow.parse());
+    try testing.expect(wf_shallow.jobs[0].steps[0].shell_insertion_byte == null);
+
+    var filled = yaml_parser_mod.Parser.init(alloc, head ++ "\n          echo hi\n");
+    const wf_filled = try parseWorkflow(alloc, try filled.parse());
+    try testing.expect(wf_filled.jobs[0].steps[0].shell_insertion_byte != null);
+}
+
+test "a step with: that is not a mapping is a type mismatch, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  d:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with: 4\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].steps.len);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("with", wf.type_mismatches[0].field);
+    try testing.expectEqualStrings("mapping", wf.type_mismatches[0].expected);
+}
+
+test "a needs: list with an unreadable entry keeps the readable ones (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // An unterminated flow sequence holds one empty item; `build` is still a
+    // dependency, and the rest of the workflow is still lintable.
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  d:\n    needs:\n      - build\n      -\n    runs-on: ubuntu-latest\n    steps: []\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].needs.len);
+    try testing.expectEqualStrings("build", wf.jobs[0].needs[0]);
+}
+
+test "a job body flush with its id does not count as own-line (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `e{up: runs-on: x` puts the body on the job id's line, where an insertion
+    // aligned to the body's column would land mid-line.
+    var yp = yaml_parser_mod.Parser.init(alloc, "on:\njobs:\n  e{up: runs-on: x\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expect(!wf.jobs[0].body_own_line);
+}
+
+test "a step written as a flow mapping does not count as own-line (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // SEC001's fix inserted a block `with:` inside the braces, which the next
+    // parse read as the step's scalar value and broke the workflow parse.
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  b:\n    runs-on: x\n    steps:\n      - {uses: actions/checkout@v4}\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs[0].steps.len);
+    try testing.expect(!wf.jobs[0].steps[0].own_line);
+
+    // A block step on its own line still takes one.
+    var block = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  b:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@v4\n");
+    const block_wf = try parseWorkflow(alloc, try block.parse());
+    try testing.expect(block_wf.jobs[0].steps[0].own_line);
+}
+
+test "a job body indented past its id counts as own-line" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expect(wf.jobs[0].body_own_line);
+}
+
 /// #293: a parse error used to be reported as a bare error name, leaving the
 /// user to find the offending field in a workflow of any size.
 fn parseFailure(allocator: std.mem.Allocator, source: []const u8) !Failure {
@@ -3135,15 +3656,37 @@ test "parseWorkflowTracked reports the line of an invalid step" {
     try testing.expectEqual(@as(u32, 8), failure.span.?.start_line);
 }
 
-test "parseWorkflowTracked reports the line of an invalid job" {
+test "a job holding a scalar is a type mismatch, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
+    const alloc = arena.allocator();
 
-    const failure = try parseFailure(arena.allocator(), "name: t\non: push\njobs:\n  build: oops\n");
+    var yp = yaml_parser_mod.Parser.init(alloc, "name: t\non: push\njobs:\n  build: oops\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
 
-    try testing.expectEqualStrings("jobs.build", failure.path);
-    try testing.expectEqual(@as(u32, 4), failure.span.?.start_line);
-    try testing.expectEqual(@as(u32, 3), failure.span.?.start_col);
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqualStrings("build", wf.jobs[0].id);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("job", wf.type_mismatches[0].field);
+}
+
+test "a job id with nothing under it does not fail the parse (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var yp = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  a:\n");
+    const wf = try parseWorkflow(alloc, try yp.parse());
+
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].steps.len);
+    try testing.expectEqual(@as(usize, 0), wf.type_mismatches.len);
+    // Rules report the job at this span, and line 0 is not a place in a file.
+    try testing.expectEqual(@as(u32, 3), wf.jobs[0].span.start_line);
+    // There is no body to insert an entry into.
+    try testing.expect(!wf.jobs[0].body_own_line);
 }
 
 test "parseWorkflowTracked reports the line of an invalid trigger" {

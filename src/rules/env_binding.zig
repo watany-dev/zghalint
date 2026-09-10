@@ -276,9 +276,9 @@ pub fn buildFix(
         .plain, .literal => {},
         else => return null,
     }
-    // `env:` present but empty leaves no anchor to append to and no room to
-    // insert a second `env:` key (#171).
-    if (util.hasEmptySection(step.empty_sections, "env")) return null;
+    // An `env:` key the parser could not read leaves no anchor to append to and
+    // no room to insert a second `env:` key (#171, fuzz).
+    if (step.env == null and step.env_key_present) return null;
 
     const alloc = list.fixAllocator();
 
@@ -336,6 +336,9 @@ fn buildEnvEdits(
     step: *const Step,
     subs: []const fix_builder.SubEntry,
 ) ?[]const Edit {
+    // Both shapes below open a block line under the step, which needs the step
+    // to own its own line to begin with.
+    if (!step.own_line) return null;
     if (step.env != null) {
         const after = step.env_last_entry_end_byte orelse return null;
         const col = step.env_key_col orelse return null;

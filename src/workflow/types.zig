@@ -533,6 +533,11 @@ pub const Strategy = struct {
     fail_fast: bool = true,
     fail_fast_value_span: ?yaml_types.Span = null,
     fail_fast_entry_span: ?yaml_types.Span = null,
+    /// The `strategy:` entry itself, and how many keys sit under it. Removing
+    /// the only key of a section leaves a header with nothing beneath it, and
+    /// whatever line follows becomes its value instead (PERF003 autofix, fuzz).
+    entry_span: ?yaml_types.Span = null,
+    entry_count: usize = 0,
     matrix: ?Matrix = null,
     /// True when a `matrix:` key is present, even if its value carries no
     /// inspectable axes (`matrix: ${{ fromJSON(...) }}` leaves `matrix` null).
@@ -554,11 +559,23 @@ pub const Step = struct {
     shell: ?[]const u8 = null,
     /// Span of the `shell:` scalar value (for BP004 diagnostics).
     shell_value_span: ?yaml_types.Span = null,
+    /// True when a `shell:` key is present, even with a value BP004 cannot
+    /// read (`shell:` holding a mapping leaves `shell` null). Without the
+    /// distinction `--fix` appended `shell: bash` again every round (fuzz).
+    shell_key_present: bool = false,
     with: ?StringMap = null,
+    /// True when a `with:` key is present, whatever it holds. An empty section
+    /// and a mistyped one (`with: 4`) both leave `with` null while the key is
+    /// still in source, so inserting a fresh `with:` block would give the step
+    /// two of them (fuzz).
+    with_key_present: bool = false,
     /// Value spans and styles of the `with:` entries (for diagnostics that
     /// scan a `with:` value, e.g. SEC003/SEC005/SEC011).
     with_meta: ?ScalarValueMetaMap = null,
     env: ?StringMap = null,
+    /// True when an `env:` key is present, whatever it holds. See
+    /// `with_key_present`.
+    env_key_present: bool = false,
     env_meta: ?ScalarValueMetaMap = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},
@@ -568,6 +585,10 @@ pub const Step = struct {
     if_condition_meta: ?ScalarValueMeta = null,
     /// Span of the step mapping in source YAML (for autofix anchor).
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
+    /// The step opens on a line of its own. `steps: - uses: x` puts it on the
+    /// `steps:` line, where a block insertion aligned to the step's columns
+    /// lands mid-line and outside the step, so the rule keeps re-adding it.
+    own_line: bool = true,
     /// Column of the `uses:` key in source YAML (for autofix indentation).
     uses_key_col: ?u32 = null,
     /// End byte of the `uses:` value in source YAML (insertion point when no `with:` exists).
@@ -579,6 +600,11 @@ pub const Step = struct {
     uses_value_ends_line: bool = false,
     /// End byte of the last entry's value in the `with:` mapping (insertion point for new entries).
     with_last_entry_end_byte: ?usize = null,
+    /// Column of the first `with:` key, which appended entries align with. The
+    /// step's `uses:` column is not a substitute: a `with:` body indented off
+    /// the usual grid would take the appended key out of the mapping, and the
+    /// rule would then re-add it on every run.
+    with_key_col: ?u32 = null,
     /// Span and style of the `run:` scalar. The style is needed to map an
     /// offset inside `run` back to a source line/column (block scalars start
     /// one line below their `|` / `>` indicator).
@@ -630,6 +656,9 @@ pub const Service = struct {
 
 pub const Job = struct {
     id: []const u8,
+    /// How many keys sit under the job id. Removing the only one leaves the job
+    /// with no body, and the next line becomes its value (PERF003 autofix, fuzz).
+    entry_count: usize = 0,
     /// Span of the job key in the top-level `jobs:` mapping (for SYN005/SYN006 diagnostics).
     id_span: ?yaml_types.Span = null,
     span: yaml_types.Span = yaml_types.Span.point(0, 0, 0),
@@ -682,6 +711,9 @@ pub const Job = struct {
     secrets_args: []const CallArg = &.{},
     /// Column (1-based) at which this job's child keys are indented.
     job_indent: u32 = 0,
+    /// The job body starts on a line of its own rather than on the job id's
+    /// line, which is what an insertion aligned to `job_indent` assumes.
+    body_own_line: bool = true,
     /// Byte position to insert a new `permissions:` entry (after `runs-on:` line).
     permissions_insertion_byte: ?usize = null,
     concurrency_insertion_byte: ?usize = null,
@@ -716,7 +748,9 @@ pub const Workflow = struct {
     unknown_keys: []const schema.UnknownKey = &.{},
     /// Mapping value type mismatches collected during parsing (SYN004).
     type_mismatches: []const type_validation.TypeMismatch = &.{},
-    /// Top-level keys are always at column 1.
+    /// Indentation (0-based) of the top-level keys. Normally 0, but a document
+    /// whose root mapping is written indented needs the inserted entries to
+    /// line up with it or the mapping ends at the insertion.
     top_level_indent: u32 = 0,
     /// Byte position to insert a new top-level `permissions:` entry (after `on:` line).
     permissions_insertion_byte: ?usize = null,

@@ -99,6 +99,10 @@ pub const Scalar = struct {
     /// the `#` and surrounding blanks. Null when the line carries no comment.
     /// SC003 reads the `# v1.2.3` convention next to a SHA-pinned `uses:`.
     line_comment: ?[]const u8 = null,
+    /// A quoted scalar that never met its closing quote, so it ran to the end
+    /// of the file. Its span has no boundary after it: text an autofix writes
+    /// there becomes more quoted content instead of the key it was meant to be.
+    unterminated: bool = false,
 };
 
 /// What one sequence item costs the source text, so an autofix can take it
@@ -123,6 +127,13 @@ pub const ItemDelete = struct {
 pub const Sequence = struct {
     items: []Node,
     span: Span,
+    /// Byte just past the closing `]` of a flow sequence, when the parser saw
+    /// one. `span` covers the opening indicator alone, so a sequence written
+    /// across lines needs this to say where its text really stops.
+    close_byte: ?usize = null,
+    /// Written with `[ ]` rather than as a block. A flow sequence with no
+    /// `close_byte` was never closed, and its text stops nowhere.
+    flow: bool = false,
     /// How to remove each item, parallel to `items`. Empty when the parser
     /// can offer no stable range — an alias expansion, whose text lives at
     /// the anchor rather than here.
@@ -136,11 +147,25 @@ pub const MappingEntry = struct {
     /// Byte range that can safely remove the entire entry from block-style YAML.
     /// Null when the parser cannot determine a stable removable range.
     full_span: ?Span = null,
+    /// Byte just past the entry's text, measured while the token stream still
+    /// said where it stopped. Recomputing it from the source alone cannot see
+    /// a token that opens on the entry's line and closes below. Null for a
+    /// flow entry, whose text is bounded by the closing brace instead.
+    extent_end: ?usize = null,
+    /// Lines the parser dropped sit under this entry's key, inside its extent.
+    /// An insertion anchored at the value's own end lands above them, where a
+    /// block key it opens adopts them (fuzz).
+    has_indented_tail: bool = false,
 };
 
 pub const Mapping = struct {
     entries: []MappingEntry,
     span: Span,
+    /// Byte just past the closing `}` of a flow mapping. See
+    /// `Sequence.close_byte`.
+    close_byte: ?usize = null,
+    /// Written with `{ }` rather than as a block. See `Sequence.flow`.
+    flow: bool = false,
 
     pub fn get(self: Mapping, key: []const u8) ?Node {
         for (self.entries) |entry| {
@@ -161,6 +186,26 @@ pub const Mapping = struct {
             }
         }
         return null;
+    }
+
+    /// Span covering the whole `key: value` entry, or null when the key is
+    /// absent or the entry has no span that removes it and nothing else.
+    pub fn getFullSpan(self: Mapping, key: []const u8) ?Span {
+        for (self.entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, key)) {
+                return entry.full_span;
+            }
+        }
+        return null;
+    }
+
+    /// Whether `key`'s entry took lines the parser dropped under it. False
+    /// when the key is absent.
+    pub fn hasIndentedTail(self: Mapping, key: []const u8) bool {
+        for (self.entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, key)) return entry.has_indented_tail;
+        }
+        return false;
     }
 
     pub fn getScalar(self: Mapping, key: []const u8) ?[]const u8 {

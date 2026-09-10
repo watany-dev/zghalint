@@ -49,7 +49,8 @@ const Selection = struct {
 /// (#223). The loser is decided at the overlap, so the fix that survives is
 /// the one owning the earlier edit of the conflicting pair, not necessarily
 /// the one that starts earlier in the file.
-/// Edits with invalid byte ranges are dropped without penalising their fix.
+/// A fix holding an edit with an invalid byte range is dropped whole and not
+/// counted as skipped: a second run reads the same source and drops it again.
 fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []const u8) !Selection {
     var total: usize = 0;
     for (fixes) |f| {
@@ -61,10 +62,22 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
     const owned = try allocator.alloc(OwnedEdit, total);
     defer allocator.free(owned);
 
+    const dropped = try allocator.alloc(bool, fixes.len);
+    defer allocator.free(dropped);
+    @memset(dropped, false);
+
     var idx: usize = 0;
     for (fixes, 0..) |f, fix_index| {
+        // An edit the source does not match means the rule read the file
+        // differently than it is written, so its siblings are no safer. The
+        // `run:` rewrite of an env binding landed on an alias and failed while
+        // the `env:` insertion beside it applied, so the file grew a binding
+        // every round and never settled (fuzz).
         for (f.edits) |e| {
-            if (!isValidEdit(e, source)) continue;
+            if (!isValidEdit(e, source)) dropped[fix_index] = true;
+        }
+        if (dropped[fix_index]) continue;
+        for (f.edits) |e| {
             owned[idx] = .{ .edit = snapInsertionToLineEnd(e, source), .fix_index = fix_index };
             idx += 1;
         }
@@ -83,10 +96,6 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
             return a.fix_index < b.fix_index;
         }
     }.lessThan);
-
-    const dropped = try allocator.alloc(bool, fixes.len);
-    defer allocator.free(dropped);
-    @memset(dropped, false);
 
     dropRenameInsertCollisions(flat, source, dropped);
 
@@ -312,6 +321,34 @@ fn snapInsertionToLineEnd(e: Edit, source: []const u8) Edit {
     return snapped;
 }
 
+/// How many of the leading (highest-byte) edits are appended at the very end of
+/// a file that has no final newline, when the earliest of them would otherwise
+/// continue the last line: `on: []` plus an inserted `permissions:` becomes
+/// `on: []permissions: ...`, where the new key is not a key at all, so the rule
+/// inserts it again every round (fuzz). Zero when no newline is owed.
+///
+/// `edits` is sorted descending by position, so these are exactly its first `n`
+/// entries and the newline belongs in front of the `n`-th.
+fn trailingInsertRun(edits: []const Edit, source: []const u8) usize {
+    if (source.len == 0) return 0;
+    if (source[source.len - 1] == '\n' or source[source.len - 1] == '\r') return 0;
+
+    var n: usize = 0;
+    while (n < edits.len) : (n += 1) {
+        const e = edits[n];
+        if (e.start_byte != source.len or e.end_byte != source.len) break;
+    }
+    if (n == 0) return 0;
+
+    const first_in_source_order = edits[n - 1].replacement;
+    if (first_in_source_order.len == 0) return 0;
+    if (first_in_source_order[0] == '\n' or first_in_source_order[0] == '\r') return 0;
+    // Only a whole line owes a newline in front of it. A replacement that does
+    // not close its own line is a token meant to continue the last one.
+    if (first_in_source_order[first_in_source_order.len - 1] != '\n') return 0;
+    return n;
+}
+
 /// Invalid edits are dropped by `flattenAndSort` to avoid arithmetic underflow or
 /// out-of-bounds reads in `applyFixes`.
 fn isValidEdit(e: Edit, source: []const u8) bool {
@@ -320,7 +357,47 @@ fn isValidEdit(e: Edit, source: []const u8) bool {
     if (e.expects) |x| {
         if (!std.mem.eql(u8, source[e.start_byte..e.end_byte], x)) return false;
     }
+    if (removesLiveAnchor(e, source)) return false;
     return true;
+}
+
+fn isMarkerLead(c: u8) bool {
+    return switch (c) {
+        ' ', '\t', '\n', '-', ':', '[', '{', ',' => true,
+        else => false,
+    };
+}
+
+/// The anchor or alias name at `at`, which points at the `&` or `*`. Empty when
+/// the byte is not in a position where YAML reads one, so a `&&` in a `run:`
+/// script names nothing.
+fn markerName(source: []const u8, at: usize) []const u8 {
+    if (at > 0 and !isMarkerLead(source[at - 1])) return &.{};
+    var end = at + 1;
+    while (end < source.len and (std.ascii.isAlphanumeric(source[end]) or source[end] == '-' or source[end] == '_')) {
+        end += 1;
+    }
+    return source[at + 1 .. end];
+}
+
+/// True when `e` removes an anchor something outside its range still aliases.
+/// SYN011 dropping a filter key took the `&b` written on it with it, and the
+/// `*b` below stopped resolving -- the next parse read no diagnostics at all.
+/// A fix that cannot keep the file parsing is worse than none (fuzz).
+fn removesLiveAnchor(e: Edit, source: []const u8) bool {
+    var i = e.start_byte;
+    while (std.mem.indexOfScalarPos(u8, source[0..e.end_byte], i, '&')) |at| {
+        i = at + 1;
+        const name = markerName(source, at);
+        if (name.len == 0) continue;
+        var j: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, source, j, '*')) |use| {
+            j = use + 1;
+            if (use >= e.start_byte and use < e.end_byte) continue;
+            if (std.mem.eql(u8, markerName(source, use), name)) return true;
+        }
+    }
+    return false;
 }
 
 /// Edits are applied back-to-front to avoid offset invalidation.
@@ -341,10 +418,12 @@ pub fn applyFixes(
         };
     }
 
+    var trailing_run = trailingInsertRun(edits, source);
     var result_len: usize = source.len;
     for (edits) |e| {
         result_len = result_len - (e.end_byte - e.start_byte) + e.replacement.len;
     }
+    if (trailing_run > 0) result_len += 1;
 
     var result = try allocator.alloc(u8, result_len);
     var src_pos: usize = source.len;
@@ -357,6 +436,14 @@ pub fn applyFixes(
 
         dst_pos -= e.replacement.len;
         @memcpy(result[dst_pos..][0..e.replacement.len], e.replacement);
+
+        if (trailing_run > 0) {
+            trailing_run -= 1;
+            if (trailing_run == 0) {
+                dst_pos -= 1;
+                result[dst_pos] = '\n';
+            }
+        }
 
         src_pos = e.start_byte;
     }
@@ -419,6 +506,80 @@ test "an edit whose `expects` does not match the source is dropped" {
     try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
 }
 
+test "one edit the source does not match drops the whole fix (fuzz)" {
+    const allocator = std.testing.allocator;
+    // The env binding rewrites the `run:` body and inserts the `env:` key that
+    // body will read. Applying only the insertion leaves a binding nothing
+    // references, and the next run inserts another one.
+    const source = "run: x\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 0, .replacement = "env:\n  T: y\n" },
+        .{ .start_byte = 5, .end_byte = 6, .replacement = "$T", .expects = "y" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "bind to env:", .safety = .unsafe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(source, result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
+}
+
+test "an edit that removes an anchor still aliased below is dropped (fuzz)" {
+    const allocator = std.testing.allocator;
+    // SYN011 removes the filter `d:` the event does not accept, and the `&b`
+    // written on it goes too. The `*b` below then resolves to nothing and the
+    // whole file stops parsing, so the fix is worth less than the diagnostic.
+    const source = "on:\n workflow_call:\n  d: &b \njobs: *b\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 20, .end_byte = 29, .replacement = "" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "remove \"d\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(source, result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "an edit that removes an anchor nothing aliases is applied (fuzz)" {
+    const allocator = std.testing.allocator;
+    const source = "on:\n workflow_call:\n  d: &b \njobs: x\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 20, .end_byte = 29, .replacement = "" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "remove \"d\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("on:\n workflow_call:\njobs: x\n", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "a `&&` in a run script is not an anchor (fuzz)" {
+    const allocator = std.testing.allocator;
+    // `*` and `&` are shell operators far more often than YAML markers, and
+    // dropping the fix over them would cost every fix inside a `run:` block.
+    const source = "on: push\nx: a && b\ny: c *b\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 9, .end_byte = 19, .replacement = "" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "remove \"x\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("on: push\ny: c *b\n", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
 test "an edit whose `expects` matches is applied" {
     const allocator = std.testing.allocator;
     const source = "on: 'pusg'";
@@ -448,6 +609,21 @@ test "insertion edit (start_byte == end_byte)" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("name: CI\ntimeout-minutes: 30", result.content);
+}
+
+test "a block entry appended to a file with no final newline opens its own line (fuzz)" {
+    const allocator = std.testing.allocator;
+    const source = "on: []";
+    const edits = [_]Edit{
+        .{ .start_byte = 6, .end_byte = 6, .replacement = "permissions: {contents: read}\n" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "add permissions", .safety = .unsafe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("on: []\npermissions: {contents: read}\n", result.content);
 }
 
 test "deletion edit (empty replacement)" {

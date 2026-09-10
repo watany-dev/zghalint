@@ -18,6 +18,7 @@ const DiagnosticList = engine.DiagnosticList;
 const spans = @import("spans.zig");
 const Span = yaml_types.Span;
 const ActionRef = workflow_types.ActionRef;
+const Strategy = workflow_types.Strategy;
 const Fix = diagnostics_mod.Fix;
 
 /// - `.with_cache_input`: the action exposes a `cache:` input taking a
@@ -91,23 +92,31 @@ fn buildCacheFix(
             if (with.get("cache")) |_| continue;
         }
 
+        // Both shapes below open a block line under the step, which needs the
+        // step to own its own line to begin with.
+        if (!step.own_line) continue;
         const col = step.uses_key_col orelse continue;
         if (col == 0) continue;
 
         if (step.with != null) {
             const anchor = step.with_last_entry_end_byte orelse continue;
+            // The existing `with:` keys, not the `uses:` column, decide the
+            // indent: an appended key off their column falls out of the mapping.
+            const with_col = step.with_key_col orelse continue;
+            if (with_col == 0) continue;
             const appended = fix_builder.appendMappingEntry(
                 alloc,
                 anchor,
-                col + 1,
+                with_col - 1,
                 "cache",
                 cache_value,
             ) orelse continue;
             edits.appendSlice(alloc, appended) catch continue;
         } else {
-            // `with: {}` / `with:` parses to a null `with` while the key is still
-            // in source; inserting another `with:` block would duplicate it (#171).
-            if (util.hasEmptySection(step.empty_sections, "with")) continue;
+            // `with: {}`, `with:` and `with: 4` parse to a null `with` while the
+            // key is still in source; inserting another `with:` block would
+            // duplicate it (#171, fuzz).
+            if (step.with_key_present) continue;
             const anchor = step.uses_value_end_byte orelse continue;
             const inserted = fix_builder.insertWithEntry(alloc, anchor, col, "cache", cache_value) orelse continue;
             edits.appendSlice(alloc, inserted) catch continue;
@@ -366,14 +375,30 @@ fn checkRedundantCheckout(job: *const Job, diag_list: *DiagnosticList) void {
     }
 }
 
-fn buildFailFastDisabledFix(diag_list: *DiagnosticList, entry_span: Span) ?Fix {
+fn buildFailFastDisabledFix(diag_list: *DiagnosticList, job: *const Job, strategy: Strategy, entry_span: Span) ?Fix {
+    // `fail-fast` alone under `strategy:` means removing it empties the
+    // section, and the next line then reads as the section's value. Take the
+    // whole `strategy:` entry instead, which is what the removal leaves behind
+    // anyway (fuzz).
+    const sole_key = strategy.entry_count == 1;
+    // The same one level up: a job whose only key is `strategy:` has no body
+    // left once the section goes, so the parse the fix was meant to preserve
+    // fails instead (fuzz).
+    if (sole_key and job.entry_count == 1) return null;
+    // Without a span that removes the section, there is no safe rewrite: the
+    // inner delete on its own is what empties it.
+    const removal_span = if (sole_key) (strategy.entry_span orelse return null) else entry_span;
+
     const edits = fix_builder.deleteMappingEntry(
         diag_list.fixAllocator(),
-        entry_span,
+        removal_span,
     ) orelse return null;
 
     return .{
-        .description = "remove fail-fast: false from strategy",
+        .description = if (sole_key)
+            "remove the strategy section, whose only key is fail-fast: false"
+        else
+            "remove fail-fast: false from strategy",
         .safety = .unsafe,
         .edits = edits,
     };
@@ -393,7 +418,7 @@ fn checkFailFastDisabled(job: *const Job, diag_list: *DiagnosticList) void {
         .fix_hint = "Consider removing 'fail-fast: false' to cancel remaining jobs on first failure.",
     };
     if (strategy.fail_fast_entry_span) |entry_span| {
-        diag.fix = buildFailFastDisabledFix(diag_list, entry_span);
+        diag.fix = buildFailFastDisabledFix(diag_list, job, strategy, entry_span);
     }
 
     diag_list.append(diag) catch return;
@@ -561,6 +586,7 @@ test "PERF001: setup-go with existing with: appends cache entry" {
             .uses_key_col = 9,
             .uses_value_end_byte = 100,
             .with_last_entry_end_byte = 140,
+            .with_key_col = 11,
         },
     };
     const job = Job{ .id = "build", .steps = &steps };
@@ -578,6 +604,37 @@ test "PERF001: setup-go with existing with: appends cache entry" {
     try std.testing.expectEqualStrings("\n          cache: true", fix.edits[0].replacement);
 }
 
+test "PERF001: an off-grid with: block sets the appended entry's indent (fuzz)" {
+    workspace.set(.{ .go_sum_present = true });
+    defer workspace.clear();
+
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "go-version", "1.21");
+
+    // The `with:` keys sit at column 10, one left of the column a fresh block
+    // would use. Appending at the `uses:`-derived column would drop the new key
+    // out of the mapping, and the rule would re-add it on every run.
+    const steps = [_]Step{
+        .{
+            .uses = ActionRef.parse("actions/setup-go@v5"),
+            .with = with,
+            .uses_key_col = 9,
+            .uses_value_end_byte = 100,
+            .with_last_entry_end_byte = 140,
+            .with_key_col = 10,
+        },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+
+    const fix = diags.get(0).fix orelse return error.TestExpectedNonNull;
+    try std.testing.expectEqualStrings("\n         cache: true", fix.edits[0].replacement);
+}
+
 test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key" {
     workspace.set(.{ .go_sum_present = true });
     defer workspace.clear();
@@ -593,6 +650,7 @@ test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key
             .uses_key_col = 9,
             .uses_value_end_byte = 100,
             .with_last_entry_end_byte = 140,
+            .with_key_col = 11,
         },
     };
     const job = Job{ .id = "build", .steps = &steps };
@@ -1389,6 +1447,88 @@ test "PERF003: autofix removes fail-fast line from workflow source" {
     ,
         result.content,
     );
+}
+
+test "PERF003: autofix removes a strategy section whose only key is fail-fast (fuzz)" {
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    strategy:
+        \\      fail-fast: false
+        \\    steps:
+        \\      - run: npm test
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkFailFastDisabled(&wf.jobs[0], &diags);
+
+    const all_fixes = try fix_engine.collectFixes(std.testing.allocator, diags.items.items, true);
+    defer std.testing.allocator.free(all_fixes);
+    const result = try fix_engine.applyFixes(std.testing.allocator, source, all_fixes);
+    defer result.deinit(std.testing.allocator);
+
+    // Leaving `strategy:` behind would give the section no value, and the
+    // `steps:` line below would become one.
+    try std.testing.expectEqualStrings(
+        \\on: push
+        \\jobs:
+        \\  test:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: npm test
+        \\
+    ,
+        result.content,
+    );
+}
+
+test "PERF003: no autofix when the strategy is the job's only key (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Removing the section would leave `b:` with no body at all, so the file
+    // stopped parsing where it had linted a moment before.
+    const source = "on: push\njobs:\n b:\n  strategy:\n   fail-fast: false\n";
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkFailFastDisabled(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.items.items.len);
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "PERF003: no autofix when the sole-key strategy has no removable span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `strategy` shares its line with `b`, so removing it as a line would take
+    // the job with it. Removing `fail-fast` alone empties the section instead.
+    const source = "on: push\njobs:\n b: strategy:\n     fail-fast: false\n     x\n";
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkFailFastDisabled(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
 }
 
 test "PERF003: no warning when fail-fast is true (default)" {

@@ -1949,20 +1949,29 @@ fn buildPersistCredentialsFalseFix(
     safety: diagnostics.FixSafety,
 ) ?diagnostics.Fix {
     const alloc = list.fixAllocator();
+    // Both shapes below open a block line under the step, which needs the step
+    // to own its own line to begin with.
+    if (!step.own_line) return null;
     const col = step.uses_key_col orelse 7;
 
     const has_persist = if (step.with) |w| w.get("persist-credentials") != null else false;
     if (has_persist) return null;
 
-    // `with: {}` / `with:` parses to a null `with` while the key is still in
-    // source, so inserting a `with:` block would leave the step with two (#171).
-    if (step.with == null and util.hasEmptySection(step.empty_sections, "with")) return null;
+    // `with: {}`, `with:` and `with: 4` all parse to a null `with` while the key
+    // is still in source, so inserting a `with:` block would leave the step with
+    // two (#171, fuzz).
+    if (step.with == null and step.with_key_present) return null;
 
     // uses_key_col is 1-based; parent aligns at col - 1 spaces, child at col + 1.
+    // An existing `with:` sets the indent instead: its keys need not sit on the
+    // grid a fresh block would use.
     const edits = if (step.with == null)
         fix_builder.insertWithEntry(alloc, step.uses_value_end_byte orelse return null, col, "persist-credentials", "false")
-    else
-        fix_builder.appendMappingEntry(alloc, step.with_last_entry_end_byte orelse return null, col + 1, "persist-credentials", "false");
+    else blk: {
+        const with_col = step.with_key_col orelse return null;
+        if (with_col == 0) return null;
+        break :blk fix_builder.appendMappingEntry(alloc, step.with_last_entry_end_byte orelse return null, with_col - 1, "persist-credentials", "false");
+    };
 
     return .{
         .description = "add persist-credentials: false to checkout step",
@@ -4669,6 +4678,125 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
     try testing.expect(perm_pos < jobs_pos);
 }
 
+test "SEC007: an indented root mapping keeps its indent (fuzz)" {
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A block mapping may be written indented, and inserting at column 0 there
+    // ends the mapping: everything below the insertion leaves the document.
+    const source =
+        \\  on: push
+        \\  jobs:
+        \\    build:
+        \\      runs-on: ubuntu-latest
+        \\      steps:
+        \\        - run: echo hi
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+    const fix = list.get(0).fix orelse return error.TestUnexpectedResult;
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "\n  permissions: {contents: read}\n") != null);
+    const fixed = try test_support.parseWorkflowSource(alloc, result.content);
+    try testing.expectEqual(@as(usize, 1), fixed.jobs.len);
+}
+
+test "SEC007: no fix when the trigger mapping opens on the on: line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `on: push:` puts the trigger's children outside the entry's full_span,
+    // so its end byte sits inside the trigger rather than after it.
+    const source =
+        \\on: push:
+        \\    branches: [main]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+    try testing.expect(list.get(0).fix == null);
+}
+
+test "SEC015: an off-grid with: block is appended at its own indent (fuzz)" {
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `with:` children sit one column left of where a fresh block would put
+    // them. Appending at the `uses:`-derived column would land the new key
+    // inside the previous value, and the rule would re-add it on every run.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\         ref: main
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    const step = &wf.jobs[0].steps[0];
+
+    var list = DiagnosticList.init(alloc);
+    const fix = buildPersistCredentialsFalseFix(&list, step, .unsafe) orelse
+        return error.TestUnexpectedResult;
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "\n         persist-credentials: false") != null);
+
+    // The appended key must be part of `with:`, or the next run adds it again.
+    const fixed = try test_support.parseWorkflowSource(alloc, result.content);
+    const with = fixed.jobs[0].steps[0].with orelse return error.TestUnexpectedResult;
+    try testing.expect(with.get("persist-credentials") != null);
+}
+
+test "SEC015: no fix when the step opens on the steps: line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The step shares its line with `steps:` and the sequence dash, so there is
+    // no column a `with:` block could be opened at.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build: steps: [{uses: actions/checkout@v4}]
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    const step = &wf.jobs[0].steps[0];
+
+    var list = DiagnosticList.init(alloc);
+    try testing.expect(buildPersistCredentialsFalseFix(&list, step, .unsafe) == null);
+}
+
 test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
     // SEC007 と BP005 はいずれも `on:` 行末の同一 byte を anchor にしたゼロ幅挿入を発行する
     // (parser が permissions_insertion_byte と concurrency_insertion_byte に同じ end_byte を
@@ -5780,6 +5908,7 @@ test "SEC015: fix inserts into existing with: block" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .with_last_entry_end_byte = 80,
+            .with_key_col = 10,
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -5821,6 +5950,7 @@ test "SEC015: no fix when with: is present but empty (#171)" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .empty_sections = &empty,
+            .with_key_present = true,
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -5862,6 +5992,7 @@ test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .with_last_entry_end_byte = 80,
+            .with_key_col = 10,
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -6022,6 +6153,7 @@ test "SEC018: with exists without persist-credentials triggers with fix" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 10,
     });
     defer list.deinit();
 
@@ -6055,6 +6187,7 @@ test "SEC018: no fix when with: is present but empty (#171)" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .empty_sections = &empty,
+        .with_key_present = true,
     });
     defer list.deinit();
 
@@ -6092,6 +6225,7 @@ test "SEC018: persist-credentials: true triggers without fix" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 10,
     });
     defer list.deinit();
 
@@ -6111,6 +6245,7 @@ test "SEC018: persist-credentials: false does not trigger" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 10,
     });
     defer list.deinit();
 
@@ -6144,6 +6279,7 @@ test "SEC018: autofix appends entry when with already exists" {
         .uses_key_col = 6,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 8,
     });
     defer list.deinit();
 
@@ -6179,6 +6315,7 @@ test "SEC018: YAML-boolean capitalization variants are classified correctly" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .with_last_entry_end_byte = 80,
+            .with_key_col = 10,
         },
     };
     const jobs_true = [_]Job{.{ .id = "build", .steps = &steps_true, .permissions = Permissions{} }};

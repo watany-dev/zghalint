@@ -129,6 +129,61 @@ pub fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
     return false;
 }
 
+/// Keys whose value is always a mapping. Naming one of them over anything else
+/// is not a workflow the parser tolerates: it gives up on the file entirely, so
+/// a rename onto such a key would leave the file unlintable.
+const mapping_only_keys = [_][]const u8{
+    "defaults", "env",      "jobs",     "matrix",
+    "outputs",  "services", "strategy", "with",
+};
+
+/// Keys whose value is a scalar or a mapping, and nothing else.
+const scalar_or_mapping_keys = [_][]const u8{ "container", "permissions" };
+
+/// True when renaming a key to `key` would leave `value` in a place the workflow
+/// parser rejects. An empty value is never rejected: the section is reported as
+/// empty, but the file still parses.
+///
+/// `steps:` is the one collection key that takes a sequence rather than a
+/// mapping, and `secrets:` the one that takes either a mapping or the single
+/// scalar `inherit`. `concurrency:` takes a scalar, or a mapping whose `group`
+/// is one.
+pub fn rejectsValue(key: []const u8, value: yaml.Node) bool {
+    if (value == .null_value) return false;
+    if (std.mem.eql(u8, key, "concurrency")) {
+        return switch (value) {
+            .mapping => |m| (m.get("group") orelse return true) != .scalar,
+            .scalar => false,
+            else => true,
+        };
+    }
+    if (std.mem.eql(u8, key, "secrets")) {
+        return switch (value) {
+            .mapping => false,
+            .scalar => |s| !std.mem.eql(u8, s.value, "inherit"),
+            else => true,
+        };
+    }
+    // A step is a mapping, and one that is not makes the parser give up on the
+    // whole file, so `tps: -` renamed to `steps: -` trades one diagnostic for
+    // an unlintable workflow (fuzz).
+    if (std.mem.eql(u8, key, "steps")) {
+        return switch (value) {
+            .sequence => |seq| for (seq.items) |item| {
+                if (item != .mapping) break true;
+            } else false,
+            else => true,
+        };
+    }
+    // `permissions:` and `container:` take a scalar or a mapping and give up on
+    // the file over anything else (fuzz).
+    if (isAllowedKey(key, &scalar_or_mapping_keys)) {
+        return value != .mapping and value != .scalar;
+    }
+    if (isAllowedKey(key, &mapping_only_keys)) return value != .mapping;
+    return false;
+}
+
 pub fn stepExpectedKeys(m: yaml.Mapping) []const []const u8 {
     const has_run = m.get("run") != null;
     const has_uses = m.get("uses") != null;

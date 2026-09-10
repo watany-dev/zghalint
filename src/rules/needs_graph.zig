@@ -89,7 +89,13 @@ fn reportUndefined(
         .message = message,
         .span = span,
         .fix_hint = "name a job defined under 'jobs', or drop the entry",
-        .fix = if (nearest) |near| rename.tokenFix(list, span, need, near) else null,
+        // A job ID the source cannot carry unquoted (`g]t`) closes the flow
+        // sequence it is written into, so `needs: [ight]` becomes `[g]t]` and
+        // every `--fix` round appends another `t]` (fuzz).
+        .fix = if (nearest) |near| blk: {
+            if (!rename.isSimpleName(near)) break :blk null;
+            break :blk rename.tokenFix(list, span, need, near);
+        } else null,
     }) catch return;
 }
 
@@ -296,6 +302,28 @@ test "SYN021: the owning job is not a rename candidate" {
     const diag = list.get(0);
     try testing.expectEqualStrings("SYN021", diag.rule_id);
     try testing.expect(std.mem.find(u8, diag.message, "did you mean") == null);
+    try testing.expect(diag.fix == null);
+}
+
+test "SYN021: no rename onto a job ID the source cannot carry (fuzz)" {
+    // `g]t` closes the flow sequence it would be written into, so `[ight]`
+    // would become `[g]t]` and every `--fix` round would append another `t]`.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  d:
+        \\    needs: [ight]
+        \\    runs-on: ubuntu-latest
+        \\  g]t:
+        \\    runs-on: ubuntu-latest
+    ;
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    try runOn(source, &list);
+
+    const diag = list.get(0);
+    try testing.expectEqualStrings("SYN021", diag.rule_id);
+    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean") != null);
     try testing.expect(diag.fix == null);
 }
 

@@ -58,12 +58,16 @@ pub fn pathSegmentFix(
     // is re-lexed as a shorter path plus a remainder, so the same diagnostic
     // fires again with a fresh candidate and every `--fix` round grows the
     // expression (#369).
-    if (!isPathIdentifier(new_segment)) return null;
+    if (!isSimpleName(new_segment)) return null;
     return tokenFix(list, segment.span, segment.text, new_segment);
 }
 
-/// GitHub's grammar for a property name in a `${{ }}` path.
-fn isPathIdentifier(name: []const u8) bool {
+/// GitHub's grammar for a property name in a `${{ }}` path, which is also its
+/// grammar for a job ID. A candidate outside it is not a name the source can
+/// carry unquoted: writing it back re-lexes as something shorter plus a
+/// remainder, so the same diagnostic fires again on a fresh candidate and every
+/// `--fix` round grows the file (#369, fuzz).
+pub fn isSimpleName(name: []const u8) bool {
     if (name.len == 0) return false;
     if (!std.ascii.isAlphabetic(name[0]) and name[0] != '_') return false;
     for (name[1..]) |c| {
@@ -168,14 +172,14 @@ test "tokenFix returns null for a span that is not the token" {
     try testing.expect(tokenFix(&list, pathSpan(0, 40), "pusg", "push") == null);
 }
 
-test "isPathIdentifier accepts only expression-safe segments" {
-    try testing.expect(isPathIdentifier("build"));
-    try testing.expect(isPathIdentifier("_build-2"));
-    try testing.expect(!isPathIdentifier(""));
-    try testing.expect(!isPathIdentifier("2build"));
-    try testing.expect(!isPathIdentifier("a>b"));
-    try testing.expect(!isPathIdentifier("a b"));
-    try testing.expect(!isPathIdentifier("a.b"));
+test "isSimpleName accepts only expression-safe segments" {
+    try testing.expect(isSimpleName("build"));
+    try testing.expect(isSimpleName("_build-2"));
+    try testing.expect(!isSimpleName(""));
+    try testing.expect(!isSimpleName("2build"));
+    try testing.expect(!isSimpleName("a>b"));
+    try testing.expect(!isSimpleName("a b"));
+    try testing.expect(!isSimpleName("a.b"));
 }
 
 test "pathSegmentFix declines a candidate that is not a path identifier" {
