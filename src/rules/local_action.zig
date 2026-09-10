@@ -12,6 +12,7 @@
 //! `--quick` / `--offline`: those flags only disable network access.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const engine = @import("engine.zig");
 const spans = @import("spans.zig");
 const uses = @import("uses.zig");
@@ -118,13 +119,13 @@ fn load(alloc: Allocator, root: []const u8, uses_path: []const u8) Resolution {
     const dir = if (rel.len == 0)
         root
     else
-        std.fs.path.join(alloc, &.{ root, rel }) catch return .unavailable;
+        std.Io.Dir.path.join(alloc, &.{ root, rel }) catch return .unavailable;
 
     for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
-        const path = std.fs.path.join(alloc, &.{ dir, name }) catch return .unavailable;
+        const path = std.Io.Dir.path.join(alloc, &.{ dir, name }) catch return .unavailable;
         // 1MiB is far above any real action manifest; a larger file is
         // treated as unreadable rather than parsed.
-        const source = std.fs.cwd().readFileAlloc(alloc, path, 1024 * 1024) catch continue;
+        const source = std.Io.Dir.cwd().readFileAlloc(runtime.io(), path, alloc, .limited(1024 * 1024)) catch continue;
         return .{ .found = parseMeta(alloc, source) orelse return .unavailable };
     }
 
@@ -259,7 +260,7 @@ fn isCheckedOutAtRuntime(steps: []const Step, index: usize) bool {
         // Only the part before the first `${{` is knowable here; the rest
         // resolves on the runner, so everything under that prefix has to be
         // treated as possibly created.
-        const expression = std.mem.indexOf(u8, path, "${{");
+        const expression = std.mem.find(u8, path, "${{");
         const dir = normalizeCheckoutPath(path[0..(expression orelse path.len)]);
         // A literal `path: .` checks the repository out over the workspace
         // root, which is the tree already on disk here: no new directory
@@ -285,7 +286,7 @@ fn isCheckoutAction(action: workflow_types.ActionRef) bool {
 fn normalizeCheckoutPath(path: []const u8) []const u8 {
     var out = std.mem.trim(u8, path, " \t");
     while (std.mem.startsWith(u8, out, "./")) out = out["./".len..];
-    out = std.mem.trimRight(u8, out, "/");
+    out = std.mem.trimEnd(u8, out, "/");
     if (std.mem.eql(u8, out, ".")) return "";
     return out;
 }
@@ -380,15 +381,15 @@ const Fixture = struct {
         root_path = null;
         cache = null;
 
-        const abs = try fx.tmp.dir.realpathAlloc(testing.allocator, ".");
+        const abs = try fx.tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
         defer testing.allocator.free(abs);
         local_action.init(testing.allocator, abs);
         return fx;
     }
 
     fn write(self: *Fixture, sub_path: []const u8, data: []const u8) !void {
-        if (std.fs.path.dirname(sub_path)) |dir| try self.tmp.dir.makePath(dir);
-        try self.tmp.dir.writeFile(.{ .sub_path = sub_path, .data = data });
+        if (std.Io.Dir.path.dirname(sub_path)) |dir| try self.tmp.dir.createDirPath(runtime.io(), dir);
+        try self.tmp.dir.writeFile(runtime.io(), .{ .sub_path = sub_path, .data = data });
     }
 
     fn deinit(self: *Fixture) void {
@@ -418,7 +419,7 @@ test "DEP004: missing action.yml is reported" {
 
     try testing.expectEqual(@as(usize, 1), list.len());
     try testing.expectEqualStrings("DEP004", list.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "no action.yml") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).message, "no action.yml") != null);
 }
 
 test "DEP004: unknown input is reported with a suggestion" {
@@ -436,17 +437,17 @@ test "DEP004: unknown input is reported with a suggestion" {
         \\
     );
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("versoin", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "versoin", "1");
 
     const step = Step{ .uses = ActionRef.parse("./.github/actions/setup"), .with = with };
     var list = runStep(&step);
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 1), list.len());
-    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "not declared") != null);
-    try testing.expect(std.mem.indexOf(u8, list.get(0).fix_hint.?, "version") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).message, "not declared") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).fix_hint.?, "version") != null);
 }
 
 test "DEP004: declared inputs are accepted" {
@@ -464,9 +465,9 @@ test "DEP004: declared inputs are accepted" {
         \\
     );
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("version", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "version", "1");
 
     const step = Step{ .uses = ActionRef.parse("./.github/actions/setup"), .with = with };
     var list = runStep(&step);
@@ -500,7 +501,7 @@ test "DEP004: required input without a default must be passed" {
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 1), list.len());
-    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "token") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).message, "token") != null);
 }
 
 test "DEP004: a manifest that is not a mapping reports nothing" {
@@ -512,9 +513,9 @@ test "DEP004: a manifest that is not a mapping reports nothing" {
         \\
     );
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("version", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "version", "1");
 
     const step = Step{ .uses = ActionRef.parse("./.github/actions/bad"), .with = with };
     var list = runStep(&step);
@@ -539,9 +540,9 @@ test "DEP004: with keys match inputs case-insensitively" {
         \\
     );
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("Version", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "Version", "1");
 
     const step = Step{ .uses = ActionRef.parse("./.github/actions/setup"), .with = with };
     var list = runStep(&step);
@@ -562,10 +563,10 @@ test "DEP004: docker args and entrypoint are not inputs" {
         \\
     );
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("args", "--help");
-    try with.put("entrypoint", "/bin/sh");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "args", "--help");
+    try with.put(testing.allocator, "entrypoint", "/bin/sh");
 
     const step = Step{ .uses = ActionRef.parse("./tool"), .with = with };
     var list = runStep(&step);
@@ -668,7 +669,7 @@ test "dirContains covers a directory and everything below it" {
 ///
 /// `with` is borrowed rather than owned so the caller can free it.
 fn checkoutStep(path: []const u8, with: *workflow_types.StringMap) !Step {
-    try with.put("path", path);
+    try with.put(testing.allocator, "path", path);
     return .{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with.* };
 }
 
@@ -682,8 +683,8 @@ test "DEP004: a directory an earlier checkout creates is not reported" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
 
     const steps = [_]Step{
         try checkoutStep("action-under-test", &with),
@@ -700,8 +701,8 @@ test "DEP004: a directory no checkout creates is still reported" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
 
     const steps = [_]Step{
         try checkoutStep("action-under-test", &with),
@@ -711,7 +712,7 @@ test "DEP004: a directory no checkout creates is still reported" {
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 1), list.len());
-    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "./elsewhere") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).message, "./elsewhere") != null);
 }
 
 test "DEP004: a checkout without path: creates no directory" {
@@ -732,8 +733,8 @@ test "DEP004: a checkout after the step does not excuse it" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
 
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("./action-under-test") },
@@ -749,8 +750,8 @@ test "DEP004: an expression path: is unresolvable, so nothing is reported" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
 
     const steps = [_]Step{
         try checkoutStep("${{ inputs.dir }}", &with),
@@ -766,8 +767,8 @@ test "DEP004: a checkout over the workspace root creates no new directory" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
 
     const steps = [_]Step{
         try checkoutStep(".", &with),
@@ -783,8 +784,8 @@ test "DEP004: an expression path: excuses only what its literal prefix covers" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
 
     const steps = [_]Step{
         try checkoutStep("vendor/${{ matrix.repo }}", &with),
@@ -795,16 +796,16 @@ test "DEP004: an expression path: excuses only what its literal prefix covers" {
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 1), list.len());
-    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "./.github/actions/setup") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).message, "./.github/actions/setup") != null);
 }
 
 test "DEP004: another action's path: input does not excuse the step" {
     var fx = try Fixture.init();
     defer fx.deinit();
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("path", "action-under-test");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "path", "action-under-test");
 
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v4"), .with = with },
@@ -830,12 +831,12 @@ test "DEP004: with: is not checked against a tree the checkout replaces" {
         \\
     );
 
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
 
-    var step_with = workflow_types.StringMap.init(testing.allocator);
-    defer step_with.deinit();
-    try step_with.put("version", "1");
+    var step_with: workflow_types.StringMap = .empty;
+    defer step_with.deinit(testing.allocator);
+    try step_with.put(testing.allocator, "version", "1");
 
     const steps = [_]Step{
         try checkoutStep("action-under-test", &with),

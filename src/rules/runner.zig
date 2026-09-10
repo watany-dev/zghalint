@@ -330,7 +330,7 @@ fn matrixAxisKey(runs_on: []const u8) ?[]const u8 {
 
     const inner = std.mem.trim(u8, trimmed[3 .. trimmed.len - 2], " \t");
     // A second `}}` means two expressions were concatenated, not one reference.
-    if (std.mem.indexOf(u8, inner, "}}") != null) return null;
+    if (std.mem.find(u8, inner, "}}") != null) return null;
 
     const prefix = "matrix.";
     if (inner.len <= prefix.len) return null;
@@ -382,7 +382,7 @@ fn checkMatrixValue(
         else => return,
     };
     // A matrix value can itself be an expression, which lands back at unexpandable.
-    if (std.mem.indexOf(u8, scalar.value, "${{") != null) return;
+    if (std.mem.find(u8, scalar.value, "${{") != null) return;
 
     const unknown = classifyLabel(scalar.value) orelse return;
     const edits: ?[]const Edit = if (unknown.suggestion) |name|
@@ -422,7 +422,7 @@ fn matrixLabelEdits(
     diag_list: *DiagnosticList,
 ) ?[]const Edit {
     const alloc = diag_list.fixAllocator();
-    var edits = std.ArrayList(Edit){};
+    var edits = std.ArrayList(Edit).empty;
     edits.append(alloc, labelEdit(scalar, replacement) orelse return null) catch return null;
 
     for (matrix.axes) |axis| {
@@ -461,7 +461,7 @@ fn checkUnknownLabel(job: *const Job, label: LabelRef, diag_list: *DiagnosticLis
 
     // `runs-on: ${{ matrix.os }}` names no label of its own; the values behind
     // the axis are where a typo is visible.
-    if (std.mem.indexOf(u8, label.value, "${{") != null) {
+    if (std.mem.find(u8, label.value, "${{") != null) {
         const key = matrixAxisKey(label.value) orelse return;
         return checkMatrixRunner(job, key, diag_list);
     }
@@ -499,7 +499,7 @@ fn labelOs(label: []const u8) ?RunnerOs {
 fn hasExpressionLabel(job: *const Job) bool {
     var labels = runsOnLabels(job);
     while (labels.next()) |label| {
-        if (std.mem.indexOf(u8, label.value, "${{") != null) return true;
+        if (std.mem.find(u8, label.value, "${{") != null) return true;
     }
     return false;
 }
@@ -671,8 +671,8 @@ test "RUNNER001: autofix end-to-end replaces label in YAML source" {
 
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, result.content, "ubuntu-22.04") != null);
-    try testing.expect(std.mem.indexOf(u8, result.content, "ubuntu-20.04") == null);
+    try testing.expect(std.mem.find(u8, result.content, "ubuntu-22.04") != null);
+    try testing.expect(std.mem.find(u8, result.content, "ubuntu-20.04") == null);
 }
 
 test "RUNNER002: typo'd label is reported with an unsafe fix" {
@@ -822,7 +822,7 @@ test "RUNNER002: autofix end-to-end replaces the typo in YAML source" {
 
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest") != null);
+    try testing.expect(std.mem.find(u8, result.content, "runs-on: ubuntu-latest") != null);
 }
 
 fn runRunner002(source: []const u8) !DiagnosticList {
@@ -987,8 +987,8 @@ test "RUNNER002: matrix autofix rewrites the value, not the runs-on line" {
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), result.edits_applied);
     // The quotes around the value survive the replacement.
-    try testing.expect(std.mem.indexOf(u8, result.content, "os: [\"ubuntu-latest\"]") != null);
-    try testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ${{ matrix.os }}") != null);
+    try testing.expect(std.mem.find(u8, result.content, "os: [\"ubuntu-latest\"]") != null);
+    try testing.expect(std.mem.find(u8, result.content, "runs-on: ${{ matrix.os }}") != null);
 }
 
 test "RUNNER002: the autofix rewrites the matching exclude entry too" {
@@ -1016,8 +1016,8 @@ test "RUNNER002: the autofix rewrites the matching exclude entry too" {
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 2), result.edits_applied);
     // Leaving the exclusion behind would revive the combination it removed.
-    try testing.expect(std.mem.indexOf(u8, result.content, "windwos") == null);
-    try testing.expect(std.mem.indexOf(u8, result.content, "- os: windows-latest") != null);
+    try testing.expect(std.mem.find(u8, result.content, "windwos") == null);
+    try testing.expect(std.mem.find(u8, result.content, "- os: windows-latest") != null);
 }
 
 /// Runs a job check over real workflow source, so a sequence `runs-on` reaches
@@ -1098,8 +1098,8 @@ test "RUNNER003: the diagnostic names both conflicting labels" {
     const diag = diags.get(0);
     try testing.expectEqualStrings("RUNNER003", diag.rule_id);
     try testing.expect(diag.severity == .@"error");
-    try testing.expect(std.mem.indexOf(u8, diag.message, "ubuntu-latest") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "windows-latest") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "ubuntu-latest") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "windows-latest") != null);
     // The span points at the label that broke the set, not at the job.
     try testing.expectEqualStrings("windows-latest", source[diag.span.start_byte..diag.span.end_byte]);
 }

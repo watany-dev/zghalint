@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
@@ -29,6 +32,26 @@ PBT_SETTINGS = settings(
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow],
 )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits and umask")
+def test_fix_preserves_permissions_under_restrictive_umask(zghalint_bin, tmp_path):
+    path = tmp_path / "ci.yml"
+    source = (
+        "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+    )
+    path.write_text(source)
+    path.chmod(0o764)
+    result = subprocess.run(
+        [str(zghalint_bin), "--quick", "--fix", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        umask=0o077,
+    )
+    assert result.returncode in (0, 1), result.stderr
+    assert path.read_text() != source
+    assert stat.S_IMODE(path.stat().st_mode) == 0o764
 
 
 def _count_diagnostics_json(binary, path: str) -> tuple[int, set[str]]:

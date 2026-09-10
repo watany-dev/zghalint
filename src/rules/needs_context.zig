@@ -276,7 +276,7 @@ fn expectMessage(source: []const u8, needle: []const u8) !void {
     const diag = list.get(0);
     try testing.expectEqualStrings("EXPR012", diag.rule_id);
     try testing.expectEqual(engine.Severity.@"error", diag.severity);
-    if (std.mem.indexOf(u8, diag.message, needle) == null) {
+    if (std.mem.find(u8, diag.message, needle) == null) {
         std.debug.print("message '{s}' does not contain '{s}'\n", .{ diag.message, needle });
         return error.UnexpectedMessage;
     }
@@ -317,9 +317,9 @@ test "EXPR012: the three detections from issue #88" {
     try testing.expectEqual(@as(usize, 3), list.len());
     // "ver" is 4 edits from "version", past `util.didYouMean`'s threshold of 2,
     // so no suggestion is appended.
-    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "output \"ver\" is not defined in job \"setup\"") != null);
-    try testing.expect(std.mem.indexOf(u8, list.get(1).message, "\"lint\" is not in the \"needs\" of this job") != null);
-    try testing.expect(std.mem.indexOf(u8, list.get(2).message, "unknown property \"output\" on \"needs.setup\". did you mean \"outputs\"?") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).message, "output \"ver\" is not defined in job \"setup\"") != null);
+    try testing.expect(std.mem.find(u8, list.get(1).message, "\"lint\" is not in the \"needs\" of this job") != null);
+    try testing.expect(std.mem.find(u8, list.get(2).message, "unknown property \"output\" on \"needs.setup\". did you mean \"outputs\"?") != null);
 }
 
 test "EXPR012: valid needs references produce no diagnostics" {

@@ -459,7 +459,7 @@ test "ACT001: a composite run step without shell is an error" {
     defer lint.deinit();
 
     try testing.expect(lint.has("ACT001"));
-    try testing.expect(std.mem.indexOf(u8, lint.message("ACT001"), "shell") != null);
+    try testing.expect(std.mem.find(u8, lint.message("ACT001"), "shell") != null);
 }
 
 test "ACT001: a uses step needs no shell" {
@@ -498,7 +498,7 @@ test "ACT005: matrix is not available inside a composite action" {
     defer lint.deinit();
 
     try testing.expect(lint.has("ACT005"));
-    try testing.expect(std.mem.indexOf(u8, lint.message("ACT005"), "matrix") != null);
+    try testing.expect(std.mem.find(u8, lint.message("ACT005"), "matrix") != null);
 }
 
 test "ACT005: secrets is not available inside a composite action" {
@@ -528,7 +528,7 @@ test "ACT005: an undeclared input is reported with a suggestion" {
     defer lint.deinit();
 
     try testing.expect(lint.has("ACT005"));
-    try testing.expect(std.mem.indexOf(u8, lint.message("ACT005"), "\"target\"") != null);
+    try testing.expect(std.mem.find(u8, lint.message("ACT005"), "\"target\"") != null);
 }
 
 test "ACT005: an action with no inputs section declares no inputs" {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = zghalint.runtime;
 const builtin = @import("builtin");
 const zghalint = @import("zghalint");
 const Config = zghalint.Config;
@@ -15,8 +16,6 @@ const FixMode = enum {
 
 const all_rules = zghalint.rules.registry.all_rules;
 
-var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
-
 const CliArgs = struct {
     files: std.ArrayList([]const u8),
     allocator: std.mem.Allocator,
@@ -28,40 +27,11 @@ const CliArgs = struct {
     show_help: bool = false,
     show_version: bool = false,
     fix_mode: FixMode = .off,
-    /// Copies of the process arguments. `files` and `config_path` point into
-    /// these, so they must outlive the argument iterator.
-    argv_storage: []const []const u8 = &.{},
 
     fn deinit(self: *CliArgs) void {
         self.files.deinit(self.allocator);
-        for (self.argv_storage) |arg| self.allocator.free(arg);
-        self.allocator.free(self.argv_storage);
     }
 };
-
-fn parseArgs(allocator: std.mem.Allocator, stderr: *std.Io.Writer) !CliArgs {
-    var raw_args = std.ArrayList([]const u8){};
-    errdefer {
-        for (raw_args.items) |arg| allocator.free(arg);
-        raw_args.deinit(allocator);
-    }
-
-    var iter = try std.process.argsWithAllocator(allocator);
-    defer iter.deinit();
-
-    _ = iter.next();
-    // On Windows the iterator owns the argument strings and frees them in
-    // `deinit`, so everything kept past this function has to be copied. On
-    // POSIX they point into static process memory, which hides the mistake.
-    while (iter.next()) |arg| {
-        try raw_args.append(allocator, try allocator.dupe(u8, arg));
-    }
-
-    var args = try parseArgsSlice(allocator, raw_args.items, stderr);
-    errdefer args.deinit();
-    args.argv_storage = try raw_args.toOwnedSlice(allocator);
-    return args;
-}
 
 const ArgError = error{
     UnknownOption,
@@ -75,7 +45,7 @@ const ArgError = error{
 /// silently fall back to another format, and `--config --fix` must not eat
 /// `--fix` as the config path.
 fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr: *std.Io.Writer) ArgError!CliArgs {
-    var args = CliArgs{ .files = .{}, .allocator = allocator };
+    var args = CliArgs{ .files = .empty, .allocator = allocator };
     errdefer args.deinit();
 
     var i: usize = 0;
@@ -169,12 +139,12 @@ fn printHelp(writer: anytype) !void {
 }
 
 fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
-    var files = std.ArrayList([]const u8){};
-    var dir = std.fs.cwd().openDir(".github/workflows", .{ .iterate = true }) catch return files;
-    defer dir.close();
+    var files = std.ArrayList([]const u8).empty;
+    var dir = std.Io.Dir.cwd().openDir(runtime.io(), ".github/workflows", .{ .iterate = true }) catch return files;
+    defer dir.close(runtime.io());
 
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(runtime.io())) |entry| {
         if (entry.kind == .file) {
             if (std.mem.endsWith(u8, entry.name, ".yml") or std.mem.endsWith(u8, entry.name, ".yaml")) {
                 const full_path = try std.fmt.allocPrint(allocator, ".github/workflows/{s}", .{entry.name});
@@ -184,7 +154,7 @@ fn collectDefaultFiles(allocator: std.mem.Allocator) !std.ArrayList([]const u8) 
     }
 
     inline for ([_][]const u8{ ".github/dependabot.yml", ".github/dependabot.yaml" }) |dep_path| {
-        if (std.fs.cwd().access(dep_path, .{})) |_| {
+        if (std.Io.Dir.cwd().access(runtime.io(), dep_path, .{})) |_| {
             const path_copy = try allocator.dupe(u8, dep_path);
             try files.append(allocator, path_copy);
         } else |_| {}
@@ -203,25 +173,25 @@ fn collectDefaultActionFiles(
     files: *std.ArrayList([]const u8),
 ) !void {
     inline for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
-        if (std.fs.cwd().access(name, .{})) |_| {
+        if (std.Io.Dir.cwd().access(runtime.io(), name, .{})) |_| {
             try files.append(allocator, try allocator.dupe(u8, name));
         } else |_| {}
     }
 
-    var dir = std.fs.cwd().openDir(".github/actions", .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.cwd().openDir(runtime.io(), ".github/actions", .{ .iterate = true }) catch return;
+    defer dir.close(runtime.io());
 
     // A directory that cannot be walked is treated like one that is not
     // there: every other probe here is best-effort too, and a default-file
     // scan should not fail the whole run.
     var iter = dir.iterate();
-    while (iter.next() catch return) |entry| {
+    while (iter.next(runtime.io()) catch return) |entry| {
         // The kind is not checked: a symlinked action directory is as valid
         // as a real one, and `access` on the file below settles it either way.
         inline for ([_][]const u8{ "action.yml", "action.yaml" }) |name| {
             const path = try std.fmt.allocPrint(allocator, ".github/actions/{s}/{s}", .{ entry.name, name });
             errdefer allocator.free(path);
-            if (std.fs.cwd().access(path, .{})) |_| {
+            if (std.Io.Dir.cwd().access(runtime.io(), path, .{})) |_| {
                 try files.append(allocator, path);
             } else |_| {
                 allocator.free(path);
@@ -244,11 +214,11 @@ fn isActionMetadataFile(path: []const u8) bool {
 /// A file under `.github/workflows/` is a workflow whatever it is called, so
 /// `workflows/action.yml` and `workflows/dependabot.yml` keep the workflow rules.
 fn isDocumentFileNamed(path: []const u8, yml: []const u8, yaml: []const u8) bool {
-    const base = std.fs.path.basename(path);
+    const base = std.Io.Dir.path.basename(path);
     if (!std.mem.eql(u8, base, yml) and !std.mem.eql(u8, base, yaml)) return false;
 
-    const dir = std.fs.path.dirname(path) orelse return true;
-    return !std.mem.eql(u8, std.fs.path.basename(dir), "workflows");
+    const dir = std.Io.Dir.path.dirname(path) orelse return true;
+    return !std.mem.eql(u8, std.Io.Dir.path.basename(dir), "workflows");
 }
 
 fn readSourceFile(
@@ -258,7 +228,7 @@ fn readSourceFile(
 ) ?[]u8 {
     // stat before open: opening a FIFO for reading blocks until a writer
     // appears, so the kind check cannot come after openFile.
-    const stat = std.fs.cwd().statFile(file_path) catch |err| {
+    const stat = std.Io.Dir.cwd().statFile(runtime.io(), file_path, .{}) catch |err| {
         stderr.print("error: cannot open '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
         return null;
     };
@@ -267,13 +237,14 @@ fn readSourceFile(
         return null;
     }
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(runtime.io(), file_path, .{}) catch |err| {
         stderr.print("error: cannot open '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
         return null;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
-    return file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+    var file_reader = file.reader(runtime.io(), &.{});
+    return file_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024)) catch |err| {
         stderr.print("error: cannot read '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
         return null;
     };
@@ -403,17 +374,18 @@ fn prefetchNetworkData(
     defer arena.deinit();
     const scratch = arena.allocator();
 
-    var workflows = std.ArrayList(zghalint.workflow.Workflow){};
+    var workflows = std.ArrayList(zghalint.workflow.Workflow).empty;
     defer workflows.deinit(scratch);
 
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
         if (documentLintFn(file_path) != null) continue;
 
-        const file = std.fs.cwd().openFile(file_path, .{}) catch continue;
-        defer file.close();
+        const file = std.Io.Dir.cwd().openFile(runtime.io(), file_path, .{}) catch continue;
+        defer file.close(runtime.io());
 
-        const source = file.readToEndAlloc(scratch, 10 * 1024 * 1024) catch continue;
+        var file_reader = file.reader(runtime.io(), &.{});
+        const source = file_reader.interface.allocRemaining(scratch, .limited(10 * 1024 * 1024)) catch continue;
 
         var yaml_parser = zghalint.yaml.Parser.init(scratch, source);
 
@@ -474,13 +446,14 @@ fn hasDiagnosticFor(diags: *const zghalint.diagnostics.DiagnosticList, rule_id: 
 fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8, stderr: *std.Io.Writer) !Config {
     const path = config_path orelse zghalint.config.defaultConfigPath() orelse return Config.init(allocator);
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(runtime.io(), path, .{}) catch |err| {
         stderr.print("error: cannot open config '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
-    const source = file.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
+    var file_reader = file.reader(runtime.io(), &.{});
+    const source = file_reader.interface.allocRemaining(allocator, .limited(1024 * 1024)) catch |err| {
         stderr.print("error: cannot read config '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     };
@@ -505,13 +478,18 @@ fn dedupeFiles(allocator: std.mem.Allocator, files: []const []const u8, config: 
         seen.deinit();
     }
 
-    var unique = std.ArrayList([]const u8){};
+    var unique = std.ArrayList([]const u8).empty;
     errdefer unique.deinit(allocator);
 
     for (files) |file_path| {
         if (config.isIgnored(file_path)) continue;
-        const key = std.fs.cwd().realpathAlloc(allocator, file_path) catch try allocator.dupe(u8, file_path);
-        const entry = try seen.getOrPut(key);
+        var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const canonical = std.Io.Dir.cwd().realPathFile(runtime.io(), file_path, &path_buf) catch null;
+        const key = try allocator.dupe(u8, if (canonical) |len| path_buf[0..len] else file_path);
+        const entry = seen.getOrPut(key) catch |err| {
+            allocator.free(key);
+            return err;
+        };
         if (entry.found_existing) {
             allocator.free(key);
             continue;
@@ -589,7 +567,7 @@ fn applyFixesForFile(
     all_diags: *zghalint.DiagnosticList,
     include_unsafe: bool,
 ) !FixOutcome {
-    var file_diags = std.ArrayList(zghalint.Diagnostic){};
+    var file_diags = std.ArrayList(zghalint.Diagnostic).empty;
     defer file_diags.deinit(allocator);
 
     for (all_diags.items.items) |d| {
@@ -611,12 +589,13 @@ fn applyFixesForFile(
     // Refuse to rewrite through a symlink: otherwise `--fix` on a crafted
     // `workflow.yml -> /etc/passwd` would read and then overwrite the link
     // target. `readLink` succeeding means the path itself is a symlink.
-    if (try zghalint.util.isSymlink(std.fs.cwd(), file_path)) return error.RefusingToFixSymlink;
+    if (try zghalint.util.isSymlink(std.Io.Dir.cwd(), file_path)) return error.RefusingToFixSymlink;
 
-    const file = try std.fs.cwd().openFile(file_path, .{});
-    defer file.close();
-    const stat = try file.stat();
-    const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+    const file = try std.Io.Dir.cwd().openFile(runtime.io(), file_path, .{});
+    defer file.close(runtime.io());
+    const stat = try file.stat(runtime.io());
+    var file_reader = file.reader(runtime.io(), &.{});
+    const source = try file_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024));
     defer allocator.free(source);
 
     const result = try zghalint.fix.applyFixes(allocator, source, fixes);
@@ -628,17 +607,18 @@ fn applyFixesForFile(
     // it into place. `rename(2)` replaces the directory entry itself, so if
     // the destination was swapped to a symlink between our check and now,
     // the symlink is replaced — the link target is never written through.
-    var write_buf: [4096]u8 = undefined;
     // rename(2) replaces the inode, so the new file must carry the original
     // permission bits or an executable / group-readable workflow would be
     // reset to the umask default.
-    var af = try std.fs.cwd().atomicFile(file_path, .{
-        .write_buffer = &write_buf,
-        .mode = if (builtin.os.tag == .windows) std.fs.File.default_mode else stat.mode & 0o7777,
+    var af = try std.Io.Dir.cwd().createFileAtomic(runtime.io(), file_path, .{
+        .replace = true,
+        .permissions = stat.permissions,
     });
-    defer af.deinit();
-    try af.file_writer.interface.writeAll(result.content);
-    try af.finish();
+    defer af.deinit(runtime.io());
+    try af.file.writeStreamingAll(runtime.io(), result.content);
+    // Creation applies a umask; replacement must preserve the original bits.
+    if (builtin.os.tag != .windows) try af.file.setPermissions(runtime.io(), stat.permissions);
+    try af.replace(runtime.io());
 
     return .{ .applied = result.edits_applied, .skipped = result.fixes_skipped };
 }
@@ -662,9 +642,9 @@ fn resolveWorkspaceRoot(arena: std.mem.Allocator, files: []const []const u8) ?[]
 
     // Files in a directory already checked cannot resolve to another root, so
     // the common case (one directory of workflows) costs a single walk.
-    var last_dir = std.fs.path.dirname(hint) orelse ".";
+    var last_dir = std.Io.Dir.path.dirname(hint) orelse ".";
     for (files) |file| {
-        const dir = std.fs.path.dirname(file) orelse ".";
+        const dir = std.Io.Dir.path.dirname(file) orelse ".";
         if (std.mem.eql(u8, dir, last_dir)) continue;
         last_dir = dir;
         const other = zghalint.workspace.findWorkspaceRoot(arena, file) catch return null;
@@ -702,31 +682,24 @@ fn initWorkspaceContext(
     zghalint.workspace.set(ctx);
 }
 
-pub fn main() !u8 {
-    // 多ファイル実行では DebugAllocator が空になったスラブごとに munmap を返し、
-    // syscall 時間の大半が mmap/munmap に消える (#294)。smp_allocator はスラブを
-    // スレッドローカルに保持して返さない。リーク検出が効くビルドでは従来どおり。
-    const allocator, const is_debug_allocator = switch (builtin.mode) {
-        .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
-        .ReleaseFast, .ReleaseSmall => .{ std.heap.smp_allocator, false },
-    };
-    defer if (is_debug_allocator) {
-        _ = debug_allocator.deinit();
-    };
+pub fn main(init: std.process.Init) !u8 {
+    runtime.init(init);
+    const allocator = init.gpa;
 
     // 64KB: a large workflow set emits megabytes of diagnostics, and a 4KB
     // buffer turned that into thousands of `write` syscalls (0.94s of sys
     // time on a 8.4MB terminal render).
     var stdout_buf: [64 * 1024]u8 = undefined;
-    var stdout_bw = std.fs.File.stdout().writer(&stdout_buf);
+    var stdout_bw = std.Io.File.stdout().writerStreaming(init.io, &stdout_buf);
     const stdout = &stdout_bw.interface;
 
     var stderr_buf: [1024]u8 = undefined;
-    var stderr_bw = std.fs.File.stderr().writer(&stderr_buf);
+    var stderr_bw = std.Io.File.stderr().writerStreaming(init.io, &stderr_buf);
     const stderr = &stderr_bw.interface;
     defer stderr.flush() catch {};
 
-    var cli_args = parseArgs(allocator, stderr) catch return 2;
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
+    var cli_args = parseArgsSlice(allocator, argv[1..], stderr) catch return 2;
     defer cli_args.deinit();
 
     if (cli_args.show_help) {
@@ -887,7 +860,12 @@ pub fn main() !u8 {
     const use_color = switch (config.color_mode) {
         .always => true,
         .never => false,
-        .auto => std.Io.tty.detectConfig(std.fs.File.stdout()) != .no_color,
+        .auto => (try std.Io.Terminal.Mode.detect(
+            init.io,
+            std.Io.File.stdout(),
+            if (init.environ_map.get("NO_COLOR")) |v| v.len > 0 else false,
+            if (init.environ_map.get("CLICOLOR_FORCE")) |v| v.len > 0 else false,
+        )) != .no_color,
     };
 
     // Output. Only the terminal format is self-terminating; the machine-readable
@@ -1042,28 +1020,17 @@ test "hasErrors detects error severity" {
 }
 
 test "printHelp outputs usage text" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    try printHelp(buf.writer(std.testing.allocator));
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "Usage: zghalint") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--config") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--format") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--color") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--quick") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--offline") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--no-cache") != null);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "--fix") != null);
-}
-
-test "CliArgs frees the argument copies it owns" {
-    // The argument iterator's strings are freed on Windows when `parseArgs`
-    // returns, so `deinit` has to release the copies it took.
-    const storage = try std.testing.allocator.alloc([]const u8, 1);
-    storage[0] = try std.testing.allocator.dupe(u8, "a.yml");
-
-    var args = CliArgs{ .files = .{}, .allocator = std.testing.allocator, .argv_storage = storage };
-    defer args.deinit();
-    try args.files.append(std.testing.allocator, storage[0]);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    try printHelp(&buf.writer);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "Usage: zghalint") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--config") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--format") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--color") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--quick") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--offline") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--no-cache") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--fix") != null);
 }
 
 test "parseArgsSlice parses offline flag" {
@@ -1158,12 +1125,12 @@ test "parseArgsSlice reports the offending argument" {
 test "dedupeFiles keeps the first spelling of a repeated path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.yml", .data = "" });
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "a.yml", .data = "" });
+    const dir_path = try tmp.dir.realPathFileAlloc(runtime.io(), ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
-    const direct = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "a.yml" });
+    const direct = try std.Io.Dir.path.join(std.testing.allocator, &.{ dir_path, "a.yml" });
     defer std.testing.allocator.free(direct);
-    const dotted = try std.fs.path.join(std.testing.allocator, &.{ dir_path, ".", "a.yml" });
+    const dotted = try std.Io.Dir.path.join(std.testing.allocator, &.{ dir_path, ".", "a.yml" });
     defer std.testing.allocator.free(dotted);
 
     const config = Config.init(std.testing.allocator);
@@ -1177,13 +1144,13 @@ test "dedupeFiles keeps the first spelling of a repeated path" {
 test "dedupeFiles drops ignored spellings before collapsing by real path" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "a.yml", .data = "" });
-    try tmp.dir.symLink("a.yml", "b.yml", .{});
-    const dir_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "a.yml", .data = "" });
+    try tmp.dir.symLink(runtime.io(), "a.yml", "b.yml", .{});
+    const dir_path = try tmp.dir.realPathFileAlloc(runtime.io(), ".", std.testing.allocator);
     defer std.testing.allocator.free(dir_path);
-    const ignored = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "a.yml" });
+    const ignored = try std.Io.Dir.path.join(std.testing.allocator, &.{ dir_path, "a.yml" });
     defer std.testing.allocator.free(ignored);
-    const link = try std.fs.path.join(std.testing.allocator, &.{ dir_path, "b.yml" });
+    const link = try std.Io.Dir.path.join(std.testing.allocator, &.{ dir_path, "b.yml" });
     defer std.testing.allocator.free(link);
 
     var config = Config.init(std.testing.allocator);

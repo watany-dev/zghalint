@@ -5,6 +5,7 @@
 //! `prefetch.zig` can import this without a cycle.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const engine = @import("engine.zig");
 const impostor = @import("impostor.zig");
 const graphql = @import("graphql.zig");
@@ -176,7 +177,7 @@ test "classifyImpostorFromGraphql: tag oid match yields legitimate (no pending)"
         .tag_oids = &tag_oids,
     };
 
-    var pending = std.ArrayList(PendingCompare){};
+    var pending = std.ArrayList(PendingCompare).empty;
     defer pending.deinit(alloc);
     classifyImpostorFromGraphql(alloc, res, &pending);
 
@@ -203,7 +204,7 @@ test "classifyImpostorFromGraphql: branch HEAD match yields legitimate" {
         .branch_oids = &branch_oids,
     };
 
-    var pending = std.ArrayList(PendingCompare){};
+    var pending = std.ArrayList(PendingCompare).empty;
     defer pending.deinit(alloc);
     classifyImpostorFromGraphql(alloc, res, &pending);
 
@@ -229,7 +230,7 @@ test "classifyImpostorFromGraphql: pagination incomplete fails closed to unknown
         .tag_oids_complete = false,
     };
 
-    var pending = std.ArrayList(PendingCompare){};
+    var pending = std.ArrayList(PendingCompare).empty;
     defer pending.deinit(alloc);
     classifyImpostorFromGraphql(alloc, res, &pending);
 
@@ -260,7 +261,7 @@ test "classifyImpostorFromGraphql: no match queues pending compare entry" {
         .default_branch = default_branch,
     };
 
-    var pending = std.ArrayList(PendingCompare){};
+    var pending = std.ArrayList(PendingCompare).empty;
     defer pending.deinit(alloc);
     classifyImpostorFromGraphql(alloc, res, &pending);
 
@@ -303,7 +304,7 @@ test "runImpostorCompares: deadline-expired entries all map to unknown" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer engine.clearNetworkDeadline();
 
     const pending = [_]PendingCompare{

@@ -13,6 +13,7 @@
 //!   zig build fuzz-driver -- --file PATH
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 
 const tokenizer = @import("yaml/tokenizer.zig");
 const yaml_parser = @import("yaml/parser.zig");
@@ -52,15 +53,15 @@ const Violation = error{
 /// reach deep into the rules, so a mutation lands somewhere interesting far
 /// more often than a mutation of a hand-written snippet would.
 fn loadCorpus(alloc: std.mem.Allocator) ![]const []const u8 {
-    var list = std.ArrayList([]const u8){};
+    var list = std.ArrayList([]const u8).empty;
     for ([_][]const u8{ "tests/fixtures/e2e", "tests/fixtures/e2e-action" }) |path| {
-        var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch continue;
-        defer dir.close();
+        var dir = std.Io.Dir.cwd().openDir(runtime.io(), path, .{ .iterate = true }) catch continue;
+        defer dir.close(runtime.io());
         var it = dir.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(runtime.io())) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".yml")) continue;
-            const body = dir.readFileAlloc(alloc, entry.name, max_input) catch continue;
+            const body = dir.readFileAlloc(runtime.io(), entry.name, alloc, .limited(max_input)) catch continue;
             try list.append(alloc, body);
         }
     }
@@ -126,7 +127,7 @@ const Mutator = struct {
     /// handful of mutations. About one input in thirty-two is unstructured
     /// noise, which keeps the tokenizer's error paths exercised.
     fn generate(self: Mutator, alloc: std.mem.Allocator) ![]u8 {
-        var buf = std.ArrayList(u8){};
+        var buf = std.ArrayList(u8).empty;
 
         if (self.rng.uintLessThan(u8, 32) == 0) {
             const len = self.rng.uintLessThan(usize, 512);
@@ -174,8 +175,8 @@ const Mutator = struct {
             5 => {
                 if (len == 0) return;
                 const at = self.rng.uintLessThan(usize, len);
-                const start = if (std.mem.lastIndexOfScalar(u8, buf.items[0..at], '\n')) |i| i + 1 else 0;
-                const end = (std.mem.indexOfScalarPos(u8, buf.items, at, '\n') orelse len - 1) + 1;
+                const start = if (std.mem.findScalarLast(u8, buf.items[0..at], '\n')) |i| i + 1 else 0;
+                const end = (std.mem.findScalarPos(u8, buf.items, at, '\n') orelse len - 1) + 1;
                 const line = try alloc.dupe(u8, buf.items[start..end]);
                 defer alloc.free(line);
                 try buf.insertSlice(alloc, end, line);
@@ -184,7 +185,7 @@ const Mutator = struct {
             6 => {
                 if (len == 0) return;
                 const at = self.rng.uintLessThan(usize, len);
-                const start = if (std.mem.lastIndexOfScalar(u8, buf.items[0..at], '\n')) |i| i + 1 else 0;
+                const start = if (std.mem.findScalarLast(u8, buf.items[0..at], '\n')) |i| i + 1 else 0;
                 if (self.rng.boolean()) {
                     try buf.insertSlice(alloc, start, "  ");
                 } else if (start < len and (buf.items[start] == ' ' or buf.items[start] == '\t')) {
@@ -231,7 +232,7 @@ fn checkSerializers(
     alloc: std.mem.Allocator,
     list: diagnostics.DiagnosticList,
 ) !void {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
 
     {
@@ -292,7 +293,7 @@ fn lint(alloc: std.mem.Allocator, source: []const u8) !Lint {
 
 /// A rendering of the diagnostics stable enough to compare two runs by.
 fn digest(alloc: std.mem.Allocator, list: diagnostics.DiagnosticList) ![]u8 {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     for (list.items.items) |d| {
         try buf.print(alloc, "{s}|{d}|{d}|{s}\n", .{ d.rule_id, d.span.start_line, d.span.start_col, d.message });
     }
@@ -375,12 +376,11 @@ fn runOne(alloc: std.mem.Allocator, input: []const u8) !void {
     }
 }
 
-pub fn main() !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer _ = gpa.deinit();
-    const base = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    runtime.init(init);
+    const base = init.gpa;
 
-    var args = try std.process.argsWithAllocator(base);
+    var args = try init.minimal.args.iterateAllocator(base);
     defer args.deinit();
     _ = args.next();
 
@@ -412,10 +412,10 @@ pub fn main() !void {
         var arena = std.heap.ArenaAllocator.init(base);
         defer arena.deinit();
         const alloc = arena.allocator();
-        const input = try std.fs.cwd().readFileAlloc(alloc, path, max_input);
+        const input = try std.Io.Dir.cwd().readFileAlloc(runtime.io(), path, alloc, .limited(max_input));
         runOne(alloc, input) catch |err| {
             var buf: [256]u8 = undefined;
-            var errw = std.fs.File.stderr().writer(&buf);
+            var errw = std.Io.File.stderr().writerStreaming(init.io, &buf);
             try errw.interface.print("FAIL file={s} err={s}\n", .{ path, @errorName(err) });
             try errw.interface.flush();
             std.process.exit(1);
@@ -423,7 +423,7 @@ pub fn main() !void {
         return;
     }
     var stderr_buf: [4096]u8 = undefined;
-    var stderr = std.fs.File.stderr().writer(&stderr_buf);
+    var stderr = std.Io.File.stderr().writerStreaming(init.io, &stderr_buf);
     const w = &stderr.interface;
 
     if (!quiet) {

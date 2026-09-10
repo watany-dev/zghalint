@@ -128,14 +128,13 @@ fn runWithTagCache(entries: ?[]const TagCacheEntry, uses_ref: ?[]const u8) Diagn
         stale_refs_arena = prev_arena;
     }
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
+    stale_refs_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer stale_refs_arena.?.deinit();
 
     if (entries) |es| {
-        var cache = std.StringHashMap(TagResolution).init(arena.allocator());
+        var cache = std.StringHashMap(TagResolution).init(stale_refs_arena.?.allocator());
         for (es) |e| cache.put(e.key, e.resolution) catch unreachable;
         tag_cache = cache;
-        stale_refs_arena = arena;
     } else {
         tag_cache = null;
     }

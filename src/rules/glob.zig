@@ -23,7 +23,7 @@ const GlobValidator = struct {
             .prec = false,
             .pat = pat,
             .pos = 0,
-            .errs = .{},
+            .errs = .empty,
             .allocator = allocator,
         };
     }
@@ -315,21 +315,21 @@ test "validateRefGlob: unclosed character class" {
     const errs = validateRefGlob(testing.allocator, "v[1.*");
     defer freeGlobErrors(testing.allocator, errs);
     try testing.expect(errs.len > 0);
-    try testing.expect(std.mem.indexOf(u8, errs[0].message, "missing ]") != null);
+    try testing.expect(std.mem.find(u8, errs[0].message, "missing ]") != null);
 }
 
 test "validateRefGlob: + at start" {
     const errs = validateRefGlob(testing.allocator, "+foo");
     defer freeGlobErrors(testing.allocator, errs);
     try testing.expect(errs.len > 0);
-    try testing.expect(std.mem.indexOf(u8, errs[0].message, "the preceding character must not be special character") != null);
+    try testing.expect(std.mem.find(u8, errs[0].message, "the preceding character must not be special character") != null);
 }
 
 test "validatePathGlob: rejects ./ prefix" {
     const errs = validatePathGlob(testing.allocator, "./src/**");
     defer freeGlobErrors(testing.allocator, errs);
     try testing.expectEqual(@as(usize, 1), errs.len);
-    try testing.expect(std.mem.indexOf(u8, errs[0].message, "'.' and '..' are not allowed") != null);
+    try testing.expect(std.mem.find(u8, errs[0].message, "'.' and '..' are not allowed") != null);
 }
 
 test "validateRefGlob: empty pattern" {

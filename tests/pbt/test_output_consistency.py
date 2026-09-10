@@ -4,7 +4,10 @@ summary arithmetic, span validity, and sort stability."""
 from __future__ import annotations
 
 import json
+import subprocess
+import tempfile
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 
 from tests.pbt.conftest import (
@@ -19,6 +22,25 @@ PBT_SETTINGS = settings(
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow],
 )
+
+
+@pytest.mark.parametrize("option", ["--help", "--unknown-option"])
+def test_redirected_output_preserves_inherited_position(zghalint_bin, option):
+    prefix = b"prior command output\n"
+    with tempfile.TemporaryFile() as output:
+        output.write(prefix)
+        output.flush()
+        subprocess.run(
+            [str(zghalint_bin), option],
+            stdout=output,
+            stderr=output,
+            timeout=10,
+            check=False,
+        )
+        output.seek(0)
+        data = output.read()
+    assert data.startswith(prefix)
+    assert len(data) > len(prefix)
 
 
 # ============================================================

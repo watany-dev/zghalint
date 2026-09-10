@@ -54,7 +54,7 @@ published to it, so `brew` installs the newest stable release.
 
 ### Build from source
 
-Requires **Zig 0.15.2** or later (the authoritative value is `minimum_zig_version` in `build.zig.zon`; see [docs/maintenance.md](docs/maintenance.md)).
+Requires **Zig 0.16.0** or later (the authoritative value is `minimum_zig_version` in `build.zig.zon`; see [docs/maintenance.md](docs/maintenance.md)).
 
 ```bash
 git clone https://github.com/watany-dev/zghalint.git

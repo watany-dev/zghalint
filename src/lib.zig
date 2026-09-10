@@ -1,3 +1,5 @@
+pub const runtime = @import("runtime.zig");
+
 pub const yaml = struct {
     pub const Parser = @import("yaml/parser.zig").Parser;
     pub const types = @import("yaml/types.zig");

@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const test_support = @import("../test_support.zig");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
@@ -90,7 +91,7 @@ fn dropSc005CoveredByImpostor(
     workflow: *const Workflow,
     list: *DiagnosticList,
 ) void {
-    var drop = std.ArrayList(usize){};
+    var drop = std.ArrayList(usize).empty;
     defer drop.deinit(allocator);
 
     var k_sc005: usize = 0;
@@ -174,12 +175,12 @@ fn dropSec018CoveredByArtipacked(list: *DiagnosticList) void {
 pub var network_deadline_ns: ?i128 = null;
 
 pub fn setNetworkDeadline(timeout_ns: i128) void {
-    network_deadline_ns = std.time.nanoTimestamp() + timeout_ns;
+    network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds + timeout_ns;
 }
 
 pub fn isNetworkDeadlineExceeded() bool {
     const deadline = network_deadline_ns orelse return false;
-    return std.time.nanoTimestamp() >= deadline;
+    return std.Io.Clock.awake.now(runtime.io()).nanoseconds >= deadline;
 }
 
 pub fn clearNetworkDeadline() void {
@@ -197,7 +198,7 @@ pub fn isValidGitHubComponent(s: []const u8) bool {
         }
     }
     // "." and ".." would enable path traversal in the URL.
-    if (std.mem.eql(u8, s, ".") or std.mem.indexOf(u8, s, "..") != null) return false;
+    if (std.mem.eql(u8, s, ".") or std.mem.find(u8, s, "..") != null) return false;
     return true;
 }
 
@@ -212,7 +213,7 @@ pub fn isValidGitRef(s: []const u8) bool {
         }
     }
     // ".." is the only dot pattern that enables path traversal
-    if (std.mem.indexOf(u8, s, "..") != null) return false;
+    if (std.mem.find(u8, s, "..") != null) return false;
     return true;
 }
 
@@ -488,7 +489,7 @@ test "isNetworkDeadlineExceeded: future deadline returns false" {
 }
 
 test "isNetworkDeadlineExceeded: past deadline returns true" {
-    network_deadline_ns = std.time.nanoTimestamp() - 1;
+    network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer clearNetworkDeadline();
     try std.testing.expect(isNetworkDeadlineExceeded());
 }

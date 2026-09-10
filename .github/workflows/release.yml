@@ -86,9 +86,8 @@ jobs:
             zig_target: aarch64-linux
             native: true
           # macOS は macos-15 に固定する。macos-latest が載せる新しい SDK では
-          # Zig 0.15.2 のリンカが libSystem のシンボルを解決できずビルドが落ちる
-          # （詳細は ci.yml の build ジョブのコメント）。Zig 側が対応したら
-          # ci.yml と併せて macos-latest に戻す。
+          # 0.15.2 で libSystem の解決に失敗したため。0.16 の最新 SDK での
+          # ネイティブ動作確認までは維持し、変更時は ci.yml も揃える。
           #
           # macOS ランナーは arm64 であり、x86_64 バイナリの実行には Rosetta が
           # 要る。存在は保証されないため起動テストの対象外とする。

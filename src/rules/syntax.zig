@@ -190,19 +190,19 @@ fn formatUnexpectedKeyMessage(
     uk: UnknownKey,
     suggestion: ?[]const u8,
 ) ![]const u8 {
-    var message = std.ArrayList(u8){};
+    var message = std.ArrayList(u8).empty;
     defer message.deinit(alloc);
-    const writer = message.writer(alloc);
-    try writer.print(
+    try message.print(
+        alloc,
         "unexpected key \"{s}\" for \"{s}\" section. expected one of ",
         .{ uk.key, uk.section },
     );
     for (uk.expected, 0..) |key, i| {
-        if (i > 0) try writer.writeAll(", ");
-        try writer.print("\"{s}\"", .{key});
+        if (i > 0) try message.appendSlice(alloc, ", ");
+        try message.print(alloc, "\"{s}\"", .{key});
     }
     if (suggestion) |s| {
-        try writer.print("; did you mean \"{s}\"?", .{s});
+        try message.print(alloc, "; did you mean \"{s}\"?", .{s});
     }
     return try message.toOwnedSlice(alloc);
 }
@@ -268,7 +268,7 @@ fn isValidId(id: []const u8) bool {
 }
 
 fn reportInvalidId(list: *DiagnosticList, what: []const u8, id: []const u8, span: Span) void {
-    if (std.mem.indexOf(u8, id, "${{") != null) return;
+    if (std.mem.find(u8, id, "${{") != null) return;
     if (isValidId(id)) return;
 
     const alloc = list.fixAllocator();
@@ -374,11 +374,11 @@ fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList)
 
         // An expression is substituted before the runner ever sees the name,
         // so the literal text here says nothing about the final name.
-        if (std.mem.indexOf(u8, key.name, "${{") != null) continue;
+        if (std.mem.find(u8, key.name, "${{") != null) continue;
 
         // `=` and `&` break the `NAME=value` form written to the environment
         // file, and a space cannot appear in a shell variable name.
-        if (std.mem.indexOfAny(u8, key.name, "&= ") == null) continue;
+        if (std.mem.findAny(u8, key.name, "&= ") == null) continue;
 
         const message = std.fmt.allocPrint(
             list.fixAllocator(),
@@ -423,7 +423,7 @@ fn buildDuplicateNeedsFix(
     if (job.needs_deletes.len != job.needs.len) return null;
 
     const alloc = diag_list.fixAllocator();
-    var indices = std.ArrayList(usize){};
+    var indices = std.ArrayList(usize).empty;
     for (job.needs[first_repeat..], first_repeat..) |later, i| {
         if (!std.ascii.eqlIgnoreCase(later, dep)) continue;
         indices.append(alloc, i) catch return null;
@@ -472,7 +472,7 @@ fn buildDuplicateMatrixFix(
 ) ?diagnostics_mod.Fix {
     if (axis.value_deletes.len != axis.values.len) return null;
 
-    var indices = std.ArrayList(usize){};
+    var indices = std.ArrayList(usize).empty;
     for (axis.values[first_repeat..], first_repeat..) |later, i| {
         if (!later.eql(value)) continue;
         indices.append(alloc, i) catch return null;
@@ -558,7 +558,7 @@ fn matrixModifier(matrix: workflow_types.Matrix, name: []const u8) ?workflow_typ
 
 fn isExpression(node: Node) bool {
     return switch (node) {
-        .scalar => |s| std.mem.indexOf(u8, s.value, "${{") != null,
+        .scalar => |s| std.mem.find(u8, s.value, "${{") != null,
         else => false,
     };
 }
@@ -635,7 +635,7 @@ fn checkMatrixExclude(
         };
         for (mapping.entries) |kv| {
             const key = kv.key.value;
-            if (std.mem.indexOf(u8, key, "${{") != null) continue;
+            if (std.mem.find(u8, key, "${{") != null) continue;
 
             const axis = findMatrixAxis(matrix, key) orelse {
                 var suffix_buf: [64]u8 = undefined;
@@ -719,7 +719,7 @@ fn checkMatrixInclude(
         };
         for (mapping.entries) |kv| {
             const key = kv.key.value;
-            if (std.mem.indexOf(u8, key, "${{") != null) continue;
+            if (std.mem.find(u8, key, "${{") != null) continue;
             if (findMatrixAxis(matrix, key) != null) continue;
 
             var near: ?[]const u8 = null;
@@ -776,7 +776,7 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.on.events) |event| {
         // A name built from an expression is not a literal event name at all.
         // An empty name is not exempt: `on: ""` triggers nothing either.
-        if (std.mem.indexOf(u8, event.name, "${{") != null) continue;
+        if (std.mem.find(u8, event.name, "${{") != null) continue;
         if (workflow_events.isKnown(event.name)) continue;
 
         var suffix_buf: [64]u8 = undefined;
@@ -817,7 +817,7 @@ fn availableHint(
 /// SYN010/SYN011 both trust the trigger table, so an event the table does not
 /// know is left to SYN009 rather than reported twice with a second wording.
 fn knownEventSpec(event: workflow_types.EventConfig) ?workflow_events.EventSpec {
-    if (std.mem.indexOf(u8, event.name, "${{") != null) return null;
+    if (std.mem.find(u8, event.name, "${{") != null) return null;
     return workflow_events.find(event.name);
 }
 
@@ -847,7 +847,7 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
         const known = spec.activity_types orelse continue;
 
         for (event.activity_types.values, 0..) |value, i| {
-            if (std.mem.indexOf(u8, value, "${{") != null) continue;
+            if (std.mem.find(u8, value, "${{") != null) continue;
 
             var found = false;
             for (known) |name| {
@@ -1126,7 +1126,7 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
         for (event.schedules) |entry| {
             const tz = entry.timezone orelse continue;
             // A name built from an expression is not a literal zone name at all.
-            if (std.mem.indexOf(u8, tz, "${{") != null) continue;
+            if (std.mem.find(u8, tz, "${{") != null) continue;
             if (timezones.isKnown(tz)) continue;
 
             var suffix_buf: [96]u8 = undefined;
@@ -1432,9 +1432,9 @@ test "SYN001: unknown job key is reported" {
     const diag = diags.get(0);
     try testing.expectEqualStrings("SYN001", diag.rule_id);
     try testing.expect(diag.severity == .@"error");
-    try testing.expect(std.mem.indexOf(u8, diag.message, "timeout-minute") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"job\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"timeout-minutes\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "timeout-minute") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"job\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"timeout-minutes\"") != null);
 }
 
 test "SYN001: unknown step key is reported" {
@@ -1453,9 +1453,9 @@ test "SYN001: unknown step key is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "runs") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"step\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"run\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "runs") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"step\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"run\"") != null);
 }
 
 test "SYN001: valid workflow produces no diagnostic" {
@@ -1537,10 +1537,10 @@ test "SYN001: unknown workflow key is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "default") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"workflow\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"defaults\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"true\"") == null);
+    try testing.expect(std.mem.find(u8, diag.message, "default") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"workflow\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"defaults\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"true\"") == null);
 }
 
 test "SYN001: expected keys are sorted" {
@@ -1559,7 +1559,7 @@ test "SYN001: expected keys are sorted" {
     try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"concurrency\", \"defaults\", \"env\", \"jobs\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "\"concurrency\", \"defaults\", \"env\", \"jobs\"") != null);
 }
 
 test "SYN001: unknown strategy key is reported" {
@@ -1582,9 +1582,9 @@ test "SYN001: unknown strategy key is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "fail_fast") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"strategy\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"fail-fast\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "fail_fast") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"strategy\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"fail-fast\"") != null);
 }
 
 test "SYN001: unknown container key is reported" {
@@ -1606,9 +1606,9 @@ test "SYN001: unknown container key is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "imagen") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"container\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"image\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "imagen") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"container\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"image\"") != null);
 }
 
 test "SYN001: unknown services key is reported" {
@@ -1631,8 +1631,8 @@ test "SYN001: unknown services key is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "imagen") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"services\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "imagen") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"services\"") != null);
 }
 
 test "SYN001: unknown defaults.run key is reported" {
@@ -1654,9 +1654,9 @@ test "SYN001: unknown defaults.run key is reported" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "shel") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"run\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"shell\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "shel") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"run\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"shell\"") != null);
 }
 
 test "SYN001: step keys are case-sensitive" {
@@ -1676,8 +1676,8 @@ test "SYN001: step keys are case-sensitive" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "Shell") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"shell\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "Shell") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"shell\"") != null);
 }
 
 test "SYN001: action step rejects shell" {
@@ -1697,8 +1697,8 @@ test "SYN001: action step rejects shell" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "shell") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "\"step\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "shell") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"step\"") != null);
 }
 
 test "SYN001: distant key has no did-you-mean" {
@@ -1717,8 +1717,8 @@ test "SYN001: distant key has no did-you-mean" {
     try runSyn001(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "totally-unrelated") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean") == null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "totally-unrelated") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean") == null);
 }
 
 test "SYN001: message survives appendOwning after source list deinit" {
@@ -1744,7 +1744,7 @@ test "SYN001: message survives appendOwning after source list deinit" {
     }
 
     try testing.expectEqualStrings("SYN001", dst.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, dst.get(0).message, "timeout-minute") != null);
+    try testing.expect(std.mem.find(u8, dst.get(0).message, "timeout-minute") != null);
 }
 
 test "SYN001: a typo is a safe rename when the target key is absent" {
@@ -1770,8 +1770,8 @@ test "SYN001: a typo is a safe rename when the target key is absent" {
     try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
     try testing.expectEqual(diagnostics_mod.FixSafety.safe, outcome.first_safety.?);
     try testing.expectEqual(@as(usize, 1), outcome.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minutes:") != null);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minute:") == null);
+    try testing.expect(std.mem.find(u8, outcome.content, "timeout-minutes:") != null);
+    try testing.expect(std.mem.find(u8, outcome.content, "timeout-minute:") == null);
 }
 
 test "SYN001: no autofix when the suggested sibling already exists" {
@@ -1821,8 +1821,8 @@ test "SYN001: a case-only mismatch of a known key is still renamed" {
 
     try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
     try testing.expectEqual(@as(usize, 1), outcome.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minutes:") != null);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "Timeout-minutes:") == null);
+    try testing.expect(std.mem.find(u8, outcome.content, "timeout-minutes:") != null);
+    try testing.expect(std.mem.find(u8, outcome.content, "Timeout-minutes:") == null);
 }
 
 test "SYN001: no autofix when a sibling differs only in letter case" {
@@ -1847,7 +1847,7 @@ test "SYN001: no autofix when a sibling differs only in letter case" {
     defer outcome.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 2), outcome.diagnostic_count);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "timeout-minute:") != null);
+    try testing.expect(std.mem.find(u8, outcome.content, "timeout-minute:") != null);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, outcome.content, "timeout-minutes:"));
 }
 
@@ -2409,9 +2409,9 @@ test "SYN002: duplicated steps key is reported" {
     const diag = diags.get(0);
     try testing.expectEqualStrings("SYN002", diag.rule_id);
     try testing.expect(diag.severity == .@"error");
-    try testing.expect(std.mem.indexOf(u8, diag.message, "STEPS") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "job") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "previously defined at line:5,col:5") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "STEPS") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "job") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "previously defined at line:5,col:5") != null);
     try testing.expectEqual(@as(u32, 7), diag.span.start_line);
     try testing.expectEqual(@as(u32, 5), diag.span.start_col);
 }
@@ -2436,7 +2436,7 @@ test "SYN002: duplicate detection is case-insensitive in matrix" {
     try collectDuplicateKeyDiagnostics(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "matrix") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "matrix") != null);
 }
 
 test "SYN002: distinct env keys are not reported" {
@@ -2480,8 +2480,8 @@ test "SYN002: a key repeated three times reports each extra occurrence" {
     try collectDuplicateKeyDiagnostics(source, &diags);
 
     try testing.expectEqual(@as(usize, 2), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "foo") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "Foo") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "foo") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "Foo") != null);
 }
 
 test "SYN002: with mapping duplicates are reported" {
@@ -2503,7 +2503,7 @@ test "SYN002: with mapping duplicates are reported" {
     try collectDuplicateKeyDiagnostics(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "with") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "with") != null);
 }
 
 test "SYN002: flow mapping duplicates are reported" {
@@ -2523,7 +2523,7 @@ test "SYN002: flow mapping duplicates are reported" {
     try collectDuplicateKeyDiagnostics(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "env") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "env") != null);
 }
 
 test "SYN002: duplicate job IDs are left to SYN005" {
@@ -2568,7 +2568,7 @@ test "SYN002: a mapping named jobs outside the workflow root is still checked" {
     try collectDuplicateKeyDiagnostics(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"BUILD\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "\"BUILD\"") != null);
 }
 
 test "SYN002: a jobs mapping nested in a root sequence is still checked" {
@@ -2591,7 +2591,7 @@ test "SYN002: a jobs mapping nested in a root sequence is still checked" {
     try collectDuplicateKeyDiagnostics(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"A\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "\"A\"") != null);
 }
 
 test "SYN002: a second root-level jobs mapping is still checked" {
@@ -2617,8 +2617,8 @@ test "SYN002: a second root-level jobs mapping is still checked" {
     // The duplicate `jobs:` key itself, plus the job IDs SYN005 cannot reach
     // because the parser only reads the first `jobs:` mapping.
     try testing.expectEqual(@as(usize, 2), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"jobs\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"OTHER\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "\"jobs\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"OTHER\"") != null);
 }
 
 test "SYN002: a job named env is still a job section" {
@@ -2638,7 +2638,7 @@ test "SYN002: a job named env is still a job section" {
     try collectDuplicateKeyDiagnostics(source, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "job") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "job") != null);
 }
 
 test "SYN002: engine.run emits via yaml_root" {
@@ -2793,7 +2793,7 @@ test "SYN004: mapping value type validation" {
         try testing.expectEqual(case.want, diags.len());
 
         if (case.message_contains) |needle| {
-            try testing.expect(std.mem.indexOf(u8, diags.get(0).message, needle) != null);
+            try testing.expect(std.mem.find(u8, diags.get(0).message, needle) != null);
         }
 
         for (diags.items.items) |diag| {
@@ -3088,11 +3088,11 @@ test "SYN007: invalid env var names are reported at every level" {
         diags.get(0).message,
     );
     try testing.expectEqual(@as(u32, 3), diags.get(0).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"FOO=BAR\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"FOO=BAR\"") != null);
     try testing.expectEqual(@as(u32, 8), diags.get(1).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diags.get(2).message, "\"FOO&BAR\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(2).message, "\"FOO&BAR\"") != null);
     try testing.expectEqual(@as(u32, 9), diags.get(2).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diags.get(3).message, "\"A B\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(3).message, "\"A B\"") != null);
     try testing.expectEqual(@as(u32, 13), diags.get(3).span.start_line);
 }
 
@@ -3168,9 +3168,9 @@ test "SYN007: container and service env keys are validated" {
     try runSyn007(source, arena.allocator(), &diags);
 
     try testing.expectEqual(@as(usize, 2), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"BAD KEY\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "\"BAD KEY\"") != null);
     try testing.expectEqual(@as(u32, 8), diags.get(0).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"X=Y\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"X=Y\"") != null);
     try testing.expectEqual(@as(u32, 14), diags.get(1).span.start_line);
 }
 
@@ -3219,7 +3219,7 @@ test "SYN007: a non-scalar env value still has its key validated" {
     try runSyn007(source, arena.allocator(), &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"A B\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "\"A B\"") != null);
 }
 
 test "SYN008: duplicated job ID is reported" {
@@ -3912,8 +3912,8 @@ test "SYN009: a typo of a non-privileged trigger is a safe rename" {
     try testing.expectEqual(@as(usize, 1), outcome.diagnostic_count);
     try testing.expectEqual(diagnostics_mod.FixSafety.safe, outcome.first_safety.?);
     try testing.expectEqual(@as(usize, 1), outcome.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "pull_request:") != null);
-    try testing.expect(std.mem.indexOf(u8, outcome.content, "pull_reqeust:") == null);
+    try testing.expect(std.mem.find(u8, outcome.content, "pull_request:") != null);
+    try testing.expect(std.mem.find(u8, outcome.content, "pull_reqeust:") == null);
 }
 
 test "SYN009: a typo of pull_request_target is unsafe and --fix leaves it" {
@@ -3949,8 +3949,8 @@ test "SYN009: a typo of pull_request_target is unsafe and --fix leaves it" {
     defer unsafe.deinit(testing.allocator);
     try testing.expectEqual(diagnostics_mod.FixSafety.unsafe, unsafe.first_safety.?);
     try testing.expectEqual(@as(usize, 1), unsafe.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, unsafe.content, "pull_request_target:") != null);
-    try testing.expect(std.mem.indexOf(u8, unsafe.content, "pull_request_targt:") == null);
+    try testing.expect(std.mem.find(u8, unsafe.content, "pull_request_target:") != null);
+    try testing.expect(std.mem.find(u8, unsafe.content, "pull_request_targt:") == null);
 }
 
 test "SYN009: a typo of workflow_run is unsafe" {
@@ -3984,7 +3984,7 @@ test "SYN009: a typo of workflow_run is unsafe" {
     defer unsafe.deinit(testing.allocator);
     try testing.expectEqual(diagnostics_mod.FixSafety.unsafe, unsafe.first_safety.?);
     try testing.expectEqual(@as(usize, 1), unsafe.edits_applied);
-    try testing.expect(std.mem.indexOf(u8, unsafe.content, "workflow_run:") != null);
+    try testing.expect(std.mem.find(u8, unsafe.content, "workflow_run:") != null);
 }
 
 test "SYN012: branches with branches-ignore is an error" {
@@ -4157,7 +4157,7 @@ test "SYN013: unclosed character class in branches" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings("SYN013", diags.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "missing ]") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "missing ]") != null);
 }
 
 test "SYN013: + at start of path pattern" {
@@ -4178,7 +4178,7 @@ test "SYN013: + at start of path pattern" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expectEqualStrings("SYN013", diags.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "the preceding character must not be special character") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "the preceding character must not be special character") != null);
     try testing.expectEqual(@as(u32, 10), diags.get(0).span.start_col);
 }
 
@@ -4223,7 +4223,7 @@ test "SYN013: rejects ./ path prefix" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "'.' and '..' are not allowed") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "'.' and '..' are not allowed") != null);
 }
 
 test "SYN014: invalid cron expressions are reported" {
@@ -4265,7 +4265,7 @@ test "SYN015: schedules shorter than 5 minutes are reported" {
     try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN014"));
     try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "SYN015"));
     const diag = test_support.findDiagnostic(&diags, "SYN015").?;
-    try testing.expect(std.mem.indexOf(u8, diag.message, "60 seconds") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "60 seconds") != null);
 }
 
 test "SYN014/SYN015: valid daily schedule is clean" {
@@ -4306,10 +4306,10 @@ test "SYN016: unknown timezone names are reported" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN016"));
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"Asia/Tokyo\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean \"Asia/Tokyo\"") != null);
     try testing.expectEqual(@as(usize, 4), diags.get(0).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "\"JST\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "did you mean") == null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"JST\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "did you mean") == null);
 }
 
 test "SYN016: IANA names and expression values are clean" {
@@ -4372,11 +4372,11 @@ test "SYN017: invalid workflow_dispatch inputs from the issue example" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 4), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"staging\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "default \"staging\"") != null);
     try testing.expectEqual(@as(usize, 6), diags.get(0).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "is not a valid \"boolean\" value") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(2).message, "invalid input type \"enum\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(3).message, "\"options\" is required") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "is not a valid \"boolean\" value") != null);
+    try testing.expect(std.mem.find(u8, diags.get(2).message, "invalid input type \"enum\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(3).message, "\"options\" is required") != null);
 }
 
 test "SYN017: options outside type choice and an empty options list are reported" {
@@ -4401,8 +4401,8 @@ test "SYN017: options outside type choice and an empty options list are reported
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 2), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "only available for type \"choice\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(1).message, "is empty") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "only available for type \"choice\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "is empty") != null);
 }
 
 test "SYN017: number default and untyped inputs" {
@@ -4427,7 +4427,7 @@ test "SYN017: number default and untyped inputs" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "is not a valid \"number\" value") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "is not a valid \"number\" value") != null);
 }
 
 test "SYN017: valid workflow_dispatch inputs are clean" {
@@ -4480,8 +4480,8 @@ test "SYN017: an untyped input carrying options is still reported" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "only available for type \"choice\"") != null);
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "has type \"string\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "only available for type \"choice\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "has type \"string\"") != null);
 }
 
 test "SYN017: a malformed options list does not abort the parse" {
@@ -4506,7 +4506,7 @@ test "SYN017: a malformed options list does not abort the parse" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "default \"prod\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "default \"prod\"") != null);
 }
 
 test "SYN017: YAML 1.2 boolean spellings are accepted as defaults" {
@@ -4535,7 +4535,7 @@ test "SYN017: YAML 1.2 boolean spellings are accepted as defaults" {
 
     // `yes` is YAML 1.1 only, so it stays a string and is still reported.
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "\"c\"") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "\"c\"") != null);
 }
 
 test "SYN017: a scalar options value counts as no options" {
@@ -4557,7 +4557,7 @@ test "SYN017: a scalar options value counts as no options" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "is empty") != null);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "is empty") != null);
 }
 
 fn runSyn018(source: []const u8) !DiagnosticList {
@@ -4590,8 +4590,8 @@ test "SYN018: duplicate scalar values in matrix axes are reported" {
     const first = diags.get(0);
     try testing.expectEqualStrings("SYN018", first.rule_id);
     try testing.expect(first.severity == .warning);
-    try testing.expect(std.mem.indexOf(u8, first.message, "\"ubuntu-latest\"") != null);
-    try testing.expect(std.mem.indexOf(u8, first.message, "matrix \"os\"") != null);
+    try testing.expect(std.mem.find(u8, first.message, "\"ubuntu-latest\"") != null);
+    try testing.expect(std.mem.find(u8, first.message, "matrix \"os\"") != null);
     try testing.expectEqual(@as(u32, 6), first.span.start_line);
     try testing.expectEqual(@as(u32, 7), diags.get(1).span.start_line);
 }
@@ -4795,8 +4795,8 @@ test "SYN018: duplicate include entries are reported as entries" {
 
     try testing.expectEqual(@as(usize, 1), diags.len());
     const diag = diags.get(0);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "duplicate entry") != null);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "matrix \"include\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "duplicate entry") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "matrix \"include\"") != null);
 }
 
 test "SYN018: include entries differing in one value are clean" {
