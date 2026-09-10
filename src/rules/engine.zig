@@ -187,6 +187,24 @@ pub fn clearNetworkDeadline() void {
     network_deadline_ns = null;
 }
 
+/// Upper bound for a single GitHub API request. The success path streams
+/// ~23 requests over one connection with none approaching this, and half of
+/// the 10 s overall deadline leaves room for a slow first connection
+/// (DNS + TCP + TLS + CONNECT). See `docs/adr/0016-*.md` D5.
+pub const request_budget_cap_ns: i128 = 5 * std.time.ns_per_s;
+
+/// Budget for the next single request: the smaller of the remaining overall
+/// deadline and `request_budget_cap_ns`. `.none` without an overall deadline.
+/// An exceeded deadline yields a zero duration so the caller times out at
+/// once instead of connecting.
+pub fn requestBudget() std.Io.Timeout {
+    const deadline = network_deadline_ns orelse return .none;
+    const now = std.Io.Clock.awake.now(runtime.io()).nanoseconds;
+    const remaining = @max(deadline - now, 0);
+    const budget = @min(remaining, request_budget_cap_ns);
+    return .{ .duration = .{ .raw = .fromNanoseconds(@intCast(budget)), .clock = .awake } };
+}
+
 /// Guards GitHub API URL path segments; the allowed character set is
 /// GitHub's naming rules for owners, repos, and refs.
 pub fn isValidGitHubComponent(s: []const u8) bool {
@@ -492,6 +510,41 @@ test "isNetworkDeadlineExceeded: past deadline returns true" {
     network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer clearNetworkDeadline();
     try std.testing.expect(isNetworkDeadlineExceeded());
+}
+
+fn budgetNanoseconds(timeout: std.Io.Timeout) i128 {
+    return switch (timeout) {
+        .none => unreachable,
+        .duration => |d| d.raw.nanoseconds,
+        .deadline => unreachable,
+    };
+}
+
+test "requestBudget: no deadline set returns none" {
+    clearNetworkDeadline();
+    try std.testing.expectEqual(std.Io.Timeout.none, requestBudget());
+}
+
+test "requestBudget: long remaining deadline is capped" {
+    setNetworkDeadline(8 * std.time.ns_per_s);
+    defer clearNetworkDeadline();
+    const budget = budgetNanoseconds(requestBudget());
+    try std.testing.expect(budget <= request_budget_cap_ns);
+    try std.testing.expect(budget > request_budget_cap_ns - std.time.ns_per_s);
+}
+
+test "requestBudget: short remaining deadline is used as is" {
+    setNetworkDeadline(2 * std.time.ns_per_s);
+    defer clearNetworkDeadline();
+    const budget = budgetNanoseconds(requestBudget());
+    try std.testing.expect(budget <= 2 * std.time.ns_per_s);
+    try std.testing.expect(budget > std.time.ns_per_s);
+}
+
+test "requestBudget: exceeded deadline yields a zero budget" {
+    network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
+    defer clearNetworkDeadline();
+    try std.testing.expectEqual(@as(i128, 0), budgetNanoseconds(requestBudget()));
 }
 
 test "postProcess: drops SC005 when same step is impostor" {
