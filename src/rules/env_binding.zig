@@ -29,7 +29,9 @@ pub const Occurrence = struct {
 pub const max_occurrences = 16;
 
 pub const Occurrences = struct {
-    buf: [max_occurrences]Occurrence = undefined,
+    /// Spelled out at every construction site rather than defaulted to
+    /// `undefined`: the omitted-field form fills the buffer (#403).
+    buf: [max_occurrences]Occurrence,
     len: usize = 0,
     /// Set when the step had more occurrences than fit, which makes any fix
     /// built from the list a partial rewrite.
@@ -453,7 +455,7 @@ test "reference declines a single-quoted occurrence" {
 }
 
 test "Occurrences marks the overflow instead of truncating silently" {
-    var occs: Occurrences = .{};
+    var occs: Occurrences = .{ .buf = undefined };
     var i: usize = 0;
     while (i < max_occurrences + 1) : (i += 1) occs.append(.{ .offset = i, .len = 1 });
     try testing.expectEqual(max_occurrences, occs.len);
