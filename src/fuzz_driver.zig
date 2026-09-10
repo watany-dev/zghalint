@@ -216,6 +216,14 @@ const Mutator = struct {
         return slice[self.rng.uintLessThan(usize, slice.len)];
     }
 
+    fn lineStart(_: Mutator, s: []const u8, at: usize) usize {
+        return if (std.mem.lastIndexOfScalar(u8, s[0..at], '\n')) |i| i + 1 else 0;
+    }
+
+    fn lineEnd(_: Mutator, s: []const u8, at: usize) usize {
+        return if (std.mem.indexOfScalarPos(u8, s, at, '\n')) |i| i + 1 else s.len;
+    }
+
     /// Builds one input: a corpus entry (or a splice of two) put through a
     /// handful of mutations. About one input in thirty-two is unstructured
     /// noise, which keeps the tokenizer's error paths exercised.
@@ -248,7 +256,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 16)) {
+        switch (self.rng.uintLessThan(u8, 18)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -375,6 +383,31 @@ const Mutator = struct {
                 if (colon >= nl) return;
                 try buf.insertSlice(alloc, nl, " }}");
                 try buf.insertSlice(alloc, colon + 1, " ${{");
+            },
+            // Graft a line from another corpus entry into the middle of this
+            // one. The splice in `generate` replaces everything after its cut,
+            // so a foreign job body never lands under an existing `jobs:`;
+            // grafted at a line boundary it does.
+            16 => {
+                const other = self.pick(self.corpus);
+                if (other.len == 0) return;
+                const from = self.lineStart(other, self.rng.uintLessThan(usize, other.len));
+                const at = if (len == 0) 0 else self.lineStart(buf.items, self.rng.uintLessThan(usize, len));
+                try buf.insertSlice(alloc, at, other[from..self.lineEnd(other, from)]);
+            },
+            // Move a line to another line boundary, so keys appear out of the
+            // order they are written in (`steps:` above `runs-on:`, a sequence
+            // entry away from its parent). No edit in place produces that.
+            17 => {
+                if (len == 0) return;
+                const start = self.lineStart(buf.items, self.rng.uintLessThan(usize, len));
+                const end = self.lineEnd(buf.items, start);
+                const line = try alloc.dupe(u8, buf.items[start..end]);
+                defer alloc.free(line);
+                buf.replaceRangeAssumeCapacity(start, end - start, &.{});
+                const rest = buf.items.len;
+                const at = if (rest == 0) 0 else self.lineStart(buf.items, self.rng.uintLessThan(usize, rest));
+                try buf.insertSlice(alloc, at, line);
             },
             else => unreachable,
         }
