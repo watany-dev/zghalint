@@ -256,7 +256,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 20)) {
+        switch (self.rng.uintLessThan(u8, 21)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -447,6 +447,33 @@ const Mutator = struct {
                 }
                 buf.clearRetainingCapacity();
                 try buf.appendSlice(alloc, out.items);
+            },
+            // Rewrite a line's value as a double-quoted scalar carrying escapes.
+            // A decoded value is shorter than the source token it came from, so
+            // an offset into the value is not an offset into the file -- the
+            // same shape aliases have. Splicing `\n` in at random lands it
+            // outside quotes, where it is only two plain characters.
+            20 => {
+                if (len == 0) return;
+                const at = self.rng.uintLessThan(usize, len);
+                const start = self.lineStart(buf.items, at);
+                const nl = std.mem.indexOfScalarPos(u8, buf.items, start, '\n') orelse len;
+                const colon = std.mem.indexOfScalarPos(u8, buf.items, start, ':') orelse return;
+                if (colon + 1 >= nl) return;
+                var quoted = std.ArrayList(u8){};
+                defer quoted.deinit(alloc);
+                try quoted.appendSlice(alloc, " \"");
+                for (buf.items[colon + 1 .. nl]) |c| {
+                    if (c == '"' or c == '\\') try quoted.append(alloc, '\\');
+                    try quoted.append(alloc, c);
+                }
+                try quoted.appendSlice(alloc, self.pick(&.{
+                    "\\n",     "\\t",     "\\\"", "\\\\",
+                    "\\u00e9", "\\x41",   "\\0",  "\\N",
+                    "\\ ",     "\\u{1F}", "\\",
+                }));
+                try quoted.append(alloc, '"');
+                try buf.replaceRange(alloc, colon + 1, nl - (colon + 1), quoted.items);
             },
             else => unreachable,
         }
