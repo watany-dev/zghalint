@@ -889,6 +889,20 @@
       "line_matched": 1,
       "violations": 0
     },
+    "i-robustness/plain-scalar-wrapped-expression.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 1
+    },
+    "i-robustness/plain-scalar-wrapped-injection.yml": {
+      "detected": 0,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 0,
+      "violations": 0
+    },
     "i-robustness/seq-at-steps-column.yml": {
       "detected": 1,
       "expected": 1,
