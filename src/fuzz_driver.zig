@@ -448,7 +448,6 @@ const Mutator = struct {
                 buf.clearRetainingCapacity();
                 try buf.appendSlice(alloc, out.items);
             },
-            // Rewrite a line's value as a double-quoted scalar carrying escapes.
             // A decoded value is shorter than the source token it came from, so
             // an offset into the value is not an offset into the file -- the
             // same shape aliases have. Splicing `\n` in at random lands it
