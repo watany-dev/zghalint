@@ -49,7 +49,8 @@ const Selection = struct {
 /// (#223). The loser is decided at the overlap, so the fix that survives is
 /// the one owning the earlier edit of the conflicting pair, not necessarily
 /// the one that starts earlier in the file.
-/// Edits with invalid byte ranges are dropped without penalising their fix.
+/// A fix holding an edit with an invalid byte range is dropped whole and not
+/// counted as skipped: a second run reads the same source and drops it again.
 fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []const u8) !Selection {
     var total: usize = 0;
     for (fixes) |f| {
@@ -61,10 +62,22 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
     const owned = try allocator.alloc(OwnedEdit, total);
     defer allocator.free(owned);
 
+    const dropped = try allocator.alloc(bool, fixes.len);
+    defer allocator.free(dropped);
+    @memset(dropped, false);
+
     var idx: usize = 0;
     for (fixes, 0..) |f, fix_index| {
+        // An edit the source does not match means the rule read the file
+        // differently than it is written, so its siblings are no safer. The
+        // `run:` rewrite of an env binding landed on an alias and failed while
+        // the `env:` insertion beside it applied, so the file grew a binding
+        // every round and never settled (fuzz).
         for (f.edits) |e| {
-            if (!isValidEdit(e, source)) continue;
+            if (!isValidEdit(e, source)) dropped[fix_index] = true;
+        }
+        if (dropped[fix_index]) continue;
+        for (f.edits) |e| {
             owned[idx] = .{ .edit = snapInsertionToLineEnd(e, source), .fix_index = fix_index };
             idx += 1;
         }
@@ -83,10 +96,6 @@ fn flattenAndSort(allocator: std.mem.Allocator, fixes: []const Fix, source: []co
             return a.fix_index < b.fix_index;
         }
     }.lessThan);
-
-    const dropped = try allocator.alloc(bool, fixes.len);
-    defer allocator.free(dropped);
-    @memset(dropped, false);
 
     dropRenameInsertCollisions(flat, source, dropped);
 
@@ -495,6 +504,27 @@ test "an edit whose `expects` does not match the source is dropped" {
 
     try std.testing.expectEqualStrings(source, result.content);
     try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "one edit the source does not match drops the whole fix (fuzz)" {
+    const allocator = std.testing.allocator;
+    // The env binding rewrites the `run:` body and inserts the `env:` key that
+    // body will read. Applying only the insertion leaves a binding nothing
+    // references, and the next run inserts another one.
+    const source = "run: x\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 0, .end_byte = 0, .replacement = "env:\n  T: y\n" },
+        .{ .start_byte = 5, .end_byte = 6, .replacement = "$T", .expects = "y" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "bind to env:", .safety = .unsafe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(source, result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+    try std.testing.expectEqual(@as(usize, 0), result.fixes_skipped);
 }
 
 test "an edit that removes an anchor still aliased below is dropped (fuzz)" {
