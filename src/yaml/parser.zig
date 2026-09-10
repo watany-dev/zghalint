@@ -1074,9 +1074,13 @@ pub const Parser = struct {
                 const last_end = self.nodeEndByteInclusive(seq.items[seq.items.len - 1]) orelse return null;
                 break :blk self.flowCloseLineEnd(seq.flow, seq.close_byte, last_end);
             },
-            // A block scalar's span already ends at the start of the line that
-            // closes it; scanning on would swallow the next sibling.
-            .scalar => |sc| if (sc.style == .literal or sc.style == .folded)
+            // A block scalar that took content already ends at the start of the
+            // line that closes it; scanning on would swallow the next sibling.
+            // One that took none ends on its header line, where an insertion
+            // would land between the `|` and the newline (fuzz).
+            .scalar => |sc| if ((sc.style == .literal or sc.style == .folded) and
+                sc.span.end_byte != 0 and sc.span.end_byte <= self.source.len and
+                self.source[sc.span.end_byte - 1] == '\n')
                 sc.span.end_byte
             else
                 self.scanLineEndInclusive(sc.span.end_byte),
@@ -1580,6 +1584,25 @@ test "a scalar entry's extent covers the lines indented under it (fuzz)" {
     var plain = Parser.init(alloc, "on: push\njobs:");
     const plain_doc = try plain.parse();
     try std.testing.expectEqual(@as(usize, 9), plain_doc.mapping.entries[0].extent_end.?);
+}
+
+test "an empty block scalar ends on its own header line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `- |` takes no content, so its token stops at the `|` rather than at a
+    // line start. Ending the `on:` entry there put SEC007's inserted
+    // `permissions:` block between the `|` and the newline, where the next pass
+    // could not see it and inserted it again (fuzz).
+    var parser = Parser.init(alloc, "on:\n- |\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 8), doc.mapping.entries[0].extent_end.?);
+
+    // One that took content still ends at the line that closes it.
+    var content = Parser.init(alloc, "on:\n- |\n  x\njobs:");
+    const content_doc = try content.parse();
+    try std.testing.expectEqual(@as(usize, 12), content_doc.mapping.entries[0].extent_end.?);
 }
 
 test "a comment line does not cut an entry's indented tail short (fuzz)" {
