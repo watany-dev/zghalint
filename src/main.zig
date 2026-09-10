@@ -367,7 +367,6 @@ fn lintDocumentFile(
 fn prefetchNetworkData(
     allocator: std.mem.Allocator,
     files: []const []const u8,
-    config: *const Config,
     no_cache: bool,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -378,7 +377,6 @@ fn prefetchNetworkData(
     defer workflows.deinit(scratch);
 
     for (files) |file_path| {
-        if (config.isIgnored(file_path)) continue;
         if (documentLintFn(file_path) != null) continue;
 
         const file = std.Io.Dir.cwd().openFile(runtime.io(), file_path, .{}) catch continue;
@@ -800,7 +798,7 @@ pub fn main(init: std.process.Init) !u8 {
     // Batch all network-rule fetches before the lint pass so TLS/TCP
     // connections, advisories, and repo metadata are primed in the caches.
     if (!cli_args.offline) {
-        prefetchNetworkData(allocator, files, &config, cli_args.no_cache) catch {};
+        prefetchNetworkData(allocator, files, cli_args.no_cache) catch {};
     }
 
     var all_diags = zghalint.DiagnosticList.init(allocator);
@@ -812,7 +810,6 @@ pub fn main(init: std.process.Init) !u8 {
     var unlinted_count: usize = 0;
 
     for (files) |file_path| {
-        if (config.isIgnored(file_path)) continue;
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
             lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn)
         else
@@ -829,7 +826,6 @@ pub fn main(init: std.process.Init) !u8 {
         var total_fixed: usize = 0;
         var total_skipped: usize = 0;
         for (files) |file_path| {
-            if (config.isIgnored(file_path)) continue;
             const outcome = applyFixesForFile(allocator, file_path, &all_diags, include_unsafe) catch |err| {
                 stderr.print("error: failed to apply fixes to '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
                 had_fatal = true;
