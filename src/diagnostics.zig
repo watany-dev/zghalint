@@ -67,7 +67,7 @@ pub const DiagnosticList = struct {
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticList {
         return .{
-            .items = .{},
+            .items = .empty,
             .allocator = allocator,
             .fix_arena = std.heap.ArenaAllocator.init(allocator),
         };

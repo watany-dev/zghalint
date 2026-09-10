@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const yaml_parser = @import("yaml/parser.zig");
 const yaml_types = @import("yaml/types.zig");
 const diagnostics = @import("diagnostics.zig");
@@ -65,8 +66,8 @@ pub const Config = struct {
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{
             .rule_overrides = std.StringHashMap(RuleOverride).init(allocator),
-            .ignore_patterns = .{},
-            .runner_labels = .{},
+            .ignore_patterns = .empty,
+            .runner_labels = .empty,
             .allocator = allocator,
             .strings_arena = std.heap.ArenaAllocator.init(allocator),
         };
@@ -277,7 +278,7 @@ fn matchGlob(pattern: []const u8, str: []const u8) bool {
 /// No upward search is performed.
 pub fn defaultConfigPath() ?[]const u8 {
     const path = ".zghalint.yml";
-    std.fs.cwd().access(path, .{}) catch return null;
+    std.Io.Dir.cwd().access(runtime.io(), path, .{}) catch return null;
     return path;
 }
 

@@ -86,13 +86,14 @@ pub fn maxReposPerBatch(repos: []const RepoInput) usize {
 }
 
 pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, "query {");
 
     for (repos, 0..) |repo, idx| {
-        try buf.writer(allocator).print(
+        try buf.print(
+            allocator,
             " r{d}: repository(owner:\"{s}\", name:\"{s}\") {{ isArchived",
             .{ idx, repo.owner, repo.repo },
         );
@@ -108,7 +109,8 @@ pub fn buildQuery(allocator: Allocator, repos: []const RepoInput) ![]const u8 {
             // The tag half also carries its target oid so SEC001 / SC006 can
             // offer a SHA pin; annotated tags are dereferenced inline, exactly
             // as the `tagNodes` listing does.
-            try buf.writer(allocator).print(
+            try buf.print(
+                allocator,
                 " tag_{d}: ref(qualifiedName:\"refs/tags/{s}\") {{ name target {{ oid ... on Tag {{ target {{ oid }} }} }} }} branch_{d}: ref(qualifiedName:\"refs/heads/{s}\") {{ name }}",
                 .{ j, named, j, named },
             );
@@ -387,7 +389,7 @@ fn collectRefOids(
     const listing_obj = json_util.objField(obj, listing_name) orelse return &[_]NamedOid{};
     const nodes = json_util.arrayField(listing_obj, "nodes") orelse return &[_]NamedOid{};
 
-    var entries = std.ArrayList(NamedOid){};
+    var entries = std.ArrayList(NamedOid).empty;
     errdefer entries.deinit(allocator);
 
     for (nodes) |node_val| {
@@ -414,9 +416,9 @@ test "buildQuery: single repo with no refs" {
     const repos = [_]RepoInput{.{ .owner = "actions", .repo = "checkout" }};
     const q = try buildQuery(testing.allocator, &repos);
     defer testing.allocator.free(q);
-    try testing.expect(std.mem.indexOf(u8, q, "r0: repository(owner:\"actions\", name:\"checkout\")") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "isArchived") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "tagNodes") == null);
+    try testing.expect(std.mem.find(u8, q, "r0: repository(owner:\"actions\", name:\"checkout\")") != null);
+    try testing.expect(std.mem.find(u8, q, "isArchived") != null);
+    try testing.expect(std.mem.find(u8, q, "tagNodes") == null);
 }
 
 test "buildQuery: named refs produce tag_ and branch_ aliases" {
@@ -424,9 +426,9 @@ test "buildQuery: named refs produce tag_ and branch_ aliases" {
     const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .named_refs = &named }};
     const q = try buildQuery(testing.allocator, &repos);
     defer testing.allocator.free(q);
-    try testing.expect(std.mem.indexOf(u8, q, "tag_0: ref(qualifiedName:\"refs/tags/main\")") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "branch_0: ref(qualifiedName:\"refs/heads/main\")") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "tag_1: ref(qualifiedName:\"refs/tags/v4\")") != null);
+    try testing.expect(std.mem.find(u8, q, "tag_0: ref(qualifiedName:\"refs/tags/main\")") != null);
+    try testing.expect(std.mem.find(u8, q, "branch_0: ref(qualifiedName:\"refs/heads/main\")") != null);
+    try testing.expect(std.mem.find(u8, q, "tag_1: ref(qualifiedName:\"refs/tags/v4\")") != null);
 }
 
 test "buildQuery: sha refs pull in tagNodes subquery with pageInfo" {
@@ -434,9 +436,9 @@ test "buildQuery: sha refs pull in tagNodes subquery with pageInfo" {
     const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
     const q = try buildQuery(testing.allocator, &repos);
     defer testing.allocator.free(q);
-    try testing.expect(std.mem.indexOf(u8, q, "tagNodes: refs(refPrefix:\"refs/tags/\", first:100)") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "pageInfo { hasNextPage }") != null);
-    try testing.expect(std.mem.indexOf(u8, q, "... on Tag { target { oid } }") != null);
+    try testing.expect(std.mem.find(u8, q, "tagNodes: refs(refPrefix:\"refs/tags/\", first:100)") != null);
+    try testing.expect(std.mem.find(u8, q, "pageInfo { hasNextPage }") != null);
+    try testing.expect(std.mem.find(u8, q, "... on Tag { target { oid } }") != null);
 }
 
 test "parseResponse: archived + named ref results" {
@@ -568,12 +570,12 @@ test "parseResponse: pageInfo.hasNextPage=false keeps no_tag for non-match" {
 }
 
 test "parseResponse: 100 tag nodes without match yields unknown (legacy heuristic)" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     try buf.appendSlice(testing.allocator, "{\"data\":{\"r0\":{\"isArchived\":false,\"tagNodes\":{\"nodes\":[");
     for (0..100) |i| {
         if (i != 0) try buf.append(testing.allocator, ',');
-        try buf.writer(testing.allocator).print("{{\"name\":\"v{d}\",\"target\":{{\"oid\":\"oid{d}\"}}}}", .{ i, i });
+        try buf.print(testing.allocator, "{{\"name\":\"v{d}\",\"target\":{{\"oid\":\"oid{d}\"}}}}", .{ i, i });
     }
     try buf.appendSlice(testing.allocator, "]}}}}");
 
@@ -612,9 +614,9 @@ test "encodeRequestBody escapes quotes, backslashes, and newlines" {
     defer testing.allocator.free(body);
     try testing.expect(std.mem.startsWith(u8, body, "{\"query\":\""));
     try testing.expect(std.mem.endsWith(u8, body, "\"}"));
-    try testing.expect(std.mem.indexOf(u8, body, "\\\"b\\\"") != null);
-    try testing.expect(std.mem.indexOf(u8, body, "\\\\c") != null);
-    try testing.expect(std.mem.indexOf(u8, body, "\\n") != null);
+    try testing.expect(std.mem.find(u8, body, "\\\"b\\\"") != null);
+    try testing.expect(std.mem.find(u8, body, "\\\\c") != null);
+    try testing.expect(std.mem.find(u8, body, "\\n") != null);
 }
 
 test "batchQuery: empty repo slice short-circuits" {
@@ -738,9 +740,9 @@ test "buildQuery: branchNodes only appears when needs_impostor=true" {
     const repos_off = [_]RepoInput{.{ .owner = "o", .repo = "r", .sha_refs = &shas }};
     const q_off = try buildQuery(testing.allocator, &repos_off);
     defer testing.allocator.free(q_off);
-    try testing.expect(std.mem.indexOf(u8, q_off, "tagNodes:") != null);
-    try testing.expect(std.mem.indexOf(u8, q_off, "branchNodes:") == null);
-    try testing.expect(std.mem.indexOf(u8, q_off, "defaultBranchRef") == null);
+    try testing.expect(std.mem.find(u8, q_off, "tagNodes:") != null);
+    try testing.expect(std.mem.find(u8, q_off, "branchNodes:") == null);
+    try testing.expect(std.mem.find(u8, q_off, "defaultBranchRef") == null);
 
     const repos_on = [_]RepoInput{.{
         .owner = "o",
@@ -750,8 +752,8 @@ test "buildQuery: branchNodes only appears when needs_impostor=true" {
     }};
     const q_on = try buildQuery(testing.allocator, &repos_on);
     defer testing.allocator.free(q_on);
-    try testing.expect(std.mem.indexOf(u8, q_on, "branchNodes: refs(refPrefix:\"refs/heads/\", first:100)") != null);
-    try testing.expect(std.mem.indexOf(u8, q_on, "defaultBranchRef { name target { oid } }") != null);
+    try testing.expect(std.mem.find(u8, q_on, "branchNodes: refs(refPrefix:\"refs/heads/\", first:100)") != null);
+    try testing.expect(std.mem.find(u8, q_on, "defaultBranchRef { name target { oid } }") != null);
 }
 
 test "buildQuery: needs_impostor without sha_refs still skips branchNodes" {
@@ -764,8 +766,8 @@ test "buildQuery: needs_impostor without sha_refs still skips branchNodes" {
     }};
     const q = try buildQuery(testing.allocator, &repos);
     defer testing.allocator.free(q);
-    try testing.expect(std.mem.indexOf(u8, q, "branchNodes:") == null);
-    try testing.expect(std.mem.indexOf(u8, q, "defaultBranchRef") != null);
+    try testing.expect(std.mem.find(u8, q, "branchNodes:") == null);
+    try testing.expect(std.mem.find(u8, q, "defaultBranchRef") != null);
 }
 
 test "maxReposPerBatch: impostor-free batches keep the larger limit" {
@@ -945,5 +947,5 @@ test "buildQuery: the tag alias requests the target oid" {
     const repos = [_]RepoInput{.{ .owner = "o", .repo = "r", .named_refs = &named }};
     const q = try buildQuery(testing.allocator, &repos);
     defer testing.allocator.free(q);
-    try testing.expect(std.mem.indexOf(u8, q, "tag_0: ref(qualifiedName:\"refs/tags/v4\") { name target { oid ... on Tag { target { oid } } } }") != null);
+    try testing.expect(std.mem.find(u8, q, "tag_0: ref(qualifiedName:\"refs/tags/v4\") { name target { oid ... on Tag { target { oid } } } }") != null);
 }

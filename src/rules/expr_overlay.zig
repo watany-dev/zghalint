@@ -203,7 +203,7 @@ fn scalarType(text: []const u8) TypeRef {
     if (std.mem.eql(u8, text, "null") or std.mem.eql(u8, text, "~")) return &t.type_null;
     if (std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "false")) return &t.type_bool;
     // An expression is whatever it evaluates to at run time.
-    if (std.mem.indexOf(u8, text, "${{") != null) return any;
+    if (std.mem.find(u8, text, "${{") != null) return any;
     if (std.fmt.parseFloat(f64, text)) |_| return &t.type_number else |_| {}
     return string;
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const workflow_types = @import("../workflow/types.zig");
@@ -364,9 +365,9 @@ const valid_shell_list = "'bash', 'pwsh', 'python', 'sh' (non-Windows only), 'cm
 /// still resolves to Windows while `${{ matrix.windows_runner }}` does not.
 fn labelHas(runs_on: []const u8, needle: []const u8) bool {
     var rest = runs_on;
-    while (std.mem.indexOf(u8, rest, "${{")) |open| {
+    while (std.mem.find(u8, rest, "${{")) |open| {
         if (std.ascii.indexOfIgnoreCase(rest[0..open], needle) != null) return true;
-        const close = std.mem.indexOfPos(u8, rest, open, "}}") orelse return false;
+        const close = std.mem.findPos(u8, rest, open, "}}") orelse return false;
         rest = rest[close + 2 ..];
     }
     return std.ascii.indexOfIgnoreCase(rest, needle) != null;
@@ -383,8 +384,8 @@ fn runnerOs(job: *const Job) RunnerOs {
 /// (`perl {0}`) or an expression that only resolves at run time.
 fn isOpaqueShell(shell: []const u8) bool {
     return shell.len == 0 or
-        std.mem.indexOf(u8, shell, "{0}") != null or
-        std.mem.indexOf(u8, shell, "${{") != null;
+        std.mem.find(u8, shell, "{0}") != null or
+        std.mem.find(u8, shell, "${{") != null;
 }
 
 fn lookupShell(shell: []const u8) ?KnownShell {
@@ -560,7 +561,7 @@ const deprecated_workflow_commands = [_]DeprecatedWorkflowCommand{
 /// separator (so `::set-outputs` does not match).
 fn usesDeprecatedCommand(script: []const u8, marker: []const u8) bool {
     var offset: usize = 0;
-    while (std.mem.indexOfPos(u8, script, offset, marker)) |idx| {
+    while (std.mem.findPos(u8, script, offset, marker)) |idx| {
         const end = idx + marker.len;
         offset = end;
         const starts_word = idx == 0 or switch (script[idx - 1]) {
@@ -625,7 +626,7 @@ fn rewriteWorkflowCommandLine(
     const inner = body[i + 1 .. body.len - 1];
     // A second quote of the same kind would close the string early, leaving a
     // tail this rewrite has not looked at.
-    if (std.mem.indexOfScalar(u8, inner, quote) != null) return null;
+    if (std.mem.findScalar(u8, inner, quote) != null) return null;
     if (!std.mem.startsWith(u8, inner, cmd.marker)) return null;
     var rest = inner[cmd.marker.len..];
 
@@ -633,7 +634,7 @@ fn rewriteWorkflowCommandLine(
     if (cmd.named) {
         if (!std.mem.startsWith(u8, rest, " name=")) return null;
         rest = rest[" name=".len..];
-        const sep = std.mem.indexOf(u8, rest, "::") orelse return null;
+        const sep = std.mem.find(u8, rest, "::") orelse return null;
         name = rest[0..sep];
         rest = rest[sep + 2 ..];
         if (!isWorkflowCommandName(name)) return null;
@@ -645,7 +646,7 @@ fn rewriteWorkflowCommandLine(
 
     // A `%0A`-encoded multi-line value needs the `NAME<<EOF` delimiter form,
     // which is out of scope for this rewrite.
-    if (std.mem.indexOf(u8, rest, "%0A") != null) return null;
+    if (std.mem.find(u8, rest, "%0A") != null) return null;
 
     // `$GITHUB_*` is always double-quoted because it has to expand; the value
     // keeps the quote style it came with, so a single-quoted literal stays
@@ -675,17 +676,17 @@ fn buildDeprecatedCommandFix(
     if (anchor.style == .folded) return null;
 
     const alloc = list.fixAllocator();
-    var edits = std.ArrayList(diagnostics_mod.Edit){};
+    var edits = std.ArrayList(diagnostics_mod.Edit).empty;
     defer edits.deinit(alloc);
 
     var offset: usize = 0;
     var continued = false;
     while (offset < script.len) {
         const line_start = offset;
-        const nl = std.mem.indexOfScalarPos(u8, script, offset, '\n') orelse script.len;
+        const nl = std.mem.findScalarPos(u8, script, offset, '\n') orelse script.len;
         const line = script[line_start..nl];
         const was_continued = continued;
-        continued = std.mem.endsWith(u8, std.mem.trimRight(u8, line, "\r"), "\\");
+        continued = std.mem.endsWith(u8, std.mem.trimEnd(u8, line, "\r"), "\\");
         offset = nl + 1;
 
         // A line continued from the one above is an argument, not a command.
@@ -867,10 +868,10 @@ test "BP001: autofix applied to YAML source" {
 
     try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "timeout-minutes: 30") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest") != null);
-    const timeout_pos = std.mem.indexOf(u8, result.content, "timeout-minutes: 30").?;
-    const runs_on_pos = std.mem.indexOf(u8, result.content, "runs-on: ubuntu-latest").?;
+    try std.testing.expect(std.mem.find(u8, result.content, "timeout-minutes: 30") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "runs-on: ubuntu-latest") != null);
+    const timeout_pos = std.mem.find(u8, result.content, "timeout-minutes: 30").?;
+    const runs_on_pos = std.mem.find(u8, result.content, "runs-on: ubuntu-latest").?;
     try std.testing.expect(timeout_pos < runs_on_pos);
 }
 
@@ -936,7 +937,7 @@ test "BP003: a remote action on a retired runtime is an error" {
     const d = diags.get(0);
     try std.testing.expectEqualStrings("BP003", d.rule_id);
     try std.testing.expect(d.severity == .@"error");
-    try std.testing.expect(std.mem.indexOf(u8, d.message, "node12") != null);
+    try std.testing.expect(std.mem.find(u8, d.message, "node12") != null);
 }
 
 test "BP003: the retired-runtime finding keeps the version table's autofix" {
@@ -1007,7 +1008,7 @@ test "BP003: a third-party action older than its current major is reported (#358
     const d = diags.get(0);
     try std.testing.expectEqualStrings("BP003", d.rule_id);
     try std.testing.expect(d.severity == .info);
-    try std.testing.expect(std.mem.indexOf(u8, d.message, "v2") != null);
+    try std.testing.expect(std.mem.find(u8, d.message, "v2") != null);
 }
 
 test "BP003: the behind-major fix rewrites the major and is unsafe" {
@@ -1065,10 +1066,10 @@ fn runtimeFixture(manifest: []const u8) !std.testing.TmpDir {
     var tmp = std.testing.tmpDir(.{});
     errdefer tmp.cleanup();
 
-    try tmp.dir.makePath("legacy");
-    try tmp.dir.writeFile(.{ .sub_path = "legacy/action.yml", .data = manifest });
+    try tmp.dir.createDirPath(runtime.io(), "legacy");
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "legacy/action.yml", .data = manifest });
 
-    const abs = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", std.testing.allocator);
     defer std.testing.allocator.free(abs);
     local_action.init(std.testing.allocator, abs);
 
@@ -1095,8 +1096,8 @@ test "BP003: a local action on a retired runtime is an error" {
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqualStrings("BP003", diags.get(0).rule_id);
     try std.testing.expect(diags.get(0).severity == .@"error");
-    try std.testing.expect(std.mem.indexOf(u8, diags.get(0).message, "node16") != null);
-    try std.testing.expect(std.mem.indexOf(u8, diags.get(0).fix_hint.?, "node24") != null);
+    try std.testing.expect(std.mem.find(u8, diags.get(0).message, "node16") != null);
+    try std.testing.expect(std.mem.find(u8, diags.get(0).fix_hint.?, "node24") != null);
     // The action's own file has to change, so there is nothing to rewrite here.
     try std.testing.expect(diags.get(0).fix == null);
 }
@@ -1218,8 +1219,8 @@ test "BP003: autofix applied to YAML source" {
     try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "actions/checkout@v4") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "actions/checkout@v1") == null);
+    try std.testing.expect(std.mem.find(u8, result.content, "actions/checkout@v4") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "actions/checkout@v1") == null);
 }
 
 /// BP004 is a workflow-level rule (it needs `defaults.run.shell` from both the
@@ -1571,11 +1572,11 @@ test "BP004: autofix applied to YAML source inserts shell: bash after run" {
     try std.testing.expectEqual(FixSafety.unsafe, result.first_safety.?);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "shell: bash") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "run: make build") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "shell: bash") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "run: make build") != null);
 
-    const run_pos = std.mem.indexOf(u8, result.content, "run: make build").?;
-    const shell_pos = std.mem.indexOf(u8, result.content, "shell: bash").?;
+    const run_pos = std.mem.find(u8, result.content, "run: make build").?;
+    const shell_pos = std.mem.find(u8, result.content, "shell: bash").?;
     try std.testing.expect(run_pos < shell_pos);
 }
 
@@ -1717,7 +1718,7 @@ test "BP008: each deprecated command is detected with its replacement hint" {
         try std.testing.expectEqualStrings("BP008", diags.get(0).rule_id);
         try std.testing.expect(diags.get(0).severity == .@"error");
         const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
-        try std.testing.expect(std.mem.indexOf(u8, hint, case[1]) != null);
+        try std.testing.expect(std.mem.find(u8, hint, case[1]) != null);
     }
 }
 
@@ -1905,8 +1906,8 @@ test "BP008: a line the rewriter cannot read is left alone" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "::set-output name=a::1\" | tee log") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "echo \"b=2\" >> \"$GITHUB_OUTPUT\"") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "::set-output name=a::1\" | tee log") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "echo \"b=2\" >> \"$GITHUB_OUTPUT\"") != null);
 }
 
 test "BP008: no fix when no line is convertible" {

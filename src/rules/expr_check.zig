@@ -47,7 +47,7 @@ pub const SegmentIter = struct {
         if (self.path[self.pos] == '.') self.pos += 1;
 
         if (self.pos < self.path.len and self.path[self.pos] == '[') {
-            const close = std.mem.indexOfScalarPos(u8, self.path, self.pos, ']') orelse {
+            const close = std.mem.findScalarPos(u8, self.path, self.pos, ']') orelse {
                 self.pos = self.path.len;
                 self.prev_end = self.path.len;
                 return null;

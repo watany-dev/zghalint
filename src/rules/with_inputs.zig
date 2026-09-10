@@ -189,9 +189,9 @@ test "find matches an input name without regard to case" {
 }
 
 test "a with key matching an input under a different case is accepted" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("FETCH-DEPTH", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "FETCH-DEPTH", "1");
 
     const step = Step{ .uses = ActionRef.parse("actions/checkout@v4"), .with = with };
     var list = runCheck(&step, &.{.{ .name = "fetch-depth" }}, "node24");
@@ -201,9 +201,9 @@ test "a with key matching an input under a different case is accepted" {
 }
 
 test "a required input is satisfied by a with key under a different case" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("Path", "src");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "Path", "src");
 
     const step = Step{ .uses = ActionRef.parse("actions/cache@v4"), .with = with };
     var list = runCheck(&step, &.{.{ .name = "path", .required = true }}, "node24");
@@ -213,10 +213,10 @@ test "a required input is satisfied by a with key under a different case" {
 }
 
 test "docker args and entrypoint are accepted only by a docker action" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("args", "--help");
-    try with.put("entrypoint", "/bin/sh");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "args", "--help");
+    try with.put(testing.allocator, "entrypoint", "/bin/sh");
 
     const step = Step{ .uses = ActionRef.parse("some/action@v1"), .with = with };
 
@@ -230,13 +230,13 @@ test "docker args and entrypoint are accepted only by a docker action" {
 }
 
 test "an unknown key points at its own value, a missing input at uses" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("versoin", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "versoin", "1");
 
-    var meta = workflow_types.ScalarValueMetaMap.init(testing.allocator);
-    defer meta.deinit();
-    try meta.put("versoin", .{
+    var meta: workflow_types.ScalarValueMetaMap = .empty;
+    defer meta.deinit(testing.allocator);
+    try meta.put(testing.allocator, "versoin", .{
         .value_span = .{ .start_line = 9, .start_col = 18, .end_line = 9, .end_col = 19, .start_byte = 40, .end_byte = 41 },
         .style = .plain,
     });
@@ -255,19 +255,19 @@ test "an unknown key points at its own value, a missing input at uses" {
 
     try testing.expectEqual(@as(usize, 2), list.len());
     try testing.expectEqual(@as(usize, 9), list.get(0).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, list.get(0).fix_hint.?, "version") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).fix_hint.?, "version") != null);
     try testing.expectEqual(@as(usize, 7), list.get(1).span.start_line);
-    try testing.expect(std.mem.indexOf(u8, list.get(1).message, "required input") != null);
+    try testing.expect(std.mem.find(u8, list.get(1).message, "required input") != null);
 }
 
 test "an unknown key with a captured key span renames the key" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("versoin", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "versoin", "1");
 
-    var meta = workflow_types.ScalarValueMetaMap.init(testing.allocator);
-    defer meta.deinit();
-    try meta.put("versoin", .{
+    var meta: workflow_types.ScalarValueMetaMap = .empty;
+    defer meta.deinit(testing.allocator);
+    try meta.put(testing.allocator, "versoin", .{
         .value_span = .{ .start_line = 9, .start_col = 18, .end_line = 9, .end_col = 19, .start_byte = 40, .end_byte = 41 },
         .key_span = .{ .start_line = 9, .start_col = 9, .end_line = 9, .end_col = 16, .start_byte = 31, .end_byte = 38 },
         .style = .plain,
@@ -293,13 +293,13 @@ test "an unknown key with a captured key span renames the key" {
 }
 
 test "an unknown key without a close name carries no fix" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("completely-different", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "completely-different", "1");
 
-    var meta = workflow_types.ScalarValueMetaMap.init(testing.allocator);
-    defer meta.deinit();
-    try meta.put("completely-different", .{
+    var meta: workflow_types.ScalarValueMetaMap = .empty;
+    defer meta.deinit(testing.allocator);
+    try meta.put(testing.allocator, "completely-different", .{
         .value_span = .{ .start_line = 9, .start_col = 31, .end_line = 9, .end_col = 32, .start_byte = 60, .end_byte = 61 },
         .key_span = .{ .start_line = 9, .start_col = 9, .end_line = 9, .end_col = 29, .start_byte = 31, .end_byte = 51 },
         .style = .plain,
@@ -319,9 +319,9 @@ test "an unknown key without a close name carries no fix" {
 }
 
 test "without with_meta an unknown key falls back to the uses span" {
-    var with = workflow_types.StringMap.init(testing.allocator);
-    defer with.deinit();
-    try with.put("nope", "1");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "nope", "1");
 
     const step = Step{
         .uses = ActionRef.parse("actions/setup-node@v4"),

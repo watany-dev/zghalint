@@ -128,14 +128,13 @@ fn runWithRefCache(entries: ?[]const RefCacheEntry, uses_ref: ?[]const u8) Diagn
         ref_arena = prev_arena;
     }
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
+    ref_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ref_arena.?.deinit();
 
     if (entries) |es| {
-        var cache = std.StringHashMap(RefStatus).init(arena.allocator());
+        var cache = std.StringHashMap(RefStatus).init(ref_arena.?.allocator());
         for (es) |e| cache.put(e.key, e.status) catch unreachable;
         ref_cache = cache;
-        ref_arena = arena;
     } else {
         ref_cache = null;
     }
@@ -251,12 +250,11 @@ fn fixWithAmbiguousRef(include_unsafe: bool) !test_support.FixOutcome {
         ref_arena = prev_arena;
     }
 
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var cache = std.StringHashMap(RefStatus).init(arena.allocator());
+    ref_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer ref_arena.?.deinit();
+    var cache = std.StringHashMap(RefStatus).init(ref_arena.?.allocator());
     try cache.put("owner/repo@v4", .ambiguous);
     ref_cache = cache;
-    ref_arena = arena;
 
     return test_support.lintAndFix(testing.allocator, sc006_source, .{ .step = &checkRefConfusion }, include_unsafe);
 }
@@ -271,7 +269,7 @@ test "SC006: --fix-unsafe pins the ambiguous ref to the tag side" {
 
     try testing.expectEqual(@as(usize, 1), result.fix_count);
     try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
-    try testing.expect(std.mem.indexOf(u8, result.content, "uses: owner/repo@" ++ sc006_pin_oid ++ " # v4") != null);
+    try testing.expect(std.mem.find(u8, result.content, "uses: owner/repo@" ++ sc006_pin_oid ++ " # v4") != null);
 }
 
 test "SC006: plain --fix leaves the ambiguity for a human to resolve" {

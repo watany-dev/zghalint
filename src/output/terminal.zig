@@ -167,9 +167,9 @@ pub fn renderSummary(writer: anytype, list: DiagnosticList, use_color: bool) !vo
 const Span = @import("../yaml/types.zig").Span;
 
 test "renderDiagnostic with color" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     const diag = Diagnostic{
         .rule_id = "SEC002",
@@ -188,21 +188,21 @@ test "renderDiagnostic with color" {
     };
 
     try renderDiagnostic(writer, diag, true);
-    const output = buf.items;
+    const output = buf.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "SEC002") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "error") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "15:14") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "script injection") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "help:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "environment variable") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
+    try std.testing.expect(std.mem.find(u8, output, "SEC002") != null);
+    try std.testing.expect(std.mem.find(u8, output, "error") != null);
+    try std.testing.expect(std.mem.find(u8, output, "15:14") != null);
+    try std.testing.expect(std.mem.find(u8, output, "script injection") != null);
+    try std.testing.expect(std.mem.find(u8, output, "help:") != null);
+    try std.testing.expect(std.mem.find(u8, output, "environment variable") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[") != null);
 }
 
 test "renderDiagnostic without color" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     const diag = Diagnostic{
         .rule_id = "BP001",
@@ -214,19 +214,19 @@ test "renderDiagnostic without color" {
     };
 
     try renderDiagnostic(writer, diag, false);
-    const output = buf.items;
+    const output = buf.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "ci.yml:5:3:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "warning[BP001]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "missing timeout") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "help:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try std.testing.expect(std.mem.find(u8, output, "ci.yml:5:3:") != null);
+    try std.testing.expect(std.mem.find(u8, output, "warning[BP001]") != null);
+    try std.testing.expect(std.mem.find(u8, output, "missing timeout") != null);
+    try std.testing.expect(std.mem.find(u8, output, "help:") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[") == null);
 }
 
 test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     // Evil file path, message, and fix hint all carry ESC (0x1b)
     // — a malicious workflow or filename must not be able to inject ANSI
@@ -241,56 +241,56 @@ test "renderDiagnostic sanitizes ANSI escapes in attacker-controlled fields" {
     };
 
     try renderDiagnostic(writer, diag, false);
-    const output = buf.items;
+    const output = buf.written();
 
     // No raw ESC (0x1b) anywhere in the output — the sanitizer must rewrite
     // every attacker-supplied byte before it hits the terminal.
-    try std.testing.expect(std.mem.indexOfScalar(u8, output, 0x1b) == null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\\x1b") != null);
+    try std.testing.expect(std.mem.findScalar(u8, output, 0x1b) == null);
+    try std.testing.expect(std.mem.find(u8, output, "\\x1b") != null);
 }
 
 test "writeSanitized passes multi-byte UTF-8 through unchanged" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     // Japanese text contains continuation bytes in 0x80–0x9F; they must never
     // be byte-escaped. Tab is kept as-is.
     const input = "ワークフロー\tcafé 🚀";
     try writeSanitized(writer, input);
-    try std.testing.expectEqualStrings(input, buf.items);
+    try std.testing.expectEqualStrings(input, buf.written());
 }
 
 test "writeSanitized escapes C1 and bidi controls but not invalid-looking text" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     // U+009B is the 8-bit CSI; U+202E is RIGHT-TO-LEFT OVERRIDE; U+2066 is
     // LEFT-TO-RIGHT ISOLATE.
     try writeSanitized(writer, "a\u{9b}b\u{202e}c\u{2066}d");
-    try std.testing.expectEqualStrings("a\\u{009b}b\\u{202e}c\\u{2066}d", buf.items);
+    try std.testing.expectEqualStrings("a\\u{009b}b\\u{202e}c\\u{2066}d", buf.written());
 }
 
 test "writeSanitized escapes bytes that are not valid UTF-8" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     // Lone continuation byte, truncated 3-byte sequence at end of input, and
     // an overlong/invalid lead byte.
     try writeSanitized(writer, "x\x9by\xe3\x81");
-    try std.testing.expectEqualStrings("x\\x9by\\xe3\\x81", buf.items);
+    try std.testing.expectEqualStrings("x\\x9by\\xe3\\x81", buf.written());
 
     buf.clearRetainingCapacity();
     try writeSanitized(writer, "\xffz\x7f");
-    try std.testing.expectEqualStrings("\\xffz\\x7f", buf.items);
+    try std.testing.expectEqualStrings("\\xffz\\x7f", buf.written());
 }
 
 test "writeSanitized escapes controls past the first chunk of plain text" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     // Longer than one 16-byte chunk before the first byte that needs escaping,
     // then a control in the tail the byte loop handles, then more plain text.
@@ -298,7 +298,7 @@ test "writeSanitized escapes controls past the first chunk of plain text" {
     try writeSanitized(writer, input);
     try std.testing.expectEqualStrings(
         "abcdefghijklmnopqrstuvwxyz0123456789\\x1b[31mred\\x07" ++ "0123456789abcdef" ++ "\\x00",
-        buf.items,
+        buf.written(),
     );
 }
 
@@ -312,9 +312,9 @@ test "skipPlainAscii stops at tab, control, DEL and the first high byte" {
 }
 
 test "renderDiagnostic no hint" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     const diag = Diagnostic{
         .rule_id = "PERF001",
@@ -324,11 +324,11 @@ test "renderDiagnostic no hint" {
     };
 
     try renderDiagnostic(writer, diag, false);
-    const output = buf.items;
+    const output = buf.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<unknown>:1:1:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "info[PERF001]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "help:") == null);
+    try std.testing.expect(std.mem.find(u8, output, "<unknown>:1:1:") != null);
+    try std.testing.expect(std.mem.find(u8, output, "info[PERF001]") != null);
+    try std.testing.expect(std.mem.find(u8, output, "help:") == null);
 }
 
 test "renderSummary counts" {
@@ -339,32 +339,32 @@ test "renderSummary counts" {
     try list.append(.{ .rule_id = "E2", .severity = .@"error", .message = "e", .span = Span.point(2, 1, 0) });
     try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "w", .span = Span.point(3, 1, 0) });
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
 
-    try renderSummary(buf.writer(std.testing.allocator), list, false);
-    const output = buf.items;
+    try renderSummary(&buf.writer, list, false);
+    const output = buf.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "3 issue(s)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "2 error(s)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "1 warning(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "3 issue(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "2 error(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "1 warning(s)") != null);
 }
 
 test "renderSummary no issues" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
 
-    try renderSummary(buf.writer(std.testing.allocator), list, false);
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "No issues found") != null);
+    try renderSummary(&buf.writer, list, false);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "No issues found") != null);
 }
 
 test "renderDiagnostics renders multiple items with summary" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -373,11 +373,11 @@ test "renderDiagnostics renders multiple items with summary" {
     try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn msg", .file = "a.yml", .span = Span.point(2, 1, 0) });
 
     try renderDiagnostics(writer, list, false);
-    const output = buf.items;
+    const output = buf.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "err msg") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "warn msg") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "2 issue(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "err msg") != null);
+    try std.testing.expect(std.mem.find(u8, output, "warn msg") != null);
+    try std.testing.expect(std.mem.find(u8, output, "2 issue(s)") != null);
 }
 
 test "renderSummary with all severity types" {
@@ -389,17 +389,17 @@ test "renderSummary with all severity types" {
     try list.append(.{ .rule_id = "I1", .severity = .info, .message = "i", .span = Span.point(3, 1, 0) });
     try list.append(.{ .rule_id = "H1", .severity = .hint, .message = "h", .span = Span.point(4, 1, 0) });
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
 
-    try renderSummary(buf.writer(std.testing.allocator), list, false);
-    const output = buf.items;
+    try renderSummary(&buf.writer, list, false);
+    const output = buf.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "4 issue(s)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "1 error(s)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "1 warning(s)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "1 info") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "1 hint(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "4 issue(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "1 error(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "1 warning(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "1 info") != null);
+    try std.testing.expect(std.mem.find(u8, output, "1 hint(s)") != null);
 }
 
 test "renderSummary with color" {
@@ -408,20 +408,20 @@ test "renderSummary with color" {
 
     try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "e", .span = Span.point(1, 1, 0) });
 
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
 
-    try renderSummary(buf.writer(std.testing.allocator), list, true);
-    const output = buf.items;
+    try renderSummary(&buf.writer, list, true);
+    const output = buf.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "1 error(s)") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\x1b[") != null);
+    try std.testing.expect(std.mem.find(u8, output, "1 error(s)") != null);
 }
 
 test "renderDiagnostic with no file shows unknown" {
-    var buf = std.ArrayList(u8){};
-    defer buf.deinit(std.testing.allocator);
-    const writer = buf.writer(std.testing.allocator);
+    var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = &buf.writer;
 
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -434,6 +434,6 @@ test "renderDiagnostic with no file shows unknown" {
     });
 
     try renderDiagnostics(writer, list, false);
-    const output = buf.items;
-    try std.testing.expect(std.mem.indexOf(u8, output, "a hint") != null);
+    const output = buf.written();
+    try std.testing.expect(std.mem.find(u8, output, "a hint") != null);
 }

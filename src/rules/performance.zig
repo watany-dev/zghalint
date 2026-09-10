@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const test_support = @import("../test_support.zig");
 const engine = @import("engine.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
@@ -79,7 +80,7 @@ fn buildCacheFix(
 ) ?Fix {
     const alloc = diag_list.fixAllocator();
 
-    var edits = std.ArrayList(diagnostics_mod.Edit){};
+    var edits = std.ArrayList(diagnostics_mod.Edit).empty;
 
     for (job.steps) |step| {
         const action_ref = step.uses orelse continue;
@@ -441,9 +442,9 @@ test "PERF001: detect missing cache for setup-node" {
 }
 
 test "PERF001: no warning when cache input is set" {
-    var with = workflow_types.StringMap.init(std.testing.allocator);
-    defer with.deinit();
-    try with.put("cache", "npm");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "cache", "npm");
 
     const steps = [_]Step{
         Step{ .uses = ActionRef.parse("actions/setup-node@v4"), .with = with },
@@ -549,9 +550,9 @@ test "PERF001: setup-go with existing with: appends cache entry" {
     workspace.set(.{ .go_sum_present = true });
     defer workspace.clear();
 
-    var with = workflow_types.StringMap.init(std.testing.allocator);
-    defer with.deinit();
-    try with.put("go-version", "1.21");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "go-version", "1.21");
 
     const steps = [_]Step{
         .{
@@ -581,9 +582,9 @@ test "PERF001: setup-go with empty cache: value skips fix to avoid duplicate key
     workspace.set(.{ .go_sum_present = true });
     defer workspace.clear();
 
-    var with = workflow_types.StringMap.init(std.testing.allocator);
-    defer with.deinit();
-    try with.put("cache", "");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "cache", "");
 
     const steps = [_]Step{
         .{
@@ -729,9 +730,9 @@ test "PERF001: setup-node ambiguous lockfiles surface fix_hint listing them" {
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expect(diags.get(0).fix == null);
     const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
-    try std.testing.expect(std.mem.indexOf(u8, hint, "package-lock.json") != null);
-    try std.testing.expect(std.mem.indexOf(u8, hint, "yarn.lock") != null);
-    try std.testing.expect(std.mem.indexOf(u8, hint, "node_cache_manager") != null);
+    try std.testing.expect(std.mem.find(u8, hint, "package-lock.json") != null);
+    try std.testing.expect(std.mem.find(u8, hint, "yarn.lock") != null);
+    try std.testing.expect(std.mem.find(u8, hint, "node_cache_manager") != null);
 }
 
 test "PERF001: setup-python fix with python_cache=poetry" {
@@ -799,7 +800,7 @@ test "PERF001: setup-python ambiguous lockfiles produce hint" {
 
     try std.testing.expect(diags.get(0).fix == null);
     const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
-    try std.testing.expect(std.mem.indexOf(u8, hint, "python_cache_manager") != null);
+    try std.testing.expect(std.mem.find(u8, hint, "python_cache_manager") != null);
 }
 
 test "PERF001: setup-go with missing span skips fix" {
@@ -874,7 +875,7 @@ test "PERF001: autofix applied to YAML source adds cache: true to setup-go" {
 
     const cache_count = std.mem.count(u8, result.content, "cache: true");
     try std.testing.expectEqual(@as(usize, 2), cache_count);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "go-version: '1.21'") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "go-version: '1.21'") != null);
 }
 
 test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
@@ -895,8 +896,8 @@ test "PERF001: setup-node autofix applied to YAML source with node_cache=npm" {
     const result = try test_support.lintAndFix(std.testing.allocator, source, .{ .job = &checkCacheNotUsed }, true);
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "cache: npm") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "with:") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "cache: npm") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "with:") != null);
 }
 
 test "PERF001: no warning for unrelated actions" {
@@ -1014,7 +1015,7 @@ test "PERF001: detect missing cache for setup-bun" {
     try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
     try std.testing.expect(diags.get(0).fix == null);
     const msg = diags.get(0).message;
-    try std.testing.expect(std.mem.indexOf(u8, msg, "oven-sh/setup-bun") != null);
+    try std.testing.expect(std.mem.find(u8, msg, "oven-sh/setup-bun") != null);
 }
 
 test "PERF001: no warning for setup-bun when actions/cache is present" {
@@ -1050,7 +1051,7 @@ test "PERF001: setup-bun without bun lockfile extends hint" {
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const hint = diags.get(0).fix_hint orelse return error.TestExpectedNonNull;
-    try std.testing.expect(std.mem.indexOf(u8, hint, "no bun.lock or bun.lockb detected") != null);
+    try std.testing.expect(std.mem.find(u8, hint, "no bun.lock or bun.lockb detected") != null);
 }
 
 test "PERF001: setup-uv without enable-cache input does not warn" {
@@ -1067,9 +1068,9 @@ test "PERF001: setup-uv without enable-cache input does not warn" {
 }
 
 test "PERF001: setup-uv with enable-cache=true does not warn" {
-    var with = workflow_types.StringMap.init(std.testing.allocator);
-    defer with.deinit();
-    try with.put("enable-cache", "true");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "enable-cache", "true");
 
     const steps = [_]Step{
         Step{ .uses = ActionRef.parse("astral-sh/setup-uv@v3"), .with = with },
@@ -1082,9 +1083,9 @@ test "PERF001: setup-uv with enable-cache=true does not warn" {
 }
 
 test "PERF001: setup-uv with enable-cache=false warns" {
-    var with = workflow_types.StringMap.init(std.testing.allocator);
-    defer with.deinit();
-    try with.put("enable-cache", "false");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "enable-cache", "false");
 
     const steps = [_]Step{
         Step{ .uses = ActionRef.parse("astral-sh/setup-uv@v3"), .with = with },
@@ -1098,13 +1099,13 @@ test "PERF001: setup-uv with enable-cache=false warns" {
     try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
     try std.testing.expect(diags.get(0).fix == null);
     const msg = diags.get(0).message;
-    try std.testing.expect(std.mem.indexOf(u8, msg, "enable-cache") != null);
+    try std.testing.expect(std.mem.find(u8, msg, "enable-cache") != null);
 }
 
 test "PERF001: setup-uv with enable-cache=false but actions/cache present does not warn" {
-    var with = workflow_types.StringMap.init(std.testing.allocator);
-    defer with.deinit();
-    try with.put("enable-cache", "false");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "enable-cache", "false");
 
     const steps = [_]Step{
         Step{ .uses = ActionRef.parse("astral-sh/setup-uv@v3"), .with = with },
@@ -1134,9 +1135,9 @@ test "PERF002: detect redundant checkout" {
 }
 
 test "PERF002: no warning when path is specified" {
-    var with = workflow_types.StringMap.init(std.testing.allocator);
-    defer with.deinit();
-    try with.put("path", "sub-repo");
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "path", "sub-repo");
 
     const steps = [_]Step{
         Step{ .uses = ActionRef.parse("actions/checkout@v4") },
@@ -1488,7 +1489,7 @@ test "PERF001: fixture harness applies expected fix" {
     // root under both `zig build test` and the local wrapper, so a runtime
     // read keeps this harness independent of the build-system embed-dir
     // wiring.
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
 
     for (cases) |case| {
         workspace.set(case.ctx);
@@ -1498,7 +1499,7 @@ test "PERF001: fixture harness applies expected fix" {
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        const input = cwd.readFileAlloc(alloc, case.input_path, 64 * 1024) catch |err| {
+        const input = cwd.readFileAlloc(runtime.io(), case.input_path, alloc, .limited(64 * 1024)) catch |err| {
             std.debug.print("case '{s}': failed to read {s}: {s}\n", .{ case.name, case.input_path, @errorName(err) });
             return err;
         };
@@ -1509,7 +1510,7 @@ test "PERF001: fixture harness applies expected fix" {
         try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
         if (case.expected_path) |exp_path| {
-            const expected = try cwd.readFileAlloc(alloc, exp_path, 64 * 1024);
+            const expected = try cwd.readFileAlloc(runtime.io(), exp_path, alloc, .limited(64 * 1024));
             if (result.fix_count == 0) {
                 std.debug.print("case '{s}': expected fix, got null\n", .{case.name});
                 return error.TestExpectedFix;

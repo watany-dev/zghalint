@@ -17,6 +17,7 @@
 //! all. Directives are additive across lines, so a fixture can group them.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const yaml_parser = @import("yaml/parser.zig");
 const tokenizer = @import("yaml/tokenizer.zig");
 const workflow_parser = @import("workflow/parser.zig");
@@ -37,7 +38,7 @@ const Expectation = struct {
     /// A malformed `@line` is an error: silently dropping it would turn the
     /// expectation into a line-agnostic one and hide line regressions.
     fn parse(token: []const u8) !Expectation {
-        const at = std.mem.indexOfScalar(u8, token, '@') orelse
+        const at = std.mem.findScalar(u8, token, '@') orelse
             return .{ .rule_id = token };
         return .{
             .rule_id = token[0..at],
@@ -47,8 +48,8 @@ const Expectation = struct {
 };
 
 const Directives = struct {
-    expect: std.ArrayList(Expectation) = .{},
-    forbid: std.ArrayList(Expectation) = .{},
+    expect: std.ArrayList(Expectation) = .empty,
+    forbid: std.ArrayList(Expectation) = .empty,
 
     fn parse(alloc: std.mem.Allocator, source: []const u8) !Directives {
         var self = Directives{};
@@ -121,7 +122,7 @@ fn lintActionSource(
 /// rewrites, which is the half a wrong byte range would silently get wrong.
 fn checkFixedOutputs(
     alloc: std.mem.Allocator,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     name: []const u8,
     source: []const u8,
     diags: []const diagnostics.Diagnostic,
@@ -132,7 +133,7 @@ fn checkFixedOutputs(
 
 fn checkFixedOutput(
     alloc: std.mem.Allocator,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     name: []const u8,
     source: []const u8,
     diags: []const diagnostics.Diagnostic,
@@ -140,7 +141,7 @@ fn checkFixedOutput(
 ) !void {
     const suffix = if (include_unsafe) ".fixed-unsafe" else ".fixed";
     const expected_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ name, suffix });
-    const expected = dir.readFileAlloc(alloc, expected_name, 256 * 1024) catch |err| switch (err) {
+    const expected = dir.readFileAlloc(runtime.io(), expected_name, alloc, .limited(256 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
@@ -225,15 +226,15 @@ fn runFixtures(
     /// Rule IDs seen across every fixture, for the coverage check.
     covered: *std.StringHashMapUnmanaged(void),
 ) !void {
-    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
-    defer dir.close();
+    var dir = try std.Io.Dir.cwd().openDir(runtime.io(), dir_path, .{ .iterate = true });
+    defer dir.close(runtime.io());
 
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(runtime.io())) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".yml")) continue;
 
-        const source = try dir.readFileAlloc(alloc, entry.name, 256 * 1024);
+        const source = try dir.readFileAlloc(runtime.io(), entry.name, alloc, .limited(256 * 1024));
         const directives = try Directives.parse(alloc, source);
         if (directives.expect.items.len == 0 and directives.forbid.items.len == 0) {
             std.debug.print("fixture '{s}': no zghalint:expect/forbid directives\n", .{entry.name});

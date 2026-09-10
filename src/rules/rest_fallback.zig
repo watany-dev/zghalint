@@ -4,6 +4,7 @@
 //! rule file only contains domain logic, not HTTP plumbing.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 
 const rules_engine = @import("engine.zig");
 const http_client = @import("http_client.zig");
@@ -515,13 +516,14 @@ test "matchShasInRefs: resolves several SHAs from one listing" {
 }
 
 test "matchShasInRefs: pagination guard leaves unmatched targets unknown" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     try buf.append(testing.allocator, '[');
     var i: usize = 0;
     while (i < 100) : (i += 1) {
         if (i != 0) try buf.append(testing.allocator, ',');
-        try buf.writer(testing.allocator).print(
+        try buf.print(
+            testing.allocator,
             "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
             .{ i, i },
         );
@@ -546,7 +548,7 @@ test "resolveTagsForShas: empty input is a no-op that issues no request" {
     defer arena.deinit();
     // An expired deadline would make any real request fail, so reaching the
     // early return proves nothing was fetched.
-    rules_engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    rules_engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer rules_engine.clearNetworkDeadline();
 
     var out: [0]TagResolution = undefined;
@@ -554,7 +556,7 @@ test "resolveTagsForShas: empty input is a no-op that issues no request" {
 }
 
 test "matchShaInRefs: annotated tags that fail to dereference -> unknown" {
-    rules_engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    rules_engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer rules_engine.clearNetworkDeadline();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -570,7 +572,7 @@ test "matchShaInRefs: annotated tags that fail to dereference -> unknown" {
 }
 
 test "matchShaInRefs: a lightweight match survives a failed peel of another tag" {
-    rules_engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    rules_engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer rules_engine.clearNetworkDeadline();
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -586,13 +588,14 @@ test "matchShaInRefs: a lightweight match survives a failed peel of another tag"
 }
 
 test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" {
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     try buf.append(testing.allocator, '[');
     var i: usize = 0;
     while (i < 100) : (i += 1) {
         if (i != 0) try buf.append(testing.allocator, ',');
-        try buf.writer(testing.allocator).print(
+        try buf.print(
+            testing.allocator,
             "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"commit\"}}}}",
             .{ i, i },
         );
@@ -607,18 +610,19 @@ test "matchShaInRefs: >= 100 items with no match -> unknown (pagination guard)" 
 
 test "matchShaInRefs: more annotated tags than can be dereferenced -> unknown" {
     const engine = @import("engine.zig");
-    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer engine.clearNetworkDeadline();
 
     // 65 annotated tags on a single (non-full) page: the 65th is never
     // dereferenced, so "no tag" must not be asserted.
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(testing.allocator);
     try buf.append(testing.allocator, '[');
     var i: usize = 0;
     while (i < 65) : (i += 1) {
         if (i != 0) try buf.append(testing.allocator, ',');
-        try buf.writer(testing.allocator).print(
+        try buf.print(
+            testing.allocator,
             "{{\"ref\":\"refs/tags/v{d}\",\"object\":{{\"sha\":\"{x:0>40}\",\"type\":\"tag\"}}}}",
             .{ i, i },
         );

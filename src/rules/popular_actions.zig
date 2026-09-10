@@ -129,7 +129,7 @@ pub fn checkDeprecatedInputs(step: *const Step, list: *DiagnosticList) void {
             "input \"{s}\" of action \"{s}\" is deprecated: {s}",
             // `deprecationMessage:` is often a block scalar, whose trailing
             // newline would break a one-line diagnostic.
-            .{ key, action.raw, std.mem.trimRight(u8, deprecation, " \t\r\n") },
+            .{ key, action.raw, std.mem.trimEnd(u8, deprecation, " \t\r\n") },
         ) catch return;
 
         list.append(.{
@@ -259,7 +259,7 @@ test "DEP005: a misspelled input is reported with a suggestion" {
     try testing.expectEqual(@as(usize, 1), result.len());
     const d = result.get(0);
     try testing.expectEqualStrings("DEP005", d.rule_id);
-    try testing.expect(std.mem.indexOf(u8, d.message, "fetch-dept") != null);
+    try testing.expect(std.mem.find(u8, d.message, "fetch-dept") != null);
     try testing.expectEqualStrings("did you mean \"fetch-depth\"?", d.fix_hint.?);
 }
 
@@ -282,7 +282,7 @@ test "DEP005: a missing required input is reported" {
 
     try testing.expectEqual(@as(usize, 1), result.len());
     try testing.expectEqualStrings("DEP005", result.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, result.get(0).message, "\"key\"") != null);
+    try testing.expect(std.mem.find(u8, result.get(0).message, "\"key\"") != null);
 }
 
 test "DEP005: correct inputs and unknown actions are left alone" {
@@ -349,9 +349,9 @@ test "DEP006: a deprecated input reports the action's own message" {
     try testing.expectEqual(@as(usize, 1), result.len());
     const d = result.get(0);
     try testing.expectEqualStrings("DEP006", d.rule_id);
-    try testing.expect(std.mem.indexOf(u8, d.message, "node-version instead") != null);
+    try testing.expect(std.mem.find(u8, d.message, "node-version instead") != null);
     // The message is a single line even though the action wrote a block scalar.
-    try testing.expect(std.mem.indexOf(u8, d.message, "\n") == null);
+    try testing.expect(std.mem.find(u8, d.message, "\n") == null);
 }
 
 test "DEP006: a supported input is not reported" {
@@ -391,8 +391,8 @@ test "DEP005: a step with no `with:` at all reports every required input" {
 
     try testing.expectEqual(@as(usize, 2), result.len());
     try testing.expectEqualStrings("DEP005", result.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, result.get(0).message, "\"path\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result.get(1).message, "\"key\"") != null);
+    try testing.expect(std.mem.find(u8, result.get(0).message, "\"path\"") != null);
+    try testing.expect(std.mem.find(u8, result.get(1).message, "\"key\"") != null);
 }
 
 test "DEP005: a required input written as a sequence counts as provided" {
@@ -462,8 +462,8 @@ test "DEP005 names the action when no input is close enough to suggest" {
 
     try testing.expectEqual(@as(usize, 1), result.len());
     try testing.expectEqualStrings("DEP005", result.get(0).rule_id);
-    try testing.expect(std.mem.indexOf(u8, result.get(0).fix_hint.?, "did you mean") == null);
-    try testing.expect(std.mem.indexOf(u8, result.get(0).fix_hint.?, "remove the input") != null);
+    try testing.expect(std.mem.find(u8, result.get(0).fix_hint.?, "did you mean") == null);
+    try testing.expect(std.mem.find(u8, result.get(0).fix_hint.?, "remove the input") != null);
 }
 
 test "every manifest entry is present in the generated table" {
@@ -477,7 +477,7 @@ test "every manifest entry is present in the generated table" {
     while (lines.next()) |raw| {
         // The generator strips a trailing comment too, so a manifest line the
         // generator accepts must not fail here for a reason of its own.
-        const body = raw[0 .. std.mem.indexOfScalar(u8, raw, '#') orelse raw.len];
+        const body = raw[0 .. std.mem.findScalar(u8, raw, '#') orelse raw.len];
         const line = std.mem.trim(u8, body, " \t\r");
         if (line.len == 0) continue;
 

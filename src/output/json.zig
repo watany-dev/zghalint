@@ -110,9 +110,9 @@ test "renderJson empty diagnostics" {
     try renderJson(&out.writer, list, 3);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"diagnostics\":[]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"total\":0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"files_checked\":3") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"diagnostics\":[]") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"total\":0") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"files_checked\":3") != null);
 }
 
 test "renderJson single diagnostic" {
@@ -141,13 +141,13 @@ test "renderJson single diagnostic" {
     try renderJson(&out.writer, list, 1);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"rule_id\":\"SEC002\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"severity\":\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"line\":15") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"column\":9") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"fix_hint\":\"Use an environment variable instead\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"errors\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"total\":1") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"rule_id\":\"SEC002\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"severity\":\"error\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"line\":15") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"column\":9") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"fix_hint\":\"Use an environment variable instead\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"errors\":1") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"total\":1") != null);
 }
 
 test "renderJson multiple diagnostics" {
@@ -163,9 +163,9 @@ test "renderJson multiple diagnostics" {
     try renderJson(&out.writer, list, 1);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"errors\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"warnings\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"total\":2") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"errors\":1") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"warnings\":1") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"total\":2") != null);
 }
 
 test "renderJson null fix_hint" {
@@ -180,8 +180,8 @@ test "renderJson null fix_hint" {
     try renderJson(&out.writer, list, 0);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"fix_hint\":null") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"file\":\"<unknown>\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"fix_hint\":null") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"file\":\"<unknown>\"") != null);
 }
 
 test "renderJson is valid JSON structure" {
@@ -212,8 +212,8 @@ test "renderJson with hint severity" {
     try renderJson(&out.writer, list, 1);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"hints\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"severity\":\"hint\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"hints\":1") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"severity\":\"hint\"") != null);
 }
 
 test "renderJson escapes quotes, backslashes and control characters" {
@@ -234,8 +234,8 @@ test "renderJson escapes quotes, backslashes and control characters" {
     try renderJson(&out.writer, list, 1);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"file\":\"a\\tb.yml\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"message\":\"say \\\"hi\\\"\\\\ then\\nstop\\u0001\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"file\":\"a\\tb.yml\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"message\":\"say \\\"hi\\\"\\\\ then\\nstop\\u0001\"") != null);
 }
 
 test "renderJson passes multi-byte UTF-8 through unescaped" {
@@ -253,7 +253,7 @@ test "renderJson passes multi-byte UTF-8 through unescaped" {
     });
 
     try renderJson(&out.writer, list, 1);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"message\":\"ワークフロー 🚀\"") != null);
+    try std.testing.expect(std.mem.find(u8, out.written(), "\"message\":\"ワークフロー 🚀\"") != null);
 }
 
 test "renderJson replaces bytes that are not valid UTF-8" {
@@ -323,5 +323,5 @@ test "renderJson with info severity" {
     try renderJson(&out.writer, list, 1);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"infos\":1") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"infos\":1") != null);
 }

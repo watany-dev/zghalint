@@ -60,7 +60,7 @@ pub const CachedResult = struct {
 pub const NamedOid = struct { name: []const u8, oid: []const u8 };
 
 var cache: std.StringHashMapUnmanaged(CachedResult) = .{};
-var cache_mu: std.Thread.Mutex = .{};
+var cache_mu: std.Io.Mutex = .init;
 
 pub fn initImpostor(allocator: std.mem.Allocator) void { ... }
 pub fn deinitImpostor(allocator: std.mem.Allocator) void { ... }

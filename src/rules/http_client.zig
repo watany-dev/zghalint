@@ -3,13 +3,14 @@
 //! amortizes the ~200ms TLS handshake to a single occurrence.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const engine = @import("engine.zig");
 
 const Allocator = std.mem.Allocator;
 
 var client_storage: std.http.Client = undefined;
 var client_initialized: bool = false;
-var client_mutex: std.Thread.Mutex = .{};
+var client_mutex: std.Io.Mutex = .init;
 
 /// Set by `init`, cleared by the first `fetch`, which is where the CA bundle
 /// scan actually runs. A run that never touches the network (`--offline`, or
@@ -25,19 +26,19 @@ var proxy_arena: std.heap.ArenaAllocator = undefined;
 /// retains it for connection pool allocations. init/deinit/fetch share a mutex
 /// so the initialization flag and storage are never observed half-built.
 pub fn init(allocator: Allocator) void {
-    client_mutex.lock();
-    defer client_mutex.unlock();
+    client_mutex.lockUncancelable(runtime.io());
+    defer client_mutex.unlock(runtime.io());
     if (client_initialized) return;
-    client_storage = .{ .allocator = allocator };
+    client_storage = .{ .allocator = allocator, .io = runtime.io() };
     proxy_arena = .init(allocator);
-    client_storage.initDefaultProxies(proxy_arena.allocator()) catch {};
+    if (runtime.environ) |environ| client_storage.initDefaultProxies(proxy_arena.allocator(), environ) catch {};
     custom_ca_pending = true;
     client_initialized = true;
 }
 
 pub fn deinit() void {
-    client_mutex.lock();
-    defer client_mutex.unlock();
+    client_mutex.lockUncancelable(runtime.io());
+    defer client_mutex.unlock(runtime.io());
     if (!client_initialized) return;
     client_storage.deinit();
     proxy_arena.deinit();
@@ -55,15 +56,16 @@ fn applyPendingCustomCa() void {
 /// `SSL_CERT_FILE`. A TLS-intercepting proxy needs that file. Loading it
 /// freezes the bundle so the next-request rescan cannot wipe the extra CA.
 fn applyCustomCa(allocator: Allocator) void {
-    const path = std.process.getEnvVarOwned(allocator, "SSL_CERT_FILE") catch return;
+    const path = runtime.getEnv(allocator, "SSL_CERT_FILE") catch return;
     defer allocator.free(path);
     if (path.len == 0) return;
     // Zig's addCertsFromFilePathAbsolute asserts an absolute path; a relative
     // SSL_CERT_FILE would panic in Debug rather than skip the extra CA.
-    if (!std.fs.path.isAbsolute(path)) return;
-    client_storage.ca_bundle.rescan(allocator) catch {};
-    client_storage.ca_bundle.addCertsFromFilePathAbsolute(allocator, path) catch return;
-    client_storage.next_https_rescan_certs = false;
+    if (!std.Io.Dir.path.isAbsolute(path)) return;
+    const now = std.Io.Clock.real.now(runtime.io());
+    client_storage.ca_bundle.rescan(allocator, runtime.io(), now) catch {};
+    client_storage.ca_bundle.addCertsFromFilePathAbsolute(allocator, runtime.io(), now, path) catch return;
+    client_storage.now = now;
 }
 
 pub const user_agent: []const u8 = "zghalint/0.1.0";
@@ -71,7 +73,7 @@ pub const accept_github_json: []const u8 = "application/vnd.github+json";
 pub const api_version: []const u8 = "2022-11-28";
 
 pub fn getAuthHeader(allocator: Allocator) ?[]const u8 {
-    const token = std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN") catch return null;
+    const token = runtime.getEnv(allocator, "GITHUB_TOKEN") catch return null;
     defer allocator.free(token);
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
 }
@@ -101,7 +103,7 @@ pub const max_response_bytes: usize = 16 * 1024 * 1024;
 /// A `std.Io.Writer` that accumulates into an owned buffer and fails the
 /// write (and therefore the fetch) once `limit` bytes would be exceeded.
 pub const BoundedBody = struct {
-    list: std.ArrayListUnmanaged(u8) = .empty,
+    list: std.ArrayList(u8) = .empty,
     allocator: Allocator,
     limit: usize,
     overflowed: bool = false,
@@ -164,8 +166,8 @@ pub fn fetch(
 ) FetchError!std.http.Client.FetchResult {
     if (engine.isNetworkDeadlineExceeded()) return error.NetworkDeadlineExceeded;
     if (!client_initialized) return error.NotInitialized;
-    client_mutex.lock();
-    defer client_mutex.unlock();
+    client_mutex.lockUncancelable(runtime.io());
+    defer client_mutex.unlock(runtime.io());
     applyPendingCustomCa();
     return client_storage.fetch(opts) catch return error.FetchFailed;
 }
@@ -277,7 +279,7 @@ test "init honors HTTPS_PROXY (#336)" {
     init(testing.allocator);
     defer deinit();
     const proxy = client_storage.https_proxy orelse return error.TestExpectedNonNull;
-    try testing.expectEqualStrings("127.0.0.1", proxy.host);
+    try testing.expectEqualStrings("127.0.0.1", proxy.host.bytes);
     try testing.expectEqual(@as(u16, 8080), proxy.port);
 }
 
@@ -330,7 +332,7 @@ test "getAuthHeader: returns null when GITHUB_TOKEN unset" {
 test "fetch: returns NetworkDeadlineExceeded when deadline has passed" {
     // The deadline check must short-circuit before any TCP / TLS work is
     // attempted, so the client is deliberately left uninitialized.
-    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer engine.clearNetworkDeadline();
 
     const result = fetch(.{ .location = .{ .url = "http://127.0.0.1:1/irrelevant" } });
@@ -344,7 +346,7 @@ test "fetchAuthenticatedJson: returns NotInitialized when client not started" {
 }
 
 test "fetchAuthenticatedJson: short-circuits on expired deadline" {
-    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer engine.clearNetworkDeadline();
 
     const result = fetchAuthenticatedJson(testing.allocator, "http://127.0.0.1:1/irrelevant");

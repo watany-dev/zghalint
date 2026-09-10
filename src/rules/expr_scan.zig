@@ -88,11 +88,11 @@ pub fn scanText(visitor: anytype, text: []const u8, anchor: Anchor) void {
             continue;
         }
         const expr_start = pos + 3;
-        const end_offset = std.mem.indexOf(u8, text[expr_start..], "}}") orelse return;
+        const end_offset = std.mem.find(u8, text[expr_start..], "}}") orelse return;
         const content = text[expr_start .. expr_start + end_offset];
         pos = expr_start + end_offset + 2;
 
-        const leading = std.mem.indexOfNone(u8, content, " \t\n\r") orelse continue;
+        const leading = std.mem.findNone(u8, content, " \t\n\r") orelse continue;
         const trimmed = std.mem.trim(u8, content, " \t\n\r");
         scanExpression(visitor, text, anchor, expr_start + leading, trimmed);
     }
@@ -108,7 +108,7 @@ pub fn scanCondition(
 ) void {
     const value = condition orelse return;
     const anchor = Anchor.fromMeta(meta, fallback);
-    if (std.mem.indexOf(u8, value, "${{") != null) {
+    if (std.mem.find(u8, value, "${{") != null) {
         scanText(visitor, value, anchor);
         return;
     }

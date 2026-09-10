@@ -31,7 +31,7 @@ const testing = std.testing;
 fn ruleRowId(line: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, line, "|")) return null;
     const rest = line[1..];
-    const end = std.mem.indexOfScalar(u8, rest, '|') orelse return null;
+    const end = std.mem.findScalar(u8, rest, '|') orelse return null;
     const id = std.mem.trim(u8, rest[0..end], " ");
     if (id.len < 4) return null;
 
@@ -46,11 +46,11 @@ fn ruleRowId(line: []const u8) ?[]const u8 {
     return if (seen_digit) id else null;
 }
 
-fn collectDocumentedIds(alloc: std.mem.Allocator) !std.StringArrayHashMapUnmanaged(void) {
-    var ids: std.StringArrayHashMapUnmanaged(void) = .empty;
+fn collectDocumentedIds(alloc: std.mem.Allocator) !std.array_hash_map.String(void) {
+    var ids: std.array_hash_map.String(void) = .empty;
     var lines = std.mem.splitScalar(u8, rules_md, '\n');
     while (lines.next()) |line| {
-        const id = ruleRowId(std.mem.trimRight(u8, line, "\r")) orelse continue;
+        const id = ruleRowId(std.mem.trimEnd(u8, line, "\r")) orelse continue;
         try ids.put(alloc, id, {});
     }
     return ids;
@@ -79,7 +79,7 @@ test "docs/rules.md documents no rule that is not registered" {
 
     var documented = try collectDocumentedIds(alloc);
 
-    var registered: std.StringArrayHashMapUnmanaged(void) = .empty;
+    var registered: std.array_hash_map.String(void) = .empty;
     for (registry.documented_rule_ids) |id| try registered.put(alloc, id, {});
 
     var stale = false;
@@ -100,7 +100,7 @@ test "expressions: sub_rule_ids covers every emitted ID" {
     const needle = "\"EXPR";
     for (expression_sources) |src| {
         var i: usize = 0;
-        while (std.mem.indexOfPos(u8, src, i, needle)) |pos| {
+        while (std.mem.findPos(u8, src, i, needle)) |pos| {
             i = pos + needle.len;
             const id_start = pos + 1;
             const id_end = i + 3;

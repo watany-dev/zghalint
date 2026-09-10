@@ -260,7 +260,7 @@ pub const Parser = struct {
         }
         if (!has_merge) return entries;
 
-        var merged = std.ArrayList(MappingEntry){};
+        var merged = std.ArrayList(MappingEntry).empty;
         for (entries) |entry| {
             if (std.mem.eql(u8, entry.key.value, merge_key)) continue;
             merged.append(self.allocator, entry) catch return ParseError.OutOfMemory;
@@ -295,7 +295,7 @@ pub const Parser = struct {
     }
 
     fn parseBlockMapping(self: *Parser, first_key_token: Token, min_indent: u32) ParseError!Node {
-        var entries = std.ArrayList(MappingEntry){};
+        var entries = std.ArrayList(MappingEntry).empty;
 
         const key_indent = first_key_token.column;
         var current_key = first_key_token;
@@ -372,8 +372,8 @@ pub const Parser = struct {
     }
 
     fn parseBlockSequence(self: *Parser) ParseError!Node {
-        var items = std.ArrayList(Node){};
-        var deletes = std.ArrayList(types.ItemDelete){};
+        var items = std.ArrayList(Node).empty;
+        var deletes = std.ArrayList(types.ItemDelete).empty;
         const seq_indent = self.current.column;
         const anchors_before = self.anchors_seen;
         // Cleared once any item's range proves untrustworthy: the sequence then
@@ -455,7 +455,7 @@ pub const Parser = struct {
     }
 
     fn parseFlowMapping(self: *Parser) ParseError!Node {
-        var entries = std.ArrayList(MappingEntry){};
+        var entries = std.ArrayList(MappingEntry).empty;
         const start_span = self.spanFromToken(self.current);
         self.advance();
 
@@ -494,8 +494,8 @@ pub const Parser = struct {
     }
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
-        var items = std.ArrayList(Node){};
-        var extents = std.ArrayList(ItemExtent){};
+        var items = std.ArrayList(Node).empty;
+        var extents = std.ArrayList(ItemExtent).empty;
         const start_span = self.spanFromToken(self.current);
         const open_line = self.current.line;
         const anchors_before = self.anchors_seen;
@@ -645,7 +645,7 @@ pub const Parser = struct {
     fn tokenLineComment(self: *Parser, token: Token) ?[]const u8 {
         // A block scalar ends at the start of the line that closes it, so what
         // follows `end` is a separate line whose comment belongs to no scalar.
-        if (std.mem.indexOfScalar(u8, token.slice(self.source), '\n') != null) return null;
+        if (std.mem.findScalar(u8, token.slice(self.source), '\n') != null) return null;
 
         var i = token.end;
         if (i >= self.source.len) return null;
@@ -675,7 +675,7 @@ pub const Parser = struct {
         }
         if (raw.len >= 1 and (raw[0] == '|' or raw[0] == '>')) {
             const style: ScalarStyle = if (raw[0] == '|') .literal else .folded;
-            const content_start = if (std.mem.indexOfScalar(u8, raw, '\n')) |nl| nl + 1 else 0;
+            const content_start = if (std.mem.findScalar(u8, raw, '\n')) |nl| nl + 1 else 0;
             return .{
                 .value = if (content_start < raw.len) raw[content_start..] else "",
                 .style = style,
@@ -1040,7 +1040,7 @@ test "parse rejects input nested past max_parse_depth" {
     defer arena.deinit();
 
     const levels = @as(usize, max_parse_depth) + 16;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(std.testing.allocator);
     for (0..levels) |i| {
         try buf.appendNTimes(std.testing.allocator, ' ', i);
@@ -1056,7 +1056,7 @@ test "parse rejects flow collections nested past max_parse_depth" {
     defer arena.deinit();
 
     const levels = @as(usize, max_parse_depth) + 16;
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(std.testing.allocator);
     try buf.appendSlice(std.testing.allocator, "a: ");
     try buf.appendNTimes(std.testing.allocator, '[', levels);
@@ -1475,7 +1475,7 @@ test "parse caps an exponentially expanding alias chain" {
 
     // The classic "billion laughs": every level doubles the previous one, so
     // 32 levels would materialise 2^32 nodes without the expansion budget.
-    var source = std.ArrayList(u8){};
+    var source = std.ArrayList(u8).empty;
     defer source.deinit(std.testing.allocator);
     try source.appendSlice(std.testing.allocator, "a0: &a0 [x, x]\n");
     for (1..32) |i| {
@@ -1507,7 +1507,7 @@ test "a comment run longer than the depth limit does not abort the parse" {
     // Comments used to be skipped by recursing into `parseNode`, so a run
     // longer than `max_parse_depth` exhausted the budget and the whole
     // document failed to parse.
-    var source = std.ArrayList(u8){};
+    var source = std.ArrayList(u8).empty;
     defer source.deinit(std.testing.allocator);
     for (0..max_parse_depth * 2) |_| try source.appendSlice(std.testing.allocator, "# skip me\n");
     try source.appendSlice(std.testing.allocator, "name: ci\n");

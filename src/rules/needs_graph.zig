@@ -45,7 +45,7 @@ fn needsSpan(job: *const Job, index: usize) Span {
 /// to SYN006, whose ID grammar accepts the empty string.
 fn isCheckable(need: []const u8) bool {
     if (need.len == 0) return true;
-    if (std.mem.indexOf(u8, need, "${{") != null) return false;
+    if (std.mem.find(u8, need, "${{") != null) return false;
     const first = need[0];
     if (first != '_' and !std.ascii.isAlphabetic(first)) return false;
     for (need[1..]) |c| {
@@ -131,7 +131,7 @@ const CycleWalk = struct {
     const Stack = std.ArrayList(Frame);
 
     fn run(self: *CycleWalk, alloc: std.mem.Allocator) void {
-        var stack = Stack{};
+        var stack = Stack.empty;
         defer stack.deinit(alloc);
 
         for (self.wf.jobs, 0..) |_, start| {
@@ -176,7 +176,7 @@ const CycleWalk = struct {
         } else return;
 
         const alloc = self.list.fixAllocator();
-        var chain: std.ArrayList(u8) = .{};
+        var chain: std.ArrayList(u8) = .empty;
         for (stack.items[start..]) |frame| {
             chain.appendSlice(alloc, self.wf.jobs[frame.job].id) catch return;
             chain.appendSlice(alloc, " -> ") catch return;
@@ -272,7 +272,7 @@ test "SYN021: needs naming no job is reported at the entry" {
     const diag = list.get(0);
     try testing.expectEqualStrings("SYN021", diag.rule_id);
     try testing.expectEqual(@as(u32, 8), diag.span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean \"build\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"build\"") != null);
     try testing.expect(diag.fix != null);
 }
 
@@ -295,7 +295,7 @@ test "SYN021: the owning job is not a rename candidate" {
     try testing.expectEqual(@as(usize, 1), list.len());
     const diag = list.get(0);
     try testing.expectEqualStrings("SYN021", diag.rule_id);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "did you mean") == null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean") == null);
     try testing.expect(diag.fix == null);
 }
 
@@ -399,7 +399,7 @@ test "SYN022: a two-job cycle is reported once, at the job it returns to" {
     const diag = list.get(0);
     try testing.expectEqualStrings("SYN022", diag.rule_id);
     try testing.expectEqual(@as(u32, 3), diag.span.start_line);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "a -> b -> a") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "a -> b -> a") != null);
 }
 
 test "SYN022: a job needing itself is a cycle" {
@@ -419,7 +419,7 @@ test "SYN022: a job needing itself is a cycle" {
     try testing.expectEqual(@as(usize, 1), list.len());
     const diag = list.get(0);
     try testing.expectEqualStrings("SYN022", diag.rule_id);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "loop -> loop") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "loop -> loop") != null);
 }
 
 test "SYN022: a diamond is not a cycle" {
@@ -480,7 +480,7 @@ test "SYN022: a longer cycle is reported once even with a job leading into it" {
     try testing.expectEqual(@as(usize, 1), list.len());
     const diag = list.get(0);
     try testing.expectEqualStrings("SYN022", diag.rule_id);
-    try testing.expect(std.mem.indexOf(u8, diag.message, "a -> b -> c -> a") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "a -> b -> c -> a") != null);
 }
 
 test "SYN021/SYN022: a workflow without any needs produces no diagnostic" {

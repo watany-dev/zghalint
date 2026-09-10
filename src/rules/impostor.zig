@@ -143,7 +143,7 @@ pub fn checkImpostorCommit(step: *const Step, list: *DiagnosticList) void {
 /// Allocated into `alloc` (DiagnosticList's fix arena) so the returned slice
 /// lives for the diagnostic's lifetime.
 fn buildFixHint(alloc: Allocator, cached: CachedResult) ![]const u8 {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
 
     try buf.appendSlice(alloc, "SHA not reachable from upstream. Consider pinning to ");
@@ -156,7 +156,7 @@ fn buildFixHint(alloc: Allocator, cached: CachedResult) ![]const u8 {
         while (i < take) : (i += 1) {
             if (i != 0) try buf.appendSlice(alloc, ", ");
             const tag = cached.suggested_tags[i];
-            try buf.writer(alloc).print("{s}={s}", .{ tag.name, oidShort(tag.oid) });
+            try buf.print(alloc, "{s}={s}", .{ tag.name, oidShort(tag.oid) });
         }
         try buf.appendSlice(alloc, ")");
         wrote_candidate = true;
@@ -164,7 +164,7 @@ fn buildFixHint(alloc: Allocator, cached: CachedResult) ![]const u8 {
 
     if (cached.suggested_default) |def| {
         if (wrote_candidate) try buf.appendSlice(alloc, " or ");
-        try buf.writer(alloc).print("the default branch ({s}={s})", .{ def.name, oidShort(def.oid) });
+        try buf.print(alloc, "the default branch ({s}={s})", .{ def.name, oidShort(def.oid) });
         wrote_candidate = true;
     }
 
@@ -255,7 +255,7 @@ test "SC008: impostor status produces warning diagnostic" {
 
     try testing.expect(hasDiagnostic(&list, "SC008"));
     try testing.expectEqual(diagnostics.Severity.warning, list.get(0).severity);
-    try testing.expect(std.mem.indexOf(u8, list.get(0).message, "impostor commit") != null);
+    try testing.expect(std.mem.find(u8, list.get(0).message, "impostor commit") != null);
 }
 
 test "SC008: legitimate status produces no diagnostic" {
@@ -400,11 +400,11 @@ test "buildFixHint: lists tag candidates and default branch" {
         },
     });
 
-    try testing.expect(std.mem.indexOf(u8, hint, "v4=a81bbbf") != null);
-    try testing.expect(std.mem.indexOf(u8, hint, "v4.2.2=11bd719") != null);
-    try testing.expect(std.mem.indexOf(u8, hint, "v4.2.1=") != null);
-    try testing.expect(std.mem.indexOf(u8, hint, "v4.2.0") == null);
-    try testing.expect(std.mem.indexOf(u8, hint, "main=c85c95e") != null);
+    try testing.expect(std.mem.find(u8, hint, "v4=a81bbbf") != null);
+    try testing.expect(std.mem.find(u8, hint, "v4.2.2=11bd719") != null);
+    try testing.expect(std.mem.find(u8, hint, "v4.2.1=") != null);
+    try testing.expect(std.mem.find(u8, hint, "v4.2.0") == null);
+    try testing.expect(std.mem.find(u8, hint, "main=c85c95e") != null);
 }
 
 test "buildFixHint: falls back when no candidates" {
@@ -413,5 +413,5 @@ test "buildFixHint: falls back when no candidates" {
     const alloc = arena.allocator();
 
     const hint = try buildFixHint(alloc, .{ .status = .impostor });
-    try testing.expect(std.mem.indexOf(u8, hint, "known tag or the default branch") != null);
+    try testing.expect(std.mem.find(u8, hint, "known tag or the default branch") != null);
 }
