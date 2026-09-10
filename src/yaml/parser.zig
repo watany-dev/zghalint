@@ -729,9 +729,16 @@ pub const Parser = struct {
         }
     }
 
-    /// Consume the rest of the current line, then the trivia after it.
+    /// Consume the rest of the current line, then the trivia after it. A token
+    /// that already begins a later line is not on this one: a block scalar ends
+    /// at the start of the line that closes it, so no newline separates it from
+    /// the key there and skipping on took that key with it. The key reappeared
+    /// once an insertion above ended the scalar earlier (fuzz).
     fn skipLine(self: *Parser) void {
-        while (self.current.kind != .newline and self.current.kind != .eof) {
+        const line = self.current.line;
+        while (self.current.kind != .newline and self.current.kind != .eof and
+            self.current.line == line)
+        {
             self.advance();
         }
         self.skipNewlinesAndComments();
@@ -1599,6 +1606,20 @@ test "a quote after a closing bracket does not open a scalar (fuzz)" {
     var flow = Parser.init(alloc, "on: [a, 'b\nc']\njobs:");
     const flow_doc = try flow.parse();
     try std.testing.expect(flow_doc.mapping.entries.len == 2);
+}
+
+test "a block scalar leaves the key on the line after it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `|` token runs to the start of the `concurrency:` line, so no newline
+    // separates the two. Skipping the junk line took the key with it, and it
+    // reappeared once an inserted `permissions:` line ended the scalar earlier.
+    var parser = Parser.init(alloc, "on:\n n\n |\n  \nconcurrency: p\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 3), doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("concurrency", doc.mapping.entries[1].key.value);
 }
 
 test "a quote right after a closing quote opens a scalar (fuzz)" {
