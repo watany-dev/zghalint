@@ -730,6 +730,30 @@ pub const Job = struct {
     runs_on_label_spans: []const yaml_types.Span = &.{},
 };
 
+/// Job IDs by position, matched case-insensitively the way the runner
+/// resolves them. Every `needs` check looks jobs up by name, and scanning the
+/// job list for each entry made a dense dependency graph cost O(jobs × needs).
+pub const JobIndex = struct {
+    by_id: util.IgnoreCaseMap(usize),
+
+    /// The first job carrying an ID wins, so a duplicate (SYN005) resolves the
+    /// way a front-to-back scan did.
+    pub fn build(allocator: std.mem.Allocator, jobs: []const Job) !JobIndex {
+        var by_id: util.IgnoreCaseMap(usize) = .empty;
+        errdefer by_id.deinit(allocator);
+        try by_id.ensureTotalCapacity(allocator, @intCast(jobs.len));
+        for (jobs, 0..) |*job, i| {
+            const entry = by_id.getOrPutAssumeCapacity(job.id);
+            if (!entry.found_existing) entry.value_ptr.* = i;
+        }
+        return .{ .by_id = by_id };
+    }
+
+    pub fn find(self: *const JobIndex, id: []const u8) ?usize {
+        return self.by_id.get(id);
+    }
+};
+
 pub const Workflow = struct {
     name: ?[]const u8 = null,
     on: Trigger,
@@ -744,6 +768,9 @@ pub const Workflow = struct {
     concurrency: ?Concurrency = null,
     defaults: ?Defaults = null,
     jobs: []const Job,
+    /// Built by the parser. A `Workflow` assembled by hand (tests) leaves it
+    /// null and `findJob` scans instead.
+    job_index: ?JobIndex = null,
     empty_sections: []const EmptySection = &.{},
     unknown_keys: []const schema.UnknownKey = &.{},
     /// Mapping value type mismatches collected during parsing (SYN004).
@@ -767,9 +794,37 @@ pub const Workflow = struct {
         }
         return false;
     }
+
+    /// Position of the first job whose ID matches `id` case-insensitively.
+    pub fn findJob(self: *const Workflow, id: []const u8) ?usize {
+        if (self.job_index) |*index| return index.find(id);
+        for (self.jobs, 0..) |*job, i| {
+            if (std.ascii.eqlIgnoreCase(job.id, id)) return i;
+        }
+        return null;
+    }
 };
 
 const type_validation = @import("type_validation.zig");
+const util = @import("../util.zig");
+
+test "Workflow.findJob resolves IDs case-insensitively, first duplicate wins" {
+    const jobs = [_]Job{
+        .{ .id = "build", .span = yaml_types.Span.point(1, 1, 0) },
+        .{ .id = "Test", .span = yaml_types.Span.point(2, 1, 0) },
+        .{ .id = "BUILD", .span = yaml_types.Span.point(3, 1, 0) },
+    };
+    const scanned = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    var index = try JobIndex.build(std.testing.allocator, &jobs);
+    defer index.by_id.deinit(std.testing.allocator);
+    const indexed = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs, .job_index = index };
+
+    for ([_]*const Workflow{ &scanned, &indexed }) |wf| {
+        try std.testing.expectEqual(@as(?usize, 0), wf.findJob("Build"));
+        try std.testing.expectEqual(@as(?usize, 1), wf.findJob("test"));
+        try std.testing.expectEqual(@as(?usize, null), wf.findJob("deploy"));
+    }
+}
 
 test "EventType.fromString known events" {
     try std.testing.expectEqual(EventType.push, EventType.fromString("push"));

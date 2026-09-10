@@ -222,6 +222,7 @@ pub fn parseWorkflowTracked(
         .on = trigger,
         .concurrency = concurrency,
         .jobs = jobs,
+        .job_index = try types.JobIndex.build(allocator, jobs),
         .type_mismatches = try type_mismatches.toOwnedSlice(allocator),
         .yaml_root = node,
     };

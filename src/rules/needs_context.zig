@@ -77,10 +77,8 @@ const NeedsVisitor = struct {
     }
 
     fn findJob(self: NeedsVisitor, job_id: []const u8) ?*const Job {
-        for (self.wf.jobs) |*candidate| {
-            if (eqlId(candidate.id, job_id)) return candidate;
-        }
-        return null;
+        const index = self.wf.findJob(job_id) orelse return null;
+        return &self.wf.jobs[index];
     }
 
     fn isNeeded(self: NeedsVisitor, job_id: []const u8) bool {

@@ -63,8 +63,12 @@ pub fn levenshteinDistanceBounded(a: []const u8, b: []const u8, bound: usize) us
 /// costs one hash instead of an `eqlIgnoreCase` against every earlier key.
 pub const IgnoreCaseContext = struct {
     pub fn hash(_: IgnoreCaseContext, key: []const u8) u64 {
+        var buf: [64]u8 = undefined;
+        // Nearly every key (a job or step ID, a property name) fits the
+        // buffer, and the one-shot hash skips the streaming state a key that
+        // short never needs.
+        if (key.len <= buf.len) return std.hash.Wyhash.hash(0, std.ascii.lowerString(&buf, key));
         var hasher = std.hash.Wyhash.init(0);
-        var buf: [32]u8 = undefined;
         var pos: usize = 0;
         while (pos < key.len) : (pos += buf.len) {
             const chunk = key[pos..@min(pos + buf.len, key.len)];

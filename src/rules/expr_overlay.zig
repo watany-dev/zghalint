@@ -59,27 +59,46 @@ fn strictObject(alloc: std.mem.Allocator, props: []const Prop) ?TypeRef {
 
 /// Later duplicates lose: a repeated key keeps the first type seen, matching
 /// the source-order dedup the EXPR010-EXPR014 collectors already do.
+///
+/// `alloc` is the caller's arena, so the position map is left to it.
 const PropList = struct {
     items: std.ArrayList(Prop) = .empty,
+    /// Position in `items` of each name seen, so a repeat is found without
+    /// rescanning the list (a job with hundreds of `needs` made this O(n²)).
+    positions: util.IgnoreCaseMap(usize) = .empty,
     alloc: std.mem.Allocator,
 
     fn put(self: *PropList, name: []const u8, ty: TypeRef) void {
-        for (self.items.items) |existing| {
-            if (std.ascii.eqlIgnoreCase(existing.name, name)) return;
-        }
-        self.items.append(self.alloc, .{ .name = name, .ty = ty }) catch return;
+        const entry = self.positions.getOrPut(self.alloc, name) catch return;
+        if (entry.found_existing) return;
+        self.appendNew(entry.value_ptr, name, ty);
     }
 
     /// Merges into an existing key instead of dropping it, for overlays whose
     /// value type is a union over several declarations (`matrix`).
     fn merge(self: *PropList, name: []const u8, ty: TypeRef) void {
-        for (self.items.items) |*existing| {
-            if (std.ascii.eqlIgnoreCase(existing.name, name)) {
-                existing.ty = t.merge(existing.ty, ty);
-                return;
-            }
+        const entry = self.positions.getOrPut(self.alloc, name) catch return;
+        if (entry.found_existing) {
+            const existing = &self.items.items[entry.value_ptr.*];
+            existing.ty = t.merge(existing.ty, ty);
+            return;
         }
+        self.appendNew(entry.value_ptr, name, ty);
+    }
+
+    /// A failed append leaves the map entry pointing past the list; the next
+    /// `put` of that name then finds it and returns, which is the same silent
+    /// drop an allocation failure caused before.
+    fn appendNew(self: *PropList, position: *usize, name: []const u8, ty: TypeRef) void {
+        position.* = self.items.items.len;
         self.items.append(self.alloc, .{ .name = name, .ty = ty }) catch return;
+    }
+
+    /// Sizes both containers up front when the caller knows how many keys
+    /// are coming, so a long list does not grow (and rehash) in steps.
+    fn reserve(self: *PropList, count: usize) void {
+        self.items.ensureTotalCapacity(self.alloc, count) catch {};
+        self.positions.ensureTotalCapacity(self.alloc, std.math.cast(u32, count) orelse return) catch {};
     }
 
     fn finish(self: *PropList) ?[]const Prop {
@@ -246,6 +265,7 @@ pub fn buildNeeds(alloc: std.mem.Allocator, wf: *const Workflow, job: *const Job
     if (job.needs.len == 0) return null;
 
     var props = PropList{ .alloc = alloc };
+    props.reserve(job.needs.len);
     for (job.needs) |need| {
         props.put(need, needType(alloc, wf, need) orelse &opaque_need);
     }
@@ -255,20 +275,32 @@ pub fn buildNeeds(alloc: std.mem.Allocator, wf: *const Workflow, job: *const Job
 /// Null when the named job is absent (EXPR012's finding) or declares no
 /// outputs, so `<job>.outputs.<name>` keeps resolving to `any`.
 fn needType(alloc: std.mem.Allocator, wf: *const Workflow, name: []const u8) ?TypeRef {
+    const candidate = findJobExact(wf, name) orelse return null;
+    if (candidate.outputs.len == 0) return null;
+
+    var outputs = PropList{ .alloc = alloc };
+    for (candidate.outputs) |output| outputs.put(output.name, string);
+    const outputs_ty = strictObject(alloc, outputs.finish() orelse return null) orelse return null;
+
+    // The prop slice outlives this frame, so it has to come from the arena
+    // rather than from an anonymous array literal.
+    var props = PropList{ .alloc = alloc };
+    props.put("outputs", outputs_ty);
+    props.put("result", string);
+    return strictObject(alloc, props.finish() orelse return null);
+}
+
+/// The job whose ID is exactly `name`: a `needs` entry differing only in case
+/// stays opaque here. The workflow's index resolves case-insensitively, so it
+/// serves as a first guess and the scan only runs when that guess is not an
+/// exact match (a case-variant duplicate, SYN005).
+fn findJobExact(wf: *const Workflow, name: []const u8) ?*const Job {
+    if (wf.findJob(name)) |index| {
+        const guess = &wf.jobs[index];
+        if (std.mem.eql(u8, guess.id, name)) return guess;
+    } else return null;
     for (wf.jobs) |*candidate| {
-        if (!std.mem.eql(u8, candidate.id, name)) continue;
-        if (candidate.outputs.len == 0) return null;
-
-        var outputs = PropList{ .alloc = alloc };
-        for (candidate.outputs) |output| outputs.put(output.name, string);
-        const outputs_ty = strictObject(alloc, outputs.finish() orelse return null) orelse return null;
-
-        // The prop slice outlives this frame, so it has to come from the arena
-        // rather than from an anonymous array literal.
-        var props = PropList{ .alloc = alloc };
-        props.put("outputs", outputs_ty);
-        props.put("result", string);
-        return strictObject(alloc, props.finish() orelse return null);
+        if (std.mem.eql(u8, candidate.id, name)) return candidate;
     }
     return null;
 }

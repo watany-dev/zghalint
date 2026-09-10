@@ -344,18 +344,19 @@ const step_id_dup_fmt =
 
 fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs, 0..) |*job, i| {
-        for (wf.jobs[0..i]) |*prior| {
-            if (!std.ascii.eqlIgnoreCase(prior.id, job.id)) continue;
-            reportDuplicateId(
-                list,
-                job.id,
-                (prior.id_span orelse prior.span).start_line,
-                (job.id_span orelse job.span),
-                job_id_dup_fmt,
-                "use a unique job ID within the workflow",
-            );
-            break;
-        }
+        // The index resolves to the first job with this ID, so every later
+        // occurrence points back at it.
+        const first = wf.findJob(job.id) orelse continue;
+        if (first == i) continue;
+        const prior = &wf.jobs[first];
+        reportDuplicateId(
+            list,
+            job.id,
+            (prior.id_span orelse prior.span).start_line,
+            (job.id_span orelse job.span),
+            job_id_dup_fmt,
+            "use a unique job ID within the workflow",
+        );
     }
 }
 
@@ -457,14 +458,17 @@ fn buildDuplicateNeedsFix(
 }
 
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
+    if (job.needs.len < 2) return;
+    // Job IDs are case-insensitive in GitHub Actions. Report on the second
+    // occurrence only, so an ID repeated three or more times still yields a
+    // single diagnostic.
+    var seen_before: util.IgnoreCaseMap(usize) = .empty;
+    defer seen_before.deinit(diag_list.allocator);
+    seen_before.ensureTotalCapacity(diag_list.allocator, std.math.cast(u32, job.needs.len) orelse return) catch return;
     for (job.needs, 0..) |dep, i| {
-        // Job IDs are case-insensitive in GitHub Actions. Report on the second
-        // occurrence only, so an ID repeated three or more times still yields
-        // a single diagnostic.
-        var prior: usize = 0;
-        for (job.needs[0..i]) |earlier| {
-            if (std.ascii.eqlIgnoreCase(earlier, dep)) prior += 1;
-        }
+        const entry = seen_before.getOrPut(diag_list.allocator, dep) catch return;
+        const prior = if (entry.found_existing) entry.value_ptr.* else 0;
+        entry.value_ptr.* = prior + 1;
         if (prior != 1) continue;
 
         diag_list.append(.{
