@@ -158,7 +158,7 @@ pub fn parseWorkflowTracked(
     node: Node,
     failure: *?Failure,
 ) ParseError!types.Workflow {
-    var type_mismatches = std.ArrayList(type_validation.TypeMismatch){};
+    var type_mismatches = std.ArrayList(type_validation.TypeMismatch).empty;
     errdefer type_mismatches.deinit(allocator);
 
     var unknown_collector = schema.UnknownKeyCollector.init(allocator);
@@ -179,7 +179,7 @@ pub fn parseWorkflowTracked(
         },
     };
 
-    var empty = std.ArrayList(types.EmptySection){};
+    var empty = std.ArrayList(types.EmptySection).empty;
     defer empty.deinit(allocator);
 
     const on_node = root.get("on") orelse root.get("true") orelse {
@@ -385,7 +385,7 @@ fn parseEventConfig(allocator: std.mem.Allocator, name: []const u8, node: Node, 
 }
 
 fn parseScheduleEntries(allocator: std.mem.Allocator, seq: yaml.Sequence) ParseError![]const types.ScheduleEntry {
-    var entries = std.ArrayList(types.ScheduleEntry){};
+    var entries = std.ArrayList(types.ScheduleEntry).empty;
     errdefer entries.deinit(allocator);
 
     for (seq.items) |item| {
@@ -541,9 +541,9 @@ fn parseWorkflowCallInputs(allocator: std.mem.Allocator, node: Node) ParseError!
         else => return .{ .inputs = &.{}, .problems = &.{} },
     };
 
-    var inputs = std.ArrayList(types.InputDef){};
+    var inputs = std.ArrayList(types.InputDef).empty;
     errdefer inputs.deinit(allocator);
-    var problems = std.ArrayList(types.WorkflowCallInputProblem){};
+    var problems = std.ArrayList(types.WorkflowCallInputProblem).empty;
     errdefer problems.deinit(allocator);
 
     for (inputs_mapping.entries) |entry| {
@@ -687,7 +687,7 @@ fn defaultMatchesDispatchInputType(input_type: types.DispatchInputType, node: No
 /// values rather than a parse error, so a malformed `options:` surfaces as an
 /// empty option list instead of aborting the whole file.
 fn collectOptionValues(allocator: std.mem.Allocator, node: Node) ParseError![]const []const u8 {
-    var values = std.ArrayList([]const u8){};
+    var values = std.ArrayList([]const u8).empty;
     errdefer values.deinit(allocator);
     if (node == .sequence) {
         for (node.sequence.items) |item| {
@@ -706,9 +706,9 @@ fn parseWorkflowDispatchInputs(allocator: std.mem.Allocator, node: Node) ParseEr
         else => return .{ .inputs = &.{}, .problems = &.{} },
     };
 
-    var inputs = std.ArrayList(types.DispatchInputDef){};
+    var inputs = std.ArrayList(types.DispatchInputDef).empty;
     errdefer inputs.deinit(allocator);
-    var problems = std.ArrayList(types.WorkflowDispatchInputProblem){};
+    var problems = std.ArrayList(types.WorkflowDispatchInputProblem).empty;
     errdefer problems.deinit(allocator);
 
     for (inputs_mapping.entries) |entry| {
@@ -960,7 +960,7 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         }
     }
 
-    var empty = std.ArrayList(types.EmptySection){};
+    var empty = std.ArrayList(types.EmptySection).empty;
     defer empty.deinit(ctx.allocator);
 
     // Insertion anchor for job-level `permissions:` / `concurrency:` lands after
@@ -1302,7 +1302,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             ctx.allocator,
         );
     }
-    var empty = std.ArrayList(types.EmptySection){};
+    var empty = std.ArrayList(types.EmptySection).empty;
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
         step.with_key_present = true;
@@ -1377,7 +1377,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
 }
 
 fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedPermissions {
-    var problems = std.ArrayList(types.PermissionProblem){};
+    var problems = std.ArrayList(types.PermissionProblem).empty;
     errdefer problems.deinit(allocator);
 
     switch (node) {
@@ -1570,10 +1570,10 @@ fn parseSecretsConfig(allocator: std.mem.Allocator, node: Node) ParseError!types
             return error.InvalidValue;
         },
         .mapping => |m| {
-            var map = types.StringMap.init(allocator);
+            var map: types.StringMap = .empty;
             for (m.entries) |entry| {
                 switch (entry.value) {
-                    .scalar => |sv| try map.put(entry.key.value, sv.value),
+                    .scalar => |sv| try map.put(allocator, entry.key.value, sv.value),
                     else => {},
                 }
             }
@@ -1681,22 +1681,22 @@ fn parseStringMapWithMeta(allocator: std.mem.Allocator, node: Node) ParseError!P
         else => return error.InvalidValue,
     };
 
-    var values = types.StringMap.init(allocator);
-    var meta = types.ScalarValueMetaMap.init(allocator);
+    var values: types.StringMap = .empty;
+    var meta: types.ScalarValueMetaMap = .empty;
     for (m.entries) |entry| {
         switch (entry.value) {
             .scalar => |s| {
-                try values.put(entry.key.value, s.value);
+                try values.put(allocator, entry.key.value, s.value);
                 var entry_meta = scalarMeta(s);
                 entry_meta.key_span = entry.key.span;
-                try meta.put(entry.key.value, entry_meta);
+                try meta.put(allocator, entry.key.value, entry_meta);
             },
             // A key whose value is a sequence, a mapping, or nothing at all is
             // still a key the workflow wrote. Dropping it made DEP004/DEP005
             // report the input as not provided; it is recorded with an empty
             // value instead, and without meta, because there is no scalar span
             // to point a diagnostic at.
-            else => try values.put(entry.key.value, ""),
+            else => try values.put(allocator, entry.key.value, ""),
         }
     }
     return .{ .values = values, .meta = meta };
@@ -3472,7 +3472,7 @@ test "with_last_entry_end_byte is set only for an inline scalar in a block with:
         const anchor = wf.jobs[0].steps[0].with_last_entry_end_byte;
 
         const expected: ?usize = if (case.anchored_after) |tail|
-            std.mem.indexOf(u8, source, tail).? + tail.len
+            std.mem.find(u8, source, tail).? + tail.len
         else
             null;
         testing.expectEqual(expected, anchor) catch |err| {
@@ -3748,10 +3748,10 @@ test "step: first key and env: insertion anchors are captured" {
 
     // `name` is the first key of the step mapping, at column 9.
     try testing.expectEqual(@as(u32, 9), step.first_key_col.?);
-    try testing.expectEqual(std.mem.indexOf(u8, source, "name: one").?, step.first_key_start_byte.?);
+    try testing.expectEqual(std.mem.find(u8, source, "name: one").?, step.first_key_start_byte.?);
     try testing.expectEqual(@as(u32, 11), step.env_key_col.?);
     try testing.expectEqual(
-        std.mem.indexOf(u8, source, "FOO: bar").? + "FOO: bar".len,
+        std.mem.find(u8, source, "FOO: bar").? + "FOO: bar".len,
         step.env_last_entry_end_byte.?,
     );
 }

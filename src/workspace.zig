@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 
 /// Package manager that actions/setup-node supports for its `cache` input.
 pub const NodeCache = enum {
@@ -93,23 +94,23 @@ const python_lockfiles = [_]struct {
 
 pub fn findWorkspaceRoot(allocator: std.mem.Allocator, hint_path: []const u8) ![]const u8 {
     // Resolve to an absolute path so walking parent directories terminates.
-    const abs = std.fs.cwd().realpathAlloc(allocator, hint_path) catch |err| switch (err) {
+    const abs = std.Io.Dir.cwd().realPathFileAlloc(runtime.io(), hint_path, allocator) catch |err| switch (err) {
         error.FileNotFound, error.AccessDenied => return fallbackCwd(allocator),
         else => return err,
     };
     defer allocator.free(abs);
 
-    var dir = std.fs.path.dirname(abs) orelse return fallbackCwd(allocator);
+    var dir = std.Io.Dir.path.dirname(abs) orelse return fallbackCwd(allocator);
 
     while (true) {
-        const candidate = try std.fs.path.join(allocator, &.{ dir, ".git" });
+        const candidate = try std.Io.Dir.path.join(allocator, &.{ dir, ".git" });
         defer allocator.free(candidate);
 
-        if (std.fs.accessAbsolute(candidate, .{})) |_| {
+        if (std.Io.Dir.accessAbsolute(runtime.io(), candidate, .{})) |_| {
             return try allocator.dupe(u8, dir);
         } else |_| {}
 
-        const parent = std.fs.path.dirname(dir) orelse break;
+        const parent = std.Io.Dir.path.dirname(dir) orelse break;
         if (std.mem.eql(u8, parent, dir)) break;
         dir = parent;
     }
@@ -118,10 +119,12 @@ pub fn findWorkspaceRoot(allocator: std.mem.Allocator, hint_path: []const u8) ![
 }
 
 fn fallbackCwd(allocator: std.mem.Allocator) ![]const u8 {
-    return std.fs.cwd().realpathAlloc(allocator, ".") catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied => try allocator.dupe(u8, "."),
-        else => err,
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = std.Io.Dir.cwd().realPathFile(runtime.io(), ".", &buf) catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied => return allocator.dupe(u8, "."),
+        else => return err,
     };
+    return allocator.dupe(u8, buf[0..len]);
 }
 
 /// FS access errors are treated uniformly as "absent"; errno distinctions are
@@ -132,15 +135,15 @@ fn fallbackCwd(allocator: std.mem.Allocator) ![]const u8 {
 pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     // `root` is usually absolute but may be the "." fallback, which
     // `openDirAbsolute` would reject (assert) rather than open.
-    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch {
+    var dir = std.Io.Dir.cwd().openDir(runtime.io(), root, .{ .iterate = true }) catch {
         return Context{};
     };
-    defer dir.close();
+    defer dir.close(runtime.io());
 
     // One getdents sweep instead of one `access` syscall per candidate.
     const present = scanRoot(&dir);
 
-    var node_found = std.ArrayList([]const u8){};
+    var node_found = std.ArrayList([]const u8).empty;
     defer node_found.deinit(allocator);
     var node_manager_set = std.EnumSet(NodeCache).initEmpty();
 
@@ -152,7 +155,7 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
         node_manager_set.insert(entry.manager);
     }
 
-    var python_found = std.ArrayList([]const u8){};
+    var python_found = std.ArrayList([]const u8).empty;
     defer python_found.deinit(allocator);
     var python_manager_set = std.EnumSet(PythonCache).initEmpty();
 
@@ -195,7 +198,7 @@ const RootEntries = struct {
     bun: bool = false,
 };
 
-fn scanRoot(dir: *std.fs.Dir) RootEntries {
+fn scanRoot(dir: *std.Io.Dir) RootEntries {
     var present: RootEntries = .{};
 
     var it = dir.iterate();
@@ -203,7 +206,7 @@ fn scanRoot(dir: *std.fs.Dir) RootEntries {
         // A half-read directory could hide one lockfile of an ambiguous pair and
         // turn the hint into a confident wrong answer, so a failed sweep reports
         // nothing rather than what it managed to collect.
-        const entry = (it.next() catch return .{}) orelse break;
+        const entry = (it.next(runtime.io()) catch return .{}) orelse break;
 
         for (node_lockfiles, 0..) |candidate, i| {
             if (matches(dir, entry, candidate.name)) present.node.set(i);
@@ -221,13 +224,13 @@ fn scanRoot(dir: *std.fs.Dir) RootEntries {
 /// A listing reports dangling symlinks and non-regular entries that the
 /// previous `access` probe rejected, so a matching name is only accepted once
 /// it is known to resolve to something readable.
-fn matches(dir: *std.fs.Dir, entry: std.fs.Dir.Entry, candidate: []const u8) bool {
+fn matches(dir: *std.Io.Dir, entry: std.Io.Dir.Entry, candidate: []const u8) bool {
     if (!std.mem.eql(u8, entry.name, candidate)) return false;
     if (entry.kind == .file) return true;
     if (entry.kind != .sym_link) return false;
     // `statFile` opens through the link; `access` only probes attributes, which
     // on Windows a dangling reparse point still satisfies.
-    _ = dir.statFile(entry.name) catch return false;
+    _ = dir.statFile(runtime.io(), entry.name, .{}) catch return false;
     return true;
 }
 
@@ -245,7 +248,7 @@ test "detectFromRoot returns empty Context for empty dir" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -258,9 +261,9 @@ test "detectFromRoot returns empty Context for empty dir" {
 test "detectFromRoot picks npm when only package-lock.json present" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "package-lock.json", .data = "{}" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "package-lock.json", .data = "{}" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -273,9 +276,9 @@ test "detectFromRoot picks npm when only package-lock.json present" {
 test "detectFromRoot picks yarn for yarn.lock" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "yarn.lock", .data = "" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "yarn.lock", .data = "" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -287,10 +290,10 @@ test "detectFromRoot picks yarn for yarn.lock" {
 test "detectFromRoot flags ambiguity when multiple node lockfiles exist" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "package-lock.json", .data = "{}" });
-    try tmp.dir.writeFile(.{ .sub_path = "yarn.lock", .data = "" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "package-lock.json", .data = "{}" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "yarn.lock", .data = "" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -303,9 +306,9 @@ test "detectFromRoot flags ambiguity when multiple node lockfiles exist" {
 test "detectFromRoot identifies python lockfiles" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "poetry.lock", .data = "" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "poetry.lock", .data = "" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -317,10 +320,10 @@ test "detectFromRoot identifies python lockfiles" {
 test "detectFromRoot npm-shrinkwrap aliases to npm without ambiguity" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "package-lock.json", .data = "{}" });
-    try tmp.dir.writeFile(.{ .sub_path = "npm-shrinkwrap.json", .data = "{}" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "package-lock.json", .data = "{}" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "npm-shrinkwrap.json", .data = "{}" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -333,9 +336,9 @@ test "detectFromRoot npm-shrinkwrap aliases to npm without ambiguity" {
 test "detectFromRoot detects go.sum" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "go.sum", .data = "" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "go.sum", .data = "" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -345,9 +348,9 @@ test "detectFromRoot detects go.sum" {
 test "detectFromRoot detects bun.lock" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "bun.lock", .data = "" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bun.lock", .data = "" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -357,9 +360,9 @@ test "detectFromRoot detects bun.lock" {
 test "detectFromRoot detects bun.lockb" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "bun.lockb", .data = "" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bun.lockb", .data = "" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -370,7 +373,7 @@ test "detectFromRoot leaves bun_lockfile_present false without bun lockfile" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -380,9 +383,9 @@ test "detectFromRoot leaves bun_lockfile_present false without bun lockfile" {
 test "detectFromRoot ignores a directory named like a lockfile" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir("yarn.lock");
+    try tmp.dir.createDir(runtime.io(), "yarn.lock", .default_dir);
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -392,9 +395,9 @@ test "detectFromRoot ignores a directory named like a lockfile" {
 test "detectFromRoot ignores a dangling symlink named like a lockfile" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.symLink("nowhere", "package-lock.json", .{}) catch return error.SkipZigTest;
+    tmp.dir.symLink(runtime.io(), "nowhere", "package-lock.json", .{}) catch return error.SkipZigTest;
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -404,10 +407,10 @@ test "detectFromRoot ignores a dangling symlink named like a lockfile" {
 test "detectFromRoot follows a symlink that resolves to a lockfile" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "real.json", .data = "{}" });
-    tmp.dir.symLink("real.json", "package-lock.json", .{}) catch return error.SkipZigTest;
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "real.json", .data = "{}" });
+    tmp.dir.symLink(runtime.io(), "real.json", "package-lock.json", .{}) catch return error.SkipZigTest;
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     const ctx = try detectFromRoot(testing.allocator, abs);
@@ -419,10 +422,10 @@ test "detectFromRoot ambiguity list follows table order, not directory order" {
     defer tmp.cleanup();
     // Written yarn-first so a directory-order-dependent implementation would
     // produce the reversed list.
-    try tmp.dir.writeFile(.{ .sub_path = "yarn.lock", .data = "" });
-    try tmp.dir.writeFile(.{ .sub_path = "package-lock.json", .data = "{}" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "yarn.lock", .data = "" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "package-lock.json", .data = "{}" });
 
-    const abs = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(abs);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -442,13 +445,13 @@ test "detectFromRoot returns empty Context for missing dir" {
 test "findWorkspaceRoot returns dir containing .git" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.makeDir(".git");
-    try tmp.dir.makePath(".github/workflows");
-    try tmp.dir.writeFile(.{ .sub_path = ".github/workflows/ci.yml", .data = "name: CI" });
+    try tmp.dir.createDir(runtime.io(), ".git", .default_dir);
+    try tmp.dir.createDirPath(runtime.io(), ".github/workflows");
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = ".github/workflows/ci.yml", .data = "name: CI" });
 
-    const hint = try tmp.dir.realpathAlloc(testing.allocator, ".github/workflows/ci.yml");
+    const hint = try tmp.dir.realPathFileAlloc(runtime.io(), ".github/workflows/ci.yml", testing.allocator);
     defer testing.allocator.free(hint);
-    const expected = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const expected = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(expected);
 
     const root = try findWorkspaceRoot(testing.allocator, hint);

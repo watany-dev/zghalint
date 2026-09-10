@@ -305,7 +305,7 @@ fn expectMessage(source: []const u8, rule_id: []const u8, needle: []const u8) !v
         std.debug.print("no {s} diagnostic for source:\n{s}\n", .{ rule_id, source });
         return error.MissingDiagnostic;
     };
-    if (std.mem.indexOf(u8, diag.message, needle) == null) {
+    if (std.mem.find(u8, diag.message, needle) == null) {
         std.debug.print("message \"{s}\" does not contain \"{s}\"\n", .{ diag.message, needle });
         return error.UnexpectedMessage;
     }

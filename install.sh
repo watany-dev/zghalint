@@ -13,7 +13,7 @@ REPO=watany-dev/zghalint
 # from a ref and run before any binary exists, so it cannot read the version at
 # run time the way `--version` does; `scripts/check-version-sync.sh` keeps this
 # in step with `build.zig.zon` instead. See docs/maintenance.md.
-DEFAULT_VERSION=v0.0.1-rc.1
+DEFAULT_VERSION=v0.0.1-rc.2
 
 usage() {
   cat <<'EOF'

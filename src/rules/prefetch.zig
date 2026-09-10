@@ -5,6 +5,7 @@
 //! fallback for unauthenticated users.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const workflow_types = @import("../workflow/types.zig");
 const engine = @import("engine.zig");
 
@@ -93,13 +94,13 @@ pub fn prefetchAllWithOptions(
     // GraphQL first; falls back to REST on no-token, parse failure, or
     // rate-limit. SC008's REST compare phase rides on top of the same
     // GraphQL data so it shares whatever batches succeeded.
-    var pending_compares = std.ArrayList(PendingCompare){};
+    var pending_compares = std.ArrayList(PendingCompare).empty;
     defer pending_compares.deinit(scratch);
 
     // Buffer GraphQL results so persistence runs after SC008's compare
     // phase has populated the impostor cache. Otherwise the disk_cache
     // entry would miss step3/4 verdicts on warm runs.
-    var pending_persist = std.ArrayList(graphql.RepoResult){};
+    var pending_persist = std.ArrayList(graphql.RepoResult).empty;
     defer pending_persist.deinit(scratch);
 
     const used_graphql = tryGraphQlBatch(
@@ -126,7 +127,7 @@ pub fn prefetchAllWithOptions(
     // Failures are non-fatal (best-effort warm-run hint).
     if (pending_persist.items.len > 0) {
         var cache_dir = disk_cache.getCacheDir(scratch);
-        defer if (cache_dir) |*d| d.close();
+        defer if (cache_dir) |*d| d.close(runtime.io());
         for (pending_persist.items) |res| {
             persistRepoResult(scratch, res, cache_dir);
         }
@@ -225,10 +226,10 @@ fn applyDiskCache(
     // Opened once for the whole sweep: `disk_cache.load` resolves and opens the
     // directory per call, on a path that never changes during a run.
     var cache_dir = disk_cache.getCacheDir(scratch) orelse return hits;
-    defer cache_dir.close();
+    defer cache_dir.close(runtime.io());
 
     // Iterate over a stable snapshot because `sets` is mutated while iterating.
-    var repo_keys = std.ArrayList([]const u8){};
+    var repo_keys = std.ArrayList([]const u8).empty;
     defer repo_keys.deinit(scratch);
     var rk_it = sets.repos.keyIterator();
     while (rk_it.next()) |k| repo_keys.append(scratch, k.*) catch return hits;
@@ -364,7 +365,7 @@ fn pruneSatisfiedRepos(scratch: Allocator, sets: *RefSets, active: ActiveRules) 
     }
 
     // Snapshot the keys: `sets.repos` is mutated below.
-    var repo_keys = std.ArrayList([]const u8){};
+    var repo_keys = std.ArrayList([]const u8).empty;
     defer repo_keys.deinit(scratch);
     var rk_it = sets.repos.keyIterator();
     while (rk_it.next()) |k| repo_keys.append(scratch, k.*) catch return;
@@ -397,7 +398,7 @@ fn mergeEntries(
     if (old.len == 0) return fresh;
     if (fresh.len == 0) return if (old.len > max_merged_entries) old[0..max_merged_entries] else old;
 
-    var list = std.ArrayList(T){};
+    var list = std.ArrayList(T).empty;
     list.appendSlice(scratch, fresh) catch return fresh;
     outer: for (old) |o| {
         if (list.items.len >= max_merged_entries) break;
@@ -417,10 +418,10 @@ fn mergeEntries(
 /// expected on disk.
 /// `dir` lets a caller persisting several repos reuse one cache-directory
 /// handle; `null` resolves and opens it for this single entry.
-fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult, dir: ?std.fs.Dir) void {
+fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult, dir: ?std.Io.Dir) void {
     if (res.missing) return;
     const entry: disk_cache.CachedRepo = .{
-        .cached_at = std.time.timestamp(),
+        .cached_at = std.Io.Clock.real.now(runtime.io()).toSeconds(),
         .archived = res.archived,
         .shas = res.sha_results,
         .named = res.named_results,
@@ -428,7 +429,7 @@ fn persistRepoResult(scratch: Allocator, res: graphql.RepoResult, dir: ?std.fs.D
         .default_branch = res.default_branch,
         .impostor = blk: {
             if (!impostor.isActive() or res.sha_results.len == 0) break :blk &.{};
-            var list = std.ArrayList(disk_cache.ImpostorEntry){};
+            var list = std.ArrayList(disk_cache.ImpostorEntry).empty;
             defer list.deinit(scratch);
             for (res.sha_results) |sr| {
                 const cached = impostor.lookupCachedImpostorResult(res.owner, res.repo, sr.sha) orelse continue;
@@ -454,7 +455,7 @@ fn mergeWithCached(
     owner: []const u8,
     repo: []const u8,
     entry: disk_cache.CachedRepo,
-    dir: ?std.fs.Dir,
+    dir: ?std.Io.Dir,
 ) disk_cache.CachedRepo {
     const old = blk: {
         if (dir) |d| break :blk disk_cache.loadFromDir(d, scratch, owner, repo);
@@ -521,7 +522,7 @@ fn tryGraphQlBatch(
     return true;
 }
 
-const RefsByRepo = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8));
+const RefsByRepo = std.StringHashMapUnmanaged(std.ArrayList([]const u8));
 
 fn appendByRepo(
     scratch: Allocator,
@@ -532,7 +533,7 @@ fn appendByRepo(
 ) !void {
     const repo_key = try std.fmt.allocPrint(scratch, "{s}/{s}", .{ owner, repo });
     const gop = try map.getOrPut(scratch, repo_key);
-    if (!gop.found_existing) gop.value_ptr.* = .{};
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
     try gop.value_ptr.append(scratch, value);
 }
 
@@ -686,14 +687,14 @@ fn fetchRepos(scratch: Allocator, set: RepoSet) void {
 const ShaGroup = struct {
     owner: []const u8,
     repo: []const u8,
-    shas: std.ArrayListUnmanaged([]const u8) = .{},
+    shas: std.ArrayList([]const u8) = .empty,
 };
 
 /// The REST tag listing is per-repository, so grouping first turns "one
 /// request per pinned SHA" into "one request per repository". Insertion order
 /// is preserved so the deadline truncates the same prefix on every run.
-fn groupShasByRepo(scratch: Allocator, set: ShaSet) std.StringArrayHashMapUnmanaged(ShaGroup) {
-    var by_repo: std.StringArrayHashMapUnmanaged(ShaGroup) = .{};
+fn groupShasByRepo(scratch: Allocator, set: ShaSet) std.array_hash_map.String(ShaGroup) {
+    var by_repo: std.array_hash_map.String(ShaGroup) = .{};
 
     var it = set.valueIterator();
     while (it.next()) |key| {
@@ -903,7 +904,7 @@ test "applyCacheEntry: fresh hit drops shas/named from sets and counts hits" {
     const shas = [_]disk_cache.ShaEntry{.{ .sha = "deadbeef", .resolution = .no_tag }};
     const named = [_]disk_cache.NamedEntry{.{ .ref = "main", .is_tag = true, .is_branch = true }};
     const entry = disk_cache.CachedRepo{
-        .cached_at = std.time.timestamp(),
+        .cached_at = std.Io.Clock.real.now(runtime.io()).toSeconds(),
         .archived = true,
         .shas = @constCast(&shas),
         .named = @constCast(&named),
@@ -937,7 +938,7 @@ test "pruneSatisfiedRepos: keeps a cached-archived repo that still owns an unres
     try sets.sha_refs.put(alloc, "o/r@new", .{ .owner = "o", .repo = "r", .sha = "new" });
 
     // Only the archived flag is cached; the freshly added pin is not.
-    const entry = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .archived = true };
+    const entry = disk_cache.CachedRepo{ .cached_at = std.Io.Clock.real.now(runtime.io()).toSeconds(), .archived = true };
     const active = ActiveRules{ .archived = true, .stale = true, .refconf = false, .impostor = false };
     _ = applyCacheEntry(&sets, "o", "r", entry, active);
     pruneSatisfiedRepos(alloc, &sets, active);
@@ -978,7 +979,7 @@ test "applyCacheEntry: inactive rules skip corresponding categories" {
     const shas = [_]disk_cache.ShaEntry{.{ .sha = "ff", .resolution = .has_tag }};
     const named = [_]disk_cache.NamedEntry{.{ .ref = "main", .is_tag = true, .is_branch = false }};
     const entry = disk_cache.CachedRepo{
-        .cached_at = std.time.timestamp(),
+        .cached_at = std.Io.Clock.real.now(runtime.io()).toSeconds(),
         .archived = false,
         .shas = @constCast(&shas),
         .named = @constCast(&named),
@@ -1045,7 +1046,7 @@ test "prefetchAllWithOptions: deadline-expired short-circuits" {
     refconfusion.initRefConfusion(testing.allocator, false);
     defer refconfusion.deinitRefConfusion();
 
-    engine.network_deadline_ns = std.time.nanoTimestamp() - 1;
+    engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer engine.clearNetworkDeadline();
 
     const sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
@@ -1076,7 +1077,7 @@ test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets
 
     // Stage a fresh entry at the real on-disk cache location so that
     // `disk_cache.load` (via XDG resolution) finds it.
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const fake_sha = "abc1230000000000000000000000000000000000";
     const shas = [_]disk_cache.ShaEntry{.{ .sha = fake_sha, .resolution = .no_tag }};
     const named = [_]disk_cache.NamedEntry{.{ .ref = "main", .is_tag = true, .is_branch = true }};
@@ -1232,10 +1233,10 @@ test "persistRepoResult: carrying old entries over does not renew the TTL (#221)
     const sha_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     // An entry written some hours ago, still inside the TTL.
-    const stamped = std.time.timestamp() - 3600;
+    const stamped = std.Io.Clock.real.now(runtime.io()).toSeconds() - 3600;
     const first_shas = [_]disk_cache.ShaEntry{.{ .sha = sha_a, .resolution = .has_tag }};
     var dir = disk_cache.getCacheDir(alloc) orelse return error.TestExpectedNonNull;
-    defer dir.close();
+    defer dir.close(runtime.io());
     try disk_cache.saveToDir(dir, alloc, "o", "r", .{
         .cached_at = stamped,
         .archived = false,
@@ -1278,7 +1279,7 @@ test "applyCacheEntry: keeps a SHA whose SC008 verdict the cache file lacks" {
     // Written by a run with SC008 off: the tag resolution is there, the
     // impostor verdict is not.
     const shas = [_]disk_cache.ShaEntry{.{ .sha = sha, .resolution = .has_tag }};
-    const entry = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .shas = &shas };
+    const entry = disk_cache.CachedRepo{ .cached_at = std.Io.Clock.real.now(runtime.io()).toSeconds(), .shas = &shas };
     const active = ActiveRules{ .archived = false, .stale = true, .refconf = false, .impostor = true };
 
     _ = applyCacheEntry(&sets, "o", "r", entry, active);
@@ -1294,7 +1295,7 @@ test "applyCacheEntry: keeps a SHA whose SC008 verdict the cache file lacks" {
     try sets2.sha_refs.put(alloc, "o/r@" ++ sha, .{ .owner = "o", .repo = "r", .sha = sha });
 
     const imp = [_]disk_cache.ImpostorEntry{.{ .sha = sha, .status = .legitimate }};
-    const full = disk_cache.CachedRepo{ .cached_at = std.time.timestamp(), .shas = &shas, .impostor = &imp };
+    const full = disk_cache.CachedRepo{ .cached_at = std.Io.Clock.real.now(runtime.io()).toSeconds(), .shas = &shas, .impostor = &imp };
 
     _ = applyCacheEntry(&sets2, "o", "r", full, active);
     pruneSatisfiedRepos(alloc, &sets2, active);

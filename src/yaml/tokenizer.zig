@@ -358,8 +358,8 @@ pub const Tokenizer = struct {
         // and its negative result is remembered, so a line full of `${{`
         // costs one pass rather than one pass per occurrence.
         if (self.pos < self.expr_unclosed_line_end) return false;
-        const line_end = std.mem.indexOfScalarPos(u8, self.source, self.pos + 3, '\n') orelse self.source.len;
-        const close = std.mem.indexOfPos(u8, self.source[0..line_end], self.pos + 3, "}}") orelse {
+        const line_end = std.mem.findScalarPos(u8, self.source, self.pos + 3, '\n') orelse self.source.len;
+        const close = std.mem.findPos(u8, self.source[0..line_end], self.pos + 3, "}}") orelse {
             self.expr_unclosed_line_end = line_end;
             return false;
         };
@@ -920,9 +920,9 @@ test "tokenizer counts an escaped backslash followed by a newline only once" {
 
 test "tokenizer: CRLF ends a line without leaking into the token" {
     var tokenizer = Tokenizer.init("name: ci\r\non:\r\n  push:\r\n");
-    var kinds = std.ArrayList(TokenKind){};
+    var kinds = std.ArrayList(TokenKind).empty;
     defer kinds.deinit(std.testing.allocator);
-    var scalars = std.ArrayList([]const u8){};
+    var scalars = std.ArrayList([]const u8).empty;
     defer scalars.deinit(std.testing.allocator);
     while (true) {
         const tok = tokenizer.next();

@@ -26,6 +26,27 @@
 挙動が変わった場合はワークフローに `version:` を戻すのではなく、
 `build.zig.zon` を読むステップを 1 つ足して各ジョブへ渡す。
 
+### 0.16 移行時の選択 (#398)
+
+- CLI と fuzz driver は `std.process.Init` の `gpa`、`io`、引数を使う。
+  CLI の引数は起動時 arena の `Args.toSlice` に保持し、個別コピーをなくした。
+- ファイル・HTTP・同期は `std.Io`。ルール群は従来からプロセス単位の
+  キャッシュを共有しており、同じ寿命の I/O と環境マップを `runtime` に置く。
+  ライブラリから I/O を使う場合は、利用開始前に `zghalint.runtime.init(init)`
+  を呼び、各キャッシュを破棄するまで `init` のリソースを維持する。
+  純粋な YAML/式解析だけなら初期化は不要。
+- ネットワーク予算は `Io.Clock.awake`、永続キャッシュの TTL と証明書は
+  `Io.Clock.real` を使う。壁時計の修正がネットワーク予算を延ばさないよう分ける。
+- 標準出力・標準エラーは `writerStreaming` を使い、リダイレクト先の
+  現在位置から追記する。通常の `writer` は positional I/O で先頭を上書きする。
+- `Io.File.Atomic.replace` で書き戻し、元ファイルの権限は作成時の umask を
+  受けた後に復元する。キャッシュのシンボリックリンク拒否も維持する。
+- `ArrayList.empty`、`array_hash_map.String`、`ArrayList.print`、
+  `Io.Writer.Allocating` と `mem.find*` を使い、削除・非推奨 API を置き換えた。
+- 環境変数テストは `Environ.Map` を差し替える。OS の環境変更と libc リンクは不要。
+- fuzz の `testing.Smith` 移行と探索方法は
+  [pbt-strategy.md §6-4](design/pbt-strategy.md) を参照。
+
 ## リリース
 
 ### タグ命名規則

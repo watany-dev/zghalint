@@ -2,7 +2,7 @@
 //! same fixture-building and assertion code isn't re-typed in every rules file.
 
 const std = @import("std");
-const builtin = @import("builtin");
+const runtime = @import("runtime.zig");
 
 const yaml = @import("yaml/types.zig");
 const yaml_parser = @import("yaml/parser.zig");
@@ -128,61 +128,36 @@ pub fn lintAndFix(
     };
 }
 
-const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) callconv(.c) c_int, .{ .name = "setenv" });
-const libc_unsetenv = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "unsetenv" });
-
-/// Zig ships no portable `setenv`, and there is no POSIX one for the Windows
-/// linker to resolve, so the two platforms need different calls. Failures are
-/// swallowed: a test that depends on the variable fails on its own assertion.
-fn putEnv(allocator: std.mem.Allocator, name: [:0]const u8, value: ?[:0]const u8) void {
-    if (builtin.os.tag == .windows) {
-        const name_w = std.unicode.wtf8ToWtf16LeAllocZ(allocator, name) catch return;
-        defer allocator.free(name_w);
-        const value_w: ?[:0]u16 = if (value) |v|
-            std.unicode.wtf8ToWtf16LeAllocZ(allocator, v) catch return
-        else
-            null;
-        defer if (value_w) |w| allocator.free(w);
-        _ = std.os.windows.kernel32.SetEnvironmentVariableW(
-            name_w.ptr,
-            if (value_w) |w| w.ptr else null,
-        );
-        return;
-    }
-    if (value) |v| {
-        _ = libc_setenv(name.ptr, v.ptr, 1);
-    } else {
-        _ = libc_unsetenv(name.ptr);
-    }
-}
-
-/// Restores whatever the process had before, so tests leave process state
-/// untouched.
+/// Installs an isolated environment map and restores the previous one in LIFO order.
 pub const EnvGuard = struct {
     allocator: std.mem.Allocator,
-    name: [:0]const u8,
-    saved: ?[:0]u8,
+    saved: ?*std.process.Environ.Map,
+    map: *std.process.Environ.Map,
 
-    pub fn set(allocator: std.mem.Allocator, name: [:0]const u8, value: ?[:0]const u8) !EnvGuard {
-        const previous = std.process.getEnvVarOwned(allocator, name) catch null;
-        defer if (previous) |p| allocator.free(p);
-        const saved: ?[:0]u8 = if (previous) |p| try allocator.dupeZ(u8, p) else null;
-
-        putEnv(allocator, name, value);
-        return .{ .allocator = allocator, .name = name, .saved = saved };
+    pub fn set(allocator: std.mem.Allocator, name: []const u8, value: ?[]const u8) !EnvGuard {
+        const map = try allocator.create(std.process.Environ.Map);
+        errdefer allocator.destroy(map);
+        map.* = if (runtime.environ) |previous|
+            try previous.clone(allocator)
+        else
+            try std.testing.environ.createMap(allocator);
+        errdefer map.deinit();
+        if (value) |v| try map.put(name, v) else _ = map.swapRemove(name);
+        const saved = runtime.environ;
+        runtime.environ = map;
+        return .{ .allocator = allocator, .saved = saved, .map = map };
     }
 
-    /// The platform call copies the value, so the temporary path buffers can go away here.
-    pub fn setDir(allocator: std.mem.Allocator, name: [:0]const u8, dir: std.fs.Dir) !EnvGuard {
-        const path = try dir.realpathAlloc(allocator, ".");
+    pub fn setDir(allocator: std.mem.Allocator, name: []const u8, dir: std.Io.Dir) !EnvGuard {
+        const path = try dir.realPathFileAlloc(runtime.io(), ".", allocator);
         defer allocator.free(path);
-        const path_z = try allocator.dupeZ(u8, path);
-        defer allocator.free(path_z);
-        return set(allocator, name, path_z);
+        return set(allocator, name, path);
     }
 
     pub fn deinit(self: *EnvGuard) void {
-        putEnv(self.allocator, self.name, self.saved);
-        if (self.saved) |s| self.allocator.free(s);
+        std.debug.assert(runtime.environ == self.map);
+        runtime.environ = self.saved;
+        self.map.deinit();
+        self.allocator.destroy(self.map);
     }
 };

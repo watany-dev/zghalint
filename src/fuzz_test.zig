@@ -46,7 +46,9 @@ const yaml_corpus: []const []const u8 = &.{
 
 test "fuzz: yaml tokenizer never leaves the source buffer" {
     const Context = struct {
-        fn testOne(_: @This(), input: []const u8) anyerror!void {
+        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
+            var buffer: [64 * 1024]u8 = undefined;
+            const input = buffer[0..smith.slice(&buffer)];
             var tok = tokenizer.Tokenizer.init(input);
             // A tokenizer that stops making progress would hang the fuzzer
             // instead of failing it, so the loop is bounded: every token must
@@ -69,7 +71,9 @@ test "fuzz: yaml tokenizer never leaves the source buffer" {
 
 test "fuzz: yaml parser survives arbitrary input" {
     const Context = struct {
-        fn testOne(_: @This(), input: []const u8) anyerror!void {
+        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
+            var buffer: [64 * 1024]u8 = undefined;
+            const input = buffer[0..smith.slice(&buffer)];
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
             defer arena.deinit();
 
@@ -86,7 +90,9 @@ test "fuzz: yaml parser survives arbitrary input" {
 
 test "fuzz: expression parser survives arbitrary input" {
     const Context = struct {
-        fn testOne(_: @This(), input: []const u8) anyerror!void {
+        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
+            var buffer: [64 * 1024]u8 = undefined;
+            const input = buffer[0..smith.slice(&buffer)];
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
             defer arena.deinit();
 

@@ -653,7 +653,7 @@ test "ACT001: node runtime without main" {
     );
     defer lint.deinit();
 
-    try std.testing.expect(std.mem.indexOf(
+    try std.testing.expect(std.mem.find(
         u8,
         lint.message("ACT001"),
         "required key \"main\" is missing in the \"runs\" section of a \"node16\" action",
@@ -668,7 +668,7 @@ test "ACT001: docker runtime without image" {
     );
     defer lint.deinit();
 
-    try std.testing.expect(std.mem.indexOf(u8, lint.message("ACT001"), "\"image\"") != null);
+    try std.testing.expect(std.mem.find(u8, lint.message("ACT001"), "\"image\"") != null);
 }
 
 test "ACT001: composite runtime without steps" {
@@ -679,7 +679,7 @@ test "ACT001: composite runtime without steps" {
     );
     defer lint.deinit();
 
-    try std.testing.expect(std.mem.indexOf(u8, lint.message("ACT001"), "\"steps\"") != null);
+    try std.testing.expect(std.mem.find(u8, lint.message("ACT001"), "\"steps\"") != null);
 }
 
 test "ACT001: runs section without using" {
@@ -725,7 +725,7 @@ test "ACT002: unknown using value suggests the nearest runtime" {
     );
     defer lint.deinit();
 
-    try std.testing.expect(std.mem.indexOf(
+    try std.testing.expect(std.mem.find(
         u8,
         lint.message("ACT002"),
         "did you mean \"composite\"?",
@@ -742,8 +742,8 @@ test "ACT002: unknown using value without a near candidate" {
     defer lint.deinit();
 
     const msg = lint.message("ACT002");
-    try std.testing.expect(std.mem.indexOf(u8, msg, "invalid value \"python\" for \"using\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, msg, "did you mean") == null);
+    try std.testing.expect(std.mem.find(u8, msg, "invalid value \"python\" for \"using\"") != null);
+    try std.testing.expect(std.mem.find(u8, msg, "did you mean") == null);
 }
 
 test "ACT002: deprecated node runtimes are a warning, not an error" {
@@ -763,7 +763,7 @@ test "ACT002: deprecated node runtimes are a warning, not an error" {
 
         const d = findDiagnostic(&diags, "ACT002") orelse return error.TestUnexpectedResult;
         try std.testing.expect(d.severity == .warning);
-        try std.testing.expect(std.mem.indexOf(u8, d.message, "deprecated") != null);
+        try std.testing.expect(std.mem.find(u8, d.message, "deprecated") != null);
     }
 }
 
@@ -823,7 +823,7 @@ test "ACT003: runs key belonging to another runtime" {
     );
     defer lint.deinit();
 
-    try std.testing.expect(std.mem.indexOf(
+    try std.testing.expect(std.mem.find(
         u8,
         lint.message("ACT003"),
         "unknown key \"image\" in the \"runs\" section of a \"node24\" action",
@@ -842,7 +842,7 @@ test "ACT003: unknown key inside an output definition" {
     );
     defer lint.deinit();
 
-    try std.testing.expect(std.mem.indexOf(u8, lint.message("ACT003"), "output \"result\"") != null);
+    try std.testing.expect(std.mem.find(u8, lint.message("ACT003"), "output \"result\"") != null);
 }
 
 test "ACT004: runs is not a mapping" {

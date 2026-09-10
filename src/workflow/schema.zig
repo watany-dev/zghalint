@@ -198,7 +198,7 @@ pub const UnknownKeyCollector = struct {
 
     pub fn init(allocator: std.mem.Allocator) UnknownKeyCollector {
         return .{
-            .list = .{},
+            .list = .empty,
             .allocator = allocator,
         };
     }

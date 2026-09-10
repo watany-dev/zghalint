@@ -894,8 +894,8 @@ test "PERM001: id-token alongside contents: write leaves id-token untouched" {
     }
     const result = try fix_engine.applyFixes(std.testing.allocator, wrapped, fixes_buf[0..n]);
     defer result.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "contents: read") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content, "id-token: write") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "contents: read") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "id-token: write") != null);
 }
 
 fn runInvalidPermissions(alloc: std.mem.Allocator, source: []const u8, diags: *DiagnosticList) !void {

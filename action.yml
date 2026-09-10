@@ -50,7 +50,7 @@ runs:
 
         # The release this commit belongs to. Kept in sync with
         # `build.zig.zon`'s `.version` by CI (see docs/maintenance.md).
-        FALLBACK_VERSION=v0.0.1-rc.1
+        FALLBACK_VERSION=v0.0.1-rc.2
 
         # $GITHUB_ACTION_REF is whatever the caller wrote after `@`, and only a
         # release tag names a downloadable archive. A SHA (what SEC001 asks

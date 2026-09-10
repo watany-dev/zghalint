@@ -171,10 +171,10 @@ test "renderSarif empty diagnostics" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"version\":\"2.1.0\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"name\":\"zghalint\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"results\":[]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "sarif-schema-2.1.0") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"version\":\"2.1.0\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"name\":\"zghalint\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"results\":[]") != null);
+    try std.testing.expect(std.mem.find(u8, output, "sarif-schema-2.1.0") != null);
 }
 
 test "renderSarif with diagnostic" {
@@ -203,15 +203,15 @@ test "renderSarif with diagnostic" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"version\":\"2.1.0\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"SEC002\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"level\":\"error\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"startLine\":15") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"startColumn\":9") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "%SRCROOT%") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "script injection") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "environment variable") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"version\":\"2.1.0\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleId\":\"SEC002\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleIndex\":1") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"level\":\"error\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"startLine\":15") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"startColumn\":9") != null);
+    try std.testing.expect(std.mem.find(u8, output, "%SRCROOT%") != null);
+    try std.testing.expect(std.mem.find(u8, output, "script injection") != null);
+    try std.testing.expect(std.mem.find(u8, output, "environment variable") != null);
 }
 
 test "renderSarif rule descriptors" {
@@ -224,12 +224,12 @@ test "renderSarif rule descriptors" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":\"SEC001\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":\"SEC002\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":\"BP001\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"name\":\"pinned-action\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"level\":\"warning\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"level\":\"note\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"id\":\"SEC001\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"id\":\"SEC002\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"id\":\"BP001\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"name\":\"pinned-action\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"level\":\"warning\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"level\":\"note\"") != null);
 }
 
 test "renderSarif multiple results" {
@@ -245,10 +245,10 @@ test "renderSarif multiple results" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"SEC001\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"BP001\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":2") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleId\":\"SEC001\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleId\":\"BP001\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleIndex\":0") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleIndex\":2") != null);
 }
 
 test "renderSarif unknown rule id has no ruleIndex" {
@@ -263,8 +263,8 @@ test "renderSarif unknown rule id has no ruleIndex" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleId\":\"UNKNOWN\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"ruleIndex\":") == null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleId\":\"UNKNOWN\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"ruleIndex\":") == null);
 }
 
 test "renderSarif with no file" {
@@ -279,7 +279,7 @@ test "renderSarif with no file" {
     try renderSarif(&out.writer, list, &test_rules);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"<unknown>\"") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"<unknown>\"") != null);
 }
 
 test "renderSarif empty rules array" {
@@ -293,7 +293,7 @@ test "renderSarif empty rules array" {
     try renderSarif(&out.writer, list, empty_rules);
     const output = out.written();
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "\"rules\":[]") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"rules\":[]") != null);
 }
 
 test "truncateUtf8 never splits a multi-byte sequence" {

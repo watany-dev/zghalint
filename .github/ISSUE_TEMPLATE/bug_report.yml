@@ -51,6 +51,6 @@ body:
     id: environment
     attributes:
       label: OS, architecture, and Zig version (if built from source)
-      placeholder: macOS 15 aarch64, Zig 0.15.2
+      placeholder: macOS 15 aarch64, Zig 0.16.0
     validations:
       required: true

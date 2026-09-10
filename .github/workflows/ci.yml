@@ -140,10 +140,10 @@ jobs:
     strategy:
       matrix:
         # macOS は macos-15 に固定する。macos-latest が載せる新しい SDK では
-        # Zig 0.15.2 のリンカが libSystem のシンボル（_abort,
+        # 0.15.2 で libSystem のシンボル（_abort,
         # __availability_version_check 等）を解決できずビルドが落ちる。
-        # Zig 側が対応したらここと release.yml の build マトリクスを併せて
-        # macos-latest に戻す。
+        # 0.16 の最新 SDK でのネイティブ動作確認までは固定を維持する。
+        # 変更時は release.yml の build マトリクスも揃える。
         os: [ubuntu-latest, macos-15, windows-latest]
     steps:
       - name: Checkout
@@ -411,12 +411,8 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       # 決定的な回帰実行。シードコーパスを 1 件ずつ流すだけなので数秒で終わり、
       # 過去に見つかった入力が再発していれば必ず落ちる。
-      #
-      # `--fuzz` の探索実行は CI に入れていない。Zig 0.15.2 のファザ本体が
-      # 起動直後に落ちる (`run test failure`) ため、反例の有無に関わらず必ず
-      # 赤になる。ターゲットを 1 つだけ持つ最小プロジェクトでも、キャッシュを
-      # 削除した初回実行でも再現するので zghalint 側の問題ではない。
-      # 詳細と手元での回し方は docs/design/pbt-strategy.md §6-4 を参照。
+      # 探索実行は常駐するため、CI は再現可能なシード実行を使う。
+      # Zig 0.16 での手動探索は docs/design/pbt-strategy.md §6-4 を参照。
       - name: Fuzz targets over the seed corpus
         run: zig build fuzz
 

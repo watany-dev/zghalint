@@ -7,6 +7,7 @@
 //! them to v2.
 
 const std = @import("std");
+const runtime = @import("../runtime.zig");
 const json_util = @import("json_util.zig");
 const graphql = @import("graphql.zig");
 const impostor = @import("impostor.zig");
@@ -48,7 +49,7 @@ pub const CachedRepo = struct {
 
 /// Callers that touch more than one repo open the directory once and pass it
 /// to `loadFromDir` / `saveToDir`, rather than paying an open per repo.
-pub fn getCacheDir(allocator: Allocator) ?std.fs.Dir {
+pub fn getCacheDir(allocator: Allocator) ?std.Io.Dir {
     return cache_dir.open(allocator, cache_subdir);
 }
 
@@ -57,7 +58,7 @@ fn repoFilename(allocator: Allocator, owner: []const u8, repo: []const u8) ![]co
 }
 
 pub fn isFresh(cached_at: i64) bool {
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     if (cached_at > now) return false;
     const floor = std.math.sub(i64, now, cache_ttl_s) catch return false;
     if (cached_at < floor) return false;
@@ -70,14 +71,14 @@ pub fn load(
     repo: []const u8,
 ) ?CachedRepo {
     var dir = getCacheDir(allocator) orelse return null;
-    defer dir.close();
+    defer dir.close(runtime.io());
     return loadFromDir(dir, allocator, owner, repo);
 }
 
 /// Tests use this to drive load/save against a `std.testing.tmpDir` instead
 /// of the user's real XDG cache.
 pub fn loadFromDir(
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     allocator: Allocator,
     owner: []const u8,
     repo: []const u8,
@@ -85,10 +86,11 @@ pub fn loadFromDir(
     const name = repoFilename(allocator, owner, repo) catch return null;
     defer allocator.free(name);
 
-    const file = dir.openFile(name, .{}) catch return null;
-    defer file.close();
+    const file = dir.openFile(runtime.io(), name, .{}) catch return null;
+    defer file.close(runtime.io());
 
-    const body = file.readToEndAlloc(allocator, 1 * 1024 * 1024) catch return null;
+    var file_reader = file.reader(runtime.io(), &.{});
+    const body = file_reader.interface.allocRemaining(allocator, .limited(1 * 1024 * 1024)) catch return null;
     defer allocator.free(body);
 
     // Parse the JSON into an isolated arena so we don't leak the tree
@@ -140,7 +142,7 @@ fn parseEntryArray(
     const v = obj.get(key) orelse return &.{};
     if (v != .array) return &.{};
 
-    var list = std.ArrayList(T){};
+    var list = std.ArrayList(T).empty;
     defer list.deinit(allocator);
     for (v.array.items) |entry| {
         if (entry != .array) continue;
@@ -255,12 +257,12 @@ pub fn save(
     entry: CachedRepo,
 ) !void {
     var dir = getCacheDir(allocator) orelse return;
-    defer dir.close();
+    defer dir.close(runtime.io());
     try saveToDir(dir, allocator, owner, repo, entry);
 }
 
 pub fn saveToDir(
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     allocator: Allocator,
     owner: []const u8,
     repo: []const u8,
@@ -326,7 +328,7 @@ const test_support = @import("../test_support.zig");
 const testing = std.testing;
 
 test "isFresh: recent timestamp is fresh" {
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     try testing.expect(isFresh(now - 60));
     try testing.expect(!isFresh(now - cache_ttl_s - 1));
     try testing.expect(!isFresh(now + 60));
@@ -366,7 +368,7 @@ test "saveToDir/loadFromDir round-trips all fields" {
         .{ .ref = "main", .is_tag = false, .is_branch = true },
         .{ .ref = "v4", .is_tag = true, .is_branch = false },
     };
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const entry: CachedRepo = .{
         .cached_at = now,
         .archived = true,
@@ -427,7 +429,7 @@ test "loadFromDir: stale file (older than TTL) returns null" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const stale_time = std.time.timestamp() - cache_ttl_s - 10;
+    const stale_time = std.Io.Clock.real.now(runtime.io()).toSeconds() - cache_ttl_s - 10;
     try saveToDir(tmp.dir, testing.allocator, "o", "r", .{ .cached_at = stale_time, .archived = false });
 
     try testing.expect(loadFromDir(tmp.dir, testing.allocator, "o", "r") == null);
@@ -439,9 +441,9 @@ test "loadFromDir: malformed JSON returns null" {
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
-    try file.writeAll("{ not valid json");
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
+    try file.writeStreamingAll(runtime.io(), "{ not valid json");
 
     try testing.expect(loadFromDir(tmp.dir, testing.allocator, "o", "r") == null);
 }
@@ -450,7 +452,7 @@ test "saveToDir: archived null serializes as null literal" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     try saveToDir(tmp.dir, testing.allocator, "o", "r", .{ .cached_at = now, .archived = null });
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
@@ -468,9 +470,9 @@ test "loadFromDir: non-object JSON root returns null" {
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
-    try file.writeAll("[1,2,3]");
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
+    try file.writeStreamingAll(runtime.io(), "[1,2,3]");
 
     try testing.expect(loadFromDir(tmp.dir, testing.allocator, "o", "r") == null);
 }
@@ -481,17 +483,17 @@ test "loadFromDir: tolerates malformed shas/named entries" {
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const body = try std.fmt.allocPrint(
         testing.allocator,
         "{{\"cached_at\":{d},\"archived\":false,\"shas\":[42,[\"onlyone\"],[1,2],[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"X\"],[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[0,[\"x\"],[\"ref\",\"notnum\",1],[\"ok\",1,0]]}}",
         .{now},
     );
     defer testing.allocator.free(body);
-    try file.writeAll(body);
+    try file.writeStreamingAll(runtime.io(), body);
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
@@ -515,7 +517,7 @@ test "load/save: round-trip via XDG_CACHE_HOME" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
     const tmp_path_z = try testing.allocator.dupeZ(u8, tmp_path);
     defer testing.allocator.free(tmp_path_z);
@@ -523,7 +525,7 @@ test "load/save: round-trip via XDG_CACHE_HOME" {
     var env = try test_support.EnvGuard.set(testing.allocator, "XDG_CACHE_HOME", tmp_path_z);
     defer env.deinit();
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     try save(testing.allocator, "xdg-o", "xdg-r", .{ .cached_at = now, .archived = true });
 
     const loaded = load(testing.allocator, "xdg-o", "xdg-r") orelse
@@ -542,17 +544,17 @@ test "loadFromDir: invalid sha hex is dropped" {
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const body = try std.fmt.allocPrint(
         testing.allocator,
         "{{\"cached_at\":{d},\"shas\":[[\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\",\"h\"],[\"aaaa\",\"h\"],[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[]}}",
         .{now},
     );
     defer testing.allocator.free(body);
-    try file.writeAll(body);
+    try file.writeStreamingAll(runtime.io(), body);
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
@@ -571,17 +573,17 @@ test "loadFromDir: invalid git refs are dropped" {
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const body = try std.fmt.allocPrint(
         testing.allocator,
         "{{\"cached_at\":{d},\"shas\":[],\"named\":[[\"../evil\",1,0],[\"with space\",1,0],[\"main\",0,1]]}}",
         .{now},
     );
     defer testing.allocator.free(body);
-    try file.writeAll(body);
+    try file.writeStreamingAll(runtime.io(), body);
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
@@ -627,7 +629,7 @@ test "saveToDir/loadFromDir: v2 round-trips branches/default_branch/impostor" {
         .name = "main",
         .oid = "1111111111111111111111111111111111111111",
     };
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const entry: CachedRepo = .{
         .cached_at = now,
         .archived = false,
@@ -664,17 +666,17 @@ test "loadFromDir: v1 legacy entry (no cache_format/branches/impostor) loads wit
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const body = try std.fmt.allocPrint(
         testing.allocator,
         "{{\"cached_at\":{d},\"archived\":false,\"shas\":[[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[[\"main\",0,1]]}}",
         .{now},
     );
     defer testing.allocator.free(body);
-    try file.writeAll(body);
+    try file.writeStreamingAll(runtime.io(), body);
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
@@ -693,10 +695,10 @@ test "loadFromDir: tolerates malformed branches/impostor/default_branch entries"
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     const body = try std.fmt.allocPrint(
         testing.allocator,
         "{{\"cached_at\":{d},\"archived\":false," ++
@@ -709,7 +711,7 @@ test "loadFromDir: tolerates malformed branches/impostor/default_branch entries"
         .{now},
     );
     defer testing.allocator.free(body);
-    try file.writeAll(body);
+    try file.writeStreamingAll(runtime.io(), body);
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
@@ -734,26 +736,26 @@ test "saveToDir: refuses to write through a pre-existing symlink" {
     defer tmp.cleanup();
 
     {
-        const victim = try tmp.dir.createFile("victim.txt", .{});
-        defer victim.close();
-        try victim.writeAll("SACRED");
+        const victim = try tmp.dir.createFile(runtime.io(), "victim.txt", .{});
+        defer victim.close(runtime.io());
+        try victim.writeStreamingAll(runtime.io(), "SACRED");
     }
 
     const cache_name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(cache_name);
 
-    tmp.dir.symLink("victim.txt", cache_name, .{}) catch |err| switch (err) {
+    tmp.dir.symLink(runtime.io(), "victim.txt", cache_name, .{}) catch |err| switch (err) {
         error.AccessDenied, error.Unexpected => return, // filesystem doesn't support symlinks
         else => return err,
     };
 
-    const now = std.time.timestamp();
+    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
     try saveToDir(tmp.dir, testing.allocator, "o", "r", .{ .cached_at = now, .archived = false });
 
-    const f = try tmp.dir.openFile("victim.txt", .{});
-    defer f.close();
+    const f = try tmp.dir.openFile(runtime.io(), "victim.txt", .{});
+    defer f.close(runtime.io());
     var buf: [32]u8 = undefined;
-    const n = try f.readAll(&buf);
+    const n = try f.readPositionalAll(runtime.io(), &buf, 0);
     try testing.expectEqualStrings("SACRED", buf[0..n]);
 }
 
@@ -766,7 +768,7 @@ test "saveToDir/loadFromDir: a named row round-trips its tag oid" {
         .{ .ref = "main", .is_tag = false, .is_branch = true },
     };
     const entry: CachedRepo = .{
-        .cached_at = std.time.timestamp(),
+        .cached_at = std.Io.Clock.real.now(runtime.io()).toSeconds(),
         .archived = false,
         .named = @constCast(&named),
     };
@@ -788,16 +790,16 @@ test "loadFromDir: a three-field named row (written before oids existed) reads a
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
 
     const body = try std.fmt.allocPrint(
         testing.allocator,
         "{{\"cached_at\":{d},\"archived\":false,\"shas\":[],\"named\":[[\"v4\",1,0]]}}",
-        .{std.time.timestamp()},
+        .{std.Io.Clock.real.now(runtime.io()).toSeconds()},
     );
     defer testing.allocator.free(body);
-    try file.writeAll(body);
+    try file.writeStreamingAll(runtime.io(), body);
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;
@@ -813,16 +815,16 @@ test "loadFromDir: a named row whose oid is not a SHA drops the oid, keeping the
 
     const name = try repoFilename(testing.allocator, "o", "r");
     defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(name, .{});
-    defer file.close();
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
 
     const body = try std.fmt.allocPrint(
         testing.allocator,
         "{{\"cached_at\":{d},\"archived\":false,\"shas\":[],\"named\":[[\"v4\",1,0,\"../../etc/passwd\"]]}}",
-        .{std.time.timestamp()},
+        .{std.Io.Clock.real.now(runtime.io()).toSeconds()},
     );
     defer testing.allocator.free(body);
-    try file.writeAll(body);
+    try file.writeStreamingAll(runtime.io(), body);
 
     const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
         return error.TestExpectedNonNull;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const EmptySection = @import("workflow/types.zig").EmptySection;
 
@@ -12,7 +13,7 @@ pub fn hasEmptySection(sections: []const EmptySection, name: []const u8) bool {
 }
 
 pub fn actionBaseName(raw: []const u8) []const u8 {
-    return if (std.mem.indexOf(u8, raw, "@")) |pos| raw[0..pos] else raw;
+    return if (std.mem.find(u8, raw, "@")) |pos| raw[0..pos] else raw;
 }
 
 /// ASCII-only. Inputs longer than MAX_LEN yield `std.math.maxInt(usize)` to
@@ -122,9 +123,9 @@ test "hasEmptySection matches by name" {
 /// `readLink` is the portable "is this path a symlink" probe, but Windows
 /// answers a plain file with STATUS_NOT_A_REPARSE_POINT, which the standard
 /// library has no mapping for and surfaces as `Unexpected`.
-pub fn isSymlink(dir: std.fs.Dir, sub_path: []const u8) !bool {
-    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-    if (dir.readLink(sub_path, &link_buf)) |_| {
+pub fn isSymlink(dir: std.Io.Dir, sub_path: []const u8) !bool {
+    var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    if (dir.readLink(runtime.io(), sub_path, &link_buf)) |_| {
         return true;
     } else |err| switch (err) {
         error.NotLink, error.FileNotFound => return false,
@@ -139,7 +140,7 @@ pub fn isSymlink(dir: std.fs.Dir, sub_path: []const u8) !bool {
 test "isSymlink: a plain file is not a link" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "plain.yml", .data = "name: ci\n" });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "plain.yml", .data = "name: ci\n" });
     try std.testing.expect(!try isSymlink(tmp.dir, "plain.yml"));
     try std.testing.expect(!try isSymlink(tmp.dir, "missing.yml"));
 }

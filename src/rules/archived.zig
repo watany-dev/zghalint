@@ -17,7 +17,7 @@ const Workflow = workflow_types.Workflow;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
 // Use unmanaged map to avoid storing allocator (pointer stability issue).
-const CacheMap = std.StringArrayHashMapUnmanaged(bool);
+const CacheMap = std.array_hash_map.String(bool);
 
 var archived_cache: CacheMap = .{};
 var archived_arena: ?std.heap.ArenaAllocator = null;

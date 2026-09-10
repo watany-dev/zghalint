@@ -29,7 +29,9 @@ pub const Occurrence = struct {
 pub const max_occurrences = 16;
 
 pub const Occurrences = struct {
-    buf: [max_occurrences]Occurrence = undefined,
+    /// Spelled out at every construction site rather than defaulted to
+    /// `undefined`: the omitted-field form fills the buffer (#403).
+    buf: [max_occurrences]Occurrence,
     len: usize = 0,
     /// Set when the step had more occurrences than fit, which makes any fix
     /// built from the list a partial rewrite.
@@ -77,7 +79,7 @@ fn shellFromName(name: []const u8) ?Shell {
 /// leave a bash step reading `$env:NAME`. With an explicit `shell:` present
 /// BP004 stays quiet and this resolves the shell from it as usual.
 fn shellFromRunsOn(runs_on: []const u8) ?Shell {
-    if (std.mem.indexOf(u8, runs_on, "${{") != null) return null;
+    if (std.mem.find(u8, runs_on, "${{") != null) return null;
     if (containsIgnoreCase(runs_on, "windows")) return null;
     if (containsIgnoreCase(runs_on, "ubuntu") or
         containsIgnoreCase(runs_on, "linux") or
@@ -114,7 +116,7 @@ const QuoteState = enum { plain, dquote, squote };
 /// the body as one string would let an unbalanced quote on one line poison
 /// every line below it.
 fn quoteStateAt(run: []const u8, offset: usize) QuoteState {
-    const line_start = if (std.mem.lastIndexOfScalar(u8, run[0..offset], '\n')) |nl| nl + 1 else 0;
+    const line_start = if (std.mem.findScalarLast(u8, run[0..offset], '\n')) |nl| nl + 1 else 0;
     var state: QuoteState = .plain;
     var i = line_start;
     while (i < offset) : (i += 1) {
@@ -201,7 +203,7 @@ pub fn deriveName(alloc: std.mem.Allocator, inner: []const u8) ?[]const u8 {
     const kept = segs[start..n];
     const from = if (kept.len > max_name_segments) kept.len - max_name_segments else 0;
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     for (kept[from..], 0..) |seg, i| {
         if (i > 0) buf.append(alloc, '_') catch return null;
@@ -282,7 +284,7 @@ pub fn buildFix(
 
     var bindings: [max_occurrences]Binding = undefined;
     var binding_count: usize = 0;
-    var edits = std.ArrayList(Edit){};
+    var edits = std.ArrayList(Edit).empty;
     defer edits.deinit(alloc);
 
     for (occs.slice()) |occ| {
@@ -419,14 +421,14 @@ test "deriveName returns null for anything but a plain context path" {
 
 test "quoteStateAt tracks quoting within the occurrence's own line" {
     const run = "echo \"${{ a.b }}\"\necho ${{ c.d }}\necho '${{ e.f }}'\n";
-    try testing.expectEqual(QuoteState.dquote, quoteStateAt(run, std.mem.indexOf(u8, run, "${{ a.b }}").?));
-    try testing.expectEqual(QuoteState.plain, quoteStateAt(run, std.mem.indexOf(u8, run, "${{ c.d }}").?));
-    try testing.expectEqual(QuoteState.squote, quoteStateAt(run, std.mem.indexOf(u8, run, "${{ e.f }}").?));
+    try testing.expectEqual(QuoteState.dquote, quoteStateAt(run, std.mem.find(u8, run, "${{ a.b }}").?));
+    try testing.expectEqual(QuoteState.plain, quoteStateAt(run, std.mem.find(u8, run, "${{ c.d }}").?));
+    try testing.expectEqual(QuoteState.squote, quoteStateAt(run, std.mem.find(u8, run, "${{ e.f }}").?));
 }
 
 test "quoteStateAt ignores an escaped quote" {
     const run = "echo \\\"${{ a.b }}\n";
-    try testing.expectEqual(QuoteState.plain, quoteStateAt(run, std.mem.indexOf(u8, run, "${{").?));
+    try testing.expectEqual(QuoteState.plain, quoteStateAt(run, std.mem.find(u8, run, "${{").?));
 }
 
 test "reference spells the variable per shell and adds quotes only when needed" {
@@ -456,7 +458,7 @@ test "reference declines a single-quoted occurrence" {
 }
 
 test "Occurrences marks the overflow instead of truncating silently" {
-    var occs: Occurrences = .{};
+    var occs: Occurrences = .{ .buf = undefined };
     var i: usize = 0;
     while (i < max_occurrences + 1) : (i += 1) occs.append(.{ .offset = i, .len = 1 });
     try testing.expectEqual(max_occurrences, occs.len);
