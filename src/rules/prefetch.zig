@@ -505,6 +505,10 @@ fn tryGraphQlBatch(
             // REST talks to the same rate-limited API, so falling back would
             // only add requests to a budget that just ran out (#222).
             error.RateLimited => return true,
+            // The transport is gone for the rest of the run; the REST
+            // fallback would fail the same way before sending anything
+            // (ADR 0016 D6).
+            error.NetworkUnreachable => return true,
             else => return false,
         };
 
@@ -678,7 +682,7 @@ fn applyResults(
 fn fetchRepos(scratch: Allocator, set: RepoSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
-        if (engine.isNetworkDeadlineExceeded()) return;
+        if (engine.isNetworkDeadlineExceeded() or http_client.isNetworkUnreachable()) return;
         const is_archived = rest_fallback.fetchArchiveStatus(scratch, key.owner, key.repo) catch continue;
         archived.setCachedResult(key.owner, key.repo, is_archived);
     }
@@ -712,7 +716,7 @@ fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
 
     var it = by_repo.iterator();
     while (it.next()) |entry| {
-        if (engine.isNetworkDeadlineExceeded()) return;
+        if (engine.isNetworkDeadlineExceeded() or http_client.isNetworkUnreachable()) return;
         const group = entry.value_ptr;
         const shas = group.shas.items;
 
@@ -731,7 +735,7 @@ fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
 fn fetchNamedRefs(scratch: Allocator, set: NamedSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
-        if (engine.isNetworkDeadlineExceeded()) return;
+        if (engine.isNetworkDeadlineExceeded() or http_client.isNetworkUnreachable()) return;
         const status = rest_fallback.queryRefStatus(scratch, key.owner, key.repo, key.ref);
         refconfusion.setCachedRefResult(key.owner, key.repo, key.ref, status);
     }
@@ -1059,6 +1063,66 @@ test "prefetchAllWithOptions: deadline-expired short-circuits" {
     const wfs = [_]Workflow{wf};
 
     try prefetchAllWithOptions(testing.allocator, &wfs, .{ .no_cache = true });
+}
+
+test "tryGraphQlBatch: an unreachable network counts as handled so REST is skipped" {
+    archived.initArchived(testing.allocator, false);
+    defer archived.deinitArchived();
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    refconfusion.initRefConfusion(testing.allocator, false);
+    defer refconfusion.deinitRefConfusion();
+
+    var env = try test_support.EnvGuard.set(testing.allocator, "GITHUB_TOKEN", "ghp_test");
+    defer env.deinit();
+    engine.setNetworkDeadline(10 * std.time.ns_per_s);
+    defer engine.clearNetworkDeadline();
+    http_client.markNetworkUnreachable();
+    defer http_client.resetNetworkState();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const steps = [_]Step{.{ .uses = ActionRef.parse("actions/checkout@v4") }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    var sets = try collectRefs(alloc, &[_]Workflow{wf});
+    var pending = std.ArrayList(PendingCompare).empty;
+
+    const active = ActiveRules{ .archived = true, .stale = true, .refconf = true, .impostor = false };
+    try testing.expect(tryGraphQlBatch(alloc, &sets, active, &pending, null));
+    // Nothing was resolved: the refs are still waiting, which the REST
+    // fallback would otherwise pick up.
+    try testing.expectEqual(@as(usize, 1), sets.named_refs.count());
+}
+
+test "prefetchAllWithOptions: an unreachable network short-circuits every stage" {
+    archived.initArchived(testing.allocator, false);
+    defer archived.deinitArchived();
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    refconfusion.initRefConfusion(testing.allocator, false);
+    defer refconfusion.deinitRefConfusion();
+
+    engine.setNetworkDeadline(10 * std.time.ns_per_s);
+    defer engine.clearNetworkDeadline();
+    http_client.markNetworkUnreachable();
+    defer http_client.resetNetworkState();
+
+    const sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@" ++ sha) },
+        .{ .uses = ActionRef.parse("actions/setup-node@v4") },
+    };
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    const wfs = [_]Workflow{wf};
+
+    const t0 = std.Io.Clock.awake.now(runtime.io());
+    try prefetchAllWithOptions(testing.allocator, &wfs, .{ .no_cache = true });
+    const elapsed = std.Io.Clock.awake.now(runtime.io()).nanoseconds - t0.nanoseconds;
+    try testing.expect(elapsed < std.time.ns_per_s);
 }
 
 test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets" {
