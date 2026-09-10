@@ -256,7 +256,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 21)) {
+        switch (self.rng.uintLessThan(u8, 22)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -473,6 +473,30 @@ const Mutator = struct {
                 }));
                 try quoted.append(alloc, '"');
                 try buf.replaceRange(alloc, colon + 1, nl - (colon + 1), quoted.items);
+            },
+            // Anchor one line's value and alias it from another. An alias node
+            // carries the spans of the value that defined it, so an offset in
+            // it points at a line elsewhere in the file. `&anchor` and
+            // `*anchor` are in the dictionary, but two random splices almost
+            // never name the same anchor, and an unresolved alias is a
+            // different path from a resolved one.
+            21 => {
+                if (len == 0) return;
+                const name = self.pick(&.{ "a", "b", "c" });
+                var mark: [8]u8 = undefined;
+
+                const def = self.lineStart(buf.items, self.rng.uintLessThan(usize, len));
+                const def_nl = std.mem.indexOfScalarPos(u8, buf.items, def, '\n') orelse len;
+                const def_colon = std.mem.indexOfScalarPos(u8, buf.items, def, ':') orelse return;
+                if (def_colon >= def_nl) return;
+                try buf.insertSlice(alloc, def_colon + 1, std.fmt.bufPrint(&mark, " &{s}", .{name}) catch return);
+
+                const use = self.lineStart(buf.items, self.rng.uintLessThan(usize, buf.items.len));
+                const use_nl = std.mem.indexOfScalarPos(u8, buf.items, use, '\n') orelse buf.items.len;
+                const use_colon = std.mem.indexOfScalarPos(u8, buf.items, use, ':') orelse return;
+                if (use_colon >= use_nl) return;
+                const alias = std.fmt.bufPrint(&mark, " *{s}", .{name}) catch return;
+                try buf.replaceRange(alloc, use_colon + 1, use_nl - (use_colon + 1), alias);
             },
             else => unreachable,
         }
