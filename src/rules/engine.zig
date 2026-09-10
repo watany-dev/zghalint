@@ -146,24 +146,29 @@ fn dropSc005CoveredByImpostor(
     list.items.shrinkRetainingCapacity(write);
 }
 
-fn sec015CoversSpan(items: []const Diagnostic, span: diagnostics.Span) bool {
-    for (items) |d| {
-        if (!std.mem.eql(u8, d.rule_id, "SEC015")) continue;
-        if (d.span.start_byte == span.start_byte and
-            d.span.start_line == span.start_line and
-            d.span.start_col == span.start_col) return true;
-    }
-    return false;
+/// The three fields SEC015 and SEC018 agree on when they flag the same
+/// checkout step.
+const SpanStart = struct { byte: usize, line: u32, col: u32 };
+
+fn spanStart(span: diagnostics.Span) SpanStart {
+    return .{ .byte = span.start_byte, .line = span.start_line, .col = span.start_col };
 }
 
 fn dropSec018CoveredByArtipacked(list: *DiagnosticList) void {
     const items = list.items.items;
-    const n = items.len;
+    var covered: std.AutoHashMapUnmanaged(SpanStart, void) = .empty;
+    defer covered.deinit(list.allocator);
+    for (items) |d| {
+        if (!std.mem.eql(u8, d.rule_id, "SEC015")) continue;
+        // Out of memory keeps every SEC018, which the tests treat as the
+        // behaviour of the option being off.
+        covered.put(list.allocator, spanStart(d.span), {}) catch return;
+    }
+    if (covered.count() == 0) return;
+
     var write: usize = 0;
-    var read: usize = 0;
-    while (read < n) : (read += 1) {
-        const d = items[read];
-        if (std.mem.eql(u8, d.rule_id, "SEC018") and sec015CoversSpan(items[0..n], d.span)) {
+    for (items, 0..) |d, read| {
+        if (std.mem.eql(u8, d.rule_id, "SEC018") and covered.contains(spanStart(d.span))) {
             continue;
         }
         if (write != read) items[write] = d;
