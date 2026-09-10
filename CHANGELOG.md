@@ -13,9 +13,11 @@ each ID means.
 
 ## [Unreleased]
 
-Nothing released yet. `v0.0.1-rc.1` is the first planned tag; the CLI contract
-(flag names, exit codes, output shapes) is not yet stable, and rule IDs may
-still be renumbered before 1.0.
+## [0.0.1] - 2026-09-10
+
+First public release. Preceded by prereleases `v0.0.1-rc.1` and `v0.0.1-rc.2`.
+The CLI contract (flag names, exit codes, output shapes) is not yet stable, and
+rule IDs may still be renumbered before 1.0.
 
 ### Changed
 
@@ -45,6 +47,10 @@ still be renumbered before 1.0.
 - BP007 no longer treats `$NAME = ...` at the start of a line as a command.
   That is PowerShell assignment (`$PACK_OUTPUT = npm pack`); `$CMD == ...`
   is still a command.
+- SC* GitHub API lookups now fail fast after a transport failure (connection
+  refused, network unreachable) and bound each remaining request to the
+  leftover deadline, instead of hanging until the overall timeout (#402).
+  Once the network is unreachable, the REST fallback is skipped.
 
 ### Fixed
 
