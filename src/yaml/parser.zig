@@ -965,6 +965,11 @@ pub const Parser = struct {
         var open = state;
         // A line begins a token; after that only a structural character does.
         var at_token_start = true;
+        // `,` `]` `}` are indicators only inside a flow collection; the
+        // tokenizer reads them as plain-scalar characters otherwise. A
+        // collection opened on an earlier line is not visible here, so the
+        // depth starts at zero and the scan errs toward not opening a quote.
+        var flow_depth: usize = 0;
         var i: usize = 0;
         while (i < line.len) : (i += 1) {
             const c = line[i];
@@ -989,6 +994,17 @@ pub const Parser = struct {
             // A comment holds no scalar, so nothing in it opens one.
             if (c == '#' and (i == 0 or prev == ' ' or prev == '\t')) break;
             if (c == ' ' or c == '\t') continue;
+            // `${{ ... }}` is part of the plain scalar around it, braces
+            // included. Counting them as a flow mapping made the quote in
+            // `${{"` open a scalar, which ran the entry to the end of the file
+            // (fuzz). An unterminated one covers the rest of the line, matching
+            // how the tokenizer reads it in block context.
+            if (c == '$' and std.mem.startsWith(u8, line[i + 1 ..], "{{")) {
+                const rest = line[i + 3 ..];
+                i += 2 + if (std.mem.indexOf(u8, rest, "}}")) |e| e + 2 else rest.len;
+                at_token_start = false;
+                continue;
+            }
             if ((c == '\'' or c == '"') and at_token_start) {
                 open = c;
                 continue;
@@ -1001,7 +1017,20 @@ pub const Parser = struct {
             const next: u8 = if (i + 1 < line.len) line[i + 1] else ' ';
             const separates = next == ' ' or next == '\t' or next == '\n' or next == '\r';
             at_token_start = switch (c) {
-                ',', '[', '{', ']', '}' => true,
+                '[', '{' => blk: {
+                    flow_depth += 1;
+                    break :blk true;
+                },
+                // Outside a flow collection these are ordinary characters:
+                // `}"` is one plain scalar to the tokenizer, and reading the
+                // quote as opening a scalar stretched the entry to the end of
+                // the file, so removing an unknown key took every line after it
+                // as well (fuzz).
+                ',', ']', '}' => blk: {
+                    if (flow_depth == 0) break :blk false;
+                    if (c != ',') flow_depth -= 1;
+                    break :blk true;
+                },
                 ':', '-', '?' => separates,
                 else => false,
             };
@@ -1480,6 +1509,47 @@ test "an entry whose line opens a quote that closes below has no full_span (fuzz
     var closed = Parser.init(alloc, "on:\n ''\"x\"\njobs:");
     const closed_doc = try closed.parse();
     try std.testing.expectEqual(@as(usize, 11), closed_doc.mapping.entries[0].full_span.?.end_byte);
+}
+
+test "a quote after a closing bracket does not open a scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `}` closes nothing here, so `}"` is one plain scalar. Reading the `"` as
+    // an opening quote ran the `n` entry to the end of the file, so SYN011's
+    // removal of the unknown key took the `jobs:` line with it and the workflow
+    // lost its only job.
+    var parser = Parser.init(alloc, "on: workflow_dispatch:\n     n: }\"\njobs: \"");
+    const doc = try parser.parse();
+    const inner = doc.mapping.entries[0].value.mapping.entries[0].value.mapping.entries[0];
+    try std.testing.expectEqualStrings("n", inner.key.value);
+    try std.testing.expectEqual(@as(usize, 34), inner.extent_end.?);
+
+    // A quote after a comma still opens one: `[a, 'b'` is two items.
+    var flow = Parser.init(alloc, "on: [a, 'b\nc']\njobs:");
+    const flow_doc = try flow.parse();
+    try std.testing.expect(flow_doc.mapping.entries.len == 2);
+}
+
+test "a quote after an interpolation does not open a scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The braces of `${{` are not a flow mapping, so `${{"` is one plain
+    // scalar. Reading the `"` as an opening quote ran the `n` entry to the end
+    // of the file and SYN011's removal of the unknown key took `jobs:` with it.
+    var parser = Parser.init(alloc, "on: workflow_dispatch:\n     n: ${{\"\njobs: \"");
+    const doc = try parser.parse();
+    const inner = doc.mapping.entries[0].value.mapping.entries[0].value.mapping.entries[0];
+    try std.testing.expectEqualStrings("n", inner.key.value);
+    try std.testing.expectEqual(@as(usize, 36), inner.extent_end.?);
+
+    // A closed interpolation is skipped over the same way.
+    var closed = Parser.init(alloc, "on: ${{ x }}\"\njobs:");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 14), closed_doc.mapping.entries[0].extent_end.?);
 }
 
 test "a scalar entry's extent covers the lines indented under it (fuzz)" {
