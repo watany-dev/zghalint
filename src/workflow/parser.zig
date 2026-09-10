@@ -1155,9 +1155,12 @@ fn keyLine(m: Mapping, name: []const u8) u32 {
 fn parseSteps(ctx: *ParseContext, node: Node, steps_key_line: u32) ParseError![]const types.Step {
     const seq = switch (node) {
         .sequence => |s| s,
+        // A `steps:` holding something else is a type error, not a reason to
+        // drop every other diagnostic in the file. A merge key folded a mapping
+        // into it and SEC010's rewrite made the whole parse fail (fuzz).
         else => {
-            ctx.note("steps", node.getSpan());
-            return error.InvalidValue;
+            _ = type_validation.checkSequence(node, "steps", ctx.type_mismatches, ctx.allocator);
+            return &.{};
         },
     };
 
@@ -2773,6 +2776,23 @@ test "a service holding a sequence is a type error, not a parse failure (fuzz)" 
     var scalar = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n b:\n  services: x\n");
     const scalar_wf = try parseWorkflow(alloc, try scalar.parse());
     try testing.expectEqual(@as(usize, 0), scalar_wf.jobs[0].services.len);
+}
+
+test "steps holding a mapping is a type mismatch, not a parse failure (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var parser = yaml_parser_mod.Parser.init(alloc, "on: push\njobs:\n  j:\n    steps:\n      a: b\n");
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expectEqual(@as(usize, 0), wf.jobs[0].steps.len);
+
+    var found = false;
+    for (wf.type_mismatches) |tm| {
+        if (std.mem.eql(u8, tm.field, "steps")) found = true;
+    }
+    try testing.expect(found);
 }
 
 test "a dropped line under on: offers no insertion anchor (fuzz)" {
