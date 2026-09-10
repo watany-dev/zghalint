@@ -182,6 +182,12 @@ pub fn isNetworkUnreachable() bool {
     return network_unreachable;
 }
 
+/// Records a transport failure observed outside `fetch`, e.g. by a test
+/// that must not open a connection.
+pub fn markNetworkUnreachable() void {
+    network_unreachable = true;
+}
+
 pub fn resetNetworkState() void {
     network_unreachable = false;
     last_fetch_succeeded = false;
