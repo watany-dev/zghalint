@@ -269,6 +269,14 @@ pub const Tokenizer = struct {
         };
     }
 
+    /// The number of leading spaces on the line holding `at`.
+    fn lineIndentAt(self: *Tokenizer, at: usize) u32 {
+        const line_start = if (std.mem.lastIndexOfScalar(u8, self.source[0..at], '\n')) |i| i + 1 else 0;
+        var indent: u32 = 0;
+        while (line_start + indent < at and self.source[line_start + indent] == ' ') indent += 1;
+        return indent;
+    }
+
     fn scanBlockScalar(self: *Tokenizer) Token {
         const start = self.pos;
         const line = self.line;
@@ -307,10 +315,12 @@ pub const Tokenizer = struct {
         }
 
         // Content is always indented further than the key it belongs to, so a
-        // first non-empty line at column 0 belongs to no block scalar: this one
-        // is empty. Reading it as content used to give the scalar an indentation
-        // of zero, which then swallowed every line written below it (fuzz).
-        while (base_indent > 0 and self.atBreak()) {
+        // first non-empty line at or inside the key's own indent belongs to no
+        // block scalar: this one is empty. Reading such a line as content used
+        // to give the scalar the indentation of its siblings, which then
+        // swallowed every line written below it (fuzz).
+        const own_indent = self.lineIndentAt(start);
+        while (base_indent > own_indent and self.atBreak()) {
             self.consumeNewline();
 
             var indent: u32 = 0;
@@ -834,6 +844,26 @@ test "tokenizer block scalar takes no content from column 0 (fuzz)" {
     try std.testing.expectEqualStrings("|", tokenizer.next().slice(tokenizer.source));
     try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
     try std.testing.expectEqualStrings("8", tokenizer.next().slice(tokenizer.source));
+}
+
+test "tokenizer block scalar takes no content from its own indent (fuzz)" {
+    // The `permissions:` line is a sibling of `on:`, not content: block scalar
+    // content is indented further than the key. Reading it as content hid the
+    // line from the rules, so SEC007's fix inserted it again on every pass.
+    var tokenizer = Tokenizer.init("  on: >\n  permissions: read\n");
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings(">", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("permissions", tokenizer.next().slice(tokenizer.source));
+
+    // A line indented past the key is still content.
+    var deeper = Tokenizer.init("  on: >\n    text\n");
+    _ = deeper.next();
+    _ = deeper.next();
+    _ = deeper.next();
+    try std.testing.expectEqualStrings(">\n    text\n", deeper.next().slice(deeper.source));
 }
 
 test "token slice" {
