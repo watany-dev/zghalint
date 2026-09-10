@@ -256,7 +256,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 18)) {
+        switch (self.rng.uintLessThan(u8, 20)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -408,6 +408,45 @@ const Mutator = struct {
                 const rest = buf.items.len;
                 const at = if (rest == 0) 0 else self.lineStart(buf.items, self.rng.uintLessThan(usize, rest));
                 try buf.insertSlice(alloc, at, line);
+            },
+            // Rewrite a line's value as a block scalar with a body under it.
+            // The header alone is in the dictionary, but content indented past
+            // the key is what decides where the scalar ends, and splicing a
+            // header in at random almost never leaves any.
+            18 => {
+                if (len == 0) return;
+                const at = self.rng.uintLessThan(usize, len);
+                const start = self.lineStart(buf.items, at);
+                const nl = std.mem.indexOfScalarPos(u8, buf.items, start, '\n') orelse len;
+                const colon = std.mem.indexOfScalarPos(u8, buf.items, start, ':') orelse return;
+                if (colon + 1 >= nl) return;
+                var indent: usize = 0;
+                while (start + indent < nl and buf.items[start + indent] == ' ') indent += 1;
+                const header = self.pick(&.{ "|", "|-", "|+", ">", ">-", "|2", ">1" });
+                const body = try alloc.dupe(u8, buf.items[colon + 1 .. nl]);
+                defer alloc.free(body);
+                // Two past the key's own indent, the width a block scalar with
+                // no indicator takes from its first line.
+                const pad = "                                ";
+                const want = @min(indent + 2, pad.len);
+                try buf.replaceRange(alloc, colon + 1, body.len, header);
+                try buf.insertSlice(alloc, colon + 1 + header.len, "\n");
+                try buf.insertSlice(alloc, colon + 1 + header.len + 1, pad[0..want]);
+                try buf.insertSlice(alloc, colon + 1 + header.len + 1 + want, body);
+            },
+            // Rewrite the file's line endings as CRLF. The tokenizer carries
+            // the carriage return through spans and scalar values, and a lone
+            // "\r\n" spliced mid-line reaches none of that.
+            19 => {
+                if (len == 0) return;
+                var out = std.ArrayList(u8){};
+                defer out.deinit(alloc);
+                for (buf.items) |c| {
+                    if (c == '\n') try out.append(alloc, '\r');
+                    try out.append(alloc, c);
+                }
+                buf.clearRetainingCapacity();
+                try buf.appendSlice(alloc, out.items);
             },
             else => unreachable,
         }
