@@ -256,7 +256,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 22)) {
+        switch (self.rng.uintLessThan(u8, 23)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -497,6 +497,33 @@ const Mutator = struct {
                 if (use_colon >= use_nl) return;
                 const alias = std.fmt.bufPrint(&mark, " *{s}", .{name}) catch return;
                 try buf.replaceRange(alloc, use_colon + 1, use_nl - (use_colon + 1), alias);
+            },
+            // Fold one mapping into another with a merge key. The entries a
+            // merge brings in are spanned where they were written, so a fix
+            // that edits or removes one lands in a block other than the one
+            // the diagnostic names. `<<:` is in the dictionary, but a merge
+            // only happens when its value resolves to a mapping.
+            22 => {
+                if (len == 0) return;
+                const name = self.pick(&.{ "a", "b", "c" });
+                var mark: [8]u8 = undefined;
+
+                const def = self.lineStart(buf.items, self.rng.uintLessThan(usize, len));
+                const def_nl = std.mem.indexOfScalarPos(u8, buf.items, def, '\n') orelse len;
+                const def_colon = std.mem.indexOfScalarPos(u8, buf.items, def, ':') orelse return;
+                if (def_colon >= def_nl) return;
+                try buf.insertSlice(alloc, def_colon + 1, std.fmt.bufPrint(&mark, " &{s}", .{name}) catch return);
+
+                const at = self.lineStart(buf.items, self.rng.uintLessThan(usize, buf.items.len));
+                var indent: usize = 0;
+                while (at + indent < buf.items.len and buf.items[at + indent] == ' ') indent += 1;
+                var line = std.ArrayList(u8){};
+                defer line.deinit(alloc);
+                try line.appendNTimes(alloc, ' ', indent);
+                try line.appendSlice(alloc, "<<: *");
+                try line.appendSlice(alloc, name);
+                try line.append(alloc, '\n');
+                try buf.insertSlice(alloc, at, line.items);
             },
             else => unreachable,
         }
