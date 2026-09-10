@@ -364,7 +364,10 @@ pub const Parser = struct {
             if (i + 1 >= parsed_entries.len) continue;
             const limit = self.lineStartByte(parsed_entries[i + 1].key.span.start_byte);
             const ext = entry.extent_end orelse continue;
-            if (ext <= limit) continue;
+            // A limit at or before the key would invert the entry's own range.
+            // Siblings are read from separate lines, so this is a guard rather
+            // than a case seen; leave the extent alone rather than reverse it.
+            if (ext <= limit or limit <= entry.key.span.start_byte) continue;
             entry.extent_end = limit;
             entry.full_span = self.blockEntryFullSpan(entry.key, entry.value, limit);
         }
