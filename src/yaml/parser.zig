@@ -911,7 +911,7 @@ pub const Parser = struct {
             // the alias line after the inserted `concurrency:` block, which
             // adopted it and turned a tolerated stray line into a parse error
             // (fuzz).
-            return self.extendAndNoteTail(end_byte, key.span.start_col, key.span.start_byte, tail);
+            return self.extendAndNoteTail(end_byte, key.span.start_col, value, tail);
         }
 
         // An empty or null value has no body: end at the key's own line. The
@@ -935,13 +935,31 @@ pub const Parser = struct {
         // so the nested end can land before the key. The entry still owns at
         // least its own line.
         const end = @max(key_line_end, nested);
-        return self.extendAndNoteTail(end, key.span.start_col, key.span.start_byte, tail);
+        return self.extendAndNoteTail(end, key.span.start_col, value, tail);
     }
 
-    fn extendAndNoteTail(self: *Parser, end_byte: usize, key_col: u32, key_start: usize, tail: ?*bool) ?usize {
-        const extended = self.extendOverIndentedTail(end_byte, key_col, key_start);
+    fn extendAndNoteTail(self: *Parser, end_byte: usize, key_col: u32, value: Node, tail: ?*bool) ?usize {
+        const extended = self.extendOverIndentedTail(end_byte, key_col, lastLineQuote(self, end_byte, value));
         if (tail) |t| t.* = (extended orelse end_byte + 1) > end_byte;
         return extended;
+    }
+
+    /// A block mapping/sequence with children already folded quotes into the
+    /// last child's extent. Re-lexing that last line from a closed start would
+    /// treat a closer (`'\n` after `  '`) as an opener and swallow the rest of
+    /// the file. Flow and scalars still drop tokens on their own last line
+    /// (`push: []'`), so those scan just that line — not the whole entry.
+    fn lastLineQuote(self: *Parser, end_byte: usize, value: Node) ?u8 {
+        if (end_byte == 0 or end_byte > self.source.len or self.source[end_byte - 1] != '\n') return null;
+        const rescan = switch (value) {
+            .mapping => |m| m.flow or m.entries.len == 0,
+            .sequence => |s| s.flow or s.items.len == 0,
+            else => true,
+        };
+        if (!rescan) return null;
+        const line = self.source[self.lineStartByte(end_byte - 1)..end_byte];
+        if (std.mem.indexOfAny(u8, line, "'\"") == null) return null;
+        return scanQuoteState(line, null);
     }
 
     /// The end of the line holding a flow collection's closing bracket. A flow
@@ -959,7 +977,7 @@ pub const Parser = struct {
     /// Lines the parser dropped still belong to the entry when they are
     /// indented past its key: a bare `7` under `on:` holds no node, but an
     /// insertion anchored before it lands inside the block all the same.
-    fn extendOverIndentedTail(self: *Parser, end_byte: usize, key_col: u32, key_start: usize) ?usize {
+    fn extendOverIndentedTail(self: *Parser, end_byte: usize, key_col: u32, quote_seed: ?u8) ?usize {
         if (key_col == 0) return end_byte;
         // Column arithmetic only describes a line boundary; mid-line the
         // leading run of spaces is not the line's indent.
@@ -967,11 +985,7 @@ pub const Parser = struct {
         const key_indent = key_col - 1;
 
         var end = end_byte;
-        // A quote opened inside the entry is still open at `end_byte`: the
-        // parser drops a token the flow parser never claimed (`push: []'`), so
-        // starting the scan closed read the next line's column 0 as a boundary
-        // and `--fix` wrote the new key inside the quotes (fuzz).
-        var quote = self.quoteStateAt(key_start, end_byte);
+        var quote = quote_seed;
         // Where a run of comment lines began. A comment carries no indentation
         // of its own, so it neither ends the block nor joins it: the scan reads
         // past it, and keeps this boundary in case the block turns out to have
@@ -1001,20 +1015,6 @@ pub const Parser = struct {
         }
         // A quote that never closes leaves no boundary to trust.
         return if (quote == null) before_comments orelse end else null;
-    }
-
-    /// The quote state at `to`, starting closed at the beginning of the line
-    /// holding `from`.
-    fn quoteStateAt(self: *Parser, from: usize, to: usize) ?u8 {
-        if (to > self.source.len) return null;
-        var at = self.lineStartByte(from);
-        var quote: ?u8 = null;
-        while (at < to) {
-            const line_end = @min(self.scanLineEndInclusive(at), to);
-            quote = scanQuoteState(self.source[at..line_end], quote);
-            at = line_end;
-        }
-        return quote;
     }
 
     /// Whether a quoted scalar is still open at the end of `line`, given the
