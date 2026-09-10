@@ -257,12 +257,11 @@ const BudgetedFetch = struct {
     }
 };
 
-/// Runs the request on a concurrent task and cancels it once `budget` has
-/// elapsed; `Io.Threaded` interrupts the blocked connect / read so the task
-/// returns promptly. std offers no usable connect or receive timeout, so this
-/// is the only per-request cutoff available. Without a budget, or on an `Io`
-/// that cannot run concurrent tasks, the request runs inline and waits as
-/// long as std does. The caller holds `client_mutex`.
+/// Runs the request on a concurrent task and cuts it off once `budget` has
+/// elapsed. std offers no usable connect or receive timeout, so this is the
+/// only per-request cutoff available. Without a budget, or on an `Io` that
+/// cannot run concurrent tasks, the request runs inline and waits as long as
+/// std does. The caller holds `client_mutex`.
 fn fetchWithBudget(
     opts: std.http.Client.FetchOptions,
     budget: std.Io.Timeout,
@@ -277,17 +276,66 @@ fn fetchWithBudget(
         task.done.waitTimeout(io, deadline) catch |err| switch (err) {
             // `waitTimeout` may wake early; only a spent deadline is a timeout.
             error.Timeout => if (deadline.deadline.durationFromNow(io).raw.nanoseconds <= 0) {
-                future.cancel(io);
+                abortFetch(io, &future, &task);
                 return task.result catch error.Timeout;
             },
             error.Canceled => {
-                future.cancel(io);
+                abortFetch(io, &future, &task);
                 return error.Canceled;
             },
         };
     }
     future.await(io);
     return task.result;
+}
+
+/// Stops a request that is still in flight and waits for its task to return.
+///
+/// `Future.cancel` makes `Io.Threaded` interrupt the blocked name lookup,
+/// connect, or read with `error.Canceled`, but the signal is delivered once:
+/// a task that swallows it can no longer be interrupted. `std.http.Client`
+/// does exactly that while waiting for a proxy's CONNECT reply (it treats the
+/// failure as "tunnel unsupported" and reconnects as a plain proxy), which
+/// would leave the fresh connection blocked and `cancel` waiting forever. So
+/// alongside the cancel a reaper keeps shutting down every socket the client
+/// has in use, which turns each blocked read into an EOF, until the task
+/// reports back. Both fallbacks are cheap: the reaper only runs on a spent
+/// budget.
+fn abortFetch(io: std.Io, future: *std.Io.Future(void), task: *BudgetedFetch) void {
+    var reaper: SocketReaper = .{ .done = &task.done };
+    var reaper_future = io.concurrent(SocketReaper.run, .{ &reaper, io }) catch null;
+    future.cancel(io);
+    if (reaper_future) |*f| f.await(io);
+}
+
+const SocketReaper = struct {
+    done: *std.Io.Event,
+
+    const interval: std.Io.Timeout = .{
+        .duration = .{ .raw = .fromMilliseconds(10), .clock = .awake },
+    };
+
+    fn run(self: *SocketReaper, io: std.Io) void {
+        while (!self.done.isSet()) {
+            shutdownUsedConnections(io);
+            self.done.waitTimeout(io, interval) catch {};
+        }
+    }
+};
+
+/// Shuts down every connection the client currently has in use. A read that
+/// is blocked on one returns EOF, and std never hands a shut-down socket
+/// back to the pool. Runs under the pool's own mutex, so a connection seen
+/// here is not being destroyed at the same time.
+fn shutdownUsedConnections(io: std.Io) void {
+    const pool = &client_storage.connection_pool;
+    pool.mutex.lockUncancelable(io);
+    defer pool.mutex.unlock(io);
+    var it = pool.used.first;
+    while (it) |node| : (it = node.next) {
+        const connection: *std.http.Client.Connection = @alignCast(@fieldParentPtr("pool_node", node));
+        connection.stream_reader.stream.shutdown(io, .both) catch {};
+    }
 }
 
 /// `sink` is the response writer when one is used, so a body that exceeded
@@ -596,6 +644,34 @@ test "fetch: a server that never answers is cut off by the budget and marks the 
     try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = url } }));
     try testing.expect(elapsedSince(t1) < 50 * std.time.ns_per_ms);
     try testing.expectEqual(@as(u32, 1), server.accepted.load(.monotonic));
+}
+
+test "fetch: a CONNECT proxy that never answers is cut off by the budget" {
+    if (client_initialized) return error.SkipZigTest;
+    var server = try TestServer.listen(.hang);
+    defer server.deinit();
+    try server.spawn();
+
+    var url_buf: [64]u8 = undefined;
+    const proxy_url = try server.url(&url_buf, "");
+    var https = try test_support.EnvGuard.set(testing.allocator, "HTTPS_PROXY", proxy_url);
+    defer https.deinit();
+    var https_lc = try test_support.EnvGuard.set(testing.allocator, "https_proxy", proxy_url);
+    defer https_lc.deinit();
+
+    init(testing.allocator);
+    defer deinit();
+    try testing.expect(client_storage.https_proxy != null);
+
+    // std answers a failed CONNECT by reconnecting to the proxy as a plain
+    // HTTP proxy, so the request has to be cut off twice.
+    engine.setNetworkDeadline(200 * std.time.ns_per_ms);
+    defer engine.clearNetworkDeadline();
+    const t0 = std.Io.Clock.awake.now(runtime.io());
+    try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = "https://api.github.invalid/" } }));
+    try testing.expect(elapsedSince(t0) < 2 * std.time.ns_per_s);
+    try testing.expect(isNetworkUnreachable());
+    try testing.expect(server.accepted.load(.monotonic) >= 1);
 }
 
 test "fetch: a refused connection fails at once instead of waiting out the budget" {
