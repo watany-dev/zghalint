@@ -353,13 +353,15 @@ pub const Parser = struct {
             } else try self.parseNode(key_indent + 1);
 
             const key_scalar = self.scalarFromToken(current_key);
-            const extent_end = self.entryEndByteInclusive(key_scalar, value);
+            var has_tail = false;
+            const extent_end = self.entryEndByteInclusive(key_scalar, value, &has_tail);
             try entries.append(self.allocator, .{
                 .key = key_scalar,
                 .value = value,
                 .span = key_scalar.span,
                 .full_span = self.blockEntryFullSpan(key_scalar, value, extent_end),
                 .extent_end = extent_end,
+                .has_indented_tail = has_tail,
             });
 
             current_key = self.nextSiblingKey(key_indent, min_indent) orelse break;
@@ -864,7 +866,9 @@ pub const Parser = struct {
     /// Where an entry's text stops, trailing newline included. This is the
     /// entry's extent alone: whether the entry starts its own line, and so
     /// whether it can be removed as one, is `blockEntryFullSpan`'s question.
-    fn entryEndByteInclusive(self: *Parser, key: Scalar, value: Node) ?usize {
+    /// `tail`, when given, reports whether the entry reached past its own
+    /// last line to take lines the parser dropped under the key.
+    fn entryEndByteInclusive(self: *Parser, key: Scalar, value: Node, tail: ?*bool) ?usize {
         if (value == .scalar) {
             const scalar = value.scalar;
             // A quoted scalar that never closes runs to the end of the file, so
@@ -900,7 +904,7 @@ pub const Parser = struct {
             // the alias line after the inserted `concurrency:` block, which
             // adopted it and turned a tolerated stray line into a parse error
             // (fuzz).
-            return self.extendOverIndentedTail(end_byte, key.span.start_col, key.span.start_byte);
+            return self.extendAndNoteTail(end_byte, key.span.start_col, key.span.start_byte, tail);
         }
 
         // An empty or null value has no body: end at the key's own line. The
@@ -924,7 +928,13 @@ pub const Parser = struct {
         // so the nested end can land before the key. The entry still owns at
         // least its own line.
         const end = @max(key_line_end, nested);
-        return self.extendOverIndentedTail(end, key.span.start_col, key.span.start_byte);
+        return self.extendAndNoteTail(end, key.span.start_col, key.span.start_byte, tail);
+    }
+
+    fn extendAndNoteTail(self: *Parser, end_byte: usize, key_col: u32, key_start: usize, tail: ?*bool) ?usize {
+        const extended = self.extendOverIndentedTail(end_byte, key_col, key_start);
+        if (tail) |t| t.* = (extended orelse end_byte + 1) > end_byte;
+        return extended;
     }
 
     /// The end of the line holding a flow collection's closing bracket. A flow
@@ -1094,7 +1104,7 @@ pub const Parser = struct {
                 // shares a line still ends where its value ends, and the outer
                 // entry that owns the line is removable all the same (fuzz).
                 const last_end = (if (m.flow)
-                    self.entryEndByteInclusive(last.key, last.value)
+                    self.entryEndByteInclusive(last.key, last.value, null)
                 else
                     last.extent_end) orelse return null;
                 break :blk self.flowCloseLineEnd(m.flow, m.close_byte, last_end);

@@ -152,6 +152,10 @@ pub const MappingEntry = struct {
     /// a token that opens on the entry's line and closes below. Null for a
     /// flow entry, whose text is bounded by the closing brace instead.
     extent_end: ?usize = null,
+    /// Lines the parser dropped sit under this entry's key, inside its extent.
+    /// An insertion anchored at the value's own end lands above them, where a
+    /// block key it opens adopts them (fuzz).
+    has_indented_tail: bool = false,
 };
 
 pub const Mapping = struct {
@@ -193,6 +197,15 @@ pub const Mapping = struct {
             }
         }
         return null;
+    }
+
+    /// Whether `key`'s entry took lines the parser dropped under it. False
+    /// when the key is absent.
+    pub fn hasIndentedTail(self: Mapping, key: []const u8) bool {
+        for (self.entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, key)) return entry.has_indented_tail;
+        }
+        return false;
     }
 
     pub fn getScalar(self: Mapping, key: []const u8) ?[]const u8 {

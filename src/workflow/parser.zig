@@ -1247,7 +1247,14 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                 // A quoted `uses:` that never closes swallows everything below
                 // it, so a `with:` block written after it becomes more quoted
                 // text and `--fix` writes it again every round (fuzz).
-                step.uses_value_end_byte = if (s.unterminated) null else s.span.end_byte;
+                // Lines the parser dropped under `uses:` sit below the value
+                // but inside the entry, so a `with:` block written at the
+                // value's end adopts them: a stray `<: *g` became a real merge
+                // key and the alias had no anchor to resolve (fuzz).
+                step.uses_value_end_byte = if (s.unterminated or m.hasIndentedTail("uses"))
+                    null
+                else
+                    s.span.end_byte;
                 step.uses_value_style = s.style;
                 step.uses_value_ends_line = s.ends_line;
                 step.uses_line_comment = s.line_comment;
@@ -2700,6 +2707,30 @@ test "an empty container credentials: does not fail the parse (fuzz)" {
     const wf = try parseWorkflow(alloc, try parser.parse());
     try testing.expectEqualStrings("node:20", wf.jobs[0].container.?.image.?);
     try testing.expect(wf.jobs[0].container.?.credentials == null);
+}
+
+test "a uses: with dropped lines under it offers no insertion anchor (fuzz)" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `<: *g` line holds no node, but a `with:` block written at the value's
+    // end adopts it, and the merge key's alias has no anchor to resolve.
+    var parser = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: actions/checkout@v4\n       <: *g\n",
+    );
+    const wf = try parseWorkflow(alloc, try parser.parse());
+    try testing.expect(wf.jobs[0].steps[0].uses_value_end_byte == null);
+
+    // Nothing under the value, so the anchor stands.
+    var plain = yaml_parser_mod.Parser.init(
+        alloc,
+        "on: push\njobs:\n d:\n  steps:\n   - uses: actions/checkout@v4\n",
+    );
+    const plain_wf = try parseWorkflow(alloc, try plain.parse());
+    try testing.expect(plain_wf.jobs[0].steps[0].uses_value_end_byte != null);
 }
 
 test "an unterminated quoted uses: offers no insertion anchor (fuzz)" {
