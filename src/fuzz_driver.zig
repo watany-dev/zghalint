@@ -256,7 +256,7 @@ const Mutator = struct {
 
     fn mutateOnce(self: Mutator, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         const len = buf.items.len;
-        switch (self.rng.uintLessThan(u8, 23)) {
+        switch (self.rng.uintLessThan(u8, 24)) {
             0, 1, 2 => {
                 const token = self.pick(dictionary);
                 try buf.insertSlice(alloc, self.rng.uintAtMost(usize, len), token);
@@ -524,6 +524,28 @@ const Mutator = struct {
                 try line.appendSlice(alloc, name);
                 try line.append(alloc, '\n');
                 try buf.insertSlice(alloc, at, line.items);
+            },
+            // Rewrite a line's `k: v` as an explicit key (`? k` over `: v`).
+            // The key and its value then sit on different lines and the key's
+            // own line carries no colon, so an anchor taken from the key line
+            // is nowhere near the value. `? ` is in the dictionary, but spliced
+            // at a random offset it is two plain characters.
+            23 => {
+                if (len == 0) return;
+                const start = self.lineStart(buf.items, self.rng.uintLessThan(usize, len));
+                const nl = std.mem.indexOfScalarPos(u8, buf.items, start, '\n') orelse len;
+                const colon = std.mem.indexOfScalarPos(u8, buf.items, start, ':') orelse return;
+                if (colon >= nl) return;
+                var indent: usize = 0;
+                while (start + indent < nl and buf.items[start + indent] == ' ') indent += 1;
+
+                var line = std.ArrayList(u8){};
+                defer line.deinit(alloc);
+                try line.append(alloc, '\n');
+                try line.appendNTimes(alloc, ' ', indent);
+                try line.append(alloc, ':');
+                try buf.replaceRange(alloc, colon, 1, line.items);
+                try buf.insertSlice(alloc, start + indent, "? ");
             },
             else => unreachable,
         }
