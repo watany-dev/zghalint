@@ -355,6 +355,19 @@ pub const Parser = struct {
         }
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        // An entry's text cannot reach the line its next sibling key starts on.
+        // The tail scan reads quotes with a token model of its own, and where it
+        // disagrees with the tokenizer (`p: }'` is one plain scalar to the
+        // tokenizer, an open quote to the scan) the extent ran to EOF and `--fix`
+        // inserted past the sibling instead of before it (fuzz).
+        for (parsed_entries, 0..) |*entry, i| {
+            if (i + 1 >= parsed_entries.len) continue;
+            const limit = self.lineStartByte(parsed_entries[i + 1].key.span.start_byte);
+            const ext = entry.extent_end orelse continue;
+            if (ext <= limit) continue;
+            entry.extent_end = limit;
+            entry.full_span = self.blockEntryFullSpan(entry.key, entry.value, limit);
+        }
         // The span is taken before merging. `applyMergeKeys` appends entries
         // whose text lives at the merge source, which sits anywhere in the file
         // -- reading the range off the merged list made a mapping written after
@@ -1459,6 +1472,21 @@ test "an entry whose line opens a quote that closes below has no full_span (fuzz
     var closed = Parser.init(alloc, "on:\n ''\"x\"\njobs:");
     const closed_doc = try closed.parse();
     try std.testing.expectEqual(@as(usize, 11), closed_doc.mapping.entries[0].full_span.?.end_byte);
+}
+
+test "an entry's extent stops at the next sibling key (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The tokenizer reads `}'` as one plain scalar, but the tail scan treats `}`
+    // as ending a token and so reads the `'` as opening a quote that never
+    // closes. The extent ran to EOF, and `--fix` appended `permissions:` past
+    // the unterminated quote on the `jobs:` line, once more every round.
+    var parser = Parser.init(alloc, "on:\n p: }'\njobs: '}\"\"\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 11), doc.mapping.entries[0].extent_end.?);
+    try std.testing.expectEqual(@as(usize, 11), doc.mapping.entries[0].full_span.?.end_byte);
 }
 
 test "full_span end_line follows a multi-line quoted scalar" {
