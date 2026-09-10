@@ -36,7 +36,7 @@ Options are passed after `-s --`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/watany-dev/zghalint/main/install.sh \
-  | sh -s -- --version v0.0.1-rc.2 --prefix "$HOME/.local"
+  | sh -s -- --version v0.0.1 --prefix "$HOME/.local"
 ```
 
 `--version` takes a release tag and defaults to the release the script was
@@ -67,7 +67,7 @@ The binary will be at `./zig-out/bin/zghalint`.
 ### Download release binary
 
 Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are available on the [Releases](https://github.com/watany-dev/zghalint/releases) page.
-The next prerelease is `v0.0.1-rc.2`, published while validation of the installation flow and CLI contract continues.
+The current release is `v0.0.1`.
 Tags follow `v<semver>`, with prereleases as `v<semver>-rc.<N>`; see [docs/maintenance.md](docs/maintenance.md) for the release procedure.
 
 #### Verifying a release artifact
@@ -77,7 +77,7 @@ Every release archive is published with a `SHA256SUMS` file and a
 checked against both the published checksum and the workflow that produced it.
 
 ```bash
-TAG=v0.0.1-rc.2
+TAG=v0.0.1
 ARCHIVE=zghalint-linux-x86_64.tar.gz
 BASE=https://github.com/watany-dev/zghalint/releases/download/$TAG
 
@@ -99,7 +99,7 @@ from this repository's release pipeline.
 ### Use as a GitHub Action
 
 ```yaml
-- uses: watany-dev/zghalint@v0.0.1-rc.2
+- uses: watany-dev/zghalint@v0.0.1
   with:
     paths: ".github/workflows/*.yml"
 ```
@@ -107,7 +107,7 @@ from this repository's release pipeline.
 With auto-fix enabled:
 
 ```yaml
-- uses: watany-dev/zghalint@v0.0.1-rc.2
+- uses: watany-dev/zghalint@v0.0.1
   with:
     paths: ".github/workflows/*.yml"
     fix: safe
@@ -121,7 +121,7 @@ part of a release; a commit made after a version bump but before its tag has no
 archive to download yet.
 
 ```yaml
-- uses: watany-dev/zghalint@<full-sha> # v0.0.1-rc.2
+- uses: watany-dev/zghalint@<full-sha> # v0.0.1
   with:
     paths: ".github/workflows/*.yml"
 ```
@@ -129,9 +129,9 @@ archive to download yet.
 Pass `version` to download a specific release regardless of the ref:
 
 ```yaml
-- uses: watany-dev/zghalint@<full-sha> # v0.0.1-rc.2
+- uses: watany-dev/zghalint@<full-sha> # v0.0.1
   with:
-    version: v0.0.1-rc.2
+    version: v0.0.1
     paths: ".github/workflows/*.yml"
 ```
 
