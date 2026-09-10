@@ -269,7 +269,6 @@ pub const Tokenizer = struct {
         };
     }
 
-    /// The number of leading spaces on the line holding `at`.
     fn lineIndentAt(self: *Tokenizer, at: usize) u32 {
         const line_start = if (std.mem.lastIndexOfScalar(u8, self.source[0..at], '\n')) |i| i + 1 else 0;
         var indent: u32 = 0;

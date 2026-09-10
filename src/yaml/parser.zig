@@ -706,8 +706,8 @@ pub const Parser = struct {
         };
     }
 
-    /// A flow collection the source never closed. Its text stops nowhere, so
-    /// the lines below it belong to whatever wrote them, not to it.
+    /// An unclosed flow collection's text stops nowhere, so the lines below it
+    /// belong to whatever wrote them, not to it.
     fn unclosedFlow(node: Node) bool {
         return switch (node) {
             .mapping => |m| m.flow and m.close_byte == null,
@@ -1155,7 +1155,6 @@ pub const Parser = struct {
         return end;
     }
 
-    /// The number of leading spaces on the line holding `at`.
     fn lineIndentAt(self: *Parser, at: usize) u32 {
         const line_start = self.lineStartByte(at);
         var indent: u32 = 0;
