@@ -670,6 +670,36 @@ SEC002 は既存の式パーサと関数カタログで戻り値と引数の個�
 `&&` / `||` で汚染文字列を返す式、未知の関数、直接の汚染参照は除外しない。
 同じ `run:` に安全な式と危険な式がある場合、autofix も危険な式だけを対象にする。
 
+#### G37 (#421). 行をまたぐ plain scalar の `${{ }}` を未閉じにする — 要トークナイザ修正
+
+`bench/cases/i-robustness/plain-scalar-wrapped-expression.yml` と
+`plain-scalar-wrapped-injection.yml`。
+
+```yaml
+env:
+  REF: ${{ github.sha
+    }}
+run: echo "${{ github.event.issue.title
+  }}"
+```
+
+YAML の plain scalar は次のより深い行へ続き、改行は空白に畳まれる。
+`${{` と `}}` を別行に置く書き方は正当だが、トークナイザの
+`scanPlainScalar` は改行でトークンを終え、`${{` の閉じ探索も同一行に
+限っている。最初の行だけで値が切れ、EXPR001 `unclosed expression: missing }}`
+が出る。actionlint / zizmor は式として読む。
+
+現れ方は 2 通りある。
+
+- 式自体は正当なのに EXPR001 が出る (誤検出)。安全形ケースは `bench:forbid`
+- 継続行側の汚染源を SEC002 が見ない (検出漏れ)。パースは通るので
+  終了コード 2 にはならない
+
+`>` / `|` のブロックスカラーは既に行をまたぐ
+(`a-script-injection/run-block-folded.yml` など)。欠けているのは
+plain scalar の行継続。実運用のワークフロー群を三者比較したところ、
+`with.ref` の三項演算を読みやすく折り返した形が複数ファイルで出た。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -1083,3 +1113,4 @@ zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / F
 - [x] G34 (#375): BP007 を `bash <(curl ...)` のプロセス置換にも反応させる
 - [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える
 - [x] G36 (#419): 真偽値を返す組み込み呼び出しを SEC002 から除外する
+- [ ] G37 (#421): 行をまたぐ plain scalar の `${{ }}` を一つの式として読む

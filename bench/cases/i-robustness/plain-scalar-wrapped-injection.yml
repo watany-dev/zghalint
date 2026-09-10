@@ -1,0 +1,15 @@
+# 同じ書き方で、継続行側に汚染源がある。トークナイザが行末で切るため SEC002 が沈黙する。
+# bench:expect template-injection@14 zghalint=SEC002 zizmor=template-injection actionlint=expression~untrusted
+name: greet
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Greet the author
+        run: echo "${{ github.event.issue.title
+          }}"
