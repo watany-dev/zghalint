@@ -1545,8 +1545,9 @@ pub fn checkWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
         env.steps = null;
         checkJobEnv(job, list, &env);
 
+        const steps_overlay = expr_overlay.buildSteps(alloc, job.steps);
         for (job.steps, 0..) |*step, index| {
-            env.steps = expr_overlay.buildSteps(alloc, job.steps, index);
+            env.steps = steps_overlay.at(index);
             checkStepEnv(step, list, &env);
         }
     }

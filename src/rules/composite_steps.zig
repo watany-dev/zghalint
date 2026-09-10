@@ -142,12 +142,13 @@ pub fn checkCompositeSteps(root: Mapping, steps_node: Node, list: *DiagnosticLis
     };
     const resolver = ContextResolver{ .alloc = alloc, .list = list, .declared_inputs = declared_inputs };
 
+    const steps_overlay = expr_overlay.buildSteps(alloc, steps);
     for (steps, 0..) |*step, index| {
         for (composite_step_checks) |check| check(step, list);
         local_action.checkStepAmongSteps(steps, index, list);
         checkShell(step, list);
 
-        env.steps = expr_overlay.buildSteps(alloc, steps, index);
+        env.steps = steps_overlay.at(index);
         expressions.checkStepEnv(step, list, &env);
         expr_scan.scanStep(resolver, step);
     }
