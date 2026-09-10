@@ -109,11 +109,20 @@ fn classify(err: std.http.Client.FetchError) FetchError {
         error.Canceled,
         error.HttpConnectionClosing,
         error.HttpRequestTruncated,
+        // std が対応表を持たない OS エラー。fetch の中で出るものは全て socket /
+        // 名前解決 / TLS の syscall 由来なのでトランスポート失敗として扱う
+        error.Unexpected,
         => error.NetworkUnreachable,
         else => error.FetchFailed,
     };
 }
 ```
+
+`error.Unexpected` を含めるのは Windows のためでもある。`netConnectIpWindows`
+と `netReadWindows` は AFD の status を `INSUFFICIENT_RESOURCES` 以外すべて
+`windows.unexpectedStatus` に通すので、接続拒否すら
+`error.ConnectionRefused` ではなく `error.Unexpected` で返る。ここを
+`FetchFailed` に落とすと Windows では sticky な短絡が一度も働かない。
 
 `WriteFailed` は `BoundedBody` の上限超過でも返るので、`fetch` は呼び出し側
 から渡された `response_writer` の状態を見る必要がある。`fetchAuthenticatedJson`
@@ -293,6 +302,22 @@ shutdown 済みの接続をプールに戻さない（`closing`）。2 本目の
 `used` から外してから `destroy` するので、走査中に見えた接続が同時に閉じられて
 fd が使い回されることはない。
 
+#### Windows では shutdown が読み待ちを解けない
+
+reaper が効くのは POSIX だけである。Windows の `netShutdownWindows` は AFD の
+`PARTIAL_DISCONNECT` を**同期**発行するだけで、既に queue 済みの AFD RECEIVE
+は完了しない。外から IRP を畳む手（`NtCancelIoFileEx`、handle の close）は
+受信を `STATUS_CANCELLED` で完了させるが、`netReadWindows` はその status を
+`unreachable` としているので使えない。結果 2 本目の読みは TCP の abort
+timeout（実測で約 2 分）まで残り、予算では切れない。
+
+したがって Windows では「CONNECT が無応答のプロキシ」だけ D4 の保証から外れる。
+1 本目のキャンセルは Windows でも届く（`deviceIoControl` の nonblocking 経路は
+APC ベースで、キャンセル時は `NtCancelIoFileEx` を撃って `error.Canceled` を
+返す）ので、プロキシ無しの無応答サーバは予算どおりに切れる。また D1 の sticky
+フラグは立つので、2 分を払うのはプロセスで 1 回だけである。根治には std の
+`connectProxied` の握りつぶし（§非スコープ、D8）を直す必要がある。
+
 ### 4. 予算の導き方
 
 ```zig
@@ -378,7 +403,8 @@ SSL_CERT_FILE)」と出る。fail-fast で早く諦めても bit の立ち方は
   （経過時間 < 50 ms）。fail-fast の本体。
 - 同じサーバを `HTTPS_PROXY` に据えて https URL を `fetch` する。CONNECT の
   握りつぶし → 張り直し → 2 本目の shutdown を通り、予算 200 ms で 2 s 以内に
-  `NetworkUnreachable` が返る。修正前はこのテストが終わらない。
+  `NetworkUnreachable` が返る。修正前はこのテストが終わらない。Windows は
+  shutdown で読み待ちが解けず約 2 分かかるので skip する（§3 の Windows の項）。
 - 即拒否される接続先（bind して閉じた port）は予算を待たず 1 s 以内に返る。
 - `BoundedBody` の上限超過は `FetchFailed` で、不達フラグは立たない。
 - `std.testing.io` は `Io.Threaded` で signal handler を持つので、

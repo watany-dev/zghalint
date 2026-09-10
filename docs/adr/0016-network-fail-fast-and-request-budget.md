@@ -30,6 +30,12 @@ GitHub API に到達できない環境で 80 ファイルのコーパスをオ�
 解決・TLS・送受信の失敗を `error.NetworkUnreachable` として返す。同時に
 sticky なフラグを立て、以後の `fetch` は接続を試みずに同じエラーを返す。
 
+分類には std が対応表を持たない `error.Unexpected` も含める。fetch の中で出る
+ものは全て socket / 名前解決 / TLS の syscall 由来である。Windows はこれに
+依存しており、`netConnectIpWindows` と `netReadWindows` は AFD の status を
+`INSUFFICIENT_RESOURCES` 以外すべて `windows.unexpectedStatus` に通すので、
+接続拒否すら `error.Unexpected` で返る。
+
 「2 回失敗したら」にしない。issue の環境では 2 本目の `POST /graphql` を
 まるごと払うことになり、倍増がそのまま残る。誤判定のコストは「今回の実行で
 ネットワークルールが黙る」だけで、それは既存の `net_status` の注記で利用者に
@@ -82,6 +88,14 @@ Zig 0.16 の std には使える timeout が無い。`ConnectTcpOptions.timeout`
 `connect()` 待ちを、shutdown は接続済み socket の読み待ちを担う。reaper は
 予算切れのときだけ動く。
 
+reaper が効くのは POSIX だけである。Windows の `netShutdownWindows` は AFD の
+`PARTIAL_DISCONNECT` を同期発行するだけで queue 済みの受信を完了させず、外から
+IRP を畳むと `netReadWindows` が `unreachable` としている `STATUS_CANCELLED` に
+なる。2 本目の読みは TCP の abort timeout（実測で約 2 分）まで残るので、Windows
+では「CONNECT が無応答のプロキシ」だけ予算の保証から外れる。1 本目のキャンセル
+は Windows でも届くのでプロキシ無しの無応答サーバは予算どおりに切れ、D1 の
+sticky フラグも立つため 2 分を払うのはプロセスで 1 回だけである。根治は D8。
+
 `Io.concurrent` が使えない `Io` 実装では従来どおり予算なしで待つ。
 
 ### D5. 予算は「全体の残り」と「1 本の上限 5 s」の小さい方
@@ -132,6 +146,9 @@ upstream への報告と、zghalint 側で `connectProxied` 相当を持つか�
 - `std.http.Client.FetchError` のメンバーが増減すると `classify` の `switch`
   が網羅性エラーで気付かせる。列挙し忘れは `FetchFailed`（短絡しない）に
   倒れる。
+- Windows では HTTPS_PROXY 経由の無応答プロキシだけ 1 本目に約 2 分かかる
+  （D4 の Windows の項）。sticky フラグにより 2 本目以降は接続しないので
+  実行全体では 1 回だけである。結合テストのうちこの形だけ Windows で skip する。
 - 1 リクエストあたり `Io.concurrent` のスレッド生成が乗る。TLS 往復に比べて
   無視できるが、`scripts/bench.py --perf` で成功経路が変わらないことを確認
   する。

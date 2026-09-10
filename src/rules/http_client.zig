@@ -3,6 +3,7 @@
 //! amortizes the ~200ms TLS handshake to a single occurrence.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const runtime = @import("../runtime.zig");
 const engine = @import("engine.zig");
 
@@ -655,6 +656,15 @@ test "fetch: a server that never answers is cut off by the budget and marks the 
 
 test "fetch: a CONNECT proxy that never answers is cut off by the budget" {
     if (client_initialized) return error.SkipZigTest;
+    // std swallows the first cancel (see the CONNECT note below) and the second
+    // read is no longer cancelable: `Io.Threaded` hands a task its cancelation
+    // once, and on Windows a pending AFD receive cannot be unblocked from
+    // another thread either -- `shutdown` is a synchronous PARTIAL_DISCONNECT
+    // that leaves the receive queued, and cancelling the IRP from outside would
+    // complete it with `STATUS_CANCELLED`, which `netReadWindows` calls
+    // `unreachable`. The receive there ends on the TCP abort timeout, ~2min, so
+    // the budget cannot bound this shape on Windows.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var server = try TestServer.listen(.hang);
     defer server.deinit();
     try server.spawn();
