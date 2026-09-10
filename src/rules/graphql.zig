@@ -15,6 +15,9 @@ pub const GraphQlError = error{
     RateLimited,
     OutOfMemory,
     NoToken,
+    /// Passed through from `http_client.fetch`: the transport failed and
+    /// every later request will too, so callers skip their REST fallback.
+    NetworkUnreachable,
 };
 
 pub const RepoInput = struct {
@@ -169,15 +172,17 @@ pub fn batchQuery(
     header_count += 1;
     var auth_buf: [1]std.http.Header = undefined;
 
-    const result = http_client.fetch(.{
+    const result = http_client.fetchBounded(.{
         .location = .{ .url = endpoint },
         .method = .POST,
         .payload = body,
-        .response_writer = &body_sink.writer,
         .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
         .extra_headers = headers_buf[0..header_count],
         .privileged_headers = http_client.authHeaders(&auth_buf, auth_value),
-    }) catch return error.RequestFailed;
+    }, &body_sink) catch |err| switch (err) {
+        error.NetworkUnreachable => return error.NetworkUnreachable,
+        else => return error.RequestFailed,
+    };
 
     if (result.status == .forbidden or result.status == .too_many_requests) {
         return error.RateLimited;
