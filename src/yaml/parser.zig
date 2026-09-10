@@ -1039,7 +1039,13 @@ pub const Parser = struct {
                     if (backslashes % 2 == 1) continue;
                 }
                 open = null;
-                at_token_start = false;
+                // A closed quoted scalar is a whole token, so the character
+                // after it begins the next one. Reading `"""""` as one quoted
+                // scalar and three stray quotes hid the unterminated one that
+                // the tokenizer sees, and the entry claimed a boundary that
+                // does not exist: SEC007 wrote its `permissions:` line into the
+                // open scalar and added it again every round (fuzz).
+                at_token_start = true;
                 continue;
             }
             const prev: u8 = if (i == 0) ' ' else line[i - 1];
@@ -1594,6 +1600,25 @@ test "a quote after a closing bracket does not open a scalar (fuzz)" {
     var flow = Parser.init(alloc, "on: [a, 'b\nc']\njobs:");
     const flow_doc = try flow.parse();
     try std.testing.expect(flow_doc.mapping.entries.len == 2);
+}
+
+test "a quote right after a closing quote opens a scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The tokenizer reads `"""""` as an empty scalar, another one, and a fifth
+    // quote that never closes, so nothing appended after the line is a key.
+    // Claiming a boundary there made SEC007 write its `permissions:` line into
+    // the open scalar and add it again every round.
+    var parser = Parser.init(alloc, "jobs:\non: \"\"\"\"\"\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(?usize, null), doc.mapping.entries[1].extent_end);
+
+    // Quotes that all close leave the entry a boundary of its own.
+    var closed = Parser.init(alloc, "jobs:\non: \"\"\"\"\n");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 15), closed_doc.mapping.entries[1].extent_end.?);
 }
 
 test "a quote after an interpolation does not open a scalar (fuzz)" {
