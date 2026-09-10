@@ -924,6 +924,11 @@ pub const Parser = struct {
         // starting the scan closed read the next line's column 0 as a boundary
         // and `--fix` wrote the new key inside the quotes (fuzz).
         var quote = self.quoteStateAt(key_start, end_byte);
+        // Where a run of comment lines began. A comment carries no indentation
+        // of its own, so it neither ends the block nor joins it: the scan reads
+        // past it, and keeps this boundary in case the block turns out to have
+        // ended above.
+        var before_comments: ?usize = null;
         while (end < self.source.len) {
             const line_end = self.scanLineEndInclusive(end);
             var text = end;
@@ -934,14 +939,20 @@ pub const Parser = struct {
             if (quote == null) {
                 // A blank line is already a safe boundary, so stop rather than
                 // guess whether the block resumes after it.
-                if (text >= line_end or self.source[text] == '\n' or self.source[text] == '\r') return end;
-                if (text - end <= key_indent) return end;
+                if (text >= line_end or self.source[text] == '\n' or self.source[text] == '\r') return before_comments orelse end;
+                if (self.source[text] == '#') {
+                    if (before_comments == null) before_comments = end;
+                    end = line_end;
+                    continue;
+                }
+                if (text - end <= key_indent) return before_comments orelse end;
+                before_comments = null;
             }
             quote = scanQuoteState(self.source[end..line_end], quote);
             end = line_end;
         }
         // A quote that never closes leaves no boundary to trust.
-        return if (quote == null) end else null;
+        return if (quote == null) before_comments orelse end else null;
     }
 
     /// The quote state at `to`, starting closed at the beginning of the line
@@ -1569,6 +1580,24 @@ test "a scalar entry's extent covers the lines indented under it (fuzz)" {
     var plain = Parser.init(alloc, "on: push\njobs:");
     const plain_doc = try plain.parse();
     try std.testing.expectEqual(@as(usize, 9), plain_doc.mapping.entries[0].extent_end.?);
+}
+
+test "a comment line does not cut an entry's indented tail short (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A comment sits at whatever column its writer chose, so it says nothing
+    // about where the block ends. Stopping at it left the stray `  b: *a` line
+    // below an inserted `concurrency:` block, which adopted it (fuzz).
+    var parser = Parser.init(alloc, "on: push#\n#\n  b: *a\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 20), doc.mapping.entries[0].extent_end.?);
+
+    // Comments that only trail the entry stay outside it.
+    var trailing = Parser.init(alloc, "on: push\n# c\njobs:");
+    const trailing_doc = try trailing.parse();
+    try std.testing.expectEqual(@as(usize, 9), trailing_doc.mapping.entries[0].extent_end.?);
 }
 
 test "an entry's extent stops at the next sibling key (fuzz)" {
