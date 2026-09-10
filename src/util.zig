@@ -58,6 +58,32 @@ pub fn levenshteinDistanceBounded(a: []const u8, b: []const u8, bound: usize) us
     return prev[b.len];
 }
 
+/// Hash-map context for keys the runner resolves ASCII case-insensitively
+/// (job IDs, step IDs, context property names, mapping keys), so a lookup
+/// costs one hash instead of an `eqlIgnoreCase` against every earlier key.
+pub const IgnoreCaseContext = struct {
+    pub fn hash(_: IgnoreCaseContext, key: []const u8) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        var buf: [32]u8 = undefined;
+        var pos: usize = 0;
+        while (pos < key.len) : (pos += buf.len) {
+            const chunk = key[pos..@min(pos + buf.len, key.len)];
+            hasher.update(std.ascii.lowerString(&buf, chunk));
+        }
+        return hasher.final();
+    }
+
+    pub fn eql(_: IgnoreCaseContext, a: []const u8, b: []const u8) bool {
+        return std.ascii.eqlIgnoreCase(a, b);
+    }
+};
+
+/// `std.StringHashMapUnmanaged` with case-insensitive keys. The map does not
+/// copy its keys, so they must outlive it, as with the standard map.
+pub fn IgnoreCaseMap(comptime V: type) type {
+    return std.HashMapUnmanaged([]const u8, V, IgnoreCaseContext, std.hash_map.default_max_load_percentage);
+}
+
 /// The nearest `candidates` entry within edit distance 2, or null when the
 /// input matches one exactly or two candidates tie for nearest.
 pub fn didYouMean(key: []const u8, candidates: []const []const u8) ?[]const u8 {
@@ -80,6 +106,28 @@ pub fn didYouMean(key: []const u8, candidates: []const []const u8) ?[]const u8 {
 
     if (ties != 1) return null;
     return best;
+}
+
+test "IgnoreCaseMap matches keys regardless of ASCII case" {
+    var map: IgnoreCaseMap(usize) = .empty;
+    defer map.deinit(std.testing.allocator);
+    try map.put(std.testing.allocator, "Build", 1);
+    try std.testing.expectEqual(@as(?usize, 1), map.get("build"));
+    try std.testing.expectEqual(@as(?usize, 1), map.get("BUILD"));
+    try std.testing.expectEqual(@as(?usize, null), map.get("built"));
+
+    // A second spelling of the same key finds the first entry.
+    const gop = try map.getOrPut(std.testing.allocator, "bUiLd");
+    try std.testing.expect(gop.found_existing);
+    try std.testing.expectEqual(@as(usize, 1), map.count());
+}
+
+test "IgnoreCaseContext hashes long keys the same in every case" {
+    const ctx = IgnoreCaseContext{};
+    const lower = "a-very-long-step-identifier-that-spans-several-chunks-0123456789";
+    const upper = "A-VERY-LONG-STEP-IDENTIFIER-THAT-SPANS-SEVERAL-CHUNKS-0123456789";
+    try std.testing.expectEqual(ctx.hash(lower), ctx.hash(upper));
+    try std.testing.expect(ctx.hash(lower) != ctx.hash("a-very-long-step-identifier-that-spans-several-chunks-0123456780"));
 }
 
 test "levenshteinDistanceBounded matches the exact distance within the bound" {
