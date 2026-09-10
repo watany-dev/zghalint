@@ -348,7 +348,47 @@ fn isValidEdit(e: Edit, source: []const u8) bool {
     if (e.expects) |x| {
         if (!std.mem.eql(u8, source[e.start_byte..e.end_byte], x)) return false;
     }
+    if (removesLiveAnchor(e, source)) return false;
     return true;
+}
+
+fn isMarkerLead(c: u8) bool {
+    return switch (c) {
+        ' ', '\t', '\n', '-', ':', '[', '{', ',' => true,
+        else => false,
+    };
+}
+
+/// The anchor or alias name at `at`, which points at the `&` or `*`. Empty when
+/// the byte is not in a position where YAML reads one, so a `&&` in a `run:`
+/// script names nothing.
+fn markerName(source: []const u8, at: usize) []const u8 {
+    if (at > 0 and !isMarkerLead(source[at - 1])) return &.{};
+    var end = at + 1;
+    while (end < source.len and (std.ascii.isAlphanumeric(source[end]) or source[end] == '-' or source[end] == '_')) {
+        end += 1;
+    }
+    return source[at + 1 .. end];
+}
+
+/// True when `e` removes an anchor something outside its range still aliases.
+/// SYN011 dropping a filter key took the `&b` written on it with it, and the
+/// `*b` below stopped resolving -- the next parse read no diagnostics at all.
+/// A fix that cannot keep the file parsing is worse than none (fuzz).
+fn removesLiveAnchor(e: Edit, source: []const u8) bool {
+    var i = e.start_byte;
+    while (std.mem.indexOfScalarPos(u8, source[0..e.end_byte], i, '&')) |at| {
+        i = at + 1;
+        const name = markerName(source, at);
+        if (name.len == 0) continue;
+        var j: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, source, j, '*')) |use| {
+            j = use + 1;
+            if (use >= e.start_byte and use < e.end_byte) continue;
+            if (std.mem.eql(u8, markerName(source, use), name)) return true;
+        }
+    }
+    return false;
 }
 
 /// Edits are applied back-to-front to avoid offset invalidation.
@@ -455,6 +495,59 @@ test "an edit whose `expects` does not match the source is dropped" {
 
     try std.testing.expectEqualStrings(source, result.content);
     try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "an edit that removes an anchor still aliased below is dropped (fuzz)" {
+    const allocator = std.testing.allocator;
+    // SYN011 removes the filter `d:` the event does not accept, and the `&b`
+    // written on it goes too. The `*b` below then resolves to nothing and the
+    // whole file stops parsing, so the fix is worth less than the diagnostic.
+    const source = "on:\n workflow_call:\n  d: &b \njobs: *b\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 20, .end_byte = 29, .replacement = "" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "remove \"d\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings(source, result.content);
+    try std.testing.expectEqual(@as(usize, 0), result.edits_applied);
+}
+
+test "an edit that removes an anchor nothing aliases is applied (fuzz)" {
+    const allocator = std.testing.allocator;
+    const source = "on:\n workflow_call:\n  d: &b \njobs: x\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 20, .end_byte = 29, .replacement = "" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "remove \"d\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("on:\n workflow_call:\njobs: x\n", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
+}
+
+test "a `&&` in a run script is not an anchor (fuzz)" {
+    const allocator = std.testing.allocator;
+    // `*` and `&` are shell operators far more often than YAML markers, and
+    // dropping the fix over them would cost every fix inside a `run:` block.
+    const source = "on: push\nx: a && b\ny: c *b\n";
+    const edits = [_]Edit{
+        .{ .start_byte = 9, .end_byte = 19, .replacement = "" },
+    };
+    const fixes = [_]Fix{
+        .{ .description = "remove \"x\"", .safety = .safe, .edits = &edits },
+    };
+    const result = try applyFixes(allocator, source, &fixes);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("on: push\ny: c *b\n", result.content);
+    try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
 }
 
 test "an edit whose `expects` matches is applied" {
