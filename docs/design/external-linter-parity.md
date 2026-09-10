@@ -1037,10 +1037,21 @@ many-small で 0.4〜2.3 ms (rc1 の 2 パス目だけ 7.1 ms)。
 
 rc1→rc2 は wall で 7〜14% 増 (Zig 0.15.2→0.16.0 と rc2 までのルール追加)。
 rc2→現行は cases で 14%、huge で 35%、many-small で 39% 増。RSS は
-0.1〜0.7 MiB 増。現行側の差分は YAML / workflow パーサのファズ修正
-(PR #404) が主で、#403 の taint ホットパス短縮を含めてもこの 3 シナリオでは
-打ち消していない。3 本とも `cases` / `many-small` の終了コードは 1 (指摘あり)、
-`huge` は 0。
+0.1〜0.7 MiB 増。同じ Zig 0.16 で rc2 を `ReleaseFast` し直しても
+many-small は 93 ms → 124 ms のままなので、成果物の作り方ではなく
+コードの差である。
+
+遅くなっているのは lint 本体より、パース時に毎回走るようになった
+`--fix` 用の範囲計算である。rc2 の `blockEntryFullSpan` は子の最後の
+ノードから終端を辿るだけだった。現行はマッピングのエントリごとに
+`quoteStateAt` / `extendOverIndentedTail` でそのエントリのバイト列を
+もう一度走査し、パーサが捨てた字下げ行や未閉じ引用の内側に挿入しない
+ようにしている (PR #404 のファズ修正)。`jobs:` のような外側のキーほど
+部分木を再スキャンするので、huge / many-small の方が差が大きい。
+`src/yaml/parser.zig` は 1,904 行から 2,734 行、`src/workflow/parser.zig`
+は挿入アンカーと型不一致の分岐で +665 行。#403 の taint ホットパス短縮は
+この 3 シナリオでは相殺していない。3 本とも `cases` / `many-small` の
+終了コードは 1 (指摘あり)、`huge` は 0。
 
 #### 採点 (`scripts/bench.py`、現行の 139 ケース)
 
