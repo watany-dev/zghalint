@@ -4,6 +4,7 @@ const glob = @import("glob.zig");
 const workflow_types = @import("../workflow/types.zig");
 const workflow_events = @import("../workflow/events.zig");
 const workflow_parser = @import("../workflow/parser.zig");
+const schema = @import("../workflow/schema.zig");
 const yaml_types = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
@@ -216,11 +217,29 @@ fn siblingHasKeyIgnoreCase(m: Mapping, self_span: Span, key: []const u8) bool {
     return false;
 }
 
+/// The value written under the unknown key.
+fn unknownKeyValue(m: Mapping, self_span: Span) ?yaml_types.Node {
+    for (m.entries) |entry| {
+        if (entry.key.span.start_byte != self_span.start_byte) continue;
+        if (entry.key.span.end_byte != self_span.end_byte) continue;
+        return entry.value;
+    }
+    return null;
+}
+
 /// A rename that would duplicate a sibling key is dropped: applying it would
 /// turn SYN001 into SYN002 (#347). The unknown key itself is not a sibling,
 /// even when it equals the suggestion ignoring case (`Timeout-minutes`).
+///
+/// A rename onto a key that does not take the value already written under it is
+/// dropped too: `stp: x` renamed to `steps: x`, or `eps: -` renamed to `env: -`,
+/// makes the workflow parser give up on the whole file, so the fix would trade
+/// one diagnostic for an unlintable file (fuzz).
 fn unknownKeyFix(list: *DiagnosticList, uk: UnknownKey, suggestion: []const u8) ?diagnostics_mod.Fix {
     if (siblingHasKeyIgnoreCase(uk.mapping, uk.span, suggestion)) return null;
+    if (unknownKeyValue(uk.mapping, uk.span)) |value| {
+        if (schema.rejectsValue(suggestion, value)) return null;
+    }
     return rename.tokenFix(list, uk.span, uk.key, suggestion);
 }
 
@@ -1719,6 +1738,189 @@ test "SYN001: distant key has no did-you-mean" {
     try testing.expectEqual(@as(usize, 1), diags.len());
     try testing.expect(std.mem.find(u8, diags.get(0).message, "totally-unrelated") != null);
     try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean") == null);
+}
+
+test "SYN001: no rename onto a key that never takes a scalar (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    stps: hello
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    // The suggestion still helps the reader; only the rewrite is withheld,
+    // because `steps: hello` makes the parser give up on the whole file.
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"steps\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: secrets: inherit is still renamed (fuzz)" {
+    const source =
+        \\on: workflow_call
+        \\jobs:
+        \\  build:
+        \\    uses: ./.github/workflows/x.yml
+        \\    screts: inherit
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix != null);
+}
+
+test "SYN001: no rename onto permissions: holding a sequence (fuzz)" {
+    // `permissions:` takes a scalar or a mapping; a sequence makes the workflow
+    // parser give up on the file, so the rename would cost every other finding.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    permisions:
+        \\      - contents
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: no rename onto container: holding a sequence (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    containr:
+        \\      - node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: container: holding a scalar is still renamed (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    containr: node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix != null);
+}
+
+test "SYN001: no rename onto a mapping key holding a sequence (fuzz)" {
+    const source =
+        \\on:
+        \\jobs:
+        \\eps: -
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"env\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: no rename onto concurrency: when group is not a scalar (fuzz)" {
+    const source =
+        \\on:
+        \\oncurrecy: group: l:
+        \\jobs:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"concurrency\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: no rename onto steps: when an entry is not a mapping (fuzz)" {
+    const source =
+        \\on:
+        \\jobs:
+        \\ d: tps: -
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"steps\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: no rename onto concurrency: when the mapping names no group (fuzz)" {
+    const source =
+        \\on:
+        \\oncurrenc: p:
+        \\jobs:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(std.mem.indexOf(u8, diags.get(0).message, "did you mean \"concurrency\"") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN001: an empty section is still renamed (fuzz)" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\    wth:
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    try testing.expect(diags.get(0).fix != null);
 }
 
 test "SYN001: message survives appendOwning after source list deinit" {

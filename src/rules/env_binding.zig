@@ -29,7 +29,9 @@ pub const Occurrence = struct {
 pub const max_occurrences = 16;
 
 pub const Occurrences = struct {
-    buf: [max_occurrences]Occurrence = undefined,
+    /// Spelled out at every construction site rather than defaulted to
+    /// `undefined`: the omitted-field form fills the buffer (#403).
+    buf: [max_occurrences]Occurrence,
     len: usize = 0,
     /// Set when the step had more occurrences than fit, which makes any fix
     /// built from the list a partial rewrite.
@@ -274,9 +276,9 @@ pub fn buildFix(
         .plain, .literal => {},
         else => return null,
     }
-    // `env:` present but empty leaves no anchor to append to and no room to
-    // insert a second `env:` key (#171).
-    if (util.hasEmptySection(step.empty_sections, "env")) return null;
+    // An `env:` key the parser could not read leaves no anchor to append to and
+    // no room to insert a second `env:` key (#171, fuzz).
+    if (step.env == null and step.env_key_present) return null;
 
     const alloc = list.fixAllocator();
 
@@ -334,6 +336,9 @@ fn buildEnvEdits(
     step: *const Step,
     subs: []const fix_builder.SubEntry,
 ) ?[]const Edit {
+    // Both shapes below open a block line under the step, which needs the step
+    // to own its own line to begin with.
+    if (!step.own_line) return null;
     if (step.env != null) {
         const after = step.env_last_entry_end_byte orelse return null;
         const col = step.env_key_col orelse return null;
@@ -453,7 +458,7 @@ test "reference declines a single-quoted occurrence" {
 }
 
 test "Occurrences marks the overflow instead of truncating silently" {
-    var occs: Occurrences = .{};
+    var occs: Occurrences = .{ .buf = undefined };
     var i: usize = 0;
     while (i < max_occurrences + 1) : (i += 1) occs.append(.{ .offset = i, .len = 1 });
     try testing.expectEqual(max_occurrences, occs.len);

@@ -58,6 +58,10 @@ pub const Parser = struct {
     /// past the next sibling's first token), so this is the only anchor that
     /// still marks where the node's own text stopped.
     last_end: usize,
+    /// Line the last content token *started* on. A block scalar starts and ends
+    /// on different lines, so this deliberately marks the start: trailing junk
+    /// is only ever recognised on a single-line value.
+    last_start_line: u32,
     /// How many anchor definitions the parse has consumed. A sequence whose
     /// items define anchors cannot be edited by byte range: an alias far away
     /// in the file still expands to the text being removed.
@@ -88,6 +92,7 @@ pub const Parser = struct {
             .alias_budget = max_alias_expansion_nodes,
             .failure = null,
             .last_end = 0,
+            .last_start_line = 0,
             .anchors_seen = 0,
             .comments_seen = 0,
         };
@@ -151,12 +156,23 @@ pub const Parser = struct {
             return self.parseBlockSequence();
         }
 
-        if (self.current.kind == .flow_mapping_start) {
-            return self.parseFlowMapping();
-        }
-
-        if (self.current.kind == .flow_sequence_start) {
-            return self.parseFlowSequence();
+        if (self.current.kind == .flow_mapping_start or self.current.kind == .flow_sequence_start) {
+            const open_col = self.current.column;
+            const node = if (self.current.kind == .flow_mapping_start)
+                try self.parseFlowMapping()
+            else
+                try self.parseFlowSequence();
+            // A collection nothing closes claims only its own lines, so keys
+            // written below it at the same indent are the block mapping the
+            // value should have been. Leaving them as junk made them appear
+            // only once an insertion pushed the `{` out of value position, so
+            // `--fix` changed which keys the file had (fuzz).
+            if (unclosedFlow(node)) {
+                if (self.nextSiblingKey(open_col, min_indent)) |key| {
+                    return self.parseBlockMapping(key, min_indent);
+                }
+            }
+            return node;
         }
 
         if (self.current.kind == .scalar) {
@@ -171,7 +187,18 @@ pub const Parser = struct {
         }
 
         if (self.current.kind == .mapping_value) {
+            const colon = self.current;
             self.advance();
+            if (self.current.kind == .newline or self.current.kind == .eof or self.current.kind == .comment) {
+                self.skipNewlinesAndComments();
+                // A `:` with nothing after it on its line has no value. Reading
+                // on regardless took the next line whatever its indent, so
+                // `on: a: :` swallowed the `jobs:` written below it and the file
+                // lost its jobs section (fuzz).
+                if (self.current.kind == .eof or self.current.column < min_indent) {
+                    return Node{ .null_value = self.spanFromToken(colon) };
+                }
+            }
             return self.parseNode(min_indent);
         }
 
@@ -326,30 +353,37 @@ pub const Parser = struct {
             } else try self.parseNode(key_indent + 1);
 
             const key_scalar = self.scalarFromToken(current_key);
+            var has_tail = false;
+            const extent_end = self.entryEndByteInclusive(key_scalar, value, &has_tail);
             try entries.append(self.allocator, .{
                 .key = key_scalar,
                 .value = value,
                 .span = key_scalar.span,
-                .full_span = self.blockEntryFullSpan(key_scalar, value),
+                .full_span = self.blockEntryFullSpan(key_scalar, value, extent_end),
+                .extent_end = extent_end,
+                .has_indented_tail = has_tail,
             });
 
-            self.skipNewlinesAndComments();
-
-            if (self.current.kind == .eof) break;
-            if (self.current.column < key_indent) break;
-            if (self.current.column > key_indent) break;
-            if (self.current.column < min_indent) break;
-
-            if (self.current.kind == .scalar) {
-                current_key = self.current;
-                self.advance();
-                continue;
-            }
-
-            break;
+            current_key = self.nextSiblingKey(key_indent, min_indent) orelse break;
         }
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        // An entry's text cannot reach the line its next sibling key starts on.
+        // The tail scan reads quotes with a token model of its own, and where it
+        // disagrees with the tokenizer (`p: }'` is one plain scalar to the
+        // tokenizer, an open quote to the scan) the extent ran to EOF and `--fix`
+        // inserted past the sibling instead of before it (fuzz).
+        for (parsed_entries, 0..) |*entry, i| {
+            if (i + 1 >= parsed_entries.len) continue;
+            const limit = self.lineStartByte(parsed_entries[i + 1].key.span.start_byte);
+            const ext = entry.extent_end orelse continue;
+            // A limit at or before the key would invert the entry's own range.
+            // Siblings are read from separate lines, so this is a guard rather
+            // than a case seen; leave the extent alone rather than reverse it.
+            if (ext <= limit or limit <= entry.key.span.start_byte) continue;
+            entry.extent_end = limit;
+            entry.full_span = self.blockEntryFullSpan(entry.key, entry.value, limit);
+        }
         // The span is taken before merging. `applyMergeKeys` appends entries
         // whose text lives at the merge source, which sits anywhere in the file
         // -- reading the range off the merged list made a mapping written after
@@ -459,9 +493,19 @@ pub const Parser = struct {
         const start_span = self.spanFromToken(self.current);
         self.advance();
 
+        const open_line = self.current.line;
+        const open_indent = self.lineIndentAt(start_span.start_byte);
+
         while (self.current.kind != .flow_mapping_end and self.current.kind != .eof) {
             self.skipNewlinesAndComments();
             if (self.current.kind == .flow_mapping_end) break;
+
+            // A flow mapping continued on later lines is written indented past
+            // the line it opened on. A line that is not is block content, and
+            // taking it made `{f: '')` swallow the `steps:` below it -- until an
+            // insertion above pushed the `{` out of value position, and the key
+            // reappeared (fuzz).
+            if (self.current.line != open_line and self.lineIndentAt(self.current.start) <= open_indent) break;
 
             if (self.current.kind != .scalar) break;
             const key_token = self.current;
@@ -484,13 +528,15 @@ pub const Parser = struct {
             }
         }
 
+        var close_byte: ?usize = null;
         if (self.current.kind == .flow_mapping_end) {
             self.advance();
+            close_byte = self.last_end;
         }
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const owned_entries = try self.applyMergeKeys(parsed_entries);
-        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span } };
+        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span, .close_byte = close_byte, .flow = true } };
     }
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
@@ -521,8 +567,10 @@ pub const Parser = struct {
             if (self.current.start == before) break;
         }
 
+        var close_byte: ?usize = null;
         if (self.current.kind == .flow_sequence_end) {
             self.advance();
+            close_byte = self.last_end;
         }
 
         const owned_items = items.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
@@ -530,7 +578,13 @@ pub const Parser = struct {
             &[_]types.ItemDelete{}
         else
             try self.flowItemDeletes(extents.items, open_line);
-        return Node{ .sequence = .{ .items = owned_items, .span = start_span, .item_deletes = owned_deletes } };
+        return Node{ .sequence = .{
+            .items = owned_items,
+            .span = start_span,
+            .item_deletes = owned_deletes,
+            .close_byte = close_byte,
+            .flow = true,
+        } };
     }
 
     /// Where one flow item's text starts and stops, comma excluded.
@@ -600,8 +654,12 @@ pub const Parser = struct {
             .anchor => {
                 self.anchors_seen += 1;
                 self.last_end = self.current.end;
+                self.last_start_line = self.current.line;
             },
-            else => self.last_end = self.current.end,
+            else => {
+                self.last_end = self.current.end;
+                self.last_start_line = self.current.line;
+            },
         }
         self.current = self.tokenizer.next();
     }
@@ -610,6 +668,80 @@ pub const Parser = struct {
         while (self.current.kind == .newline) {
             self.advance();
         }
+    }
+
+    /// The next key of a block mapping whose keys sit at `key_indent`, leaving
+    /// the `:` after it current. Every line that cannot start a key is junk to
+    /// skip over: text left on the line the entry ended on (`on: []l`), a line
+    /// indented past the key (`on: []` then ` l`), a `{` opening a flow mapping
+    /// nothing closes, and a scalar with no `:` after it. Ending the mapping at
+    /// any of them dropped every key written below it, so the rest of the file
+    /// went unlintable and an inserted top-level key stayed invisible (fuzz).
+    fn nextSiblingKey(self: *Parser, key_indent: u32, min_indent: u32) ?Token {
+        self.skipTrailingLineTokens();
+        self.skipNewlinesAndComments();
+        while (true) {
+            while (self.current.kind != .eof and (self.current.column > key_indent or
+                (self.current.column == key_indent and !endsBlockMapping(self.current.kind))))
+            {
+                self.skipLine();
+            }
+            if (self.current.kind != .scalar) return null;
+            if (self.current.column < key_indent) return null;
+            if (self.current.column < min_indent) return null;
+
+            const key = self.current;
+            self.advance();
+            if (self.current.kind == .mapping_value) return key;
+            self.skipLine();
+        }
+    }
+
+    /// Whether a token at a block mapping's own indent ends it rather than
+    /// leaving junk behind: a key, a sequence item, or a document marker.
+    fn endsBlockMapping(kind: TokenKind) bool {
+        return switch (kind) {
+            .scalar, .sequence_entry, .document_start, .document_end => true,
+            else => false,
+        };
+    }
+
+    /// An unclosed flow collection's text stops nowhere, so the lines below it
+    /// belong to whatever wrote them, not to it.
+    fn unclosedFlow(node: Node) bool {
+        return switch (node) {
+            .mapping => |m| m.flow and m.close_byte == null,
+            .sequence => |s| s.flow and s.close_byte == null,
+            else => false,
+        };
+    }
+
+    /// Drop whatever still sits on the line `value` ended on, so the next
+    /// sibling key is read from the line below instead of being taken for the
+    /// end of the mapping.
+    fn skipTrailingLineTokens(self: *Parser) void {
+        while (self.current.kind != .newline and
+            self.current.kind != .comment and
+            self.current.kind != .eof)
+        {
+            if (self.current.line != self.last_start_line) break;
+            self.advance();
+        }
+    }
+
+    /// Consume the rest of the current line, then the trivia after it. A token
+    /// that already begins a later line is not on this one: a block scalar ends
+    /// at the start of the line that closes it, so no newline separates it from
+    /// the key there and skipping on took that key with it. The key reappeared
+    /// once an insertion above ended the scalar earlier (fuzz).
+    fn skipLine(self: *Parser) void {
+        const line = self.current.line;
+        while (self.current.kind != .newline and self.current.kind != .eof and
+            self.current.line == line)
+        {
+            self.advance();
+        }
+        self.skipNewlinesAndComments();
     }
 
     fn skipNewlinesAndComments(self: *Parser) void {
@@ -660,17 +792,31 @@ pub const Parser = struct {
         return if (text.len == 0) null else text;
     }
 
+    /// True when a quoted token never met its closing quote and so ran to the
+    /// end of the file. The last byte alone does not answer it: in `"a\"` the
+    /// trailing quote is escaped, and the scalar is still open.
+    fn quotedIsUnterminated(raw: []const u8) bool {
+        if (raw.len < 2) return true;
+        if (raw[raw.len - 1] != raw[0]) return true;
+        if (raw[0] != '"') return false;
+        var backslashes: usize = 0;
+        var i = raw.len - 1;
+        while (i > 1 and raw[i - 1] == '\\') : (i -= 1) backslashes += 1;
+        return backslashes % 2 == 1;
+    }
+
     fn scalarFromToken(self: *Parser, token: Token) Scalar {
         const raw = token.slice(self.source);
         const ends_line = self.tokenEndsLine(token);
         const line_comment = self.tokenLineComment(token);
-        if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"')) {
+        if (raw.len >= 1 and (raw[0] == '\'' or raw[0] == '"')) {
             return .{
-                .value = raw[1 .. raw.len - 1],
+                .value = if (raw.len >= 2) raw[1 .. raw.len - 1] else "",
                 .style = if (raw[0] == '\'') .single_quoted else .double_quoted,
                 .span = self.spanFromToken(token),
                 .ends_line = ends_line,
                 .line_comment = line_comment,
+                .unterminated = quotedIsUnterminated(raw),
             };
         }
         if (raw.len >= 1 and (raw[0] == '|' or raw[0] == '>')) {
@@ -693,26 +839,24 @@ pub const Parser = struct {
         };
     }
 
-    fn blockEntryFullSpan(self: *Parser, key: Scalar, value: Node) ?Span {
+    fn blockEntryFullSpan(self: *Parser, key: Scalar, value: Node, extent_end: ?usize) ?Span {
         const line_start = self.lineStartByte(key.span.start_byte);
+
+        // The span has to remove the entry and nothing else, so it starts at
+        // the line start -- which is only the entry's own if nothing but
+        // indentation and sequence indicators precedes the key.
+        // `b: strategy: fail-fast: false` puts three keys on one line, and
+        // removing the innermost as a line took the job with it (fuzz).
+        if (std.mem.indexOfNone(u8, self.source[line_start..key.span.start_byte], " \t-") != null) {
+            return null;
+        }
+
+        const end_byte = extent_end orelse return null;
 
         // A scalar value sits on the key's own line, so its end line / column
         // follow the value itself. Every other shape keeps the key line as the
-        // end anchor and differs only in where the entry's bytes stop.
+        // end anchor.
         if (value == .scalar) {
-            const scalar = value.scalar;
-            // A block scalar's span already ends at the start of the line that
-            // closes it (or at EOF), trailing newline included. Scanning on to
-            // the next '\n' from there would swallow the next sibling key line.
-            const is_block = scalar.style == .literal or scalar.style == .folded;
-            var end_byte = scalar.span.end_byte;
-            if (!is_block) {
-                while (end_byte < self.source.len and self.source[end_byte] != '\n') {
-                    end_byte += 1;
-                }
-                if (end_byte < self.source.len) end_byte += 1;
-            }
-
             const newlines: u32 = @intCast(std.mem.count(u8, self.source[line_start..end_byte], "\n"));
             return .{
                 .start_line = key.span.start_line,
@@ -723,6 +867,52 @@ pub const Parser = struct {
                 .end_byte = end_byte,
             };
         }
+        return keyLineSpan(key, line_start, end_byte);
+    }
+
+    /// Where an entry's text stops, trailing newline included. This is the
+    /// entry's extent alone: whether the entry starts its own line, and so
+    /// whether it can be removed as one, is `blockEntryFullSpan`'s question.
+    /// `tail`, when given, reports whether the entry reached past its own
+    /// last line to take lines the parser dropped under the key.
+    fn entryEndByteInclusive(self: *Parser, key: Scalar, value: Node, tail: ?*bool) ?usize {
+        if (value == .scalar) {
+            const scalar = value.scalar;
+            // A quoted scalar that never closes runs to the end of the file, so
+            // there is no boundary after it: text appended there becomes more
+            // quoted content, and `--fix` appended the same key every round
+            // (fuzz).
+            if (scalar.unterminated) return null;
+            // A block scalar that took content ends at the start of the line
+            // that closes it, trailing newline included. Scanning on to the
+            // next '\n' from there would swallow the next sibling key line.
+            // One that took none ends on its own indicator, mid-line, and does
+            // need the scan: anchoring an insertion at the indicator wrote the
+            // new key into the middle of the `on:` line (fuzz).
+            const at_line_start = scalar.span.end_byte > 0 and
+                scalar.span.end_byte <= self.source.len and
+                self.source[scalar.span.end_byte - 1] == '\n';
+            const is_block = (scalar.style == .literal or scalar.style == .folded) and at_line_start;
+            var end_byte = scalar.span.end_byte;
+            if (!is_block) {
+                while (end_byte < self.source.len and self.source[end_byte] != '\n') {
+                    end_byte += 1;
+                }
+                if (end_byte < self.source.len) end_byte += 1;
+            }
+            // Junk left on the value's line is normally contained by it, so the
+            // newline ends the entry. A token that opens on the line and closes
+            // below is not: in `on:\n ''"` the quoted scalar runs on, and an
+            // insertion at the newline became quoted text rather than a key, so
+            // `--fix` added the same key again every round (fuzz).
+            if (self.current.start < end_byte and self.current.end > end_byte) return null;
+            // A scalar value ends on its own line, but lines below it indented
+            // past the key still belong to the entry. `on: push\n  <: *c` put
+            // the alias line after the inserted `concurrency:` block, which
+            // adopted it and turned a tolerated stray line into a parse error
+            // (fuzz).
+            return self.extendAndNoteTail(end_byte, key.span.start_col, key.span.start_byte, tail);
+        }
 
         // An empty or null value has no body: end at the key's own line. The
         // value's span may point at a far-away token (the next sibling), so we
@@ -731,14 +921,186 @@ pub const Parser = struct {
         const nested = switch (value) {
             .scalar => unreachable,
             .null_value => key_line_end,
-            .mapping => |m| if (m.entries.len == 0) key_line_end else (self.nodeEndByteInclusive(value) orelse return null),
-            .sequence => |seq| if (seq.items.len == 0) key_line_end else (self.nodeEndByteInclusive(value) orelse return null),
+            .mapping => |m| if (m.entries.len == 0)
+                (self.flowCloseLineEnd(m.flow, m.close_byte, key_line_end) orelse return null)
+            else
+                (self.nodeEndByteInclusive(value) orelse return null),
+            .sequence => |seq| if (seq.items.len == 0)
+                (self.flowCloseLineEnd(seq.flow, seq.close_byte, key_line_end) orelse return null)
+            else
+                (self.nodeEndByteInclusive(value) orelse return null),
         };
 
         // A merge key or an alias puts an entry's text elsewhere in the file,
         // so the nested end can land before the key. The entry still owns at
         // least its own line.
-        return keyLineSpan(key, line_start, @max(key_line_end, nested));
+        const end = @max(key_line_end, nested);
+        return self.extendAndNoteTail(end, key.span.start_col, key.span.start_byte, tail);
+    }
+
+    fn extendAndNoteTail(self: *Parser, end_byte: usize, key_col: u32, key_start: usize, tail: ?*bool) ?usize {
+        const extended = self.extendOverIndentedTail(end_byte, key_col, key_start);
+        if (tail) |t| t.* = (extended orelse end_byte + 1) > end_byte;
+        return extended;
+    }
+
+    /// The end of the line holding a flow collection's closing bracket. A flow
+    /// collection written across lines closes below its last item, so an
+    /// insertion anchored on the item's line lands inside the brackets (fuzz).
+    /// A flow collection that never closes runs to the end of the file, so it
+    /// leaves no boundary to anchor on at all: `on: [` took the `permissions:`
+    /// line written after it as one of its items (fuzz).
+    fn flowCloseLineEnd(self: *Parser, flow: bool, close_byte: ?usize, fallback: usize) ?usize {
+        const close = close_byte orelse return if (flow) null else fallback;
+        if (close > self.source.len) return fallback;
+        return @max(fallback, self.scanLineEndInclusive(close));
+    }
+
+    /// Lines the parser dropped still belong to the entry when they are
+    /// indented past its key: a bare `7` under `on:` holds no node, but an
+    /// insertion anchored before it lands inside the block all the same.
+    fn extendOverIndentedTail(self: *Parser, end_byte: usize, key_col: u32, key_start: usize) ?usize {
+        if (key_col == 0) return end_byte;
+        // Column arithmetic only describes a line boundary; mid-line the
+        // leading run of spaces is not the line's indent.
+        if (end_byte != 0 and (end_byte > self.source.len or self.source[end_byte - 1] != '\n')) return end_byte;
+        const key_indent = key_col - 1;
+
+        var end = end_byte;
+        // A quote opened inside the entry is still open at `end_byte`: the
+        // parser drops a token the flow parser never claimed (`push: []'`), so
+        // starting the scan closed read the next line's column 0 as a boundary
+        // and `--fix` wrote the new key inside the quotes (fuzz).
+        var quote = self.quoteStateAt(key_start, end_byte);
+        // Where a run of comment lines began. A comment carries no indentation
+        // of its own, so it neither ends the block nor joins it: the scan reads
+        // past it, and keeps this boundary in case the block turns out to have
+        // ended above.
+        var before_comments: ?usize = null;
+        while (end < self.source.len) {
+            const line_end = self.scanLineEndInclusive(end);
+            var text = end;
+            while (text < line_end and (self.source[text] == ' ' or self.source[text] == '\t')) text += 1;
+            // Indentation says nothing while a quoted scalar is still open:
+            // its closing line may sit at column 0 and still belong to the
+            // block. Stopping there put an insertion inside the quotes (fuzz).
+            if (quote == null) {
+                // A blank line is already a safe boundary, so stop rather than
+                // guess whether the block resumes after it.
+                if (text >= line_end or self.source[text] == '\n' or self.source[text] == '\r') return before_comments orelse end;
+                if (self.source[text] == '#') {
+                    if (before_comments == null) before_comments = end;
+                    end = line_end;
+                    continue;
+                }
+                if (text - end <= key_indent) return before_comments orelse end;
+                before_comments = null;
+            }
+            quote = scanQuoteState(self.source[end..line_end], quote);
+            end = line_end;
+        }
+        // A quote that never closes leaves no boundary to trust.
+        return if (quote == null) before_comments orelse end else null;
+    }
+
+    /// The quote state at `to`, starting closed at the beginning of the line
+    /// holding `from`.
+    fn quoteStateAt(self: *Parser, from: usize, to: usize) ?u8 {
+        if (to > self.source.len) return null;
+        var at = self.lineStartByte(from);
+        var quote: ?u8 = null;
+        while (at < to) {
+            const line_end = @min(self.scanLineEndInclusive(at), to);
+            quote = scanQuoteState(self.source[at..line_end], quote);
+            at = line_end;
+        }
+        return quote;
+    }
+
+    /// Whether a quoted scalar is still open at the end of `line`, given the
+    /// state at its start. A quote opens a scalar only at a token start, so an
+    /// apostrophe inside a plain scalar (`don't`) is just a character.
+    fn scanQuoteState(line: []const u8, state: ?u8) ?u8 {
+        var open = state;
+        // A line begins a token; after that only a structural character does.
+        var at_token_start = true;
+        // `,` `]` `}` are indicators only inside a flow collection; the
+        // tokenizer reads them as plain-scalar characters otherwise. A
+        // collection opened on an earlier line is not visible here, so the
+        // depth starts at zero and the scan errs toward not opening a quote.
+        var flow_depth: usize = 0;
+        var i: usize = 0;
+        while (i < line.len) : (i += 1) {
+            const c = line[i];
+            if (open) |q| {
+                if (c != q) continue;
+                // `''` is one escaped quote inside a single-quoted scalar; a
+                // double-quoted one uses a backslash instead.
+                if (q == '\'' and i + 1 < line.len and line[i + 1] == '\'') {
+                    i += 1;
+                    continue;
+                }
+                if (q == '"') {
+                    var backslashes: usize = 0;
+                    while (backslashes < i and line[i - 1 - backslashes] == '\\') backslashes += 1;
+                    if (backslashes % 2 == 1) continue;
+                }
+                open = null;
+                // A closed quoted scalar is a whole token, so the character
+                // after it begins the next one. Reading `"""""` as one quoted
+                // scalar and three stray quotes hid the unterminated one that
+                // the tokenizer sees, and the entry claimed a boundary that
+                // does not exist: SEC007 wrote its `permissions:` line into the
+                // open scalar and added it again every round (fuzz).
+                at_token_start = true;
+                continue;
+            }
+            const prev: u8 = if (i == 0) ' ' else line[i - 1];
+            // A comment holds no scalar, so nothing in it opens one.
+            if (c == '#' and (i == 0 or prev == ' ' or prev == '\t')) break;
+            if (c == ' ' or c == '\t') continue;
+            // `${{ ... }}` is part of the plain scalar around it, braces
+            // included. Counting them as a flow mapping made the quote in
+            // `${{"` open a scalar, which ran the entry to the end of the file
+            // (fuzz). An unterminated one covers the rest of the line, matching
+            // how the tokenizer reads it in block context.
+            if (c == '$' and std.mem.startsWith(u8, line[i + 1 ..], "{{")) {
+                const rest = line[i + 3 ..];
+                i += 2 + if (std.mem.indexOf(u8, rest, "}}")) |e| e + 2 else rest.len;
+                at_token_start = false;
+                continue;
+            }
+            if ((c == '\'' or c == '"') and at_token_start) {
+                open = c;
+                continue;
+            }
+            // Whitespace alone does not start a token: in `) "x` the quote sits
+            // inside the plain scalar that `)` began, and the tokenizer reads
+            // the whole line as one scalar. Treating it as an opening quote
+            // stretched the entry over the rest of the file, and `--fix`
+            // deleted every key in between (fuzz).
+            const next: u8 = if (i + 1 < line.len) line[i + 1] else ' ';
+            const separates = next == ' ' or next == '\t' or next == '\n' or next == '\r';
+            at_token_start = switch (c) {
+                '[', '{' => blk: {
+                    flow_depth += 1;
+                    break :blk true;
+                },
+                // Outside a flow collection these are ordinary characters:
+                // `}"` is one plain scalar to the tokenizer, and reading the
+                // quote as opening a scalar stretched the entry to the end of
+                // the file, so removing an unknown key took every line after it
+                // as well (fuzz).
+                ',', ']', '}' => blk: {
+                    if (flow_depth == 0) break :blk false;
+                    if (c != ',') flow_depth -= 1;
+                    break :blk true;
+                },
+                ':', '-', '?' => separates,
+                else => false,
+            };
+        }
+        return open;
     }
 
     /// The last byte the node's text occupies, trailing newline included.
@@ -748,19 +1110,31 @@ pub const Parser = struct {
     fn nodeEndByteInclusive(self: *Parser, node: Node) ?usize {
         return switch (node) {
             .mapping => |m| if (m.entries.len == 0)
-                self.scanLineEndInclusive(m.span.end_byte)
+                self.flowCloseLineEnd(m.flow, m.close_byte, self.scanLineEndInclusive(m.span.end_byte))
             else blk: {
                 const last = m.entries[m.entries.len - 1];
-                const last_full = self.blockEntryFullSpan(last.key, last.value) orelse return null;
-                break :blk last_full.end_byte;
+                // The entry's extent, not its removability: an inner key that
+                // shares a line still ends where its value ends, and the outer
+                // entry that owns the line is removable all the same (fuzz).
+                const last_end = (if (m.flow)
+                    self.entryEndByteInclusive(last.key, last.value, null)
+                else
+                    last.extent_end) orelse return null;
+                break :blk self.flowCloseLineEnd(m.flow, m.close_byte, last_end);
             },
             .sequence => |seq| if (seq.items.len == 0)
-                self.scanLineEndInclusive(seq.span.end_byte)
-            else
-                self.nodeEndByteInclusive(seq.items[seq.items.len - 1]),
-            // A block scalar's span already ends at the start of the line that
-            // closes it; scanning on would swallow the next sibling.
-            .scalar => |sc| if (sc.style == .literal or sc.style == .folded)
+                self.flowCloseLineEnd(seq.flow, seq.close_byte, self.scanLineEndInclusive(seq.span.end_byte))
+            else blk: {
+                const last_end = self.nodeEndByteInclusive(seq.items[seq.items.len - 1]) orelse return null;
+                break :blk self.flowCloseLineEnd(seq.flow, seq.close_byte, last_end);
+            },
+            // A block scalar that took content already ends at the start of the
+            // line that closes it; scanning on would swallow the next sibling.
+            // One that took none ends on its header line, where an insertion
+            // would land between the `|` and the newline (fuzz).
+            .scalar => |sc| if ((sc.style == .literal or sc.style == .folded) and
+                sc.span.end_byte != 0 and sc.span.end_byte <= self.source.len and
+                self.source[sc.span.end_byte - 1] == '\n')
                 sc.span.end_byte
             else
                 self.scanLineEndInclusive(sc.span.end_byte),
@@ -786,6 +1160,13 @@ pub const Parser = struct {
         while (end < self.source.len and self.source[end] != '\n') end += 1;
         if (end < self.source.len and self.source[end] == '\n') end += 1;
         return end;
+    }
+
+    fn lineIndentAt(self: *Parser, at: usize) u32 {
+        const line_start = self.lineStartByte(at);
+        var indent: u32 = 0;
+        while (line_start + indent < at and self.source[line_start + indent] == ' ') indent += 1;
+        return indent;
     }
 
     fn lineStartByte(self: *Parser, byte_offset: usize) usize {
@@ -1137,6 +1518,36 @@ test "full_span of a block scalar entry at EOF without a trailing newline" {
     );
 }
 
+test "full_span covers a trailing line the parser held no node for (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // The bare `7` ends the block mapping without becoming an entry. It still
+    // sits under `on:`, so an insertion at the entry's end must follow it.
+    const source = "on:\n    s:\n    7\njobs:\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings(
+        "on:\n    s:\n    7\n",
+        entryFullSpanText(source, root.mapping, "on").?,
+    );
+}
+
+test "full_span stops at a blank line rather than reaching past it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source = "on:\n  push:\n\njobs:\n  b:\n    steps: []\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqualStrings(
+        "on:\n  push:\n",
+        entryFullSpanText(source, root.mapping, "on").?,
+    );
+}
+
 test "full_span of a plain scalar entry still covers its whole line" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1150,6 +1561,196 @@ test "full_span of a plain scalar entry still covers its whole line" {
         "  runs-on: ubuntu-latest\n",
         entryFullSpanText(source, job, "runs-on").?,
     );
+}
+
+test "an entry whose line opens a quote that closes below has no full_span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `"` after `''` runs to the line below, so the newline after `''` is
+    // inside the quoted scalar rather than after the entry. `--fix` inserted
+    // `permissions:` there and the quotes swallowed it, every round.
+    var parser = Parser.init(alloc, "on:\n ''\"\n\"\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[0].full_span == null);
+
+    // The same one level down, where the entry the extent is read from is the
+    // last of a nested mapping rather than the one being measured.
+    var nested = Parser.init(alloc, "on:\n n: ''\"\n\"\njobs:");
+    const nested_doc = try nested.parse();
+    try std.testing.expect(nested_doc.mapping.entries[0].full_span == null);
+
+    // The same line with the quote closed still ends where its newline does.
+    var closed = Parser.init(alloc, "on:\n ''\"x\"\njobs:");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 11), closed_doc.mapping.entries[0].full_span.?.end_byte);
+}
+
+test "a quote after a closing bracket does not open a scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `}` closes nothing here, so `}"` is one plain scalar. Reading the `"` as
+    // an opening quote ran the `n` entry to the end of the file, so SYN011's
+    // removal of the unknown key took the `jobs:` line with it and the workflow
+    // lost its only job.
+    var parser = Parser.init(alloc, "on: workflow_dispatch:\n     n: }\"\njobs: \"");
+    const doc = try parser.parse();
+    const inner = doc.mapping.entries[0].value.mapping.entries[0].value.mapping.entries[0];
+    try std.testing.expectEqualStrings("n", inner.key.value);
+    try std.testing.expectEqual(@as(usize, 34), inner.extent_end.?);
+
+    // A quote after a comma still opens one: `[a, 'b'` is two items.
+    var flow = Parser.init(alloc, "on: [a, 'b\nc']\njobs:");
+    const flow_doc = try flow.parse();
+    try std.testing.expect(flow_doc.mapping.entries.len == 2);
+}
+
+test "a block scalar leaves the key on the line after it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `|` token runs to the start of the `concurrency:` line, so no newline
+    // separates the two. Skipping the junk line took the key with it, and it
+    // reappeared once an inserted `permissions:` line ended the scalar earlier.
+    var parser = Parser.init(alloc, "on:\n n\n |\n  \nconcurrency: p\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 3), doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("concurrency", doc.mapping.entries[1].key.value);
+}
+
+test "a quote right after a closing quote opens a scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The tokenizer reads `"""""` as an empty scalar, another one, and a fifth
+    // quote that never closes, so nothing appended after the line is a key.
+    // Claiming a boundary there made SEC007 write its `permissions:` line into
+    // the open scalar and add it again every round.
+    var parser = Parser.init(alloc, "jobs:\non: \"\"\"\"\"\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(?usize, null), doc.mapping.entries[1].extent_end);
+
+    // Quotes that all close leave the entry a boundary of its own.
+    var closed = Parser.init(alloc, "jobs:\non: \"\"\"\"\n");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 15), closed_doc.mapping.entries[1].extent_end.?);
+}
+
+test "a quote after an interpolation does not open a scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The braces of `${{` are not a flow mapping, so `${{"` is one plain
+    // scalar. Reading the `"` as an opening quote ran the `n` entry to the end
+    // of the file and SYN011's removal of the unknown key took `jobs:` with it.
+    var parser = Parser.init(alloc, "on: workflow_dispatch:\n     n: ${{\"\njobs: \"");
+    const doc = try parser.parse();
+    const inner = doc.mapping.entries[0].value.mapping.entries[0].value.mapping.entries[0];
+    try std.testing.expectEqualStrings("n", inner.key.value);
+    try std.testing.expectEqual(@as(usize, 36), inner.extent_end.?);
+
+    // A closed interpolation is skipped over the same way.
+    var closed = Parser.init(alloc, "on: ${{ x }}\"\njobs:");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 14), closed_doc.mapping.entries[0].extent_end.?);
+}
+
+test "a scalar entry's extent covers the lines indented under it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The parser tolerates `  <: *c` under `on: push` and holds no node for it.
+    // Anchoring an insertion at the end of the `on:` line put the inserted
+    // `concurrency:` block above the stray line, which then read as one of its
+    // entries and made the undefined alias a parse error.
+    var parser = Parser.init(alloc, "on: push\n  <: *c\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 17), doc.mapping.entries[0].extent_end.?);
+
+    // A sibling at the same indent is not part of the entry.
+    var plain = Parser.init(alloc, "on: push\njobs:");
+    const plain_doc = try plain.parse();
+    try std.testing.expectEqual(@as(usize, 9), plain_doc.mapping.entries[0].extent_end.?);
+}
+
+test "an unclosed flow mapping takes no line at its own indent (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `{f: '')` never closes, so it read `steps:` as one of its own keys and the
+    // job lost it. An insertion above the `{` moved it out of value position,
+    // where the same line is skipped instead -- so `--fix` changed which keys
+    // the file had and broke the workflow parse.
+    var parser = Parser.init(alloc, "on: \njobs:\n h:\n    {f: '')\n    steps: ");
+    const doc = try parser.parse();
+    const job = doc.mapping.entries[1].value.mapping.entries[0].value;
+    try std.testing.expectEqual(@as(usize, 1), job.mapping.entries.len);
+    try std.testing.expectEqualStrings("steps", job.mapping.entries[0].key.value);
+
+    // A continuation indented past the opening line still belongs to it.
+    var wrapped = Parser.init(alloc, "on: {push: ,\n  pull_request: }\njobs:");
+    const wrapped_doc = try wrapped.parse();
+    try std.testing.expectEqual(@as(usize, 2), wrapped_doc.mapping.entries[0].value.mapping.entries.len);
+}
+
+test "an empty block scalar ends on its own header line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `- |` takes no content, so its token stops at the `|` rather than at a
+    // line start. Ending the `on:` entry there put SEC007's inserted
+    // `permissions:` block between the `|` and the newline, where the next pass
+    // could not see it and inserted it again (fuzz).
+    var parser = Parser.init(alloc, "on:\n- |\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 8), doc.mapping.entries[0].extent_end.?);
+
+    // One that took content still ends at the line that closes it.
+    var content = Parser.init(alloc, "on:\n- |\n  x\njobs:");
+    const content_doc = try content.parse();
+    try std.testing.expectEqual(@as(usize, 12), content_doc.mapping.entries[0].extent_end.?);
+}
+
+test "a comment line does not cut an entry's indented tail short (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A comment sits at whatever column its writer chose, so it says nothing
+    // about where the block ends. Stopping at it left the stray `  b: *a` line
+    // below an inserted `concurrency:` block, which adopted it (fuzz).
+    var parser = Parser.init(alloc, "on: push#\n#\n  b: *a\njobs:");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 20), doc.mapping.entries[0].extent_end.?);
+
+    // Comments that only trail the entry stay outside it.
+    var trailing = Parser.init(alloc, "on: push\n# c\njobs:");
+    const trailing_doc = try trailing.parse();
+    try std.testing.expectEqual(@as(usize, 9), trailing_doc.mapping.entries[0].extent_end.?);
+}
+
+test "an entry's extent stops at the next sibling key (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The tokenizer reads `}'` as one plain scalar, but the tail scan treats `}`
+    // as ending a token and so reads the `'` as opening a quote that never
+    // closes. The extent ran to EOF, and `--fix` appended `permissions:` past
+    // the unterminated quote on the `jobs:` line, once more every round.
+    var parser = Parser.init(alloc, "on:\n p: }'\njobs: '}\"\"\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 11), doc.mapping.entries[0].extent_end.?);
+    try std.testing.expectEqual(@as(usize, 11), doc.mapping.entries[0].full_span.?.end_byte);
 }
 
 test "full_span end_line follows a multi-line quoted scalar" {
@@ -1230,6 +1831,235 @@ test "a trailing comment on an empty value does not swallow the next key" {
     try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
     try std.testing.expectEqualStrings("jobs", root.mapping.entries[1].key.value);
     try std.testing.expect(root.mapping.get("jobs").?.mapping.entries.len == 1);
+}
+
+test "an entry sharing its line with an outer key has no removable span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "jobs:\n b: strategy: fail-fast: false\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const doc = try parser.parse();
+    const job = doc.mapping.entries[0].value.mapping.entries[0];
+    const strategy = job.value.mapping.entries[0];
+    // Removing `fail-fast` as a line would take `b:` and `strategy:` with it.
+    try std.testing.expect(strategy.value.mapping.entries[0].full_span == null);
+    // A key that does start its own line keeps its span.
+    try std.testing.expect(doc.mapping.entries[0].full_span != null);
+}
+
+test "a quoted scalar closing on an escaped quote is still open (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The final `"` is escaped, so the scalar runs to the end of the file and
+    // the entry has no boundary after it.
+    var parser = Parser.init(alloc, "on: \"push\\\"");
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[0].full_span == null);
+
+    // A backslash of its own is escaped in turn, so this one does close.
+    var closed = Parser.init(alloc, "on: \"push\\\\\"\n");
+    const closed_doc = try closed.parse();
+    try std.testing.expect(closed_doc.mapping.entries[0].full_span != null);
+}
+
+test "a quote inside a plain scalar does not stretch the entry (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `) "` is one plain scalar, so the `"` opens nothing. Reading it as an
+    // open quote ran the `on:` entry to the closing `"` seven lines down, and
+    // removing the entry as an empty section took `jobs:` with it.
+    const source = "on:\n workflow_call:\n  ) \":\njobs:\n j:\n    steps:\n    - run: \"x\"\n";
+    var parser = Parser.init(alloc, source);
+    const doc = try parser.parse();
+    const on_span = doc.mapping.entries[0].full_span.?;
+    try std.testing.expect(on_span.end_byte <= std.mem.indexOf(u8, source, "jobs:").?);
+}
+
+test "a colon ending its line takes no value from the line below (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `on: a: :` ends on a `:` with nothing after it. Reading on regardless
+    // swallowed the `jobs:` below it, so removing an unrelated line above was
+    // enough to lose the jobs section.
+    var parser = Parser.init(alloc, "on: a: :\njobs:\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 2), doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("jobs", doc.mapping.entries[1].key.value);
+
+    // A line indented past the colon is still its value.
+    var nested = Parser.init(alloc, "on: a: :\n     b: 1\njobs:\n");
+    const nested_doc = try nested.parse();
+    try std.testing.expectEqual(@as(usize, 2), nested_doc.mapping.entries.len);
+}
+
+test "an unclosed flow sequence leaves the entry no end (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `on: [` runs to the end of the file, so anything written after it becomes
+    // one of its items: `--fix` appended a `permissions:` line and the sequence
+    // swallowed it.
+    var parser = Parser.init(alloc, "jobs:\non: [\n");
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[1].full_span == null);
+
+    // A closed one still ends where its `]` does.
+    var closed = Parser.init(alloc, "jobs:\non: []\n");
+    const closed_doc = try closed.parse();
+    try std.testing.expectEqual(@as(usize, 13), closed_doc.mapping.entries[1].full_span.?.end_byte);
+}
+
+test "a stray flow-mapping start does not drop the keys below it (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `{` opens a mapping nothing closes, so it starts no sibling key.
+    // Ending the top-level mapping there lost `jobs:`, and inserting a
+    // `permissions:` line above the `{` was enough to trigger it.
+    var parser = Parser.init(alloc, "on: 1\npermissions: {}\n{\njobs:\n");
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 3), doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("jobs", doc.mapping.entries[2].key.value);
+
+    // A scalar with no `:` after it is not a key either.
+    var bare = Parser.init(alloc, "on: 1\npermissions: {}\nj\njobs:\n");
+    const bare_doc = try bare.parse();
+    try std.testing.expectEqual(@as(usize, 3), bare_doc.mapping.entries.len);
+    try std.testing.expectEqualStrings("jobs", bare_doc.mapping.entries[2].key.value);
+
+    // A `-` at the same indent is a block sequence, not junk to skip over.
+    var seq = Parser.init(alloc, "on: 1\n- a\n");
+    const seq_doc = try seq.parse();
+    try std.testing.expectEqual(@as(usize, 1), seq_doc.mapping.entries.len);
+}
+
+test "an entry ends past a quote opened after a closing bracket (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `'` after `[]` opens a scalar the flow parser never claimed, and it
+    // runs to the `'` on the next line. Ending the `on:` entry on its own line
+    // put an insertion inside those quotes.
+    const source = "on:\n push: []'\n]'\njobs:\n";
+    var parser = Parser.init(alloc, source);
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 18), doc.mapping.entries[0].full_span.?.end_byte);
+
+    // A quote that never closes leaves no boundary at all.
+    var open = Parser.init(alloc, "on:\n push: []'\njobs:\n");
+    const open_doc = try open.parse();
+    try std.testing.expect(open_doc.mapping.entries[0].full_span == null);
+}
+
+test "an entry whose quoted scalar never closes has no span (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The scalar runs to the end of the file, so an insertion anchored after it
+    // lands inside the quotes and never parses as a key.
+    const source = "jobs:\non:\n \"\n";
+    var parser = Parser.init(alloc, source);
+    const doc = try parser.parse();
+    try std.testing.expect(doc.mapping.entries[1].full_span == null);
+
+    // The same scalar, closed, keeps its span.
+    const closed = "jobs:\non: \"x\"\n";
+    var closed_parser = Parser.init(alloc, closed);
+    const closed_doc = try closed_parser.parse();
+    try std.testing.expectEqual(@as(usize, 14), closed_doc.mapping.entries[1].full_span.?.end_byte);
+}
+
+test "an entry's tail runs to the line closing a quoted scalar (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The closing `'` sits at column 0 and still belongs to `on:`; an
+    // insertion stopping before it lands inside the quotes.
+    const source = "on:\n e: o\n  '\n'\njobs:\n";
+    var parser = Parser.init(alloc, source);
+    const doc = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 16), doc.mapping.entries[0].full_span.?.end_byte);
+
+    // An apostrophe inside a plain scalar opens nothing, so the tail still
+    // stops at the sibling key.
+    const plain = "on:\n e: don't\njobs:\n";
+    var plain_parser = Parser.init(alloc, plain);
+    const plain_doc = try plain_parser.parse();
+    try std.testing.expectEqual(@as(usize, 14), plain_doc.mapping.entries[0].full_span.?.end_byte);
+}
+
+test "a flow collection entry ends past its closing bracket (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // An insertion anchored on the `on:` line would land between the brackets.
+    const empty_source = "on: [\n]\njobs:\n";
+    var empty = Parser.init(alloc, empty_source);
+    const empty_doc = try empty.parse();
+    try std.testing.expectEqual(@as(usize, 8), empty_doc.mapping.entries[0].full_span.?.end_byte);
+
+    const filled_source = "on: [\n  push\n]\njobs:\n";
+    var filled = Parser.init(alloc, filled_source);
+    const filled_doc = try filled.parse();
+    try std.testing.expectEqual(@as(usize, 15), filled_doc.mapping.entries[0].full_span.?.end_byte);
+}
+
+test "an empty block scalar entry ends at its own line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "on: |\njobs:\n";
+    var parser = Parser.init(arena.allocator(), source);
+    const doc = try parser.parse();
+    const entry = doc.mapping.entries[0];
+    try std.testing.expectEqualStrings("on", entry.key.value);
+    // The entry must not stop on the `|` itself: an insertion anchored there
+    // writes the next key into the middle of the `on:` line.
+    try std.testing.expectEqual(@as(usize, 6), entry.full_span.?.end_byte);
+}
+
+test "junk after a flow collection does not end the mapping (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: []l
+        \\permissions: {contents: read}
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
+    try std.testing.expect(root.mapping.get("permissions") != null);
+}
+
+test "an orphan indented line does not end the mapping (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source =
+        \\on: []
+        \\ l
+        \\permissions: {contents: read}
+        \\
+    ;
+    var parser = Parser.init(arena.allocator(), source);
+    const root = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.entries.len);
+    try std.testing.expect(root.mapping.get("permissions") != null);
 }
 
 test "a trailing comment on an empty sequence item does not swallow the next key" {

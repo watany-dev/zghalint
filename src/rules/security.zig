@@ -370,13 +370,13 @@ fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
     const base: ContextTable = .{ .prefix = contexts.slice(), .whole = &whole_event_contexts };
 
     // Workflow-level `env:` covers every job, so it is resolved once.
-    var workflow_env: TaintedNames = .{};
+    var workflow_env: TaintedNames = .{ .buf = undefined };
     addTaintedEnvKeys(&workflow_env, wf.env, base);
 
-    const tainted_jobs = taintedJobs(wf, base, workflow_env);
+    const tainted_jobs = taintedJobs(wf, base, &workflow_env);
     var reporting = base;
     reporting.tainted_jobs = tainted_jobs.slice();
-    for (wf.jobs) |*job| _ = walkJobTaint(job, reporting, workflow_env, list, wf);
+    for (wf.jobs) |*job| _ = walkJobTaint(job, reporting, &workflow_env, list, wf);
 }
 
 /// The jobs whose `outputs:` export an untrusted value. A job's output can be
@@ -385,8 +385,8 @@ fn checkScriptInjection(wf: *const Workflow, list: *DiagnosticList) void {
 /// per job is enough to reach the fixed point. Doing it that way also needs no
 /// dependency graph, and a `needs:` cycle — which SYN rules report — cannot
 /// loop it.
-fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNames) TaintedNames {
-    var out: TaintedNames = .{};
+fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: *const TaintedNames) TaintedNames {
+    var out: TaintedNames = .{ .buf = undefined };
     var round: usize = 0;
     while (round < wf.jobs.len) : (round += 1) {
         var changed = false;
@@ -415,11 +415,11 @@ fn taintedJobs(wf: *const Workflow, base: ContextTable, workflow_env: TaintedNam
 fn walkJobTaint(
     job: *const Job,
     base: ContextTable,
-    workflow_env: TaintedNames,
+    workflow_env: *const TaintedNames,
     list: ?*DiagnosticList,
     wf: *const Workflow,
 ) bool {
-    var job_env = workflow_env;
+    var job_env = workflow_env.derive();
     var job_table = base;
     job_table.tainted_env = workflow_env.slice();
     addTaintedEnvKeys(&job_env, job.env, job_table);
@@ -427,9 +427,9 @@ fn walkJobTaint(
 
     // Steps are visited in source order so a later step sees the taint the
     // earlier ones produced. A step never taints itself.
-    var tainted: TaintedNames = .{};
+    var tainted: TaintedNames = .{ .buf = undefined };
     for (job.steps) |*step| {
-        var step_env = job_env;
+        var step_env = job_env.derive();
         var table = job_table;
         table.tainted_steps = tainted.slice();
         addTaintedEnvKeys(&step_env, step.env, table);
@@ -491,7 +491,7 @@ fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *Diagn
 /// Every untrusted `${{ ... }}` in the step's `run:`, which is exactly the set
 /// the env binding has to cover for the step to come out clean.
 fn taintedRunOccurrences(step: *const Step, table: ContextTable) env_binding.Occurrences {
-    var occs: env_binding.Occurrences = .{};
+    var occs: env_binding.Occurrences = .{ .buf = undefined };
     const run_body = step.run orelse return occs;
     var it: ExprIter = .{ .s = run_body };
     while (it.next()) |e| {
@@ -521,8 +521,19 @@ const max_tainted_names = 64;
 /// Names carrying an untrusted value: step ids whose `outputs.*` hold one,
 /// `env:` keys bound to one, or job ids exporting one.
 const TaintedNames = struct {
-    buf: [max_tainted_names][]const u8 = undefined,
+    /// No `= undefined` default: a struct literal that leaves the field out
+    /// still writes the whole buffer, which put a 1 KiB fill on the taint walk
+    /// (#403). Every construction site spells the field out instead.
+    buf: [max_tainted_names][]const u8,
     len: usize = 0,
+
+    /// A nested scope starts from its parent's names. Copying the struct would
+    /// move the whole buffer; only the entries below `len` are live.
+    fn derive(self: *const TaintedNames) TaintedNames {
+        var out: TaintedNames = .{ .buf = undefined, .len = self.len };
+        @memcpy(out.buf[0..self.len], self.buf[0..self.len]);
+        return out;
+    }
 
     fn append(self: *TaintedNames, name: []const u8) void {
         if (self.len >= self.buf.len) return;
@@ -1018,7 +1029,7 @@ const trigger_context_table = dispatch_payload_table ++ attacker_text_table;
 /// report a combination that cannot occur — so a `push` workflow reading
 /// `github.event.client_payload` is not flagged for a payload it never carries.
 fn runTaintContexts(wf: *const Workflow) RunTaintContexts {
-    var out: RunTaintContexts = .{};
+    var out: RunTaintContexts = .{ .buf = undefined };
     for (run_dangerous_contexts) |context| out.append(context);
     for (wf.on.events) |event| {
         for (dispatch_payload_table) |entry| {
@@ -1046,7 +1057,7 @@ fn ContextSet(comptime capacity: usize) type {
     return struct {
         const Self = @This();
 
-        buf: [capacity][]const u8 = undefined,
+        buf: [capacity][]const u8,
         len: usize = 0,
 
         fn append(self: *Self, context: []const u8) void {
@@ -1106,7 +1117,7 @@ fn bareInputsAreUntrusted(wf: *const Workflow) bool {
 /// started by data an attacker authors while the job runs against the base
 /// repository.
 fn untrustedRefContexts(wf: *const Workflow) CheckoutRefContexts {
-    var out: CheckoutRefContexts = .{};
+    var out: CheckoutRefContexts = .{ .buf = undefined };
     for (wf.on.events) |event| {
         for (trigger_context_table) |entry| {
             if (event.event != entry.event) continue;
@@ -1604,7 +1615,7 @@ fn checkSecretsOutsideEnv(step: *const Step, list: *DiagnosticList, shell: ?env_
 }
 
 fn secretRunOccurrences(step: *const Step) env_binding.Occurrences {
-    var occs: env_binding.Occurrences = .{};
+    var occs: env_binding.Occurrences = .{ .buf = undefined };
     const run_body = step.run orelse return occs;
     var it: ExprIter = .{ .s = run_body };
     while (it.next()) |e| {
@@ -1938,20 +1949,29 @@ fn buildPersistCredentialsFalseFix(
     safety: diagnostics.FixSafety,
 ) ?diagnostics.Fix {
     const alloc = list.fixAllocator();
+    // Both shapes below open a block line under the step, which needs the step
+    // to own its own line to begin with.
+    if (!step.own_line) return null;
     const col = step.uses_key_col orelse 7;
 
     const has_persist = if (step.with) |w| w.get("persist-credentials") != null else false;
     if (has_persist) return null;
 
-    // `with: {}` / `with:` parses to a null `with` while the key is still in
-    // source, so inserting a `with:` block would leave the step with two (#171).
-    if (step.with == null and util.hasEmptySection(step.empty_sections, "with")) return null;
+    // `with: {}`, `with:` and `with: 4` all parse to a null `with` while the key
+    // is still in source, so inserting a `with:` block would leave the step with
+    // two (#171, fuzz).
+    if (step.with == null and step.with_key_present) return null;
 
     // uses_key_col is 1-based; parent aligns at col - 1 spaces, child at col + 1.
+    // An existing `with:` sets the indent instead: its keys need not sit on the
+    // grid a fresh block would use.
     const edits = if (step.with == null)
         fix_builder.insertWithEntry(alloc, step.uses_value_end_byte orelse return null, col, "persist-credentials", "false")
-    else
-        fix_builder.appendMappingEntry(alloc, step.with_last_entry_end_byte orelse return null, col + 1, "persist-credentials", "false");
+    else blk: {
+        const with_col = step.with_key_col orelse return null;
+        if (with_col == 0) return null;
+        break :blk fix_builder.appendMappingEntry(alloc, step.with_last_entry_end_byte orelse return null, with_col - 1, "persist-credentials", "false");
+    };
 
     return .{
         .description = "add persist-credentials: false to checkout step",
@@ -2176,7 +2196,10 @@ const ContextTable = struct {
 };
 
 const ContextPath = struct {
-    segments: [max_path_segments][]const u8 = undefined,
+    /// Spelled out at every construction site rather than defaulted to
+    /// `undefined`: the omitted-field form fills the buffer, and this one is
+    /// built once per context reference (#403).
+    segments: [max_path_segments][]const u8,
     len: usize = 0,
     end: usize = 0,
 
@@ -2224,7 +2247,7 @@ fn skipStringLiteral(expr: []const u8, start: usize) usize {
 }
 
 fn parseContextPath(expr: []const u8, start: usize) ContextPath {
-    var path = ContextPath{};
+    var path: ContextPath = .{ .segments = undefined };
     var i = start;
     while (i < expr.len and isIdentChar(expr[i])) i += 1;
     path.append(expr[start..i]);
@@ -4000,6 +4023,41 @@ test "taint tables hold a repeated event once (#366)" {
     try testing.expect(containsContext(refs.slice(), "github.event.comment.body"));
 }
 
+test "a derived scope inherits the parent's names and does not write back (#403)" {
+    var parent: TaintedNames = .{ .buf = undefined };
+    parent.append("PR_TITLE");
+    parent.append("PR_BODY");
+
+    // Only the entries below `len` are copied, so a name past the copied
+    // prefix must not reappear in the child.
+    var child = parent.derive();
+    try testing.expectEqual(@as(usize, 2), child.len);
+    try testing.expect(child.contains("PR_TITLE"));
+    try testing.expect(child.contains("PR_BODY"));
+
+    // The scope ends with the step that opened it: what it adds stays local.
+    child.append("STEP_ONLY");
+    try testing.expectEqual(@as(usize, 3), child.len);
+    try testing.expectEqual(@as(usize, 2), parent.len);
+    try testing.expect(!parent.contains("STEP_ONLY"));
+}
+
+test "a derived scope carries a full buffer over (#403)" {
+    var parent: TaintedNames = .{ .buf = undefined };
+    var names: [max_tainted_names][3]u8 = undefined;
+    for (&names, 0..) |*name, i| {
+        name.* = .{ 'A' + @as(u8, @intCast(i / 26)), 'a' + @as(u8, @intCast(i % 26)), '_' };
+        parent.append(name);
+    }
+    try testing.expectEqual(max_tainted_names, parent.len);
+
+    const child = parent.derive();
+    try testing.expectEqual(max_tainted_names, child.len);
+    for (parent.slice(), child.slice()) |want, got| {
+        try testing.expectEqualStrings(want, got);
+    }
+}
+
 fn containsContext(contexts: []const []const u8, needle: []const u8) bool {
     for (contexts) |context| {
         if (std.mem.eql(u8, context, needle)) return true;
@@ -4618,6 +4676,125 @@ test "SEC007: applyFixes inserts permissions block between on: and jobs:" {
     const jobs_pos = std.mem.find(u8, result.content, "jobs:") orelse unreachable;
     try testing.expect(on_pos < perm_pos);
     try testing.expect(perm_pos < jobs_pos);
+}
+
+test "SEC007: an indented root mapping keeps its indent (fuzz)" {
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A block mapping may be written indented, and inserting at column 0 there
+    // ends the mapping: everything below the insertion leaves the document.
+    const source =
+        \\  on: push
+        \\  jobs:
+        \\    build:
+        \\      runs-on: ubuntu-latest
+        \\      steps:
+        \\        - run: echo hi
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+    const fix = list.get(0).fix orelse return error.TestUnexpectedResult;
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "\n  permissions: {contents: read}\n") != null);
+    const fixed = try test_support.parseWorkflowSource(alloc, result.content);
+    try testing.expectEqual(@as(usize, 1), fixed.jobs.len);
+}
+
+test "SEC007: no fix when the trigger mapping opens on the on: line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `on: push:` puts the trigger's children outside the entry's full_span,
+    // so its end byte sits inside the trigger rather than after it.
+    const source =
+        \\on: push:
+        \\    branches: [main]
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var list = DiagnosticList.init(alloc);
+    checkMissingPermissions(&wf, &list);
+    try testing.expect(list.get(0).fix == null);
+}
+
+test "SEC015: an off-grid with: block is appended at its own indent (fuzz)" {
+    const fix_engine = @import("../fix/engine.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The `with:` children sit one column left of where a fresh block would put
+    // them. Appending at the `uses:`-derived column would land the new key
+    // inside the previous value, and the rule would re-add it on every run.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/checkout@v4
+        \\        with:
+        \\         ref: main
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    const step = &wf.jobs[0].steps[0];
+
+    var list = DiagnosticList.init(alloc);
+    const fix = buildPersistCredentialsFalseFix(&list, step, .unsafe) orelse
+        return error.TestUnexpectedResult;
+
+    const result = try fix_engine.applyFixes(testing.allocator, source, &.{fix});
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, result.content, "\n         persist-credentials: false") != null);
+
+    // The appended key must be part of `with:`, or the next run adds it again.
+    const fixed = try test_support.parseWorkflowSource(alloc, result.content);
+    const with = fixed.jobs[0].steps[0].with orelse return error.TestUnexpectedResult;
+    try testing.expect(with.get("persist-credentials") != null);
+}
+
+test "SEC015: no fix when the step opens on the steps: line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The step shares its line with `steps:` and the sequence dash, so there is
+    // no column a `with:` block could be opened at.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build: steps: [{uses: actions/checkout@v4}]
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+    const step = &wf.jobs[0].steps[0];
+
+    var list = DiagnosticList.init(alloc);
+    try testing.expect(buildPersistCredentialsFalseFix(&list, step, .unsafe) == null);
 }
 
 test "SEC007 + BP005: same-byte insertions produce parseable YAML (golden)" {
@@ -5731,6 +5908,7 @@ test "SEC015: fix inserts into existing with: block" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .with_last_entry_end_byte = 80,
+            .with_key_col = 10,
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -5772,6 +5950,7 @@ test "SEC015: no fix when with: is present but empty (#171)" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .empty_sections = &empty,
+            .with_key_present = true,
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -5813,6 +5992,7 @@ test "SEC015: persist-credentials: true has no fix (only fix_hint)" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .with_last_entry_end_byte = 80,
+            .with_key_col = 10,
         },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
     };
@@ -5973,6 +6153,7 @@ test "SEC018: with exists without persist-credentials triggers with fix" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 10,
     });
     defer list.deinit();
 
@@ -6006,6 +6187,7 @@ test "SEC018: no fix when with: is present but empty (#171)" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .empty_sections = &empty,
+        .with_key_present = true,
     });
     defer list.deinit();
 
@@ -6043,6 +6225,7 @@ test "SEC018: persist-credentials: true triggers without fix" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 10,
     });
     defer list.deinit();
 
@@ -6062,6 +6245,7 @@ test "SEC018: persist-credentials: false does not trigger" {
         .uses_key_col = 8,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 10,
     });
     defer list.deinit();
 
@@ -6095,6 +6279,7 @@ test "SEC018: autofix appends entry when with already exists" {
         .uses_key_col = 6,
         .uses_value_end_byte = 50,
         .with_last_entry_end_byte = 80,
+        .with_key_col = 8,
     });
     defer list.deinit();
 
@@ -6130,6 +6315,7 @@ test "SEC018: YAML-boolean capitalization variants are classified correctly" {
             .uses_key_col = 8,
             .uses_value_end_byte = 50,
             .with_last_entry_end_byte = 80,
+            .with_key_col = 10,
         },
     };
     const jobs_true = [_]Job{.{ .id = "build", .steps = &steps_true, .permissions = Permissions{} }};

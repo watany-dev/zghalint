@@ -29,7 +29,7 @@ fn checkMissingTimeout(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.timeout_minutes != null or job.timeout_minutes_specified) return;
 
     var fix: ?Fix = null;
-    if (job.span.start_col >= 1) {
+    if (job.body_own_line and job.span.start_col >= 1) {
         const indent: u32 = job.span.start_col - 1;
         if (fix_builder.insertMappingEntryBefore(
             diag_list.fixAllocator(),
@@ -478,7 +478,7 @@ fn checkShell(wf: *const Workflow, diag_list: *DiagnosticList) void {
                 const span = step.shell_value_span orelse step.span;
                 checkShellName(shell, span, diag_list);
                 checkShellAvailability(shell, span, os, diag_list);
-            } else if (step.run != null and os == .windows and job.defaults == null and wf.defaults == null) {
+            } else if (!step.shell_key_present and step.run != null and os == .windows and job.defaults == null and wf.defaults == null) {
                 reportMissingShell(step, diag_list);
             }
         }
@@ -875,6 +875,31 @@ test "BP001: autofix applied to YAML source" {
     try std.testing.expect(timeout_pos < runs_on_pos);
 }
 
+test "BP001: no fix when the job body opens on the job id's line (fuzz)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `build: runs-on: …` starts the job body mid-line, where an insertion
+    // aligned to the body's column would split the line it lands on.
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build: runs-on: ubuntu-latest
+        \\         steps:
+        \\           - run: echo hi
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    checkMissingTimeout(&wf.jobs[0], &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).fix == null);
+}
+
 test "BP002: detect missing step name" {
     const step = Step{ .run = "echo hello" };
     var diags = DiagnosticList.init(std.testing.allocator);
@@ -1251,6 +1276,23 @@ test "BP004: no warning when shell is specified" {
         .runs_on = "windows-latest",
         .steps = &.{
             Step{ .name = "Build", .run = "make build", .shell = "bash" },
+        },
+    }};
+    const wf = shellTestWorkflow(&jobs);
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkShell(&wf, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP004: no warning when shell is present but unreadable (fuzz)" {
+    // `shell:` holding a mapping leaves `shell` null. Reporting a missing
+    // shell here made `--fix` append `shell: bash` again every round.
+    const jobs = [_]Job{.{
+        .id = "test",
+        .runs_on = "windows-latest",
+        .steps = &.{
+            Step{ .name = "Build", .run = "make build", .shell_key_present = true },
         },
     }};
     const wf = shellTestWorkflow(&jobs);

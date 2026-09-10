@@ -98,6 +98,45 @@ pub fn checkNumber(
     return checkScalar(u32, "number", parseU32Value, node, field, mismatches, allocator);
 }
 
+/// A field whose value must be a mapping. Reports the mismatch and answers
+/// false rather than failing the parse: giving up on the file would drop every
+/// other diagnostic in it over one mistyped section.
+pub fn checkMapping(
+    node: Node,
+    field: []const u8,
+    mismatches: ?*std.ArrayList(TypeMismatch),
+    allocator: std.mem.Allocator,
+) bool {
+    if (node == .mapping) return true;
+    if (node == .scalar and containsExpression(node.scalar.value)) return false;
+    report(mismatches, allocator, .{
+        .field = field,
+        .expected = "mapping",
+        .actual = nodeKindLabel(node),
+        .span = node.getSpan(),
+    });
+    return false;
+}
+
+/// A field whose value must be a sequence. Reports the mismatch and answers
+/// false rather than failing the parse, for the same reason as `checkMapping`.
+pub fn checkSequence(
+    node: Node,
+    field: []const u8,
+    mismatches: ?*std.ArrayList(TypeMismatch),
+    allocator: std.mem.Allocator,
+) bool {
+    if (node == .sequence) return true;
+    if (node == .scalar and containsExpression(node.scalar.value)) return false;
+    report(mismatches, allocator, .{
+        .field = field,
+        .expected = "sequence",
+        .actual = nodeKindLabel(node),
+        .span = node.getSpan(),
+    });
+    return false;
+}
+
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
 
