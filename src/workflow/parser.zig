@@ -2278,6 +2278,30 @@ test "parseStep accepts background wait wait-all cancel and parallel" {
     try testing.expectEqual(@as(usize, 0), wf.unknown_keys.len);
 }
 
+test "parseStep records a type mismatch for a non-scalar cancel" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - cancel: [producer]
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    var failure: ?Failure = null;
+    const wf = try parseWorkflowTracked(alloc, try yp.parse(), &failure);
+    try testing.expectEqual(types.StepKind.cancel, wf.jobs[0].steps[0].kind());
+    try testing.expectEqualStrings("", wf.jobs[0].steps[0].control.?.cancel.id);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("cancel", wf.type_mismatches[0].field);
+}
+
 test "parseJob with needs" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

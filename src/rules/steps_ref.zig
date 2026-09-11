@@ -73,8 +73,12 @@ const Resolver = struct {
     /// target either, but it is still the likeliest typo source, so it stays
     /// in the list.
     ids: []const []const u8,
-    /// Index of the step whose expressions are being scanned.
+    /// Index of the *top-level* step whose expressions are being scanned.
+    /// Nested `parallel:` children share this index so they are not "earlier"
+    /// than each other; `current_id` distinguishes a true self-reference
+    /// from a sibling in the same group.
     current: usize,
+    current_id: ?[]const u8 = null,
     /// Backs the expression parse trees, which never outlive a walk;
     /// diagnostic messages go to the list's own arena instead.
     alloc: std.mem.Allocator,
@@ -193,7 +197,13 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
         return;
     };
     if (target.index == res.current) {
-        appendSelfReference(res, id, span);
+        if (res.current_id) |own| {
+            if (idEql(own, id)) {
+                appendSelfReference(res, id, span);
+                return;
+            }
+        }
+        appendForwardReference(res, id, span);
         return;
     }
     if (target.index > res.current) {
@@ -238,7 +248,9 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
 }
 
 fn scanStepTree(step: *const Step, resolver: Resolver) void {
-    expr_scan.scanStep(resolver, step);
+    var current = resolver;
+    current.current_id = step.id;
+    expr_scan.scanStep(current, step);
     for (step.nestedSteps()) |*child| scanStepTree(child, resolver);
 }
 
@@ -514,4 +526,51 @@ test "EXPR010: the diagnostic points at the reference inside a run scalar" {
 
     const diag = test_support.findDiagnostic(&list, "EXPR010").?;
     try testing.expectEqual(@as(u32, 8), diag.span.start_line);
+}
+
+test "EXPR010: a parallel sibling is not this step itself" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo v=1 >> "$GITHUB_OUTPUT"
+        \\          - run: echo "${{ steps.frontend.outputs.v }}"
+    ,
+        "step \"frontend\" is defined after this step",
+    );
+}
+
+test "EXPR010: a parallel child's outputs are available after the group" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo v=1 >> "$GITHUB_OUTPUT"
+        \\          - run: echo backend
+        \\      - run: echo "${{ steps.frontend.outputs.v }}"
+    );
+}
+
+test "EXPR010: a self-reference inside parallel is still this step" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo "${{ steps.frontend.outputs.v }}"
+        \\          - run: echo backend
+    ,
+        "step \"frontend\" is this step itself",
+    );
 }

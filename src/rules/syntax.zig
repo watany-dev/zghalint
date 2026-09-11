@@ -389,14 +389,7 @@ fn checkDuplicateStepIdsIn(steps: []const Step, seen: *std.ArrayList(*const Step
 }
 
 fn isCheckableStepRef(id: []const u8) bool {
-    if (id.len == 0) return false;
-    if (std.mem.find(u8, id, "${{") != null) return false;
-    const first = id[0];
-    if (first != '_' and !std.ascii.isAlphabetic(first)) return false;
-    for (id[1..]) |c| {
-        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return false;
-    }
-    return true;
+    return id.len > 0 and isValidId(id);
 }
 
 fn collectStepIdsForControl(steps: []const Step, buf: *std.ArrayList([]const u8), alloc: std.mem.Allocator) void {
@@ -4793,6 +4786,62 @@ test "SYN024: wait targeting a defined step is clean" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN024: wait targeting a nested parallel step id is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo hi
+        \\      - wait: frontend
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN024: wait list reports only the missing id" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        run: echo hi
+        \\        background: true
+        \\      - wait: [producer, ghost]
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "SYN024"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "ghost") != null);
+}
+
+test "SYN024: expression and empty wait targets are skipped" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - wait: ${{ inputs.step }}
+        \\      - wait: ""
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN024"));
 }
 
 fn runSyn017(source: []const u8) !DiagnosticList {

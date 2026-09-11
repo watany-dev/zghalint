@@ -1997,22 +1997,23 @@ fn containsActorBotCheck(expr: []const u8) bool {
 }
 
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
-    var flat: std.ArrayList(*const Step) = .empty;
-    defer flat.deinit(list.allocator);
-    flattenSteps(job.steps, &flat, list.allocator);
-
     var has_upload_after = false;
-    var i = flat.items.len;
+    checkArtipackedSteps(job.steps, &has_upload_after, list);
+}
+
+fn checkArtipackedSteps(steps: []const Step, has_upload_after: *bool, list: *DiagnosticList) void {
+    var i = steps.len;
     while (i > 0) {
         i -= 1;
-        const step = flat.items[i];
+        const step = &steps[i];
+        checkArtipackedSteps(step.nestedSteps(), has_upload_after, list);
         if (step.uses) |ref| {
             if (isAction(ref, "actions/upload-artifact")) {
-                has_upload_after = true;
+                has_upload_after.* = true;
                 continue;
             }
 
-            if (has_upload_after and isAction(ref, "actions/checkout") and
+            if (has_upload_after.* and isAction(ref, "actions/checkout") and
                 classifyPersistCredentials(step) != .explicit_false)
             {
                 var diag = Diagnostic{
@@ -2030,13 +2031,6 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
                 list.append(diag) catch return;
             }
         }
-    }
-}
-
-fn flattenSteps(steps: []const Step, buf: *std.ArrayList(*const Step), alloc: std.mem.Allocator) void {
-    for (steps) |*step| {
-        buf.append(alloc, step) catch return;
-        flattenSteps(step.nestedSteps(), buf, alloc);
     }
 }
 
