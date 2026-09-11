@@ -812,8 +812,8 @@ fn validateFunctionCall(
             const msg = switch (sig.shape) {
                 .odd_at_least => std.fmt.allocPrint(
                     allocator,
-                    "function '{s}' expects an odd number of arguments (condition/result pairs plus a fallback), got {d}",
-                    .{ name, arg_count },
+                    "function '{s}' expects an odd number of arguments of at least {d} (condition/result pairs plus a fallback), got {d}",
+                    .{ name, sig.min_args, arg_count },
                 ) catch "wrong number of arguments",
                 .range, .exact => if (sig.min_args == sig.max_args)
                     std.fmt.allocPrint(allocator, "function '{s}' expects {d} argument(s), got {d}", .{ name, sig.min_args, arg_count }) catch "wrong number of arguments"
@@ -2134,6 +2134,16 @@ test "validate: case() is a known function" {
 
 test "validate: case() with too few arguments" {
     try expectSingleRule("case(github.ref_name, 'main')", "EXPR005");
+    try expectSingleRule("case(github.ref_name)", "EXPR005");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    validateExpression(arena.allocator(), "case(github.ref_name)", Span.point(1, 1, 0), &list, 0);
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expect(std.mem.find(u8, list.get(0).message, "odd number") != null);
+    try std.testing.expect(std.mem.find(u8, list.get(0).message, "at least 3") != null);
 }
 
 test "validate: case() rejects an even argument count" {
