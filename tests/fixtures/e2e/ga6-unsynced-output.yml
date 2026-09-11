@@ -1,0 +1,20 @@
+# zghalint:expect EXPR019@18
+# zghalint:forbid SYN001
+name: unsynced background output
+on: workflow_dispatch
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Produce a value
+        id: producer
+        background: true
+        run: |
+          printf 'value=ready\n' >> "$GITHUB_OUTPUT"
+      - name: Consume too early
+        env:
+          RESULT: ${{ steps.producer.outputs.value }}
+        run: |
+          test "$RESULT" = "ready"

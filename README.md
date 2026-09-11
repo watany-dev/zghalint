@@ -201,7 +201,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **105 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **106 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (23 rules)
 
@@ -224,9 +224,9 @@ Missing timeouts, step naming, deprecated actions, cross-platform shell, concurr
 Overly broad scopes, missing job-level permissions, unknown scope names and
 invalid permission levels.
 
-### Expression Validation (12 rules)
+### Expression Validation (13 rules)
 
-`${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions, `steps.<id>` resolution.
+`${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions, `steps.<id>` resolution, unsynchronized background outputs.
 
 ### Dependencies (3 rules)
 

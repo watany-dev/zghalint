@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **105 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **106 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -460,6 +460,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR016 | function-availability | error | `success()` / `failure()` / `always()` / `cancelled()` outside an `if:`, or `hashFiles()` under a key that does not provide it |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
+| EXPR019 | background-output-before-wait | warning | `steps.<id>.outputs` refers to a `background:` step (or a `parallel:` sibling) that has not been waited on yet |
 
 `case()` is pairs of `(condition, result)` followed by a fallback, so EXPR005
 requires an odd argument count of at least 3. Even counts (4, 6, …) are
@@ -469,6 +470,25 @@ meaning.
 EXPR006 is substring matching, so it fires only when the first argument is a
 string. Array membership — `contains(github.event.pull_request.labels.*.name, 'label')`,
 `fromJSON('[...]')`, or a `TypeEnv` array — is exact and is not reported (#333).
+
+### EXPR019 background-output-before-wait
+
+A `background: true` step runs alongside later steps. Its `outputs` exist only
+after `wait:` / `wait-all:` (or after a `parallel:` group, which waits for its
+own children). Job-level `outputs:` and post-job cleanup already see an
+implicit wait-all, so a background step with no output reference is not
+reported. `conclusion` / `outcome` are not flagged. No autofix: inserting
+`wait` can hang the job on a long-running producer.
+
+```yaml
+steps:
+  - id: producer
+    background: true
+    run: echo value=ready >> "$GITHUB_OUTPUT"
+  - run: echo ${{ steps.producer.outputs.value }}  # warning: not waited
+  - wait: producer
+  - run: echo ${{ steps.producer.outputs.value }}  # ok
+```
 
 ## Dependency Rules (DEP)
 
