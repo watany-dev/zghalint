@@ -1,0 +1,13 @@
+# A path segment that starts with @ is a directory name, not a git ref.
+# bench:forbid obfuscated-uses
+name: build
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run the local tool
+        uses: ./tools/@scope/tool
