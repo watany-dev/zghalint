@@ -277,24 +277,30 @@ fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.permissions != null) return;
     if (workflow_types.hasEmptySection(job.empty_sections, "permissions")) return;
 
-    for (job.steps) |*step| {
-        if (step.uses) |action_ref| {
-            if (action_ref.is_local or action_ref.is_docker) continue;
+    const Ctx = struct {
+        job: *const Job,
+        diag_list: *DiagnosticList,
+        found: bool = false,
+        pub fn visit(self: *@This(), step: *const Step) void {
+            if (self.found) return;
+            const action_ref = step.uses orelse return;
+            if (action_ref.is_local or action_ref.is_docker) return;
+            const owner = action_ref.owner orelse return;
+            if (std.mem.eql(u8, owner, "actions") or std.mem.eql(u8, owner, "github")) return;
 
-            const owner = action_ref.owner orelse continue;
-            if (std.mem.eql(u8, owner, "actions") or std.mem.eql(u8, owner, "github")) continue;
-
-            diag_list.append(.{
+            self.diag_list.append(.{
                 .rule_id = "PERM002",
                 .severity = .warning,
                 .message = "Job uses third-party actions without job-level 'permissions'. Define explicit permissions to limit token scope.",
                 .span = spans.usesSpan(step),
                 .fix_hint = "Add a 'permissions' block to this job to restrict the GITHUB_TOKEN scope.",
-                .fix = buildJobPermissionsFix(diag_list, job),
+                .fix = buildJobPermissionsFix(self.diag_list, self.job),
             }) catch return;
-            return;
+            self.found = true;
         }
-    }
+    };
+    var ctx = Ctx{ .job = job, .diag_list = diag_list };
+    workflow_types.walkSteps(job.steps, &ctx);
 }
 
 /// A workflow-level `permissions:` that grants no write already limits

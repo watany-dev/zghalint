@@ -361,22 +361,102 @@ fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
 }
 
 fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
-    for (job.steps, 0..) |*step, i| {
-        const step_id = step.id orelse continue;
-        for (job.steps[0..i]) |*prior_step| {
-            const prior_id = prior_step.id orelse continue;
-            if (!std.ascii.eqlIgnoreCase(prior_id, step_id)) continue;
-            reportDuplicateId(
-                list,
-                step_id,
-                (prior_step.id_value_span orelse prior_step.span).start_line,
-                (step.id_value_span orelse step.span),
-                step_id_dup_fmt,
-                "use a unique step ID within the job",
-            );
-            break;
+    var seen: std.ArrayList(*const Step) = .empty;
+    defer seen.deinit(list.allocator);
+    checkDuplicateStepIdsIn(job.steps, &seen, list);
+}
+
+fn checkDuplicateStepIdsIn(steps: []const Step, seen: *std.ArrayList(*const Step), list: *DiagnosticList) void {
+    for (steps) |*step| {
+        if (step.id) |step_id| {
+            for (seen.items) |prior_step| {
+                const prior_id = prior_step.id orelse continue;
+                if (!std.ascii.eqlIgnoreCase(prior_id, step_id)) continue;
+                reportDuplicateId(
+                    list,
+                    step_id,
+                    (prior_step.id_value_span orelse prior_step.span).start_line,
+                    (step.id_value_span orelse step.span),
+                    step_id_dup_fmt,
+                    "use a unique step ID within the job",
+                );
+                break;
+            }
+            seen.append(list.allocator, step) catch return;
         }
+        checkDuplicateStepIdsIn(step.nestedSteps(), seen, list);
     }
+}
+
+fn isCheckableStepRef(id: []const u8) bool {
+    if (id.len == 0) return false;
+    if (std.mem.find(u8, id, "${{") != null) return false;
+    const first = id[0];
+    if (first != '_' and !std.ascii.isAlphabetic(first)) return false;
+    for (id[1..]) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return false;
+    }
+    return true;
+}
+
+fn collectStepIdsForControl(steps: []const Step, buf: *std.ArrayList([]const u8), alloc: std.mem.Allocator) void {
+    for (steps) |*step| {
+        if (step.id) |id| {
+            if (id.len > 0) buf.append(alloc, id) catch return;
+        }
+        collectStepIdsForControl(step.nestedSteps(), buf, alloc);
+    }
+}
+
+fn checkUndefinedStepControlRefs(job: *const Job, list: *DiagnosticList) void {
+    var ids: std.ArrayList([]const u8) = .empty;
+    defer ids.deinit(list.allocator);
+    collectStepIdsForControl(job.steps, &ids, list.allocator);
+    checkStepControlRefs(job.steps, ids.items, list);
+}
+
+fn checkStepControlRefs(steps: []const Step, ids: []const []const u8, list: *DiagnosticList) void {
+    for (steps) |*step| {
+        if (step.control) |control| switch (control) {
+            .wait => |refs| {
+                for (refs) |ref| reportUnknownStepRef(ref, "wait", ids, list);
+            },
+            .cancel => |ref| reportUnknownStepRef(ref, "cancel", ids, list),
+            .wait_all, .parallel => {},
+        };
+        checkStepControlRefs(step.nestedSteps(), ids, list);
+    }
+}
+
+fn reportUnknownStepRef(ref: workflow_types.StepRef, keyword: []const u8, ids: []const []const u8, list: *DiagnosticList) void {
+    if (!isCheckableStepRef(ref.id)) return;
+    for (ids) |id| {
+        if (std.ascii.eqlIgnoreCase(id, ref.id)) return;
+    }
+
+    const alloc = list.fixAllocator();
+    const nearest = if (ref.id.len == 0) null else util.didYouMean(ref.id, ids);
+    const suffix = if (nearest) |near|
+        std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{near}) catch ""
+    else
+        "";
+    const message = std.fmt.allocPrint(
+        alloc,
+        "\"{s}\" in \"{s}\" is not a step id in this job{s}",
+        .{ ref.id, keyword, suffix },
+    ) catch return;
+
+    list.append(.{
+        .rule_id = "SYN024",
+        .severity = .@"error",
+        .message = message,
+        .span = ref.span,
+        .fix_hint = "name a step id defined in this job, or drop the entry",
+        .fix = if (nearest) |near|
+            if (rename.isSimpleName(near)) rename.tokenFix(list, ref.span, ref.id, near) else null
+        else
+            null,
+    }) catch return;
 }
 
 fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
@@ -1464,6 +1544,14 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
         .check_workflow = &checkCacheMode,
+    },
+    .{
+        .id = "SYN024",
+        .name = "undefined-step-control-ref",
+        .description = "wait or cancel names a step id that is not defined in the job",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_job = &checkUndefinedStepControlRefs,
     },
 };
 
@@ -4649,6 +4737,59 @@ test "SYN023: documented modes and expressions are clean" {
     ;
 
     var diags = try runSyn023(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn024(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    for (wf.jobs) |*job| checkUndefinedStepControlRefs(job, &list);
+    return list;
+}
+
+test "SYN024: wait and cancel naming a missing step id are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        run: echo hi
+        \\        background: true
+        \\      - wait: produer
+        \\      - cancel: monitrr
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN024"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean \"producer\"") != null);
+    try testing.expect(diags.get(0).fix != null);
+}
+
+test "SYN024: wait targeting a defined step is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        run: echo hi
+        \\        background: true
+        \\      - wait: producer
+        \\      - wait: [producer]
+        \\      - wait-all:
+        \\      - cancel: producer
+    ;
+
+    var diags = try runSyn024(source);
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());

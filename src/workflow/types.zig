@@ -564,6 +564,33 @@ pub const Strategy = struct {
     matrix_key_present: bool = false,
 };
 
+/// Discriminator for a job step. `background: true` is a flag on `run` /
+/// `action` steps, not a kind of its own.
+pub const StepKind = enum {
+    run,
+    action,
+    wait,
+    wait_all,
+    cancel,
+    parallel,
+};
+
+/// A `wait:` / `cancel:` target, with the span of the YAML scalar so a
+/// missing id can be reported on the token rather than the whole step.
+pub const StepRef = struct {
+    id: []const u8,
+    span: yaml_types.Span,
+};
+
+/// Control-flow payload for `wait` / `wait-all` / `cancel` / `parallel`.
+/// Ordinary `run:` / `uses:` steps leave this null.
+pub const StepControl = union(enum) {
+    wait: []const StepRef,
+    wait_all,
+    cancel: StepRef,
+    parallel: []const Step,
+};
+
 pub const Step = struct {
     id: ?[]const u8 = null,
     /// Span of the `id:` scalar value (for SYN005/SYN006 diagnostics).
@@ -645,7 +672,35 @@ pub const Step = struct {
     env_last_entry_end_byte: ?usize = null,
     /// Column of the first `env:` key, which appended entries align with.
     env_key_col: ?u32 = null,
+    background: bool = false,
+    control: ?StepControl = null,
+
+    pub fn kind(self: *const Step) StepKind {
+        if (self.control) |c| return switch (c) {
+            .wait => .wait,
+            .wait_all => .wait_all,
+            .cancel => .cancel,
+            .parallel => .parallel,
+        };
+        if (self.uses != null) return .action;
+        return .run;
+    }
+
+    pub fn nestedSteps(self: *const Step) []const Step {
+        return switch (self.control orelse return &.{}) {
+            .parallel => |children| children,
+            else => &.{},
+        };
+    }
 };
+
+/// Depth-first visit of `steps` and every nested `parallel:` child.
+pub fn walkSteps(steps: []const Step, ctx: anytype) void {
+    for (steps) |*step| {
+        ctx.visit(step);
+        walkSteps(step.nestedSteps(), ctx);
+    }
+}
 
 pub const SecretsConfig = union(enum) {
     inherit,

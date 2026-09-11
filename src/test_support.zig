@@ -111,7 +111,13 @@ pub fn lintAndFix(
             switch (check) {
                 .workflow => |f| f(&wf, &diags),
                 .job => |f| for (wf.jobs) |*job| f(job, &diags),
-                .step => |f| for (wf.jobs) |*job| for (job.steps) |*step| f(step, &diags),
+                .step => |f| for (wf.jobs) |*job| workflow_types.walkSteps(job.steps, struct {
+                    f: *const fn (*const workflow_types.Step, *DiagnosticList) void,
+                    diags: *DiagnosticList,
+                    pub fn visit(self: @This(), step: *const workflow_types.Step) void {
+                        self.f(step, self.diags);
+                    }
+                }{ .f = f, .diags = &diags }),
                 .document => unreachable,
             }
         },

@@ -1,0 +1,41 @@
+# zghalint:forbid SYN001 SYN004 SYN024
+name: accepted ga5 syntax
+on: workflow_dispatch
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Produce a value
+        id: producer
+        background: true
+        run: |
+          printf 'value=ready\n' >> "$GITHUB_OUTPUT"
+      - name: Perform independent work
+        run: |
+          printf 'Independent work\n'
+      - name: Wait for the producer
+        wait: producer
+      - name: Consume the value
+        env:
+          RESULT: ${{ steps.producer.outputs.value }}
+        run: |
+          test "$RESULT" = "ready"
+      - name: Start services
+        id: db
+        run: echo start
+        background: true
+      - name: Start cache
+        id: cache
+        run: echo cache
+        background: true
+      - name: Wait for every background step
+        wait-all:
+      - name: Stop the producer
+        cancel: producer
+      - parallel:
+          - name: Build frontend
+            run: echo frontend
+          - name: Build backend
+            run: echo backend

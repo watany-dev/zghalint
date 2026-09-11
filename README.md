@@ -201,7 +201,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **104 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **105 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (23 rules)
 
@@ -245,7 +245,7 @@ Required keys in `action.yml` / `action.yaml`, supported and deprecated
 `runs.using` runtimes, unknown metadata keys, and the shape of `inputs` /
 `outputs` definitions.
 
-### Syntax (20 rules)
+### Syntax (21 rules)
 
 Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `cache-mode` values, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency, workflow files with no content at all.
 

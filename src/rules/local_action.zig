@@ -237,7 +237,14 @@ pub fn checkStepAmongSteps(steps: []const Step, index: usize, list: *DiagnosticL
 }
 
 fn checkJobLocalActionInputs(job: *const engine.Job, list: *DiagnosticList) void {
-    for (job.steps, 0..) |_, index| checkStepAmongSteps(job.steps, index, list);
+    checkStepsLocalActionInputs(job.steps, list);
+}
+
+fn checkStepsLocalActionInputs(steps: []const Step, list: *DiagnosticList) void {
+    for (steps, 0..) |_, index| {
+        checkStepAmongSteps(steps, index, list);
+        checkStepsLocalActionInputs(steps[index].nestedSteps(), list);
+    }
 }
 
 /// True when `steps[index]` uses a local action under a directory that an
