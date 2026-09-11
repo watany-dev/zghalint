@@ -10,6 +10,7 @@ const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const rename = @import("rename.zig");
+const type_validation = @import("../workflow/type_validation.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
@@ -1174,6 +1175,45 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
+fn reportInvalidCacheMode(
+    list: *DiagnosticList,
+    value: []const u8,
+    span: Span,
+) void {
+    var suffix_buf: [64]u8 = undefined;
+    const suggestion = util.didYouMean(value, &workflow_types.cache_mode_values);
+    const suffix = if (suggestion) |s|
+        std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
+    else
+        "";
+
+    list.append(.{
+        .rule_id = "SYN023",
+        .severity = .@"error",
+        .message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "invalid cache-mode \"{s}\". expected \"none\", \"read\", \"write\" or \"write-only\"{s}",
+            .{ value, suffix },
+        ) catch "invalid cache-mode",
+        .span = span,
+        .fix_hint = "use 'none', 'read', 'write', or 'write-only'",
+        .fix = if (suggestion) |s| rename.tokenFix(list, span, value, s) else null,
+    }) catch return;
+}
+
+fn checkCacheMode(wf: *const Workflow, list: *DiagnosticList) void {
+    if (wf.cache_mode) |value| {
+        if (!type_validation.containsExpression(value) and !workflow_types.isCacheMode(value)) {
+            if (wf.cache_mode_span) |span| reportInvalidCacheMode(list, value, span);
+        }
+    }
+    for (wf.jobs) |job| {
+        const value = job.cache_mode orelse continue;
+        if (type_validation.containsExpression(value) or workflow_types.isCacheMode(value)) continue;
+        if (job.cache_mode_span) |span| reportInvalidCacheMode(list, value, span);
+    }
+}
+
 fn workflowDispatchInputMessage(
     alloc: std.mem.Allocator,
     problem: workflow_types.WorkflowDispatchInputProblem,
@@ -1416,6 +1456,14 @@ pub const rules = [_]Rule{
         .description = "the workflow file has no content at all",
         .severity = .@"error",
         .category = .syntax,
+    },
+    .{
+        .id = "SYN023",
+        .name = "invalid-cache-mode",
+        .description = "cache-mode is not one of none, read, write, or write-only",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkCacheMode,
     },
 };
 
@@ -4533,6 +4581,69 @@ test "SYN016: IANA names and expression values are clean" {
     ;
 
     var diags = try runScheduleRules(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn023(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkCacheMode(&wf, &list);
+    return list;
+}
+
+test "SYN023: unknown cache-mode values are reported" {
+    const source =
+        \\on: push
+        \\cache-mode: reed
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: readwrite
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn023(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN023"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean \"read\"") != null);
+    try testing.expectEqual(@as(usize, 2), diags.get(0).span.start_line);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"readwrite\"") != null);
+}
+
+test "SYN023: documented modes and expressions are clean" {
+    const source =
+        \\on: push
+        \\cache-mode: write
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: read
+        \\    steps:
+        \\      - run: echo
+        \\  b:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: write-only
+        \\    steps:
+        \\      - run: echo
+        \\  c:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: none
+        \\    steps:
+        \\      - run: echo
+        \\  d:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: ${{ inputs.mode }}
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn023(source);
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());

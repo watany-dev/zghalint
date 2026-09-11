@@ -3494,6 +3494,18 @@ test "EXPR003: job context is strict" {
     try expectNoDiagnostics("job.status");
     try expectNoDiagnostics("job.container.id");
     try expectNoDiagnostics("job.services.redis.ports['6379']");
+    try expectNoDiagnostics("job.workflow_ref");
+    try expectNoDiagnostics("job.workflow_sha");
+    try expectNoDiagnostics("job.workflow_repository");
+    try expectNoDiagnostics("job.workflow_file_path");
+}
+
+test "EXPR003: job.workflow_* is not github.workflow_*" {
+    try expectNoDiagnostics("github.workflow_ref");
+    try expectNoDiagnostics("github.workflow_sha");
+    try expectSingleRule("github.workflow_repository", "EXPR003");
+    try expectSingleRule("github.workflow_file_path", "EXPR003");
+    try expectSingleRule("job.workflow", "EXPR003");
 }
 
 test "EXPR003: nested unknown property message names the receiver" {

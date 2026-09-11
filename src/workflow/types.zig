@@ -87,6 +87,7 @@ pub const Permissions = struct {
     repository_projects: ?PermissionLevel = null,
     security_events: ?PermissionLevel = null,
     statuses: ?PermissionLevel = null,
+    vulnerability_alerts: ?PermissionLevel = null,
     read_all: bool = false,
     write_all: bool = false,
     /// Span of the permissions value in the YAML source (for autofix)
@@ -113,6 +114,7 @@ pub const PermissionsMeta = struct {
     repository_projects: ?yaml_types.Span = null,
     security_events: ?yaml_types.Span = null,
     statuses: ?yaml_types.Span = null,
+    vulnerability_alerts: ?yaml_types.Span = null,
 };
 
 /// The `permissions:` scope keys, in schema order. `Permissions` and
@@ -140,6 +142,22 @@ pub const permission_scope_keys: []const []const u8 = blk: {
     const frozen = keys;
     break :blk &frozen;
 };
+
+/// `vulnerability-alerts` accepts `read` / `none` only (2026-09-03).
+pub fn isAllowedPermissionLevel(scope: []const u8, level: PermissionLevel) bool {
+    if (std.mem.eql(u8, scope, "vulnerability-alerts")) return level != .write;
+    return true;
+}
+
+/// `cache-mode:` at workflow or job level (2026-09-10). Job overrides workflow.
+pub const cache_mode_values = [_][]const u8{ "none", "read", "write", "write-only" };
+
+pub fn isCacheMode(value: []const u8) bool {
+    for (cache_mode_values) |allowed| {
+        if (std.mem.eql(u8, value, allowed)) return true;
+    }
+    return false;
+}
 
 pub const PermissionProblemKind = enum {
     unknown_scope,
@@ -728,6 +746,10 @@ pub const Job = struct {
     runs_on_labels: []const []const u8 = &.{},
     /// Value spans of `runs_on_labels`, parallel to it. Empty when absent.
     runs_on_label_spans: []const yaml_types.Span = &.{},
+    /// `cache-mode:` scalar as written. Invalid values are kept so SYN023 can
+    /// report them instead of dropping the key.
+    cache_mode: ?[]const u8 = null,
+    cache_mode_span: ?yaml_types.Span = null,
 };
 
 pub const Workflow = struct {
@@ -758,6 +780,10 @@ pub const Workflow = struct {
     concurrency_insertion_byte: ?usize = null,
     /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
     yaml_root: ?yaml_types.Node = null,
+    /// `cache-mode:` scalar as written. Invalid values are kept so SYN023 can
+    /// report them instead of dropping the key.
+    cache_mode: ?[]const u8 = null,
+    cache_mode_span: ?yaml_types.Span = null,
 
     /// Many rules only apply to a single trigger, so they gate on this before
     /// walking the jobs.
@@ -860,4 +886,20 @@ test "CallableInputType.inferFromScalar reads a plain default" {
 test "CallableInputType.inferFromScalar treats a quoted default as a string" {
     try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("true", .double_quoted));
     try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("3", .single_quoted));
+}
+
+test "cache_mode_values matches the documented modes" {
+    try std.testing.expect(isCacheMode("none"));
+    try std.testing.expect(isCacheMode("read"));
+    try std.testing.expect(isCacheMode("write"));
+    try std.testing.expect(isCacheMode("write-only"));
+    try std.testing.expect(!isCacheMode("read-write"));
+    try std.testing.expect(!isCacheMode("writeonly"));
+}
+
+test "vulnerability-alerts rejects write" {
+    try std.testing.expect(!isAllowedPermissionLevel("vulnerability-alerts", .write));
+    try std.testing.expect(isAllowedPermissionLevel("vulnerability-alerts", .read));
+    try std.testing.expect(isAllowedPermissionLevel("vulnerability-alerts", .none));
+    try std.testing.expect(isAllowedPermissionLevel("contents", .write));
 }

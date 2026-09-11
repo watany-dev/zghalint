@@ -89,6 +89,8 @@ Two checks run on all fixtures, with no directive needed:
 | `perm001-workflow-level-grant.yml` | #285: the same scopes at workflow level, plus `contents: write` |
 | `perm002-workflow-level-read.yml` | #334 FP guard: workflow-level `contents: read` covers jobs |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
+| `ga1-accepted-syntax.yml` | #428: `cache-mode` / `vulnerability-alerts: read\|none` / `job.workflow_*` stay quiet |
+| `ga1-rejected-syntax.yml` | #428: unknown `cache-mode`, `vulnerability-alerts: write`, `github.workflow_repository` |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |
 | `dep004-checkout-path.yml` | #305 FP guard: a local action under an `actions/checkout` `path:` only exists on the runner |
