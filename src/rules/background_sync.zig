@@ -101,7 +101,7 @@ const Visitor = struct {
             .severity = .warning,
             .message = message,
             .span = span,
-            .fix_hint = "add a `wait:` or `wait-all:` step before reading those outputs",
+            .fix_hint = "wait for the referenced step before reading its outputs",
         }) catch return;
     }
 };
@@ -512,6 +512,40 @@ test "EXPR019: wait-all inside parallel clears outer pending afterwards" {
         \\        run: echo value=ready >> "$GITHUB_OUTPUT"
         \\      - parallel:
         \\          - wait-all:
+        \\          - run: echo other
+        \\      - run: echo "${{ steps.producer.outputs.value }}"
+    );
+}
+
+test "EXPR019: nested parallel still treats an outer sibling as unsynced" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo v=1 >> "$GITHUB_OUTPUT"
+        \\          - parallel:
+        \\              - run: echo "${{ steps.frontend.outputs.v }}"
+        \\              - run: echo other
+    ,
+        "\"frontend\"",
+    );
+}
+
+test "EXPR019: a background child of parallel is available after the group" {
+    try expectNoExpr019(
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: producer
+        \\            background: true
+        \\            run: echo value=ready >> "$GITHUB_OUTPUT"
         \\          - run: echo other
         \\      - run: echo "${{ steps.producer.outputs.value }}"
     );
