@@ -151,6 +151,23 @@
   上げるときはチェックサムを取り直し、`bench.yml` の perf ジョブで
   `scripts/bench.py --perf` を回して §4 に記録する
 
+## actionlint / zizmor の版
+
+三者比較と自リポジトリ lint が同じ版を使う。ピンは次の 2 箇所に置く。
+
+| ツール | 真 | 写し |
+|---|---|---|
+| actionlint | `.github/workflows/ci.yml` の `ACTIONLINT_VERSION` / `ACTIONLINT_SHA256`（linux amd64） | `.github/workflows/bench.yml` の同名 env（score ジョブと perf ジョブの 2 箇所） |
+| zizmor | `.github/lint-requirements.txt` の `zizmor==` | `ci.yml` と `bench.yml` がこのファイルを `pip install -r` する |
+
+手順:
+
+1. actionlint は GitHub Releases の `checksums.txt` から `linux_amd64.tar.gz` の SHA256 を取る
+2. ci.yml と bench.yml（2 箇所）を同じ VERSION / SHA256 に揃える
+3. zizmor は `lint-requirements.txt` だけを上げる
+4. `python3 scripts/bench.py` を回し、新たな FP / FN は別 issue にする。本更新で parity 差分を黙って吸収しない
+5. `docs/design/external-linter-parity.md` §2 の版表を同じ数字に直す
+
 ## popular actions メタデータの更新
 
 **真は各アクションの `action.yml`。** それを読んで生成したスナップショットが
