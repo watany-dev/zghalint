@@ -165,6 +165,11 @@ fn checkPermissionsScope(
     }
 }
 
+fn expectedPermissionLevels(scope: []const u8) []const u8 {
+    if (std.mem.eql(u8, scope, "vulnerability-alerts")) return "\"read\" or \"none\"";
+    return "\"read\", \"write\" or \"none\"";
+}
+
 fn permissionProblemMessage(
     alloc: std.mem.Allocator,
     problem: workflow_types.PermissionProblem,
@@ -186,12 +191,12 @@ fn permissionProblemMessage(
         // is no level to quote back.
         .invalid_level => if (problem.text.len == 0) std.fmt.allocPrint(
             alloc,
-            "missing permission level for \"{s}\". expected \"read\", \"write\" or \"none\"",
-            .{problem.scope},
+            "missing permission level for \"{s}\". expected {s}",
+            .{ problem.scope, expectedPermissionLevels(problem.scope) },
         ) catch null else std.fmt.allocPrint(
             alloc,
-            "invalid permission level \"{s}\" for \"{s}\". expected \"read\", \"write\" or \"none\"",
-            .{ problem.text, problem.scope },
+            "invalid permission level \"{s}\" for \"{s}\". expected {s}",
+            .{ problem.text, problem.scope, expectedPermissionLevels(problem.scope) },
         ) catch null,
         .invalid_all => std.fmt.allocPrint(
             alloc,
@@ -215,7 +220,10 @@ fn reportPermissionProblems(
             .span = problem.span,
             .fix_hint = switch (problem.kind) {
                 .unknown_scope => "use one of the permission scopes GitHub Actions defines.",
-                .invalid_level => "use 'read', 'write' or 'none' as the permission level.",
+                .invalid_level => if (std.mem.eql(u8, problem.scope, "vulnerability-alerts"))
+                    "use 'read' or 'none' as the permission level."
+                else
+                    "use 'read', 'write' or 'none' as the permission level.",
                 .invalid_all => "use 'read-all' or 'write-all', or list scopes individually.",
             },
             .fix = unknownScopeFix(diag_list, problem),
@@ -1052,6 +1060,7 @@ test "PERM003: valid permissions produce no diagnostics" {
         \\      id-token: write
         \\      artifact-metadata: read
         \\      models: read
+        \\      vulnerability-alerts: read
         \\    steps:
         \\      - run: echo hi
         \\  other:
@@ -1063,4 +1072,30 @@ test "PERM003: valid permissions produce no diagnostics" {
     , &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERM003: vulnerability-alerts write is an invalid level" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions:
+        \\  vulnerability-alerts: write
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("PERM003", diags.get(0).rule_id);
+    try std.testing.expectEqualStrings(
+        "invalid permission level \"write\" for \"vulnerability-alerts\". expected \"read\" or \"none\"",
+        diags.get(0).message,
+    );
 }

@@ -1,0 +1,17 @@
+# zghalint:expect SYN023@7 SYN023@12 PERM003@6 EXPR003@17
+# zghalint:forbid SYN001
+name: rejected ga1 syntax
+on: push
+permissions:
+  vulnerability-alerts: write
+cache-mode: reed
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    cache-mode: readwrite
+    steps:
+      - name: Shared names stay on their context
+        run: echo ${{ github.workflow_ref }} ${{ job.workflow_ref }}
+      - name: job-only property is unknown on github
+        run: echo ${{ github.workflow_repository }}

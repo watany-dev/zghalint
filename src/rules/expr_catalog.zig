@@ -233,6 +233,10 @@ pub const job: Type = .{
         .{ .name = "container", .ty = &job_container },
         .{ .name = "services", .ty = &job_services },
         .{ .name = "status", .ty = string },
+        .{ .name = "workflow_file_path", .ty = string },
+        .{ .name = "workflow_ref", .ty = string },
+        .{ .name = "workflow_repository", .ty = string },
+        .{ .name = "workflow_sha", .ty = string },
     },
 };
 
@@ -305,6 +309,14 @@ pub const ArgKind = enum {
     }
 };
 
+/// How `min_args` / `max_args` are interpreted. `case()` is pairs plus a
+/// fallback, so the count must be odd and at least 3.
+pub const ArgCountShape = enum {
+    range,
+    odd_at_least,
+    exact,
+};
+
 /// One entry per function: every overload of a GitHub Actions function shares
 /// a return type, so only the accepted argument count varies.
 pub const FuncSig = struct {
@@ -312,6 +324,7 @@ pub const FuncSig = struct {
     min_args: u8,
     max_args: u8,
     ret: TypeRef,
+    shape: ArgCountShape = .range,
     /// Types of the leading parameters, positionally.
     args: []const ArgKind = &.{},
     /// Type of every argument past `args`, for the variadic tail.
@@ -321,6 +334,14 @@ pub const FuncSig = struct {
         if (index < self.args.len) return self.args[index];
         return self.rest;
     }
+
+    pub fn acceptsArgCount(self: *const FuncSig, count: usize) bool {
+        if (count < self.min_args or count > self.max_args) return false;
+        return switch (self.shape) {
+            .range, .exact => true,
+            .odd_at_least => count % 2 == 1,
+        };
+    }
 };
 
 /// Sorted by name. Lookup is ASCII case-insensitive, matching GitHub Actions
@@ -328,7 +349,7 @@ pub const FuncSig = struct {
 const functions = [_]FuncSig{
     .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },
-    .{ .name = "case", .min_args = 3, .max_args = 255, .ret = any },
+    .{ .name = "case", .min_args = 3, .max_args = 255, .shape = .odd_at_least, .ret = any },
     .{ .name = "contains", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{.string_or_array} },
     .{ .name = "endsWith", .min_args = 2, .max_args = 2, .ret = boolean, .args = &.{ .string, .string } },
     .{ .name = "failure", .min_args = 0, .max_args = 0, .ret = boolean },
@@ -397,6 +418,10 @@ test "catalog: github property types" {
     try std.testing.expectEqual(@as(?TypeRef, number), t.findProp(&github, "retention_days"));
     try std.testing.expectEqual(@as(?TypeRef, &github_event), t.findProp(&github, "event"));
     try std.testing.expectEqual(@as(?TypeRef, null), t.findProp(&github, "reposiory"));
+    try std.testing.expectEqual(@as(?TypeRef, string), t.findProp(&github, "workflow_ref"));
+    try std.testing.expectEqual(@as(?TypeRef, null), t.findProp(&github, "workflow_repository"));
+    try std.testing.expectEqual(@as(?TypeRef, string), t.findProp(&job, "workflow_ref"));
+    try std.testing.expectEqual(@as(?TypeRef, string), t.findProp(&job, "workflow_repository"));
 }
 
 test "catalog: github.event and every curated node stay loose" {
@@ -422,6 +447,17 @@ test "catalog: arity of overloaded join" {
     const sig = lookupFunction("join").?;
     try std.testing.expectEqual(@as(u8, 1), sig.min_args);
     try std.testing.expectEqual(@as(u8, 2), sig.max_args);
+}
+
+test "catalog: case() accepts an odd count of at least 3" {
+    const sig = lookupFunction("case").?;
+    try std.testing.expectEqual(ArgCountShape.odd_at_least, sig.shape);
+    try std.testing.expect(!sig.acceptsArgCount(2));
+    try std.testing.expect(sig.acceptsArgCount(3));
+    try std.testing.expect(!sig.acceptsArgCount(4));
+    try std.testing.expect(sig.acceptsArgCount(5));
+    try std.testing.expect(!sig.acceptsArgCount(6));
+    try std.testing.expect(sig.acceptsArgCount(7));
 }
 
 test "catalog: argKind covers fixed and variadic parameters" {

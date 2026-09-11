@@ -13,6 +13,31 @@ each ID means.
 
 ## [Unreleased]
 
+### Added
+
+- SYN023 reports an unknown `cache-mode` at workflow or job level. The
+  documented values are `none` / `read` / `write` / `write-only` (#428).
+
+### Changed
+
+- `cache-mode` is a known workflow and job key, so it no longer fires SYN001
+  (#428).
+- `permissions.vulnerability-alerts` is a known scope. `read` and `none` are
+  accepted; `write` is PERM003 (#428).
+- `job.workflow_ref` / `job.workflow_sha` / `job.workflow_repository` /
+  `job.workflow_file_path` are known job-context properties and no longer
+  fire EXPR003. They are not the same as `github.workflow_ref` /
+  `github.workflow_sha` (#428).
+- EXPR005 rejects `case()` calls with an even number of arguments. `case()` is
+  pairs of `(condition, result)` plus a fallback, so the count must be odd and
+  at least 3 (#429).
+- RUNNER001 treats `macos-13` as retired (removed 2025-12-04). `macos-11` /
+  `macos-12` / `macos-13` now rewrite to `macos-15`, a current catalog entry
+  (#430). Deprecated and retired replacements are checked at compile time so
+  they cannot point at another retired label.
+- CI and bench now pin actionlint 1.7.12 and zizmor 1.30.1, the versions used
+  as the comparison baseline (#431).
+
 ## [0.0.1] - 2026-09-10
 
 First public release. Preceded by prereleases `v0.0.1-rc.1` and `v0.0.1-rc.2`.

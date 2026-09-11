@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **103 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **104 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -20,7 +20,7 @@ zghalint includes **103 rules** across 11 categories to help you write secure, e
 ないため `--fix-unsafe` でのみ適用する。候補が定まらない場合は診断のみで、
 autofix は付かない。
 
-対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021、EXPR010–EXPR014、
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 
 ---
@@ -427,6 +427,9 @@ write scope (`contents: read`, `read-all`, `{}`). The token is already
 minimized for every job. `write-all` or any `: write` at workflow level still
 warns, because those jobs should narrow the grant (#334).
 
+`permissions.vulnerability-alerts` accepts `read` / `none` only. `write` is
+PERM003, not a broad-write finding.
+
 ## Expression Validation Rules (EXPR)
 
 Validate `${{ }}` expression syntax, context access, and function calls.
@@ -443,7 +446,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR002 | unknown-context | error | Unknown context reference (e.g. `${{ foo.bar }}`) |
 | EXPR003 | unknown-property | warning | Unknown context property at any depth (e.g. `${{ github.unknown }}`, `${{ job.container.i }}`) |
 | EXPR004 | unknown-function | error | Unknown function name |
-| EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments |
+| EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments (`case()` also requires an odd count: condition/result pairs plus a fallback) |
 | EXPR006 | unsound-contains | warning | `contains()` uses substring matching which may match unintended values |
 | EXPR007 | unsound-condition | warning | Bare literal in a condition's logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
@@ -457,6 +460,11 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR016 | function-availability | error | `success()` / `failure()` / `always()` / `cancelled()` outside an `if:`, or `hashFiles()` under a key that does not provide it |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
+
+`case()` is pairs of `(condition, result)` followed by a fallback, so EXPR005
+requires an odd argument count of at least 3. Even counts (4, 6, …) are
+rejected. No autofix: inventing a fallback would change the expression's
+meaning.
 
 EXPR006 is substring matching, so it fires only when the first argument is a
 string. Array membership — `contains(github.event.pull_request.labels.*.name, 'label')`,
@@ -623,6 +631,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN020 | empty-workflow | error | ワークフローファイルに中身が無い（コメントと空白だけ、または空のマッピング） |
 | SYN021 | undefined-needs-job | error | `needs:` がこのワークフローに無いジョブ名を指している（`--fix` で綴りを修正） |
 | SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
+| SYN023 | invalid-cache-mode | error | `cache-mode` が `none` / `read` / `write` / `write-only` のいずれでもない |
 
 ### SYN001 unknown-key
 
@@ -1094,6 +1103,22 @@ jobs:
 深さ優先探索で戻り辺を 1 本見つけるごとに 1 件報告する。閉路へ流れ込むだけの
 ジョブ（`entry: needs: [a]`）は閉路の一部ではないので報告しない。指摘の位置は
 閉路が戻ってくるジョブのキーで、メッセージには閉路の並びをそのまま載せる。
+
+### SYN023 invalid-cache-mode
+
+`cache-mode` は workflow または job で指定し、job の値が workflow の値を上書きする。
+受理されるのは `none` / `read` / `write` / `write-only` だけ。未知の値は実行時に
+拒否されるので error とし、編集距離 2 以内で候補が一意なら `did you mean` と
+`--fix` の rename を付ける。値の推論（`read-write` → `write` など）はしない。
+
+```yaml
+cache-mode: reed          # error: did you mean "read"?
+jobs:
+  build:
+    cache-mode: readwrite # error: not a documented mode
+```
+
+`${{ }}` 式で作った値は実行時まで決まらないので検査しない。
 
 ## Action Metadata Rules (ACT)
 
