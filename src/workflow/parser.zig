@@ -1206,6 +1206,53 @@ fn blockScalarIndentationOpen(value: []const u8, key_column: u32) bool {
     return true;
 }
 
+fn parseStepControl(ctx: *ParseContext, m: Mapping, step: *types.Step) ParseError!void {
+    if (m.get("wait")) |n| {
+        const parsed = try parseStringArrayWithSpans(ctx.allocator, n);
+        const refs = try ctx.allocator.alloc(types.StepRef, parsed.values.len);
+        for (parsed.values, parsed.spans, refs) |id, span, *ref| {
+            ref.* = .{ .id = id, .span = span };
+        }
+        step.control = .{ .wait = refs };
+        return;
+    }
+    if (m.get("wait-all") != null) {
+        step.control = .wait_all;
+        return;
+    }
+    if (m.get("cancel")) |n| {
+        switch (n) {
+            .scalar => |s| {
+                step.control = .{ .cancel = .{ .id = s.value, .span = s.span } };
+            },
+            else => {
+                if (ctx.type_mismatches) |list| {
+                    list.append(ctx.allocator, .{
+                        .field = "cancel",
+                        .expected = "string",
+                        .actual = switch (n) {
+                            .mapping => "mapping",
+                            .sequence => "sequence",
+                            .null_value => "null",
+                            .scalar => "string",
+                        },
+                        .span = n.getSpan(),
+                    }) catch {};
+                }
+                step.control = .{ .cancel = .{ .id = "", .span = n.getSpan() } };
+            },
+        }
+        return;
+    }
+    if (m.get("parallel")) |n| {
+        if (!type_validation.checkSequence(n, "parallel", ctx.type_mismatches, ctx.allocator)) {
+            step.control = .{ .parallel = &.{} };
+            return;
+        }
+        step.control = .{ .parallel = try parseSteps(ctx, n, keyLine(m, "parallel")) };
+    }
+}
+
 fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     const m = switch (node) {
         .mapping => |mp| mp,
@@ -1313,6 +1360,17 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             ctx.allocator,
         );
     }
+    if (m.get("background")) |n| {
+        if (type_validation.checkBool(
+            n,
+            "background",
+            ctx.type_mismatches,
+            ctx.allocator,
+        )) |value| {
+            step.background = value;
+        }
+    }
+    try parseStepControl(ctx, m, &step);
     var empty = std.ArrayList(types.EmptySection).empty;
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
@@ -2168,6 +2226,80 @@ test "parseStep with run" {
     const step = try parseStep(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("make build", step.run.?);
     try testing.expectEqualStrings("bash", step.shell.?);
+}
+
+test "parseStep accepts background wait wait-all cancel and parallel" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        background: true
+        \\        run: echo value=ready >> "$GITHUB_OUTPUT"
+        \\      - name: Wait for producer
+        \\        wait: producer
+        \\      - wait-all:
+        \\      - cancel: producer
+        \\      - parallel:
+        \\          - run: echo frontend
+        \\          - run: echo backend
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqual(@as(usize, 5), wf.jobs[0].steps.len);
+
+    const producer = wf.jobs[0].steps[0];
+    try testing.expect(producer.background);
+    try testing.expectEqual(types.StepKind.run, producer.kind());
+
+    const wait_step = wf.jobs[0].steps[1];
+    try testing.expectEqual(types.StepKind.wait, wait_step.kind());
+    const wait_refs = wait_step.control.?.wait;
+    try testing.expectEqual(@as(usize, 1), wait_refs.len);
+    try testing.expectEqualStrings("producer", wait_refs[0].id);
+
+    try testing.expectEqual(types.StepKind.wait_all, wf.jobs[0].steps[2].kind());
+    try testing.expectEqual(types.StepKind.cancel, wf.jobs[0].steps[3].kind());
+    try testing.expectEqualStrings("producer", wf.jobs[0].steps[3].control.?.cancel.id);
+
+    const parallel = wf.jobs[0].steps[4];
+    try testing.expectEqual(types.StepKind.parallel, parallel.kind());
+    try testing.expectEqual(@as(usize, 2), parallel.nestedSteps().len);
+    try testing.expectEqualStrings("echo frontend", parallel.nestedSteps()[0].run.?);
+    try testing.expectEqualStrings("echo backend", parallel.nestedSteps()[1].run.?);
+    try testing.expectEqual(@as(usize, 0), wf.unknown_keys.len);
+}
+
+test "parseStep records a type mismatch for a non-scalar cancel" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - cancel: [producer]
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    var failure: ?Failure = null;
+    const wf = try parseWorkflowTracked(alloc, try yp.parse(), &failure);
+    try testing.expectEqual(types.StepKind.cancel, wf.jobs[0].steps[0].kind());
+    try testing.expectEqualStrings("", wf.jobs[0].steps[0].control.?.cancel.id);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("cancel", wf.type_mismatches[0].field);
 }
 
 test "parseJob with needs" {

@@ -53,6 +53,7 @@ pub const job_keys = [_][]const u8{
 };
 
 pub const step_action_keys = [_][]const u8{
+    "background",
     "continue-on-error",
     "env",
     "id",
@@ -64,6 +65,7 @@ pub const step_action_keys = [_][]const u8{
 };
 
 pub const step_run_keys = [_][]const u8{
+    "background",
     "continue-on-error",
     "env",
     "id",
@@ -75,16 +77,48 @@ pub const step_run_keys = [_][]const u8{
     "working-directory",
 };
 
+pub const step_wait_keys = [_][]const u8{
+    "continue-on-error",
+    "id",
+    "name",
+    "wait",
+};
+
+pub const step_wait_all_keys = [_][]const u8{
+    "continue-on-error",
+    "id",
+    "name",
+    "wait-all",
+};
+
+pub const step_cancel_keys = [_][]const u8{
+    "cancel",
+    "continue-on-error",
+    "id",
+    "name",
+};
+
+pub const step_parallel_keys = [_][]const u8{
+    "id",
+    "name",
+    "parallel",
+};
+
 pub const step_all_keys = [_][]const u8{
+    "background",
+    "cancel",
     "continue-on-error",
     "env",
     "id",
     "if",
     "name",
+    "parallel",
     "run",
     "shell",
     "timeout-minutes",
     "uses",
+    "wait",
+    "wait-all",
     "with",
     "working-directory",
 };
@@ -187,6 +221,10 @@ pub fn rejectsValue(key: []const u8, value: yaml.Node) bool {
 }
 
 pub fn stepExpectedKeys(m: yaml.Mapping) []const []const u8 {
+    if (m.get("wait") != null) return &step_wait_keys;
+    if (m.get("wait-all") != null) return &step_wait_all_keys;
+    if (m.get("cancel") != null) return &step_cancel_keys;
+    if (m.get("parallel") != null) return &step_parallel_keys;
     const has_run = m.get("run") != null;
     const has_uses = m.get("uses") != null;
     if (has_run) return &step_run_keys;
@@ -268,6 +306,10 @@ test "schema key tables are sorted" {
         &job_keys,
         &step_action_keys,
         &step_run_keys,
+        &step_wait_keys,
+        &step_wait_all_keys,
+        &step_cancel_keys,
+        &step_parallel_keys,
         &step_all_keys,
         &strategy_keys,
         &defaults_keys,
@@ -311,4 +353,28 @@ test "stepExpectedKeys prefers run over uses" {
         try std.testing.expect(isAllowedKey(key, keys));
     }
     try std.testing.expect(!isAllowedKey("with", keys));
+}
+
+test "stepExpectedKeys accepts background on run and uses" {
+    var run_entries = [_]yaml.MappingEntry{
+        .{
+            .key = .{ .value = "run", .style = .plain, .span = yaml.Span.point(1, 1, 0) },
+            .value = .{ .scalar = .{ .value = "echo", .style = .plain, .span = yaml.Span.point(1, 1, 0) } },
+            .span = yaml.Span.point(1, 1, 0),
+        },
+    };
+    const run_keys = stepExpectedKeys(.{ .entries = &run_entries, .span = yaml.Span.point(1, 1, 0) });
+    try std.testing.expect(isAllowedKey("background", run_keys));
+
+    var wait_entries = [_]yaml.MappingEntry{
+        .{
+            .key = .{ .value = "wait", .style = .plain, .span = yaml.Span.point(1, 1, 0) },
+            .value = .{ .scalar = .{ .value = "producer", .style = .plain, .span = yaml.Span.point(1, 1, 0) } },
+            .span = yaml.Span.point(1, 1, 0),
+        },
+    };
+    const wait_keys = stepExpectedKeys(.{ .entries = &wait_entries, .span = yaml.Span.point(1, 1, 0) });
+    try std.testing.expect(isAllowedKey("wait", wait_keys));
+    try std.testing.expect(!isAllowedKey("if", wait_keys));
+    try std.testing.expect(!isAllowedKey("run", wait_keys));
 }

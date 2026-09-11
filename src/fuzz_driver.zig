@@ -112,6 +112,10 @@ const builtin_seeds: []const []const u8 = &.{
     // Job sections no seed reaches: a matrix with include / exclude, an
     // environment, a service container and job-level defaults and outputs.
     "on: push\njobs:\n  b:\n    runs-on: ${{ matrix.os }}\n    environment:\n      name: prod\n      url: https://x\n    defaults:\n      run:\n        shell: bash\n        working-directory: ./sub\n    outputs:\n      o: ${{ steps.s.outputs.v }}\n    strategy:\n      fail-fast: false\n      max-parallel: 2\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n        include:\n          - os: ubuntu-latest\n            n: 20\n        exclude:\n          - os: macos-latest\n    services:\n      db:\n        image: postgres:16\n        ports:\n          - 5432:5432\n        options: --health-cmd pg_isready\n    container:\n      image: node:20\n      credentials:\n        username: u\n        password: ${{ secrets.P }}\n    steps:\n      - id: s\n        run: echo v=1 >> $GITHUB_OUTPUT\n",
+    // Background / wait / parallel step control flow (GA5).
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - id: s\n        background: true\n        run: echo v=1 >> $GITHUB_OUTPUT\n      - wait: s\n      - wait-all:\n      - cancel: s\n      - parallel:\n          - run: echo a\n          - run: echo b\n",
+    // Unsynchronized background outputs (GA6 / EXPR019).
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - id: s\n        background: true\n        run: echo v=1 >> $GITHUB_OUTPUT\n      - run: echo ${{ steps.s.outputs.v }}\n      - wait: s\n",
     // Shapes the YAML layer alone decides: a tag, an explicit key, a directive,
     // a quoted key, and a second document after the workflow.
     "%YAML 1.2\n---\n!!map\non: !!str push\n? jobs\n: b:\n    runs-on: ubuntu-latest\n---\nsecond: doc\n",

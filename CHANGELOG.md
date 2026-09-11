@@ -17,6 +17,13 @@ each ID means.
 
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
+- `background` / `wait` / `wait-all` / `cancel` / `parallel` are accepted
+  step keys. Nested `parallel:` steps are walked by existing SEC / SC / BP /
+  EXPR rules. SYN024 reports `wait` / `cancel` targeting a missing step id
+  (#432).
+- EXPR019 warns when `steps.<id>.outputs` reads a background step that has
+  not been waited on yet. A missing `wait` with no output reference is not
+  reported. No autofix (#433).
 
 ### Changed
 

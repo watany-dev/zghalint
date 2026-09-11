@@ -24,6 +24,7 @@ const popular_actions = @import("popular_actions.zig");
 const reusable_workflow = @import("reusable_workflow.zig");
 const steps_ref = @import("steps_ref.zig");
 const expr_availability = @import("expr_availability.zig");
+const background_sync = @import("background_sync.zig");
 
 pub const all_rules = security.security_rules ++
     best_practices.rules ++
@@ -36,6 +37,7 @@ pub const all_rules = security.security_rules ++
     secrets_context.rules ++
     steps_ref.rules ++
     expr_availability.rules ++
+    background_sync.rules ++
     dependabot.rules ++
     action_metadata.rules ++
     composite_steps.rules ++

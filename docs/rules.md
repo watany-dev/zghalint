@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **104 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **106 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -20,7 +20,7 @@ zghalint includes **104 rules** across 11 categories to help you write secure, e
 ないため `--fix-unsafe` でのみ適用する。候補が定まらない場合は診断のみで、
 autofix は付かない。
 
-対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023、EXPR010–EXPR014、
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023 / SYN024、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 
 ---
@@ -460,6 +460,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR016 | function-availability | error | `success()` / `failure()` / `always()` / `cancelled()` outside an `if:`, or `hashFiles()` under a key that does not provide it |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
+| EXPR019 | background-output-before-wait | warning | `steps.<id>.outputs` refers to a `background:` step (or a `parallel:` sibling) that has not been waited on yet |
 
 `case()` is pairs of `(condition, result)` followed by a fallback, so EXPR005
 requires an odd argument count of at least 3. Even counts (4, 6, …) are
@@ -469,6 +470,25 @@ meaning.
 EXPR006 is substring matching, so it fires only when the first argument is a
 string. Array membership — `contains(github.event.pull_request.labels.*.name, 'label')`,
 `fromJSON('[...]')`, or a `TypeEnv` array — is exact and is not reported (#333).
+
+### EXPR019 background-output-before-wait
+
+A `background: true` step runs alongside later steps. Its `outputs` exist only
+after `wait:` / `wait-all:` (or after a `parallel:` group, which waits for its
+own children). Job-level `outputs:` and post-job cleanup already see an
+implicit wait-all, so a background step with no output reference is not
+reported. `conclusion` / `outcome` are not flagged. No autofix: inserting
+`wait` can hang the job on a long-running producer.
+
+```yaml
+steps:
+  - id: producer
+    background: true
+    run: echo value=ready >> "$GITHUB_OUTPUT"
+  - run: echo ${{ steps.producer.outputs.value }}  # warning: not waited
+  - wait: producer
+  - run: echo ${{ steps.producer.outputs.value }}  # ok
+```
 
 ## Dependency Rules (DEP)
 
@@ -632,6 +652,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN021 | undefined-needs-job | error | `needs:` がこのワークフローに無いジョブ名を指している（`--fix` で綴りを修正） |
 | SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
 | SYN023 | invalid-cache-mode | error | `cache-mode` が `none` / `read` / `write` / `write-only` のいずれでもない |
+| SYN024 | undefined-step-control-ref | error | `wait` / `cancel` がこのジョブに無い step id を指している（`--fix` で綴りを修正） |
 
 ### SYN001 unknown-key
 
@@ -1119,6 +1140,21 @@ jobs:
 ```
 
 `${{ }}` 式で作った値は実行時まで決まらないので検査しない。
+
+### SYN024 undefined-step-control-ref
+
+`wait:` と `cancel:` は同じジョブの step `id` を指す。存在しない id はランナーが実行時に拒否するので error とし、編集距離 2 以内で候補が一意なら `did you mean` と `--fix` の rename を付ける。`wait-all` は引数を取らないので対象外。
+
+```yaml
+steps:
+  - id: producer
+    background: true
+    run: echo ready
+  - wait: produer   # error: did you mean "producer"?
+  - cancel: ghost   # error: no such step id
+```
+
+SYN006 が既に拒否する不正な id と、`${{ }}` 式で作った値はここでは見ない。
 
 ## Action Metadata Rules (ACT)
 

@@ -87,15 +87,29 @@ const PropList = struct {
 };
 
 /// `steps` as seen from `steps[index]`: only ids declared earlier in the same
-/// job are in scope, which is what EXPR010 checks too.
+/// job are in scope, which is what EXPR010 checks too. Nested `parallel:`
+/// children of those earlier steps are in scope: the group has an implicit
+/// wait, so their outputs are available afterwards.
 pub fn buildSteps(alloc: std.mem.Allocator, steps: []const Step, index: usize) ?TypeRef {
     var props = PropList{ .alloc = alloc };
     for (steps[0..@min(index, steps.len)]) |step| {
-        const id = step.id orelse continue;
-        if (id.len == 0) continue;
-        props.put(id, &step_result);
+        addStepId(&props, &step);
+        addNestedStepIds(&props, step.nestedSteps());
     }
     return strictObject(alloc, props.finish() orelse return null);
+}
+
+fn addStepId(props: *PropList, step: *const Step) void {
+    const id = step.id orelse return;
+    if (id.len == 0) return;
+    props.put(id, &step_result);
+}
+
+fn addNestedStepIds(props: *PropList, steps: []const Step) void {
+    for (steps) |*step| {
+        addStepId(props, step);
+        addNestedStepIds(props, step.nestedSteps());
+    }
 }
 
 /// A composite action's `inputs:` carry no `type:`, so every declared name is

@@ -1,0 +1,12 @@
+# zghalint:expect SYN024@12
+# zghalint:forbid SYN001
+name: undefined wait target
+on: workflow_dispatch
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wait for a missing step
+        wait: produer

@@ -1515,6 +1515,11 @@ pub fn checkStepEnv(step: *const Step, list: *DiagnosticList, env: *const expr_c
     checkScalarMap(allocator, step.env, step.env_meta, step.span, list, .track_bytes, env);
 }
 
+fn checkStepTree(step: *const Step, list: *DiagnosticList, env: *const expr_check.TypeEnv) void {
+    checkStepEnv(step, list, env);
+    for (step.nestedSteps()) |*child| checkStepTree(child, list, env);
+}
+
 /// The overlay-free path; see `checkStep`.
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     checkJobEnv(job, list, &expr_check.TypeEnv.empty);
@@ -1554,7 +1559,7 @@ pub fn checkWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
 
         for (job.steps, 0..) |*step, index| {
             env.steps = expr_overlay.buildSteps(alloc, job.steps, index);
-            checkStepEnv(step, list, &env);
+            checkStepTree(step, list, &env);
         }
     }
 }
