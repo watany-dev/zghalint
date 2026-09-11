@@ -11,9 +11,12 @@ const expr_scan = @import("expr_scan.zig");
 const diagnostics = @import("../diagnostics.zig");
 const test_support = @import("../test_support.zig");
 
+const workflow_types = @import("../workflow/types.zig");
+
 const Rule = engine.Rule;
 const Job = engine.Job;
 const Step = engine.Step;
+const StepControl = workflow_types.StepControl;
 const DiagnosticList = engine.DiagnosticList;
 const Span = diagnostics.Span;
 
@@ -89,7 +92,7 @@ const Visitor = struct {
         const alloc = self.list.fixAllocator();
         const message = std.fmt.allocPrint(
             alloc,
-            "outputs of background step \"{s}\" are used before that step has been waited on",
+            "outputs of step \"{s}\" are used before that step has been waited on",
             .{id},
         ) catch return;
 
@@ -120,34 +123,29 @@ fn scanForPending(
     }, step);
 }
 
-fn applyControl(step: *const Step, pending: *std.ArrayList([]const u8), alloc: std.mem.Allocator) void {
-    if (step.control) |control| switch (control) {
+fn applyRefs(control: StepControl, pending: *std.ArrayList([]const u8)) void {
+    switch (control) {
         .wait => |refs| {
             for (refs) |ref| removeId(pending, ref.id);
         },
         .wait_all => pending.clearRetainingCapacity(),
         .cancel => |ref| removeId(pending, ref.id),
-        .parallel => {},
+        // Nested waits take effect after the group, not for concurrent siblings.
+        .parallel => |children| applyParallelEffects(children, pending),
+    }
+}
+
+fn applyControl(step: *const Step, pending: *std.ArrayList([]const u8), alloc: std.mem.Allocator) void {
+    if (step.control) |control| {
+        applyRefs(control, pending);
     } else if (step.background) {
         if (step.id) |id| addId(pending, alloc, id);
     }
 }
 
-/// `wait` / `wait-all` / `cancel` nested in a `parallel:` group finish as
-/// part of that group, so they take effect for later top-level steps. They
-/// do not synchronize siblings *during* the group (those children run
-/// concurrently). Background children of the group are waited by the
-/// group's implicit wait and must not stay pending afterwards.
 fn applyParallelEffects(steps: []const Step, pending: *std.ArrayList([]const u8)) void {
     for (steps) |*step| {
-        if (step.control) |control| switch (control) {
-            .wait => |refs| {
-                for (refs) |ref| removeId(pending, ref.id);
-            },
-            .wait_all => pending.clearRetainingCapacity(),
-            .cancel => |ref| removeId(pending, ref.id),
-            .parallel => |children| applyParallelEffects(children, pending),
-        };
+        if (step.control) |control| applyRefs(control, pending);
     }
 }
 
@@ -180,7 +178,7 @@ fn walkSequence(
                 collectIds(children, &group_ids, alloc);
                 scanForPending(step, pending.items, group_ids.items, step.id, alloc, list);
                 walkParallel(children, pending.items, group_ids.items, alloc, list);
-                applyParallelEffects(children, pending);
+                applyControl(step, pending, alloc);
                 continue;
             },
             else => {},
@@ -260,7 +258,7 @@ test "EXPR019: outputs of a background step before wait are reported" {
         \\        run: echo value=ready >> "$GITHUB_OUTPUT"
         \\      - run: echo "${{ steps.producer.outputs.value }}"
     ,
-        "outputs of background step \"producer\"",
+        "outputs of step \"producer\"",
     );
 }
 
@@ -338,7 +336,7 @@ test "EXPR019: job-level outputs are evaluated after the implicit wait-all" {
 }
 
 test "EXPR019: wait of one id leaves another pending" {
-    try expectMessage(
+    const source =
         \\on: push
         \\jobs:
         \\  verify:
@@ -352,9 +350,13 @@ test "EXPR019: wait of one id leaves another pending" {
         \\        run: echo b=1 >> "$GITHUB_OUTPUT"
         \\      - wait: a
         \\      - run: echo "${{ steps.a.outputs.a }} ${{ steps.b.outputs.b }}"
-    ,
-        "\"b\"",
-    );
+    ;
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    try runOnSource(source, &list);
+    try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&list, "EXPR019"));
+    const diag = test_support.findDiagnostic(&list, "EXPR019").?;
+    try testing.expect(std.mem.find(u8, diag.message, "\"b\"") != null);
 }
 
 test "EXPR019: cancel drops the id without warning later output refs" {
