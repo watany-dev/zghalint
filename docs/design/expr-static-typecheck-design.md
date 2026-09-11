@@ -212,7 +212,7 @@ pub fn display(ty: TypeRef, buf: []u8) []const u8 { ... }
 | `github` | strict | issue #81 の全第一プロパティ。型は下記 | 未知キー・非 object deref |
 | `github.event` | **loose** | curated scalar overlay（ADR D3-a / #124）。中間 object も loose | 出さない |
 | `runner` | strict | `name/os/arch/temp/tool_cache/debug/environment`: string | 未知キー |
-| `job` | strict | `check_run_id: number`, `status: string`, `container: {id,network: string}`, `services: map of {id,network: string, ports: map of string}` | 未知キー（新規 true positive。リリースノート必須） |
+| `job` | strict | `check_run_id: number`, `status: string`, `container: {id,network: string}`, `services: map of {id,network: string, ports: map of string}`, `workflow_ref` / `workflow_sha` / `workflow_repository` / `workflow_file_path: string`（`github.workflow_*` とは別） | 未知キー（新規 true positive。リリースノート必須） |
 | `strategy` | loose | `fail-fast: bool`, `job-index/job-total/max-parallel: number` | 既知以外は `any` |
 | `env` | map | — | 値は string。キーは自由 |
 | `vars` | map | — | 同上 |

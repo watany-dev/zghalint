@@ -13,6 +13,22 @@ each ID means.
 
 ## [Unreleased]
 
+### Added
+
+- SYN023 reports an unknown `cache-mode` at workflow or job level. The
+  documented values are `none` / `read` / `write` / `write-only` (#428).
+
+### Changed
+
+- `cache-mode` is a known workflow and job key, so it no longer fires SYN001
+  (#428).
+- `permissions.vulnerability-alerts` is a known scope. `read` and `none` are
+  accepted; `write` is PERM003 (#428).
+- `job.workflow_ref` / `job.workflow_sha` / `job.workflow_repository` /
+  `job.workflow_file_path` are known job-context properties and no longer
+  fire EXPR003. They are not the same as `github.workflow_ref` /
+  `github.workflow_sha` (#428).
+
 ## [0.0.1] - 2026-09-10
 
 First public release. Preceded by prereleases `v0.0.1-rc.1` and `v0.0.1-rc.2`.

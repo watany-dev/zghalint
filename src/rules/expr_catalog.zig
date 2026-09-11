@@ -233,6 +233,10 @@ pub const job: Type = .{
         .{ .name = "container", .ty = &job_container },
         .{ .name = "services", .ty = &job_services },
         .{ .name = "status", .ty = string },
+        .{ .name = "workflow_file_path", .ty = string },
+        .{ .name = "workflow_ref", .ty = string },
+        .{ .name = "workflow_repository", .ty = string },
+        .{ .name = "workflow_sha", .ty = string },
     },
 };
 
@@ -397,6 +401,10 @@ test "catalog: github property types" {
     try std.testing.expectEqual(@as(?TypeRef, number), t.findProp(&github, "retention_days"));
     try std.testing.expectEqual(@as(?TypeRef, &github_event), t.findProp(&github, "event"));
     try std.testing.expectEqual(@as(?TypeRef, null), t.findProp(&github, "reposiory"));
+    try std.testing.expectEqual(@as(?TypeRef, string), t.findProp(&github, "workflow_ref"));
+    try std.testing.expectEqual(@as(?TypeRef, null), t.findProp(&github, "workflow_repository"));
+    try std.testing.expectEqual(@as(?TypeRef, string), t.findProp(&job, "workflow_ref"));
+    try std.testing.expectEqual(@as(?TypeRef, string), t.findProp(&job, "workflow_repository"));
 }
 
 test "catalog: github.event and every curated node stay loose" {

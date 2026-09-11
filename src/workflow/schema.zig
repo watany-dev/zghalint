@@ -12,6 +12,7 @@ pub const UnknownKey = struct {
 };
 
 pub const workflow_keys = [_][]const u8{
+    "cache-mode",
     "concurrency",
     "defaults",
     "env",
@@ -28,6 +29,7 @@ pub const workflow_keys = [_][]const u8{
 pub const workflow_on_key_alias = "true";
 
 pub const job_keys = [_][]const u8{
+    "cache-mode",
     "concurrency",
     "container",
     "continue-on-error",
@@ -283,6 +285,8 @@ test "schema key tables are sorted" {
 
 test "isAllowedKey exact match" {
     try std.testing.expect(isAllowedKey("runs-on", &job_keys));
+    try std.testing.expect(isAllowedKey("cache-mode", &workflow_keys));
+    try std.testing.expect(isAllowedKey("cache-mode", &job_keys));
     try std.testing.expect(!isAllowedKey("runs-on", &step_run_keys));
     try std.testing.expect(!isAllowedKey("Shell", &step_run_keys));
     try std.testing.expect(!isAllowedKey(workflow_on_key_alias, &workflow_keys));

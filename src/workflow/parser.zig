@@ -217,11 +217,19 @@ pub fn parseWorkflowTracked(
         }
     }
 
+    var cache_mode: ?[]const u8 = null;
+    var cache_mode_span: ?yaml.Span = null;
+    if (root.get("cache-mode")) |n| {
+        applyCacheMode(&ctx, n, &cache_mode, &cache_mode_span);
+    }
+
     var workflow = types.Workflow{
         .name = root.getScalar("name"),
         .on = trigger,
         .concurrency = concurrency,
         .jobs = jobs,
+        .cache_mode = cache_mode,
+        .cache_mode_span = cache_mode_span,
         .type_mismatches = try type_mismatches.toOwnedSlice(allocator),
         .yaml_root = node,
     };
@@ -1092,6 +1100,9 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         try recordEmpty(&empty, ctx.allocator, "defaults", n);
         job.defaults = parseDefaults(n);
     }
+    if (m.get("cache-mode")) |n| {
+        applyCacheMode(ctx, n, &job.cache_mode, &job.cache_mode_span);
+    }
 
     if (ctx.unknown_collector) |c| {
         try c.checkMapping(m, "job", &schema.job_keys, &.{});
@@ -1413,8 +1424,17 @@ fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedP
                         // value span for `meta` is always available alongside
                         // the level.
                         if (level) |lvl| {
-                            @field(perms, field) = lvl;
-                            @field(meta, field) = entry.value.scalar.span;
+                            if (types.isAllowedPermissionLevel(comptime types.permissionScopeKey(field), lvl)) {
+                                @field(perms, field) = lvl;
+                                @field(meta, field) = entry.value.scalar.span;
+                            } else {
+                                try problems.append(allocator, .{
+                                    .kind = .invalid_level,
+                                    .text = entry.value.scalar.value,
+                                    .scope = entry.key.value,
+                                    .span = entry.value.scalar.span,
+                                });
+                            }
                         }
                         break;
                     }
@@ -1447,6 +1467,34 @@ fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedP
             };
         },
         else => return error.InvalidValue,
+    }
+}
+
+fn applyCacheMode(
+    ctx: *ParseContext,
+    node: Node,
+    value: *?[]const u8,
+    span: *?yaml.Span,
+) void {
+    switch (node) {
+        .scalar => |s| {
+            value.* = s.value;
+            span.* = s.span;
+        },
+        else => {
+            const mismatches = ctx.type_mismatches orelse return;
+            mismatches.append(ctx.allocator, .{
+                .field = "cache-mode",
+                .expected = "string",
+                .actual = switch (node) {
+                    .mapping => "mapping",
+                    .sequence => "sequence",
+                    .null_value => "null",
+                    .scalar => unreachable,
+                },
+                .span = node.getSpan(),
+            }) catch {};
+        },
     }
 }
 
@@ -3170,6 +3218,110 @@ test "parsePermissions accepts artifact-metadata and models" {
     try testing.expectEqual(@as(usize, 0), parsed.problems.len);
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.artifact_metadata.?);
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.models.?);
+}
+
+test "parsePermissions accepts vulnerability-alerts read and none" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("vulnerability-alerts"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.vulnerability_alerts.?);
+
+    var none_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("vulnerability-alerts"), .value = mkScalar("none"), .span = mkSpan() },
+    };
+    const none_parsed = try parsePermissions(testing.allocator, mkMapping(&none_entries));
+    defer testing.allocator.free(none_parsed.problems);
+    try testing.expectEqual(types.PermissionLevel.none, none_parsed.permissions.vulnerability_alerts.?);
+}
+
+test "parsePermissions rejects vulnerability-alerts write" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("vulnerability-alerts"), .value = mkScalar("write"), .span = mkSpan() },
+    };
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expect(parsed.permissions.vulnerability_alerts == null);
+    try testing.expectEqual(@as(usize, 1), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.invalid_level, parsed.problems[0].kind);
+    try testing.expectEqualStrings("write", parsed.problems[0].text);
+    try testing.expectEqualStrings("vulnerability-alerts", parsed.problems[0].scope);
+}
+
+test "parseWorkflow captures cache-mode on workflow and job" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\cache-mode: write
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: read
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqualStrings("write", wf.cache_mode.?);
+    try testing.expectEqualStrings("read", wf.jobs[0].cache_mode.?);
+    try testing.expectEqual(@as(usize, 0), wf.unknown_keys.len);
+}
+
+test "parseWorkflow keeps an unknown cache-mode value" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\cache-mode: reed
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqualStrings("reed", wf.cache_mode.?);
+    try testing.expect(wf.cache_mode_span != null);
+}
+
+test "parseWorkflow reports a non-scalar cache-mode as a type mismatch" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\cache-mode:
+        \\  foo: bar
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expect(wf.cache_mode == null);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("cache-mode", wf.type_mismatches[0].field);
+    try testing.expectEqualStrings("mapping", wf.type_mismatches[0].actual);
 }
 
 test "parsePermissions with empty mapping" {
