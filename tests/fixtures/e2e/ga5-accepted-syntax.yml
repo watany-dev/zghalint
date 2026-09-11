@@ -1,4 +1,4 @@
-# zghalint:forbid SYN001 SYN004 SYN024
+# zghalint:forbid SYN001 SYN004 SYN024 EXPR019
 name: accepted ga5 syntax
 on: workflow_dispatch
 permissions: {}

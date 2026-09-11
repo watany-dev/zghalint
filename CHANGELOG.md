@@ -21,6 +21,9 @@ each ID means.
   step keys. Nested `parallel:` steps are walked by existing SEC / SC / BP /
   EXPR rules. SYN024 reports `wait` / `cancel` targeting a missing step id
   (#432).
+- EXPR019 warns when `steps.<id>.outputs` reads a background step that has
+  not been waited on yet. A missing `wait` with no output reference is not
+  reported. No autofix (#433).
 
 ### Changed
 

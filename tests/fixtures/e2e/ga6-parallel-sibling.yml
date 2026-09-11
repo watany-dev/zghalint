@@ -1,0 +1,16 @@
+# zghalint:expect EXPR019@16
+# zghalint:forbid SYN001
+name: parallel sibling output
+on: workflow_dispatch
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - parallel:
+          - name: Build frontend
+            id: frontend
+            run: echo v=1 >> "$GITHUB_OUTPUT"
+          - name: Read sibling too early
+            run: echo ${{ steps.frontend.outputs.v }}
