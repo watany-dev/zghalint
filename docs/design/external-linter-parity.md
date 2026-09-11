@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-09
+最終更新: 2026-09-11
 
 ## 1. 目的
 
@@ -18,8 +18,8 @@ CI に外部静的解析ツールを導入し (issue #240)、
 | ツール | 版 | 対象 | CI での実行 |
 | --- | --- | --- | --- |
 | shellcheck | runner 同梱 | `scripts/*.sh`, `action.yml` の埋め込みスクリプト | `lint` ジョブ |
-| actionlint | 1.7.7 (SHA256 検証) | `.github/workflows/**` (`run:` は shellcheck へ委譲) | `lint` ジョブ |
-| zizmor | 1.30.0 | `.github/workflows/**`, `action.yml` | `lint` ジョブ |
+| actionlint | 1.7.12 (SHA256 検証) | `.github/workflows/**` (`run:` は shellcheck へ委譲) | `lint` ジョブ |
+| zizmor | 1.30.1 | `.github/workflows/**`, `action.yml` | `lint` ジョブ |
 | ruff | 0.15.8 | `tests/pbt/` (check + format) | `lint` ジョブ |
 
 ### 2.1 `action.yml` を shellcheck にかける仕組み
@@ -1003,6 +1003,36 @@ action-validator は単一巨大ファイルでは速いが、ファイル数が
 JSON Schema 検証が支配的になる。`network` は GITHUB_TOKEN 未設定のため未計測。
 
 採点行列には足していない (§2.2)。
+
+### 4.10 2026-09-11 の比較基準更新 (#431)
+
+CI / bench のピンを actionlint 1.7.12 と zizmor 1.30.1 に揃えた。歴史的な
+§4.5〜§4.9 の数字は当時の版の記録なので書き換えない。
+
+採点 (`scripts/bench.py`、Debug `zig build`):
+
+| tool | recall | precision | 位置一致 | unique-win |
+|---|---|---|---|---|
+| zghalint | 100% (116/116) | 100% | 97% (112/116) | 25 |
+| actionlint | 100% (65/65) | 100% | 92% (60/65) | – |
+| zizmor | 100% (50/50) | 100% | 88% (44/50) | – |
+
+意図して用意したケースでは FN も FP も無い。版上げで zghalint が新たに
+取りこぼした指摘は無かった。
+
+観測した差のうち、本更新で吸収しないもの:
+
+- `yaml-anchors-and-merge-keys.yml` の `bench:skip actionlint` を外した。
+  actionlint 1.7.10 以降は alias を解決するので、1.7.7 時代の型エラーは
+  再現しない。`missing-timeout` は actionlint 非対応のまま zghalint の
+  unique-win。
+- YAML merge key `<<:` は actionlint 1.7.12 が
+  `GitHub Actions does not support YAML merge key "<<"` で拒否する。
+  zghalint はまだ検出しない。これは既に GA12 (#439) として切り出してあり、
+  本 issue では実装しない。
+
+zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / FP は
+出なかった。空ワークフローで exit 3 になる既知の挙動は変わっていない。
 
 ## 5. 次アクション
 

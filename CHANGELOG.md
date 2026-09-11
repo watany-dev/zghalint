@@ -35,6 +35,8 @@ each ID means.
   `macos-12` / `macos-13` now rewrite to `macos-15`, a current catalog entry
   (#430). Deprecated and retired replacements are checked at compile time so
   they cannot point at another retired label.
+- CI and bench now pin actionlint 1.7.12 and zizmor 1.30.1, the versions used
+  as the comparison baseline (#431).
 
 ## [0.0.1] - 2026-09-10
 
