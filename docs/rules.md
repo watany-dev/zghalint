@@ -446,7 +446,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR002 | unknown-context | error | Unknown context reference (e.g. `${{ foo.bar }}`) |
 | EXPR003 | unknown-property | warning | Unknown context property at any depth (e.g. `${{ github.unknown }}`, `${{ job.container.i }}`) |
 | EXPR004 | unknown-function | error | Unknown function name |
-| EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments |
+| EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments (`case()` also requires an odd count: condition/result pairs plus a fallback) |
 | EXPR006 | unsound-contains | warning | `contains()` uses substring matching which may match unintended values |
 | EXPR007 | unsound-condition | warning | Bare literal in a condition's logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
@@ -460,6 +460,11 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR016 | function-availability | error | `success()` / `failure()` / `always()` / `cancelled()` outside an `if:`, or `hashFiles()` under a key that does not provide it |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
+
+`case()` is pairs of `(condition, result)` followed by a fallback, so EXPR005
+requires an odd argument count of at least 3. Even counts (4, 6, …) are
+rejected. No autofix: inventing a fallback would change the expression's
+meaning.
 
 EXPR006 is substring matching, so it fires only when the first argument is a
 string. Array membership — `contains(github.event.pull_request.labels.*.name, 'label')`,

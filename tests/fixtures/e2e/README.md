@@ -65,6 +65,8 @@ Two checks run on all fixtures, with no directive needed:
 | `sec022-workflow-run-anchor-paths.yml` | #220 repro: an anchor joined with `\|\|` or under `!` |
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
+| `expr005-case-odd.yml` | #429 FP guard: `case()` with 3 or 5 arguments |
+| `expr005-case-even.yml` | #429: `case()` with 4 arguments (no fallback) |
 | `expr010-step-refs.yml` | EXPR010: unknown / misspelled / forward `steps.<id>` references |
 | `expr011-matrix-context.yml` | EXPR011: undeclared / misspelled `matrix.<key>` and jobs without a matrix |
 | `expr013-inputs-context.yml` | EXPR013: undeclared / misspelled `inputs.<name>` against the declared triggers |
