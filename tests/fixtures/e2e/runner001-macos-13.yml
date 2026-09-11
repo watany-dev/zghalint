@@ -1,0 +1,12 @@
+# zghalint:expect RUNNER001@8
+name: macos-13 retired
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-13
+    timeout-minutes: 5
+    steps:
+      - name: Build
+        run: echo hi
