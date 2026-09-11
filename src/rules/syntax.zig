@@ -1201,16 +1201,16 @@ fn reportInvalidCacheMode(
     }) catch return;
 }
 
+fn checkOneCacheMode(value: ?[]const u8, span: ?Span, list: *DiagnosticList) void {
+    const mode = value orelse return;
+    if (type_validation.containsExpression(mode) or workflow_types.isCacheMode(mode)) return;
+    if (span) |s| reportInvalidCacheMode(list, mode, s);
+}
+
 fn checkCacheMode(wf: *const Workflow, list: *DiagnosticList) void {
-    if (wf.cache_mode) |value| {
-        if (!type_validation.containsExpression(value) and !workflow_types.isCacheMode(value)) {
-            if (wf.cache_mode_span) |span| reportInvalidCacheMode(list, value, span);
-        }
-    }
+    checkOneCacheMode(wf.cache_mode, wf.cache_mode_span, list);
     for (wf.jobs) |job| {
-        const value = job.cache_mode orelse continue;
-        if (type_validation.containsExpression(value) or workflow_types.isCacheMode(value)) continue;
-        if (job.cache_mode_span) |span| reportInvalidCacheMode(list, value, span);
+        checkOneCacheMode(job.cache_mode, job.cache_mode_span, list);
     }
 }
 
@@ -4639,6 +4639,11 @@ test "SYN023: documented modes and expressions are clean" {
         \\  d:
         \\    runs-on: ubuntu-latest
         \\    cache-mode: ${{ inputs.mode }}
+        \\    steps:
+        \\      - run: echo
+        \\  e:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: $
         \\    steps:
         \\      - run: echo
     ;
