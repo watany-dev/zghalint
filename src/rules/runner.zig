@@ -75,7 +75,6 @@ const known_labels = [_]KnownLabel{
     .{ .label = "macos-26" },
     .{ .label = "macos-15" },
     .{ .label = "macos-14" },
-    .{ .label = "macos-13" },
     .{ .label = "self-hosted", .kind = .convention },
     .{ .label = "linux", .kind = .convention },
     .{ .label = "windows", .kind = .convention },
@@ -86,15 +85,29 @@ const known_labels = [_]KnownLabel{
     .{ .label = "arm64", .kind = .convention },
     .{ .label = "ubuntu-18.04", .status = .retired, .replacement = "ubuntu-22.04" },
     .{ .label = "ubuntu-20.04", .status = .retired, .replacement = "ubuntu-22.04" },
-    .{ .label = "macos-11", .status = .retired, .replacement = "macos-13" },
-    .{ .label = "macos-12", .status = .retired, .replacement = "macos-13" },
+    .{ .label = "macos-11", .status = .retired, .replacement = "macos-15" },
+    .{ .label = "macos-12", .status = .retired, .replacement = "macos-15" },
+    .{ .label = "macos-13", .status = .retired, .replacement = "macos-15" },
     .{ .label = "windows-2019", .status = .deprecated, .replacement = "windows-2022" },
 };
 
 comptime {
     for (known_labels) |entry| {
-        if (entry.status != .current and entry.replacement.len == 0) {
+        if (entry.status == .current) continue;
+        if (entry.replacement.len == 0) {
             @compileError("deprecated/retired label needs a replacement: " ++ entry.label);
+        }
+        var found = false;
+        for (known_labels) |other| {
+            if (!std.mem.eql(u8, other.label, entry.replacement)) continue;
+            found = true;
+            if (other.status != .current) {
+                @compileError("replacement must be current: " ++ entry.label ++ " -> " ++ entry.replacement);
+            }
+            break;
+        }
+        if (!found) {
+            @compileError("replacement is not in the catalog: " ++ entry.label ++ " -> " ++ entry.replacement);
         }
     }
 }
@@ -231,7 +244,7 @@ fn editDistance(a: []const u8, b: []const u8) usize {
 }
 
 /// Nearest currently-offered label, but only when the guess is unmistakable:
-/// `macos-99` sits two edits from macos-13, macos-14 and macos-15 alike, and a
+/// `macos-99` sits two edits from macos-14, macos-15 and macos-26 alike, and a
 /// tie is no basis for rewriting somebody's workflow.
 fn nearestKnownLabel(label: []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
@@ -626,6 +639,59 @@ test "RUNNER001: current runner produces no diagnostic" {
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
+test "RUNNER001: macos-13 is retired with a current replacement" {
+    const job = Job{
+        .id = "build",
+        .runs_on = "macos-13",
+        .runs_on_value_span = dummySpan(20, 28),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkDeprecatedRunner(&job, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("RUNNER001", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("macos-15", fix.edits[0].replacement);
+}
+
+test "RUNNER001: macos-11 and macos-12 replace with a current label" {
+    for ([_][]const u8{ "macos-11", "macos-12" }) |label| {
+        const job = Job{
+            .id = "build",
+            .runs_on = label,
+            .runs_on_value_span = dummySpan(0, label.len),
+        };
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+
+        checkDeprecatedRunner(&job, &diags);
+
+        try testing.expectEqual(@as(usize, 1), diags.len());
+        const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings("macos-15", fix.edits[0].replacement);
+    }
+}
+
+test "deprecated and retired replacements are current catalog entries" {
+    for (known_labels) |entry| {
+        if (entry.status == .current) {
+            try testing.expectEqual(@as(usize, 0), entry.replacement.len);
+            continue;
+        }
+        try testing.expect(entry.replacement.len > 0);
+        const replacement = for (known_labels) |other| {
+            if (std.mem.eql(u8, other.label, entry.replacement)) break other;
+        } else {
+            return error.ReplacementMissingFromCatalog;
+        };
+        try testing.expectEqual(LabelStatus.current, replacement.status);
+    }
+}
+
 test "RUNNER001: reusable workflow job without runs-on is ignored" {
     const job = Job{
         .id = "call",
@@ -709,7 +775,7 @@ test "RUNNER002: unknown version of a hosted OS is reported without a guess" {
     checkUnknownRunner(&job, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    // macos-13/14/15 are all two edits away, so no single label can be named.
+    // macos-14/15/26 are all two edits away, so no single label can be named.
     try testing.expect(diags.get(0).fix_hint == null);
     try testing.expect(diags.get(0).fix == null);
 }

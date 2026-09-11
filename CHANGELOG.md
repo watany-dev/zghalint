@@ -31,6 +31,10 @@ each ID means.
 - EXPR005 rejects `case()` calls with an even number of arguments. `case()` is
   pairs of `(condition, result)` plus a fallback, so the count must be odd and
   at least 3 (#429).
+- RUNNER001 treats `macos-13` as retired (removed 2025-12-04). `macos-11` /
+  `macos-12` / `macos-13` now rewrite to `macos-15`, a current catalog entry
+  (#430). Deprecated and retired replacements are checked at compile time so
+  they cannot point at another retired label.
 
 ## [0.0.1] - 2026-09-10
 

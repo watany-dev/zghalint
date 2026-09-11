@@ -94,6 +94,7 @@ Two checks run on all fixtures, with no directive needed:
 | `ga1-accepted-syntax.yml` | #428: `cache-mode` / `vulnerability-alerts: read\|none` / `job.workflow_*` stay quiet |
 | `ga1-rejected-syntax.yml` | #428: unknown `cache-mode`, `vulnerability-alerts: write`, `github.workflow_repository` |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
+| `runner001-macos-13.yml` | #430: retired `macos-13` is RUNNER001, not a current image |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |
 | `dep004-checkout-path.yml` | #305 FP guard: a local action under an `actions/checkout` `path:` only exists on the runner |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
