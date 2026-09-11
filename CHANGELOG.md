@@ -24,6 +24,12 @@ each ID means.
 - EXPR019 warns when `steps.<id>.outputs` reads a background step that has
   not been waited on yet. A missing `wait` with no output reference is not
   reported. No autofix (#433).
+- SEC016 and PERF001 share a `cache-mode` capability model (`can_restore` /
+  `can_save`). `cache-mode: none` silences PERF001 and SEC016. `cache-mode:
+  read` does not silence SEC016 (#434).
+- SEC024 warns when `cache-mode: write` or `write-only` is declared on a
+  low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
+  which overrides GitHub's restore-only default. No autofix (#434).
 
 ### Changed
 

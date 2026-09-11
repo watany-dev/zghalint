@@ -159,6 +159,54 @@ pub fn isCacheMode(value: []const u8) bool {
     return false;
 }
 
+/// Restore/save abilities implied by `cache-mode`. This is a partial lattice,
+/// not a linear scale: `read` restores, `write-only` saves, `write` does both,
+/// `none` does neither.
+///
+/// Job-level `cache-mode` replaces the workflow value. A reusable workflow
+/// cannot exceed the caller's grant at runtime; this resolver only sees one
+/// file, so it applies job-over-workflow in that file.
+pub const CacheCapability = struct {
+    can_restore: bool,
+    can_save: bool,
+
+    pub const none: CacheCapability = .{ .can_restore = false, .can_save = false };
+    pub const read: CacheCapability = .{ .can_restore = true, .can_save = false };
+    pub const write: CacheCapability = .{ .can_restore = true, .can_save = true };
+    pub const write_only: CacheCapability = .{ .can_restore = false, .can_save = true };
+    pub const unrestricted: CacheCapability = write;
+
+    pub fn fromMode(mode: []const u8) ?CacheCapability {
+        if (std.mem.eql(u8, mode, "none")) return none;
+        if (std.mem.eql(u8, mode, "read")) return read;
+        if (std.mem.eql(u8, mode, "write")) return write;
+        if (std.mem.eql(u8, mode, "write-only")) return write_only;
+        return null;
+    }
+
+    pub fn allowsCache(self: CacheCapability) bool {
+        return self.can_restore or self.can_save;
+    }
+};
+
+/// Effective cache capability for `job` in `wf`.
+///
+/// Returns `null` when the declared mode is an expression or an unknown
+/// value: callers must not treat that uncertainty as a finding (ADR-0009).
+/// An omitted `cache-mode` is unrestricted by this key; GitHub may still
+/// deny writes on low-trust events, which is not a YAML-level disable.
+pub fn resolveCacheCapability(wf: *const Workflow, job: *const Job) ?CacheCapability {
+    const raw = job.cache_mode orelse wf.cache_mode orelse return CacheCapability.unrestricted;
+    return CacheCapability.fromMode(raw);
+}
+
+/// Whether cache restore or save can happen for this job. Unknown / expression
+/// modes stay permissive so SEC016 and PERF001 do not guess a disable.
+pub fn jobAllowsCache(wf: *const Workflow, job: *const Job) bool {
+    const cap = resolveCacheCapability(wf, job) orelse return true;
+    return cap.allowsCache();
+}
+
 pub const PermissionProblemKind = enum {
     unknown_scope,
     invalid_level,
@@ -950,6 +998,53 @@ test "cache_mode_values matches the documented modes" {
     try std.testing.expect(isCacheMode("write-only"));
     try std.testing.expect(!isCacheMode("read-write"));
     try std.testing.expect(!isCacheMode("writeonly"));
+}
+
+test "CacheCapability.fromMode is restore/save, not a linear scale" {
+    try std.testing.expectEqual(CacheCapability.none, CacheCapability.fromMode("none").?);
+    try std.testing.expectEqual(CacheCapability.read, CacheCapability.fromMode("read").?);
+    try std.testing.expectEqual(CacheCapability.write, CacheCapability.fromMode("write").?);
+    try std.testing.expectEqual(CacheCapability.write_only, CacheCapability.fromMode("write-only").?);
+    try std.testing.expect(CacheCapability.fromMode("reed") == null);
+    try std.testing.expect(CacheCapability.fromMode("${{ inputs.mode }}") == null);
+    try std.testing.expect(CacheCapability.none.allowsCache() == false);
+    try std.testing.expect(CacheCapability.read.allowsCache());
+    try std.testing.expect(CacheCapability.write_only.allowsCache());
+}
+
+test "resolveCacheCapability: job overrides workflow" {
+    const jobs = [_]Job{
+        .{ .id = "restricted", .cache_mode = "none" },
+        .{ .id = "inherited", .cache_mode = null },
+        .{ .id = "unknown", .cache_mode = "reed" },
+    };
+    const wf = Workflow{
+        .on = .{ .events = &.{} },
+        .jobs = &jobs,
+        .cache_mode = "write",
+    };
+    try std.testing.expectEqual(CacheCapability.none, resolveCacheCapability(&wf, &jobs[0]).?);
+    try std.testing.expectEqual(CacheCapability.write, resolveCacheCapability(&wf, &jobs[1]).?);
+    try std.testing.expect(resolveCacheCapability(&wf, &jobs[2]) == null);
+}
+
+test "resolveCacheCapability: omitted cache-mode is unrestricted" {
+    const jobs = [_]Job{.{ .id = "build" }};
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    try std.testing.expectEqual(CacheCapability.unrestricted, resolveCacheCapability(&wf, &jobs[0]).?);
+    try std.testing.expect(jobAllowsCache(&wf, &jobs[0]));
+}
+
+test "jobAllowsCache: none is a disable, unknown is not" {
+    const jobs = [_]Job{
+        .{ .id = "off", .cache_mode = "none" },
+        .{ .id = "unknown", .cache_mode = "reed" },
+        .{ .id = "read", .cache_mode = "read" },
+    };
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    try std.testing.expect(!jobAllowsCache(&wf, &jobs[0]));
+    try std.testing.expect(jobAllowsCache(&wf, &jobs[1]));
+    try std.testing.expect(jobAllowsCache(&wf, &jobs[2]));
 }
 
 test "vulnerability-alerts rejects write" {
