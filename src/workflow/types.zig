@@ -153,19 +153,12 @@ pub fn isAllowedPermissionLevel(scope: []const u8, level: PermissionLevel) bool 
 pub const cache_mode_values = [_][]const u8{ "none", "read", "write", "write-only" };
 
 pub fn isCacheMode(value: []const u8) bool {
-    for (cache_mode_values) |allowed| {
-        if (std.mem.eql(u8, value, allowed)) return true;
-    }
-    return false;
+    return CacheCapability.fromMode(value) != null;
 }
 
 /// Restore/save abilities implied by `cache-mode`. This is a partial lattice,
 /// not a linear scale: `read` restores, `write-only` saves, `write` does both,
 /// `none` does neither.
-///
-/// Job-level `cache-mode` replaces the workflow value. A reusable workflow
-/// cannot exceed the caller's grant at runtime; this resolver only sees one
-/// file, so it applies job-over-workflow in that file.
 pub const CacheCapability = struct {
     can_restore: bool,
     can_save: bool,
@@ -189,19 +182,20 @@ pub const CacheCapability = struct {
     }
 };
 
-/// Effective cache capability for `job` in `wf`.
+/// Job `cache-mode` replaces the workflow value. Returns `null` for an
+/// expression or unknown value so callers do not treat uncertainty as a
+/// finding (ADR-0009). Omitted `cache-mode` is unrestricted by this key;
+/// GitHub may still deny writes on low-trust events.
 ///
-/// Returns `null` when the declared mode is an expression or an unknown
-/// value: callers must not treat that uncertainty as a finding (ADR-0009).
-/// An omitted `cache-mode` is unrestricted by this key; GitHub may still
-/// deny writes on low-trust events, which is not a YAML-level disable.
+/// A reusable workflow cannot exceed the caller's grant at runtime; this
+/// function only sees one file.
 pub fn resolveCacheCapability(wf: *const Workflow, job: *const Job) ?CacheCapability {
     const raw = job.cache_mode orelse wf.cache_mode orelse return CacheCapability.unrestricted;
     return CacheCapability.fromMode(raw);
 }
 
-/// Whether cache restore or save can happen for this job. Unknown / expression
-/// modes stay permissive so SEC016 and PERF001 do not guess a disable.
+/// Unknown / expression modes stay permissive so SEC016 and PERF001 do not
+/// guess a disable.
 pub fn jobAllowsCache(wf: *const Workflow, job: *const Job) bool {
     const cap = resolveCacheCapability(wf, job) orelse return true;
     return cap.allowsCache();
@@ -1010,6 +1004,13 @@ test "CacheCapability.fromMode is restore/save, not a linear scale" {
     try std.testing.expect(CacheCapability.none.allowsCache() == false);
     try std.testing.expect(CacheCapability.read.allowsCache());
     try std.testing.expect(CacheCapability.write_only.allowsCache());
+}
+
+test "every cache_mode_values entry has a capability" {
+    for (cache_mode_values) |mode| {
+        try std.testing.expect(CacheCapability.fromMode(mode) != null);
+        try std.testing.expect(isCacheMode(mode));
+    }
 }
 
 test "resolveCacheCapability: job overrides workflow" {
