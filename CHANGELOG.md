@@ -28,6 +28,9 @@ each ID means.
   `job.workflow_file_path` are known job-context properties and no longer
   fire EXPR003. They are not the same as `github.workflow_ref` /
   `github.workflow_sha` (#428).
+- EXPR005 rejects `case()` calls with an even number of arguments. `case()` is
+  pairs of `(condition, result)` plus a fallback, so the count must be odd and
+  at least 3 (#429).
 
 ## [0.0.1] - 2026-09-10
 
