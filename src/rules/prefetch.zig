@@ -187,31 +187,45 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
 
     for (workflows) |wf| {
         for (wf.jobs) |job| {
-            for (job.steps) |step| {
-                const action_ref = step.uses orelse continue;
-                if (action_ref.is_local or action_ref.is_docker) continue;
-                const owner = action_ref.owner orelse continue;
-                const repo = action_ref.repo orelse continue;
-                if (!engine.isValidGitHubComponent(owner)) continue;
-                if (!engine.isValidGitHubComponent(repo)) continue;
-
-                const repo_key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
-                if (!repos.contains(repo_key)) {
-                    try repos.put(allocator, repo_key, .{ .owner = owner, .repo = repo });
-                }
-
-                const ref = action_ref.ref orelse continue;
-                if (action_ref.is_pinned) {
-                    try putRefKey(allocator, &sha_refs, owner, repo, ref, ShaKey{ .owner = owner, .repo = repo, .sha = ref });
-                } else {
-                    if (!engine.isValidGitRef(ref)) continue;
-                    try putRefKey(allocator, &named_refs, owner, repo, ref, NamedKey{ .owner = owner, .repo = repo, .ref = ref });
-                }
-            }
+            try collectStepRefs(allocator, job.steps, &repos, &sha_refs, &named_refs);
         }
     }
 
     return .{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
+}
+
+fn collectStepRefs(
+    allocator: Allocator,
+    steps: []const workflow_types.Step,
+    repos: *RepoSet,
+    sha_refs: *ShaSet,
+    named_refs: *NamedSet,
+) !void {
+    for (steps) |step| {
+        if (step.uses) |action_ref| {
+            if (!action_ref.is_local and !action_ref.is_docker) {
+                if (action_ref.owner) |owner| {
+                    if (action_ref.repo) |repo| {
+                        if (engine.isValidGitHubComponent(owner) and engine.isValidGitHubComponent(repo)) {
+                            const repo_key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
+                            if (!repos.contains(repo_key)) {
+                                try repos.put(allocator, repo_key, .{ .owner = owner, .repo = repo });
+                            }
+
+                            if (action_ref.ref) |ref| {
+                                if (action_ref.is_pinned) {
+                                    try putRefKey(allocator, sha_refs, owner, repo, ref, ShaKey{ .owner = owner, .repo = repo, .sha = ref });
+                                } else if (engine.isValidGitRef(ref)) {
+                                    try putRefKey(allocator, named_refs, owner, repo, ref, NamedKey{ .owner = owner, .repo = repo, .ref = ref });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        try collectStepRefs(allocator, step.nestedSteps(), repos, sha_refs, named_refs);
+    }
 }
 
 /// Satisfied refs are removed from `sets` so the GraphQL / REST phase only

@@ -237,7 +237,26 @@ pub fn checkStepAmongSteps(steps: []const Step, index: usize, list: *DiagnosticL
 }
 
 fn checkJobLocalActionInputs(job: *const engine.Job, list: *DiagnosticList) void {
-    for (job.steps, 0..) |_, index| checkStepAmongSteps(job.steps, index, list);
+    checkStepsLocalActionInputs(job.steps, list);
+}
+
+fn checkStepsLocalActionInputs(steps: []const Step, list: *DiagnosticList) void {
+    for (steps, 0..) |*step, index| {
+        checkLocalActionAgainstPriors(step, steps[0..index], list);
+        checkNestedLocalActionInputs(step.nestedSteps(), steps[0..index], list);
+    }
+}
+
+fn checkNestedLocalActionInputs(steps: []const Step, priors: []const Step, list: *DiagnosticList) void {
+    for (steps) |*step| {
+        checkLocalActionAgainstPriors(step, priors, list);
+        checkNestedLocalActionInputs(step.nestedSteps(), priors, list);
+    }
+}
+
+fn checkLocalActionAgainstPriors(step: *const Step, priors: []const Step, list: *DiagnosticList) void {
+    if (isCheckedOutInTree(priors, step)) return;
+    checkLocalActionInputs(step, list);
 }
 
 /// True when `steps[index]` uses a local action under a directory that an
@@ -245,30 +264,43 @@ fn checkJobLocalActionInputs(job: *const engine.Job, list: *DiagnosticList) void
 /// input — the pattern an action's own test workflow uses to check itself
 /// out beside the workflow. Nothing lives at that path in the repository as
 /// checked out here, so whatever DEP004 would read there is not the tree the
-/// runner sees.
+/// runner sees. Nested `parallel:` children of those earlier steps have
+/// already finished (implicit wait after the group).
 fn isCheckedOutAtRuntime(steps: []const Step, index: usize) bool {
-    const action = steps[index].uses orelse return false;
+    return isCheckedOutInTree(steps[0..index], &steps[index]);
+}
+
+fn isCheckedOutInTree(priors: []const Step, step: *const Step) bool {
+    const action = step.uses orelse return false;
     if (!action.is_local) return false;
     const rel = relativeDir(action.raw) orelse return false;
+    return checkoutCoversTree(priors, rel);
+}
 
-    for (steps[0..index]) |prior| {
-        const prior_action = prior.uses orelse continue;
-        if (!isCheckoutAction(prior_action)) continue;
-        const with = prior.with orelse continue;
-        const path = with.get("path") orelse continue;
-
-        // Only the part before the first `${{` is knowable here; the rest
-        // resolves on the runner, so everything under that prefix has to be
-        // treated as possibly created.
-        const expression = std.mem.find(u8, path, "${{");
-        const dir = normalizeCheckoutPath(path[0..(expression orelse path.len)]);
-        // A literal `path: .` checks the repository out over the workspace
-        // root, which is the tree already on disk here: no new directory
-        // appears, so the step is judged as usual.
-        if (dir.len == 0 and expression == null) continue;
-        if (dirContains(dir, rel)) return true;
+fn checkoutCoversTree(steps: []const Step, rel: []const u8) bool {
+    for (steps) |*prior| {
+        if (checkoutCovers(prior, rel)) return true;
+        if (checkoutCoversTree(prior.nestedSteps(), rel)) return true;
     }
     return false;
+}
+
+fn checkoutCovers(prior: *const Step, rel: []const u8) bool {
+    const prior_action = prior.uses orelse return false;
+    if (!isCheckoutAction(prior_action)) return false;
+    const with = prior.with orelse return false;
+    const path = with.get("path") orelse return false;
+
+    // Only the part before the first `${{` is knowable here; the rest
+    // resolves on the runner, so everything under that prefix has to be
+    // treated as possibly created.
+    const expression = std.mem.find(u8, path, "${{");
+    const dir = normalizeCheckoutPath(path[0..(expression orelse path.len)]);
+    // A literal `path: .` checks the repository out over the workspace
+    // root, which is the tree already on disk here: no new directory
+    // appears, so the step is judged as usual.
+    if (dir.len == 0 and expression == null) return false;
+    return dirContains(dir, rel);
 }
 
 fn isCheckoutAction(action: workflow_types.ActionRef) bool {
@@ -846,4 +878,64 @@ test "DEP004: with: is not checked against a tree the checkout replaces" {
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a checkout before parallel excuses a nested local uses" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+
+    const nested = [_]Step{
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    const steps = [_]Step{
+        try checkoutStep("action-under-test", &with),
+        .{ .control = .{ .parallel = &nested } },
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStepsLocalActionInputs(&steps, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a checkout inside an earlier parallel excuses a later local uses" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+
+    const nested = [_]Step{
+        try checkoutStep("action-under-test", &with),
+    };
+    const steps = [_]Step{
+        .{ .control = .{ .parallel = &nested } },
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStepsLocalActionInputs(&steps, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a sibling checkout inside parallel does not excuse the local uses" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+
+    const nested = [_]Step{
+        try checkoutStep("action-under-test", &with),
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    const steps = [_]Step{
+        .{ .control = .{ .parallel = &nested } },
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStepsLocalActionInputs(&steps, &list);
+    try testing.expectEqual(@as(usize, 1), list.len());
 }

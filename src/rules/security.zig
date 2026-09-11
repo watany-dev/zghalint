@@ -426,18 +426,11 @@ fn walkJobTaint(
     job_table.tainted_env = job_env.slice();
 
     // Steps are visited in source order so a later step sees the taint the
-    // earlier ones produced. A step never taints itself.
+    // earlier ones produced. A step never taints itself. A `parallel:` group
+    // runs its children concurrently, so they share the incoming taint and
+    // only publish their outputs after the implicit wait.
     var tainted: TaintedNames = .{ .buf = undefined };
-    for (job.steps) |*step| {
-        var step_env = job_env.derive();
-        var table = job_table;
-        table.tainted_steps = tainted.slice();
-        addTaintedEnvKeys(&step_env, step.env, table);
-        table.tainted_env = step_env.slice();
-
-        if (list) |l| checkStepScriptInjection(step, table, l, env_binding.resolveShell(step, job, wf));
-        if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
-    }
+    walkTaintSteps(job.steps, job, job_env, job_table, &tainted, list, wf);
 
     // A step-scoped `env:` entry does not outlive its step, so the outputs are
     // resolved against the job scope.
@@ -448,6 +441,58 @@ fn walkJobTaint(
         if (hasUntrustedExpr(value, final)) return true;
     }
     return false;
+}
+
+fn walkTaintSteps(
+    steps: []const Step,
+    job: *const Job,
+    job_env: TaintedNames,
+    job_table: ContextTable,
+    tainted: *TaintedNames,
+    list: ?*DiagnosticList,
+    wf: *const Workflow,
+) void {
+    for (steps) |*step| {
+        var step_env = job_env.derive();
+        var table = job_table;
+        table.tainted_steps = tainted.slice();
+        addTaintedEnvKeys(&step_env, step.env, table);
+        table.tainted_env = step_env.slice();
+
+        if (list) |l| checkStepScriptInjection(step, table, l, env_binding.resolveShell(step, job, wf));
+
+        const children = step.nestedSteps();
+        if (children.len > 0) {
+            var group_tainted: TaintedNames = .{ .buf = undefined };
+            walkTaintGroup(children, job, job_env, table, &group_tainted, list, wf);
+            for (group_tainted.slice()) |id| tainted.append(id);
+        } else if (stepTaintsItsOutputs(step, table)) {
+            tainted.append(step.id.?);
+        }
+    }
+}
+
+fn walkTaintGroup(
+    steps: []const Step,
+    job: *const Job,
+    job_env: TaintedNames,
+    incoming: ContextTable,
+    group_tainted: *TaintedNames,
+    list: ?*DiagnosticList,
+    wf: *const Workflow,
+) void {
+    for (steps) |*step| {
+        var step_env = job_env.derive();
+        var table = incoming;
+        addTaintedEnvKeys(&step_env, step.env, table);
+        table.tainted_env = step_env.slice();
+
+        if (list) |l| checkStepScriptInjection(step, table, l, env_binding.resolveShell(step, job, wf));
+        if (stepTaintsItsOutputs(step, table)) group_tainted.append(step.id.?);
+
+        const nested = step.nestedSteps();
+        if (nested.len > 0) walkTaintGroup(nested, job, job_env, incoming, group_tainted, list, wf);
+    }
 }
 
 /// The `env:` keys of one mapping whose value interpolates an untrusted
@@ -737,17 +782,24 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
     const message = privilegedPRHeadMessage(wf) orelse return;
 
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            const input = checkoutCodeInput(step, isPRHeadValue) orelse continue;
-            if (forkGuarded(list.allocator, job, step, pull_request_head_anchors)) continue;
-            list.append(.{
-                .rule_id = "SEC005",
-                .severity = .@"error",
-                .message = message,
-                .span = withAnchor(step, input.key).whole(),
-                .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
-            }) catch return;
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            list: *DiagnosticList,
+            message: []const u8,
+            pub fn visit(self: @This(), step: *const Step) void {
+                const input = checkoutCodeInput(step, isPRHeadValue) orelse return;
+                if (forkGuarded(self.list.allocator, self.job, step, pull_request_head_anchors)) return;
+                self.list.append(.{
+                    .rule_id = "SEC005",
+                    .severity = .@"error",
+                    .message = self.message,
+                    .span = withAnchor(step, input.key).whole(),
+                    .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
+                }) catch return;
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list, .message = message });
     }
 }
 
@@ -953,9 +1005,16 @@ fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) v
     const contexts = runTaintContexts(wf);
     const table: ContextTable = .{ .prefix = contexts.slice() };
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            checkGithubEnvInjection(step, table, list, env_binding.resolveShell(step, job, wf));
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            table: ContextTable,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                checkGithubEnvInjection(step, self.table, self.list, env_binding.resolveShell(step, self.job, self.wf));
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .table = table, .list = list });
     }
 }
 
@@ -1145,9 +1204,15 @@ fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
     if (contexts.len == 0) return;
 
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            checkStepCheckoutRefs(wf, step, contexts.slice(), list);
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            contexts: []const []const u8,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                checkStepCheckoutRefs(self.wf, step, self.contexts, self.list);
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .contexts = contexts.slice(), .list = list });
     }
 }
 
@@ -1192,22 +1257,24 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
     if (!wf.hasEvent(.workflow_run)) return;
 
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            const input = checkoutCodeInput(step, isWorkflowRunValue) orelse continue;
-            if (forkGuarded(list.allocator, job, step, workflow_run_anchors)) continue;
-            // A workflow may declare both triggers, and a checkout may name
-            // both a PR head and a workflow_run ref. SEC005 is the more
-            // specific finding, so it owns the step: reporting both puts two
-            // diagnostics on one mistake (#224).
-            if (hasPrivilegedPRHeadTrigger(wf) and checkoutCodeInput(step, isPRHeadValue) != null) continue;
-            list.append(.{
-                .rule_id = "SEC009",
-                .severity = .@"error",
-                .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                .span = withAnchor(step, input.key).whole(),
-                .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
-            }) catch return;
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                const input = checkoutCodeInput(step, isWorkflowRunValue) orelse return;
+                if (forkGuarded(self.list.allocator, self.job, step, workflow_run_anchors)) return;
+                if (hasPrivilegedPRHeadTrigger(self.wf) and checkoutCodeInput(step, isPRHeadValue) != null) return;
+                self.list.append(.{
+                    .rule_id = "SEC009",
+                    .severity = .@"error",
+                    .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                    .span = withAnchor(step, input.key).whole(),
+                    .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+                }) catch return;
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list });
     }
 }
 
@@ -1309,13 +1376,18 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
             if (!job_verified) reportWorkflowRunBranchGate(cond, ifAnchorJob(job), list);
         }
 
-        for (job.steps) |*step| {
-            const step_cond = step.if_condition orelse continue;
-            // A step only runs when its job's condition already passed, so a
-            // trust check on the job covers every step inside it.
-            if (job_verified or hasTrustAnchor(list.allocator, step_cond, workflow_run_anchors)) continue;
-            reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), list);
-        }
+        const Ctx = struct {
+            job_verified: bool,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                const step_cond = step.if_condition orelse return;
+                // A step only runs when its job's condition already passed, so a
+                // trust check on the job covers every step inside it.
+                if (self.job_verified or hasTrustAnchor(self.list.allocator, step_cond, workflow_run_anchors)) return;
+                reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), self.list);
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .job_verified = job_verified, .list = list });
     }
 }
 
@@ -1516,18 +1588,22 @@ fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) vo
     if (job.container) |container| {
         checkCredentialsForHardcoded(container.credentials, job.span, list);
     }
-    for (job.steps) |*step| {
-        const ref = step.uses orelse continue;
-        if (!ref.is_docker) continue;
-        if (isImagePinned(ref.raw)) continue;
-        list.append(.{
-            .rule_id = "SC001",
-            .severity = .warning,
-            .message = "container action image is not pinned to a SHA256 digest",
-            .span = step.uses_value_span orelse step.span,
-            .fix_hint = "pin the image using a digest reference, e.g. docker://image@sha256:abc123...",
-        }) catch return;
-    }
+    const Ctx = struct {
+        list: *DiagnosticList,
+        pub fn visit(self: @This(), step: *const Step) void {
+            const ref = step.uses orelse return;
+            if (!ref.is_docker) return;
+            if (isImagePinned(ref.raw)) return;
+            self.list.append(.{
+                .rule_id = "SC001",
+                .severity = .warning,
+                .message = "container action image is not pinned to a SHA256 digest",
+                .span = step.uses_value_span orelse step.span,
+                .fix_hint = "pin the image using a digest reference, e.g. docker://image@sha256:abc123...",
+            }) catch return;
+        }
+    };
+    workflow_types.walkSteps(job.steps, Ctx{ .list = list });
     for (job.services) |service| {
         checkCredentialsForHardcoded(service.credentials, job.span, list);
     }
@@ -1593,9 +1669,15 @@ fn exprIsNonTokenSecretRef(inner: []const u8) bool {
 /// the step runs under, which needs `runs-on` and both `defaults:` levels.
 fn checkSecretsOutsideEnvWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            checkSecretsOutsideEnv(step, list, env_binding.resolveShell(step, job, wf));
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                checkSecretsOutsideEnv(step, self.list, env_binding.resolveShell(step, self.job, self.wf));
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list });
     }
 }
 
@@ -1770,16 +1852,20 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
         const job_at_risk = has_release_trigger or isDeployJob(job);
         if (!job_at_risk) continue;
 
-        for (job.steps) |*step| {
-            const hint = cachePoisoningHint(step) orelse continue;
-            list.append(.{
-                .rule_id = "SEC016",
-                .severity = .warning,
-                .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
-                .span = spans.usesSpan(step),
-                .fix_hint = hint,
-            }) catch return;
-        }
+        const Ctx = struct {
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                const hint = cachePoisoningHint(step) orelse return;
+                self.list.append(.{
+                    .rule_id = "SEC016",
+                    .severity = .warning,
+                    .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
+                    .span = spans.usesSpan(step),
+                    .fix_hint = hint,
+                }) catch return;
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .list = list });
     }
 }
 
@@ -1912,17 +1998,22 @@ fn containsActorBotCheck(expr: []const u8) bool {
 
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
     var has_upload_after = false;
-    var i = job.steps.len;
+    checkArtipackedSteps(job.steps, &has_upload_after, list);
+}
+
+fn checkArtipackedSteps(steps: []const Step, has_upload_after: *bool, list: *DiagnosticList) void {
+    var i = steps.len;
     while (i > 0) {
         i -= 1;
-        const step = &job.steps[i];
+        const step = &steps[i];
+        checkArtipackedSteps(step.nestedSteps(), has_upload_after, list);
         if (step.uses) |ref| {
             if (isAction(ref, "actions/upload-artifact")) {
-                has_upload_after = true;
+                has_upload_after.* = true;
                 continue;
             }
 
-            if (has_upload_after and isAction(ref, "actions/checkout") and
+            if (has_upload_after.* and isAction(ref, "actions/checkout") and
                 classifyPersistCredentials(step) != .explicit_false)
             {
                 var diag = Diagnostic{

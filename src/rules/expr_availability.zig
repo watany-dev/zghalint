@@ -24,6 +24,7 @@ const test_support = @import("../test_support.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
+const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Anchor = spans.Anchor;
 const Span = spans.Span;
@@ -239,24 +240,29 @@ fn scanWorkflow(comptime Visitor: type, wf: *const Workflow, list: *DiagnosticLi
         }
 
         for (job.steps) |*step| {
-            expr_scan.scanCondition(
-                visitor(Visitor, .step_if, alloc, list),
-                step.if_condition,
-                step.if_condition_meta,
-                step.span,
-            );
-            if (step.run) |run_val| {
-                const v = visitor(Visitor, .step_run, alloc, list);
-                expr_scan.scanText(v, run_val, spans.runAnchor(step));
-            }
-            if (step.name) |name| {
-                const v = visitor(Visitor, .step_name, alloc, list);
-                expr_scan.scanText(v, name, Anchor.fromMeta(step.name_meta, step.span));
-            }
-            expr_scan.scanScalarMap(visitor(Visitor, .step_with, alloc, list), step.with, step.with_meta, step.span);
-            expr_scan.scanScalarMap(visitor(Visitor, .step_env, alloc, list), step.env, step.env_meta, step.span);
+            scanStepAvailability(Visitor, alloc, list, step);
         }
     }
+}
+
+fn scanStepAvailability(comptime Visitor: type, alloc: std.mem.Allocator, list: *DiagnosticList, step: *const Step) void {
+    expr_scan.scanCondition(
+        visitor(Visitor, .step_if, alloc, list),
+        step.if_condition,
+        step.if_condition_meta,
+        step.span,
+    );
+    if (step.run) |run_val| {
+        const v = visitor(Visitor, .step_run, alloc, list);
+        expr_scan.scanText(v, run_val, spans.runAnchor(step));
+    }
+    if (step.name) |name| {
+        const v = visitor(Visitor, .step_name, alloc, list);
+        expr_scan.scanText(v, name, Anchor.fromMeta(step.name_meta, step.span));
+    }
+    expr_scan.scanScalarMap(visitor(Visitor, .step_with, alloc, list), step.with, step.with_meta, step.span);
+    expr_scan.scanScalarMap(visitor(Visitor, .step_env, alloc, list), step.env, step.env_meta, step.span);
+    for (step.nestedSteps()) |*child| scanStepAvailability(Visitor, alloc, list, child);
 }
 
 fn checkContexts(wf: *const Workflow, list: *DiagnosticList) void {

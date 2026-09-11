@@ -44,9 +44,7 @@ pub const Engine = struct {
                 }
 
                 for (job.steps) |*step| {
-                    if (rule.check_step) |check_fn| {
-                        check_fn(step, &list);
-                    }
+                    runCheckStep(rule, step, &list);
                 }
             }
         }
@@ -54,6 +52,11 @@ pub const Engine = struct {
         return list;
     }
 };
+
+fn runCheckStep(rule: Rule, step: *const Step, list: *DiagnosticList) void {
+    if (rule.check_step) |check_fn| check_fn(step, list);
+    for (step.nestedSteps()) |*child| runCheckStep(rule, child, list);
+}
 
 const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
@@ -86,6 +89,35 @@ pub fn postProcess(
     if (opts.drop_sec018) dropSec018CoveredByArtipacked(list);
 }
 
+fn walkStepsForSc005(
+    steps: []const Step,
+    allocator: std.mem.Allocator,
+    drop: *std.ArrayList(usize),
+    k_sc005: *usize,
+) void {
+    for (steps) |*step| {
+        defer walkStepsForSc005(step.nestedSteps(), allocator, drop, k_sc005);
+
+        const action_ref = step.uses orelse continue;
+        if (!action_ref.is_pinned) continue;
+        if (action_ref.is_local or action_ref.is_docker) continue;
+        const owner = action_ref.owner orelse continue;
+        const repo = action_ref.repo orelse continue;
+        const sha = action_ref.ref orelse continue;
+        if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) continue;
+        if (!isValidSha(sha)) continue;
+
+        // Did SC005 actually fire for this step?
+        const tag_res = stale_refs.lookupCachedTagResult(owner, repo, sha) orelse continue;
+        if (tag_res != .no_tag) continue;
+        defer k_sc005.* += 1;
+
+        if (impostor.shaIsCachedImpostor(owner, repo, sha)) {
+            drop.append(allocator, k_sc005.*) catch return;
+        }
+    }
+}
+
 fn dropSc005CoveredByImpostor(
     allocator: std.mem.Allocator,
     workflow: *const Workflow,
@@ -96,25 +128,7 @@ fn dropSc005CoveredByImpostor(
 
     var k_sc005: usize = 0;
     for (workflow.jobs) |*job| {
-        for (job.steps) |*step| {
-            const action_ref = step.uses orelse continue;
-            if (!action_ref.is_pinned) continue;
-            if (action_ref.is_local or action_ref.is_docker) continue;
-            const owner = action_ref.owner orelse continue;
-            const repo = action_ref.repo orelse continue;
-            const sha = action_ref.ref orelse continue;
-            if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) continue;
-            if (!isValidSha(sha)) continue;
-
-            // Did SC005 actually fire for this step?
-            const tag_res = stale_refs.lookupCachedTagResult(owner, repo, sha) orelse continue;
-            if (tag_res != .no_tag) continue;
-            defer k_sc005 += 1;
-
-            if (impostor.shaIsCachedImpostor(owner, repo, sha)) {
-                drop.append(allocator, k_sc005) catch return;
-            }
-        }
+        walkStepsForSc005(job.steps, allocator, &drop, &k_sc005);
     }
 
     if (drop.items.len == 0) return;
@@ -346,6 +360,24 @@ test "engine runs step-level rule" {
 
     const d = test_support.findDiagnostic(&list, "TEST-STEP") orelse return error.TestUnexpectedResult;
     try std.testing.expect(d.fix_hint != null);
+}
+
+test "engine runs step-level rule on nested parallel children" {
+    const engine = Engine.init(&test_rules);
+    const inner = [_]Step{
+        .{ .run = "echo ${{ github.event.issue.body }}" },
+    };
+    const steps = [_]Step{
+        .{ .control = .{ .parallel = &inner } },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps },
+    };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
+    var list = engine.run(std.testing.allocator, &wf);
+    defer list.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&list, "TEST-STEP"));
 }
 
 test "engine returns all expected diagnostics" {

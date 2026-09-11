@@ -59,8 +59,11 @@ fn checkMissingStepName(step: *const Step, diag_list: *DiagnosticList) void {
     if (step.name != null) return;
     // `uses:` already labels the step in the Actions UI with the action name,
     // and leaving it unnamed is the usual style. `run:` dumps the command as
-    // the label, so a name is still worth asking for (#337).
+    // the label, so a name is still worth asking for (#337). Control-flow
+    // steps (`wait` / `wait-all` / `cancel` / `parallel`) have no command
+    // text to dump, so they stay quiet too.
     if (step.uses != null) return;
+    if (step.run == null) return;
 
     diag_list.append(.{
         .rule_id = "BP002",
@@ -455,6 +458,17 @@ fn reportMissingShell(step: *const Step, diag_list: *DiagnosticList) void {
     }) catch return;
 }
 
+fn checkStepShell(step: *const Step, os: RunnerOs, job: *const Job, wf: *const Workflow, diag_list: *DiagnosticList) void {
+    if (step.shell) |shell| {
+        const span = step.shell_value_span orelse step.span;
+        checkShellName(shell, span, diag_list);
+        checkShellAvailability(shell, span, os, diag_list);
+    } else if (!step.shell_key_present and step.run != null and os == .windows and job.defaults == null and wf.defaults == null) {
+        reportMissingShell(step, diag_list);
+    }
+    for (step.nestedSteps()) |*child| checkStepShell(child, os, job, wf, diag_list);
+}
+
 fn checkShell(wf: *const Workflow, diag_list: *DiagnosticList) void {
     if (wf.defaults) |d| checkShellName(d.run_shell, d.run_shell_span, diag_list);
 
@@ -474,13 +488,7 @@ fn checkShell(wf: *const Workflow, diag_list: *DiagnosticList) void {
         }
 
         for (job.steps) |*step| {
-            if (step.shell) |shell| {
-                const span = step.shell_value_span orelse step.span;
-                checkShellName(shell, span, diag_list);
-                checkShellAvailability(shell, span, os, diag_list);
-            } else if (!step.shell_key_present and step.run != null and os == .windows and job.defaults == null and wf.defaults == null) {
-                reportMissingShell(step, diag_list);
-            }
+            checkStepShell(step, os, job, wf, diag_list);
         }
     }
 
@@ -923,6 +931,20 @@ test "BP002: uses-only step is not reported (#337)" {
     defer diags.deinit();
     checkMissingStepName(&step, &diags);
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP002: wait / parallel steps without a name are not reported" {
+    const wait_step = Step{ .control = .{ .wait = &.{} } };
+    var wait_diags = DiagnosticList.init(std.testing.allocator);
+    defer wait_diags.deinit();
+    checkMissingStepName(&wait_step, &wait_diags);
+    try std.testing.expectEqual(@as(usize, 0), wait_diags.len());
+
+    const parallel_step = Step{ .control = .{ .parallel = &.{} } };
+    var parallel_diags = DiagnosticList.init(std.testing.allocator);
+    defer parallel_diags.deinit();
+    checkMissingStepName(&parallel_step, &parallel_diags);
+    try std.testing.expectEqual(@as(usize, 0), parallel_diags.len());
 }
 
 test "BP003: detect deprecated checkout v1" {

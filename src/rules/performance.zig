@@ -83,45 +83,50 @@ fn buildCacheFix(
 
     var edits = std.ArrayList(diagnostics_mod.Edit).empty;
 
-    for (job.steps) |step| {
-        const action_ref = step.uses orelse continue;
-        const action_name = util.actionBaseName(action_ref.raw);
-        if (!std.mem.eql(u8, action_name, setup_action)) continue;
+    const Ctx = struct {
+        setup_action: []const u8,
+        cache_value: []const u8,
+        alloc: std.mem.Allocator,
+        edits: *std.ArrayList(diagnostics_mod.Edit),
+        pub fn visit(self: @This(), step: *const Step) void {
+            const action_ref = step.uses orelse return;
+            const action_name = util.actionBaseName(action_ref.raw);
+            if (!std.mem.eql(u8, action_name, self.setup_action)) return;
 
-        if (step.with) |with| {
-            if (with.get("cache")) |_| continue;
+            if (step.with) |with| {
+                if (with.get("cache")) |_| return;
+            }
+
+            if (!step.own_line) return;
+            const col = step.uses_key_col orelse return;
+            if (col == 0) return;
+
+            if (step.with != null) {
+                const anchor = step.with_last_entry_end_byte orelse return;
+                const with_col = step.with_key_col orelse return;
+                if (with_col == 0) return;
+                const appended = fix_builder.appendMappingEntry(
+                    self.alloc,
+                    anchor,
+                    with_col - 1,
+                    "cache",
+                    self.cache_value,
+                ) orelse return;
+                self.edits.appendSlice(self.alloc, appended) catch return;
+            } else {
+                if (step.with_key_present) return;
+                const anchor = step.uses_value_end_byte orelse return;
+                const inserted = fix_builder.insertWithEntry(self.alloc, anchor, col, "cache", self.cache_value) orelse return;
+                self.edits.appendSlice(self.alloc, inserted) catch return;
+            }
         }
-
-        // Both shapes below open a block line under the step, which needs the
-        // step to own its own line to begin with.
-        if (!step.own_line) continue;
-        const col = step.uses_key_col orelse continue;
-        if (col == 0) continue;
-
-        if (step.with != null) {
-            const anchor = step.with_last_entry_end_byte orelse continue;
-            // The existing `with:` keys, not the `uses:` column, decide the
-            // indent: an appended key off their column falls out of the mapping.
-            const with_col = step.with_key_col orelse continue;
-            if (with_col == 0) continue;
-            const appended = fix_builder.appendMappingEntry(
-                alloc,
-                anchor,
-                with_col - 1,
-                "cache",
-                cache_value,
-            ) orelse continue;
-            edits.appendSlice(alloc, appended) catch continue;
-        } else {
-            // `with: {}`, `with:` and `with: 4` parse to a null `with` while the
-            // key is still in source; inserting another `with:` block would
-            // duplicate it (#171, fuzz).
-            if (step.with_key_present) continue;
-            const anchor = step.uses_value_end_byte orelse continue;
-            const inserted = fix_builder.insertWithEntry(alloc, anchor, col, "cache", cache_value) orelse continue;
-            edits.appendSlice(alloc, inserted) catch continue;
-        }
-    }
+    };
+    workflow_types.walkSteps(job.steps, Ctx{
+        .setup_action = setup_action,
+        .cache_value = cache_value,
+        .alloc = alloc,
+        .edits = &edits,
+    });
 
     if (edits.items.len == 0) return null;
 
@@ -251,43 +256,45 @@ fn checkCacheableSetup(
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
-    // Span of the first setup step that warrants a warning, so the diagnostic
-    // points at the action rather than at the job.
-    var setup_span: ?Span = null;
-    var has_cache = false;
+    const Ctx = struct {
+        ca: CacheableSetup,
+        setup_span: ?Span = null,
+        has_cache: bool = false,
+        pub fn visit(self: *@This(), step: *const Step) void {
+            const action_ref = step.uses orelse return;
+            const action_name = util.actionBaseName(action_ref.raw);
 
-    for (job.steps) |*step| {
-        const action_ref = step.uses orelse continue;
-        const action_name = util.actionBaseName(action_ref.raw);
+            if (std.mem.eql(u8, action_name, "actions/cache")) {
+                self.has_cache = true;
+                return;
+            }
+            if (!std.mem.eql(u8, action_name, self.ca.setup_action)) return;
 
-        if (std.mem.eql(u8, action_name, "actions/cache")) {
-            has_cache = true;
-            continue;
+            switch (self.ca.kind) {
+                .with_cache_input => {
+                    if (self.setup_span == null) self.setup_span = spans.usesSpan(step);
+                    const with = step.with orelse return;
+                    const val = with.get(self.ca.cache_key) orelse return;
+                    if (val.len > 0) self.has_cache = true;
+                },
+                .bun_independent => {
+                    if (self.setup_span == null) self.setup_span = spans.usesSpan(step);
+                },
+                .uv_independent => {
+                    const with = step.with orelse return;
+                    const val = with.get(self.ca.cache_key) orelse return;
+                    if (std.mem.eql(u8, val, "false") and self.setup_span == null) {
+                        self.setup_span = spans.usesSpan(step);
+                    }
+                },
+            }
         }
-        if (!std.mem.eql(u8, action_name, ca.setup_action)) continue;
+    };
+    var ctx = Ctx{ .ca = ca };
+    workflow_types.walkSteps(job.steps, &ctx);
 
-        switch (comptime ca.kind) {
-            .with_cache_input => {
-                if (setup_span == null) setup_span = spans.usesSpan(step);
-                const with = step.with orelse continue;
-                const val = with.get(ca.cache_key) orelse continue;
-                if (val.len > 0) has_cache = true;
-            },
-            .bun_independent => {
-                if (setup_span == null) setup_span = spans.usesSpan(step);
-            },
-            .uv_independent => {
-                const with = step.with orelse continue;
-                const val = with.get(ca.cache_key) orelse continue;
-                if (std.mem.eql(u8, val, "false") and setup_span == null) {
-                    setup_span = spans.usesSpan(step);
-                }
-            },
-        }
-    }
-
-    const span = setup_span orelse return;
-    if (has_cache) return;
+    const span = ctx.setup_span orelse return;
+    if (ctx.has_cache) return;
 
     const dispatched: DispatchResult = switch (comptime ca.kind) {
         .with_cache_input => dispatchCacheFix(diag_list, job, ca.setup_action),

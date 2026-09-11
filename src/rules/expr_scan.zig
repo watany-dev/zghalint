@@ -163,8 +163,16 @@ pub fn runsOnAnchor(job: *const Job) Anchor {
     return Anchor.fromMeta(.{ .value_span = span, .style = job.runs_on_value_style }, job.span);
 }
 
-/// Every scalar of a job: its own fields and those of each step.
+/// Every scalar of a job: its own fields and those of each step, including
+/// nested `parallel:` children.
 pub fn scanJob(visitor: anytype, job: *const Job) void {
     scanJobFields(visitor, job);
-    for (job.steps) |*step| scanStep(visitor, step);
+    scanStepTree(visitor, job.steps);
+}
+
+fn scanStepTree(visitor: anytype, steps: []const Step) void {
+    for (steps) |*step| {
+        scanStep(visitor, step);
+        scanStepTree(visitor, step.nestedSteps());
+    }
 }

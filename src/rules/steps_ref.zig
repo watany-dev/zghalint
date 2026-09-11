@@ -46,13 +46,24 @@ fn idEql(a: []const u8, b: []const u8) bool {
 
 fn collectStepIds(job: *const Job, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
     for (job.steps, 0..) |step, index| {
-        const id = step.id orelse continue;
-        if (id.len == 0) continue;
-        for (buf.items) |seen| {
-            if (idEql(seen.id, id)) break;
-        } else {
-            buf.append(alloc, .{ .id = id, .index = index }) catch return;
-        }
+        addDefinedStep(step.id, index, buf, alloc);
+        addNestedDefinedSteps(step.nestedSteps(), index, buf, alloc);
+    }
+}
+
+fn addDefinedStep(id: ?[]const u8, index: usize, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
+    const step_id = id orelse return;
+    if (step_id.len == 0) return;
+    for (buf.items) |seen| {
+        if (idEql(seen.id, step_id)) return;
+    }
+    buf.append(alloc, .{ .id = step_id, .index = index }) catch return;
+}
+
+fn addNestedDefinedSteps(steps: []const Step, index: usize, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
+    for (steps) |step| {
+        addDefinedStep(step.id, index, buf, alloc);
+        addNestedDefinedSteps(step.nestedSteps(), index, buf, alloc);
     }
 }
 
@@ -62,8 +73,12 @@ const Resolver = struct {
     /// target either, but it is still the likeliest typo source, so it stays
     /// in the list.
     ids: []const []const u8,
-    /// Index of the step whose expressions are being scanned.
+    /// Index of the *top-level* step whose expressions are being scanned.
+    /// Nested `parallel:` children share this index so they are not "earlier"
+    /// than each other; `current_id` distinguishes a true self-reference
+    /// from a sibling in the same group.
     current: usize,
+    current_id: ?[]const u8 = null,
     /// Backs the expression parse trees, which never outlive a walk;
     /// diagnostic messages go to the list's own arena instead.
     alloc: std.mem.Allocator,
@@ -182,7 +197,13 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
         return;
     };
     if (target.index == res.current) {
-        appendSelfReference(res, id, span);
+        if (res.current_id) |own| {
+            if (idEql(own, id)) {
+                appendSelfReference(res, id, span);
+                return;
+            }
+        }
+        appendForwardReference(res, id, span);
         return;
     }
     if (target.index > res.current) {
@@ -216,14 +237,21 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     // A job where no step carries an `id:` is not skipped: there every
     // `steps.<id>` reference is certainly undefined.
     for (job.steps, 0..) |*step, index| {
-        expr_scan.scanStep(Resolver{
+        scanStepTree(step, Resolver{
             .defined = defined.items,
             .ids = ids.items,
             .current = index,
             .alloc = alloc,
             .list = list,
-        }, step);
+        });
     }
+}
+
+fn scanStepTree(step: *const Step, resolver: Resolver) void {
+    var current = resolver;
+    current.current_id = step.id;
+    expr_scan.scanStep(current, step);
+    for (step.nestedSteps()) |*child| scanStepTree(child, resolver);
 }
 
 pub const step_reference_rule = Rule{
@@ -498,4 +526,51 @@ test "EXPR010: the diagnostic points at the reference inside a run scalar" {
 
     const diag = test_support.findDiagnostic(&list, "EXPR010").?;
     try testing.expectEqual(@as(u32, 8), diag.span.start_line);
+}
+
+test "EXPR010: a parallel sibling is not this step itself" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo v=1 >> "$GITHUB_OUTPUT"
+        \\          - run: echo "${{ steps.frontend.outputs.v }}"
+    ,
+        "step \"frontend\" is defined after this step",
+    );
+}
+
+test "EXPR010: a parallel child's outputs are available after the group" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo v=1 >> "$GITHUB_OUTPUT"
+        \\          - run: echo backend
+        \\      - run: echo "${{ steps.frontend.outputs.v }}"
+    );
+}
+
+test "EXPR010: a self-reference inside parallel is still this step" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo "${{ steps.frontend.outputs.v }}"
+        \\          - run: echo backend
+    ,
+        "step \"frontend\" is this step itself",
+    );
 }
