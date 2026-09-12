@@ -15,6 +15,10 @@ each ID means.
 
 ### Added
 
+- SYN012 offers an unsafe fix that removes the later conflicting branch, tag,
+  or path filter while keeping the earlier one (#412). Guarded flow-mapping
+  deletion spans are shared with SYN011; uncertain or anchored ranges are skipped.
+
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
 - `background` / `wait` / `wait-all` / `cancel` / `parallel` are accepted

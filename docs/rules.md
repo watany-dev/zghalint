@@ -658,7 +658,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
 | SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
 | SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all (`--fix` で綴りを修正、候補が無ければ `--fix-unsafe` でキーを削除) |
-| SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+| SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event; `--fix-unsafe` removes the later conflicting filter |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
