@@ -81,12 +81,10 @@ pub fn getAuthHeader(allocator: Allocator) ?[]const u8 {
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
 }
 
-pub fn writeStandardHeaders(buf: []std.http.Header) usize {
-    std.debug.assert(buf.len >= 2);
-    buf[0] = .{ .name = "Accept", .value = accept_github_json };
-    buf[1] = .{ .name = "X-GitHub-Api-Version", .value = api_version };
-    return 2;
-}
+pub const standard_headers: [2]std.http.Header = .{
+    .{ .name = "Accept", .value = accept_github_json },
+    .{ .name = "X-GitHub-Api-Version", .value = api_version },
+};
 
 /// The Authorization header goes in `privileged_headers`, which
 /// `std.http.Client` drops when a redirect leaves the original host, so a
@@ -416,14 +414,12 @@ pub fn fetchAuthenticatedJson(
     const auth_value = getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
 
-    var headers_buf: [2]std.http.Header = undefined;
-    const header_count = writeStandardHeaders(&headers_buf);
     var auth_buf: [1]std.http.Header = undefined;
 
     const result = try fetchBounded(.{
         .location = .{ .url = url },
         .headers = .{ .user_agent = .{ .override = user_agent } },
-        .extra_headers = headers_buf[0..header_count],
+        .extra_headers = &standard_headers,
         .privileged_headers = authHeaders(&auth_buf, auth_value),
     }, &body_sink);
 
