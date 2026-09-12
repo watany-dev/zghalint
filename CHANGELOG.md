@@ -15,6 +15,11 @@ each ID means.
 
 ### Added
 
+- SEC014 offers an unsafe fix for a whole `if:` condition comparing
+  `github.actor` or `github.triggering_actor` to a bot name with `==` / `!=`.
+  It preserves YAML quotes and expression wrappers, replacing the comparison
+  with `github.event.sender.type` and the generic `Bot` type (#413).
+
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
 - `background` / `wait` / `wait-all` / `cancel` / `parallel` are accepted
