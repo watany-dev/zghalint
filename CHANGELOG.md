@@ -92,6 +92,9 @@ rule IDs may still be renumbered before 1.0.
 
 ### Fixed
 
+- DEP003 accepts scoped local action paths such as `./tools/@scope/tool` and
+  `$/tools/@scope/tool`, while still rejecting `tool@v1` ref suffixes (#425).
+
 - A `steps:` holding a mapping instead of a sequence no longer aborts the
   workflow parse and silences every diagnostic in the file. It now reports
   SYN004 and parsing continues, the same treatment `services:` and
