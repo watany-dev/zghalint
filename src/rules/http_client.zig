@@ -81,12 +81,10 @@ pub fn getAuthHeader(allocator: Allocator) ?[]const u8 {
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{token}) catch null;
 }
 
-pub fn writeStandardHeaders(buf: []std.http.Header) usize {
-    std.debug.assert(buf.len >= 2);
-    buf[0] = .{ .name = "Accept", .value = accept_github_json };
-    buf[1] = .{ .name = "X-GitHub-Api-Version", .value = api_version };
-    return 2;
-}
+pub const standard_headers: [2]std.http.Header = .{
+    .{ .name = "Accept", .value = accept_github_json },
+    .{ .name = "X-GitHub-Api-Version", .value = api_version },
+};
 
 /// The Authorization header goes in `privileged_headers`, which
 /// `std.http.Client` drops when a redirect leaves the original host, so a
@@ -350,7 +348,7 @@ fn shutdownUsedConnections(io: std.Io) void {
 /// failed send) is not mistaken for a dead network.
 fn fetchRecorded(
     opts: std.http.Client.FetchOptions,
-    sink: ?*const BoundedBody,
+    sink: *const BoundedBody,
 ) FetchError!std.http.Client.FetchResult {
     if (network_unreachable) return error.NetworkUnreachable;
     if (engine.isNetworkDeadlineExceeded()) return error.NetworkDeadlineExceeded;
@@ -359,29 +357,17 @@ fn fetchRecorded(
     defer client_mutex.unlock(runtime.io());
     applyPendingCustomCa();
     const result = fetchWithBudget(opts, engine.requestBudget()) catch |err| {
-        if (sink) |s| if (s.overflowed) {
+        if (sink.overflowed) {
             last_fetch_succeeded = true;
             return error.FetchFailed;
-        };
+        }
         return recordFailure(err);
     };
     last_fetch_succeeded = true;
     return result;
 }
 
-/// The client mutex is held for the duration of the call so the shared
-/// `std.http.Client` remains safe even if callers are later parallelized.
-/// Each request is bounded by `engine.requestBudget()`, and a transport
-/// failure makes every later call fail fast with `NetworkUnreachable`.
-pub fn fetch(
-    opts: std.http.Client.FetchOptions,
-) FetchError!std.http.Client.FetchResult {
-    return fetchRecorded(opts, null);
-}
-
-/// `fetch` with the response body streamed into `sink`; overrides
-/// `opts.response_writer`. An overflowed body is `FetchFailed` and does not
-/// mark the network unreachable.
+/// An overflowed body is `FetchFailed` and does not mark the network unreachable.
 pub fn fetchBounded(
     opts: std.http.Client.FetchOptions,
     sink: *BoundedBody,
@@ -416,14 +402,12 @@ pub fn fetchAuthenticatedJson(
     const auth_value = getAuthHeader(allocator);
     defer if (auth_value) |auth| allocator.free(auth);
 
-    var headers_buf: [2]std.http.Header = undefined;
-    const header_count = writeStandardHeaders(&headers_buf);
     var auth_buf: [1]std.http.Header = undefined;
 
     const result = try fetchBounded(.{
         .location = .{ .url = url },
         .headers = .{ .user_agent = .{ .override = user_agent } },
-        .extra_headers = headers_buf[0..header_count],
+        .extra_headers = &standard_headers,
         .privileged_headers = authHeaders(&auth_buf, auth_value),
     }, &body_sink);
 
@@ -492,6 +476,8 @@ test "classify: transport failures are NetworkUnreachable, the rest FetchFailed"
 }
 
 test "recordFailure: a transport failure is sticky until reset" {
+    var sink = BoundedBody.init(testing.allocator, max_response_bytes);
+    defer sink.deinit();
     resetNetworkState();
     defer resetNetworkState();
 
@@ -501,7 +487,7 @@ test "recordFailure: a transport failure is sticky until reset" {
     // The flag short-circuits ahead of every other check, so even an
     // uninitialized client answers NetworkUnreachable.
     if (!client_initialized) {
-        try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = "http://127.0.0.1:1/x" } }));
+        try testing.expectError(error.NetworkUnreachable, fetchBounded(.{ .location = .{ .url = "http://127.0.0.1:1/x" } }, &sink));
     }
 
     resetNetworkState();
@@ -622,7 +608,9 @@ fn elapsedSince(t0: std.Io.Timestamp) i128 {
     return std.Io.Clock.awake.now(runtime.io()).nanoseconds - t0.nanoseconds;
 }
 
-test "fetch: a server that never answers is cut off by the budget and marks the network unreachable" {
+test "fetchBounded: a server that never answers is cut off by the budget and marks the network unreachable" {
+    var sink = BoundedBody.init(testing.allocator, max_response_bytes);
+    defer sink.deinit();
     if (client_initialized) return error.SkipZigTest;
     var server = try TestServer.listen(.hang);
     defer server.deinit();
@@ -639,7 +627,7 @@ test "fetch: a server that never answers is cut off by the budget and marks the 
     engine.setNetworkDeadline(200 * std.time.ns_per_ms);
     defer engine.clearNetworkDeadline();
     const t0 = std.Io.Clock.awake.now(runtime.io());
-    try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = url } }));
+    try testing.expectError(error.NetworkUnreachable, fetchBounded(.{ .location = .{ .url = url } }, &sink));
     const first = elapsedSince(t0);
     try testing.expect(first >= 150 * std.time.ns_per_ms);
     try testing.expect(first < 2 * std.time.ns_per_s);
@@ -649,12 +637,14 @@ test "fetch: a server that never answers is cut off by the budget and marks the 
     // The second request is refused before connecting, whatever the budget.
     engine.setNetworkDeadline(10 * std.time.ns_per_s);
     const t1 = std.Io.Clock.awake.now(runtime.io());
-    try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = url } }));
+    try testing.expectError(error.NetworkUnreachable, fetchBounded(.{ .location = .{ .url = url } }, &sink));
     try testing.expect(elapsedSince(t1) < 50 * std.time.ns_per_ms);
     try testing.expectEqual(@as(u32, 1), server.accepted.load(.monotonic));
 }
 
-test "fetch: a CONNECT proxy that never answers is cut off by the budget" {
+test "fetchBounded: a CONNECT proxy that never answers is cut off by the budget" {
+    var sink = BoundedBody.init(testing.allocator, max_response_bytes);
+    defer sink.deinit();
     if (client_initialized) return error.SkipZigTest;
     // std swallows the first cancel (see the CONNECT note below) and the second
     // read is no longer cancelable: `Io.Threaded` hands a task its cancelation
@@ -685,13 +675,15 @@ test "fetch: a CONNECT proxy that never answers is cut off by the budget" {
     engine.setNetworkDeadline(200 * std.time.ns_per_ms);
     defer engine.clearNetworkDeadline();
     const t0 = std.Io.Clock.awake.now(runtime.io());
-    try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = "https://api.github.invalid/" } }));
+    try testing.expectError(error.NetworkUnreachable, fetchBounded(.{ .location = .{ .url = "https://api.github.invalid/" } }, &sink));
     try testing.expect(elapsedSince(t0) < 2 * std.time.ns_per_s);
     try testing.expect(isNetworkUnreachable());
     try testing.expect(server.accepted.load(.monotonic) >= 1);
 }
 
-test "fetch: a refused connection fails at once instead of waiting out the budget" {
+test "fetchBounded: a refused connection fails at once instead of waiting out the budget" {
+    var sink = BoundedBody.init(testing.allocator, max_response_bytes);
+    defer sink.deinit();
     if (client_initialized) return error.SkipZigTest;
     // Bind and release a port so nothing listens on it.
     var probe = try TestServer.listen(.hang);
@@ -706,7 +698,7 @@ test "fetch: a refused connection fails at once instead of waiting out the budge
     engine.setNetworkDeadline(5 * std.time.ns_per_s);
     defer engine.clearNetworkDeadline();
     const t0 = std.Io.Clock.awake.now(runtime.io());
-    try testing.expectError(error.NetworkUnreachable, fetch(.{ .location = .{ .url = url } }));
+    try testing.expectError(error.NetworkUnreachable, fetchBounded(.{ .location = .{ .url = url } }, &sink));
     // A refused connect on Windows loopback is not immediate: the SYN to a port
     // whose listener was just closed is dropped rather than reset, so the RST
     // only arrives on a retransmit (measured over a second in CI). The bound
@@ -748,9 +740,11 @@ test "fetchBounded: an oversized body is FetchFailed and leaves the network reac
     try testing.expect(!isNetworkUnreachable());
 }
 
-test "fetch returns NotInitialized when client not started" {
+test "fetchBounded returns NotInitialized when client not started" {
+    var sink = BoundedBody.init(testing.allocator, max_response_bytes);
+    defer sink.deinit();
     if (client_initialized) return error.SkipZigTest;
-    const result = fetch(.{ .location = .{ .url = "http://localhost/does-not-matter" } });
+    const result = fetchBounded(.{ .location = .{ .url = "http://localhost/does-not-matter" } }, &sink);
     try testing.expectError(error.NotInitialized, result);
 }
 
@@ -828,13 +822,15 @@ test "getAuthHeader: returns null when GITHUB_TOKEN unset" {
     try testing.expect(getAuthHeader(testing.allocator) == null);
 }
 
-test "fetch: returns NetworkDeadlineExceeded when deadline has passed" {
+test "fetchBounded: returns NetworkDeadlineExceeded when deadline has passed" {
+    var sink = BoundedBody.init(testing.allocator, max_response_bytes);
+    defer sink.deinit();
     // The deadline check must short-circuit before any TCP / TLS work is
     // attempted, so the client is deliberately left uninitialized.
     engine.network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer engine.clearNetworkDeadline();
 
-    const result = fetch(.{ .location = .{ .url = "http://127.0.0.1:1/irrelevant" } });
+    const result = fetchBounded(.{ .location = .{ .url = "http://127.0.0.1:1/irrelevant" } }, &sink);
     try testing.expectError(error.NetworkDeadlineExceeded, result);
 }
 

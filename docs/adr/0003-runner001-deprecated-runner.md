@@ -76,8 +76,8 @@ GitHub Actions のホステッドランナー画像は定期的に撤去され�
   `--fix-unsafe` 明示オプトインで適用可能にする
 - 実装: 静的テーブルの `replacement` フィールドをそのまま `Edit` の
   `replacement` に使う。置換範囲は `job.runs_on_value_span`（新設）の
-  `start_byte..end_byte`。`fix_builder` ヘルパは通さず、`DiagnosticList.allocEdit`
-  で 1 個の Edit を確保する最小構成
+  `start_byte..end_byte`。`fix_builder` ヘルパは通さず、`DiagnosticList.fixAllocator().dupe`
+  で 1 個の Edit を確保する最小構成（#474 で専用フォワーダを削除）
 - `runs_on_value_span` の追加は構造的変更なので、機能追加コミットと分離
   （`feat(parser): capture runs_on_value_span for scalar runs-on`）。
   CLAUDE.md の Kent Beck Tidy First 方針に準拠

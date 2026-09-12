@@ -19,14 +19,14 @@ const Job = workflow_types.Job;
 const Workflow = workflow_types.Workflow;
 
 /// A `${{ ... }}` occurrence inside `Step.run`, in normalized-value offsets.
-pub const Occurrence = struct {
+const Occurrence = struct {
     offset: usize,
     len: usize,
 };
 
 /// The occurrences of one step. A step with more than this many offending
 /// expressions gets no fix rather than a partial one.
-pub const max_occurrences = 16;
+const max_occurrences = 16;
 
 pub const Occurrences = struct {
     /// Spelled out at every construction site rather than defaulted to
@@ -180,7 +180,7 @@ fn isNameSegment(seg: []const u8) bool {
 /// The env var name for one expression, or null when the expression is not a
 /// plain context path (a function call, an index, an operator). Null means the
 /// whole step gets no fix: a partly bound step reads as fixed without being it.
-pub fn deriveName(alloc: std.mem.Allocator, inner: []const u8) ?[]const u8 {
+fn deriveName(alloc: std.mem.Allocator, inner: []const u8) ?[]const u8 {
     const path = std.mem.trim(u8, inner, " \t\n\r");
     if (path.len == 0) return null;
 

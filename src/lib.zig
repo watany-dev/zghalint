@@ -43,7 +43,6 @@ pub const rules = struct {
     pub const prefetch = @import("rules/prefetch.zig");
     pub const runner = @import("rules/runner.zig");
     pub const syntax = @import("rules/syntax.zig");
-    pub const composite_steps = @import("rules/composite_steps.zig");
     pub const local_action = @import("rules/local_action.zig");
 };
 

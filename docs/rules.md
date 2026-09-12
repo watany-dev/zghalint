@@ -64,6 +64,13 @@ SEC014 の `--fix-unsafe` は、`if:` 全体が `github.actor` または
 どちらでもよく、plain / quoted scalar と `${{ }}` を保持する。特定 bot 名から
 汎用の bot 判定へ意味が変わるため unsafe。AND / OR を含む条件、`contains()`、
 block scalar、ソース位置を取得できない条件には fix を付けない。
+### SEC002 と真偽値の展開
+
+SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式全体が
+`startsWith(...)` / `endsWith(...)` / `contains(...)` など真偽値を返す組み込みの
+呼び出しであれば、引数の汚染値を理由に報告しない。返る値は `true` / `false`
+だけであり、引数そのものはコードへ届かない。`&&` / `||` で汚染文字列を返す
+条件式や、別の `${{ }}` にある直接参照は引き続き診断・autofix の対象になる。
 
 ### SEC016 の対象
 
@@ -540,6 +547,8 @@ action / reusable workflow references.
 - `$/{path}` — ワークフロー自身のリポジトリの実行中コミット（`@ref` を付けられない）
 - `docker://{image}`
 
+ローカルアクションのパス要素先頭の `@`（例: `./tools/@scope/tool`、`$/tools/@scope/tool`）はディレクトリ名として受理する。`tool@v1` のような途中の `@` は ref として報告する。
+
 ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
 
 - `{owner}/{repo}/.github/workflows/{file}.yml@{ref}`
@@ -667,7 +676,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
 | SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
 | SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all (`--fix` で綴りを修正、候補が無ければ `--fix-unsafe` でキーを削除) |
-| SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+| SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event; `--fix-unsafe` removes the later conflicting filter |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
@@ -1194,7 +1203,7 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入） |
+| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入）。composite の欠落 `shell` は `--fix` で `bash` を挿入 |
 | ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
 | ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
 | ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
@@ -1257,6 +1266,7 @@ composite action の step は、ワークフローの step と同じ実体なの
 
 - `run:` を持つ step には `shell:` が必須。既定のシェルも `defaults.run` も無く、
   GitHub は実行時にエラーにするため、ACT001（必須キーが無い）として報告する。
+  挿入位置が確定できる場合、`--fix` で `shell: bash` を追加する。既存の `shell:` は変更しない。
   `shell:` の値そのものの妥当性は BP004 と同じ表で判定する。
 - 式検証（EXPR 系）は composite 用の context で行う。`inputs.<name>` はその action
   自身の `inputs:` を指すため、宣言されていない名前は ACT005 として報告する

@@ -16,3 +16,4 @@ runs:
       run: echo ${{ inputs.version }}
     - name: Missing shell
       run: echo hi
+      shell: bash

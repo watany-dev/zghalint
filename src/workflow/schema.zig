@@ -52,7 +52,7 @@ pub const job_keys = [_][]const u8{
     "with",
 };
 
-pub const step_action_keys = [_][]const u8{
+const step_action_keys = [_][]const u8{
     "background",
     "continue-on-error",
     "env",
@@ -64,7 +64,7 @@ pub const step_action_keys = [_][]const u8{
     "with",
 };
 
-pub const step_run_keys = [_][]const u8{
+const step_run_keys = [_][]const u8{
     "background",
     "continue-on-error",
     "env",
@@ -77,34 +77,34 @@ pub const step_run_keys = [_][]const u8{
     "working-directory",
 };
 
-pub const step_wait_keys = [_][]const u8{
+const step_wait_keys = [_][]const u8{
     "continue-on-error",
     "id",
     "name",
     "wait",
 };
 
-pub const step_wait_all_keys = [_][]const u8{
+const step_wait_all_keys = [_][]const u8{
     "continue-on-error",
     "id",
     "name",
     "wait-all",
 };
 
-pub const step_cancel_keys = [_][]const u8{
+const step_cancel_keys = [_][]const u8{
     "cancel",
     "continue-on-error",
     "id",
     "name",
 };
 
-pub const step_parallel_keys = [_][]const u8{
+const step_parallel_keys = [_][]const u8{
     "id",
     "name",
     "parallel",
 };
 
-pub const step_all_keys = [_][]const u8{
+const step_all_keys = [_][]const u8{
     "background",
     "cancel",
     "continue-on-error",
@@ -129,16 +129,16 @@ pub const strategy_keys = [_][]const u8{
     "max-parallel",
 };
 
-pub const defaults_keys = [_][]const u8{
+const defaults_keys = [_][]const u8{
     "run",
 };
 
-pub const defaults_run_keys = [_][]const u8{
+const defaults_run_keys = [_][]const u8{
     "shell",
     "working-directory",
 };
 
-pub const container_keys = [_][]const u8{
+const container_keys = [_][]const u8{
     "credentials",
     "env",
     "image",
@@ -147,7 +147,7 @@ pub const container_keys = [_][]const u8{
     "volumes",
 };
 
-pub const service_container_keys = [_][]const u8{
+const service_container_keys = [_][]const u8{
     "command",
     "credentials",
     "entrypoint",
@@ -158,7 +158,7 @@ pub const service_container_keys = [_][]const u8{
     "volumes",
 };
 
-pub fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
+fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
     for (allowed) |candidate| {
         if (std.mem.eql(u8, key, candidate)) return true;
     }

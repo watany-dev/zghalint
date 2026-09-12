@@ -16,7 +16,7 @@ pub fn levenshteinDistance(a: []const u8, b: []const u8) usize {
 /// the distance is known to exceed `bound`. The length difference is a lower
 /// bound, and so is the smallest entry of a finished DP row, so a hopeless
 /// candidate costs at most a row or two instead of the full table.
-pub fn levenshteinDistanceBounded(a: []const u8, b: []const u8, bound: usize) usize {
+fn levenshteinDistanceBounded(a: []const u8, b: []const u8, bound: usize) usize {
     const MAX_LEN: usize = 64;
     if (a.len > MAX_LEN or b.len > MAX_LEN) return std.math.maxInt(usize);
     if (@max(a.len, b.len) - @min(a.len, b.len) > bound) return std.math.maxInt(usize);

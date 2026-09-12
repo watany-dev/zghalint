@@ -15,14 +15,14 @@ pub fn asObject(value: Value) ?ObjectMap {
     };
 }
 
-pub fn asString(value: Value) ?[]const u8 {
+fn asString(value: Value) ?[]const u8 {
     return switch (value) {
         .string => |s| s,
         else => null,
     };
 }
 
-pub fn asArray(value: Value) ?[]const Value {
+fn asArray(value: Value) ?[]const Value {
     return switch (value) {
         .array => |a| a.items,
         else => null,
@@ -48,10 +48,6 @@ pub fn arrayField(obj: ObjectMap, key: []const u8) ?[]const Value {
     return asArray(obj.get(key) orelse return null);
 }
 
-pub fn boolField(obj: ObjectMap, key: []const u8) ?bool {
-    return asBool(obj.get(key) orelse return null);
-}
-
 const testing = std.testing;
 
 fn parse(arena: std.mem.Allocator, text: []const u8) Value {
@@ -66,7 +62,7 @@ test "field accessors return the value for a matching type" {
     )).?;
 
     try testing.expectEqualStrings("x", stringField(root, "s").?);
-    try testing.expectEqual(true, boolField(root, "b").?);
+    try testing.expectEqual(true, asBool(root.get("b").?).?);
     try testing.expectEqual(@as(usize, 1), arrayField(root, "a").?.len);
     try testing.expectEqualStrings("v", stringField(objField(root, "o").?, "k").?);
 }
@@ -79,7 +75,7 @@ test "field accessors return null for a missing key or a wrong type" {
     )).?;
 
     try testing.expect(stringField(root, "absent") == null);
-    try testing.expect(boolField(root, "s") == null);
+    try testing.expect(asBool(root.get("s").?) == null);
     try testing.expect(arrayField(root, "s") == null);
     try testing.expect(objField(root, "s") == null);
 }

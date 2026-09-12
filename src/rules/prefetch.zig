@@ -30,14 +30,6 @@ pub const Options = struct {
     no_cache: bool = false,
 };
 
-/// The tag → commit oid answers this layer collected, re-exported so rules can
-/// reach them through the prefetch API without depending on the orchestrator.
-/// See `sha_pin.zig` for why a miss must never be read as "the tag is absent".
-pub const lookupTagOid = sha_pin.lookupTagOid;
-pub const setCachedTagOid = sha_pin.setCachedTagOid;
-pub const initTagOids = sha_pin.initTagOids;
-pub const deinitTagOids = sha_pin.deinitTagOids;
-
 /// Threaded through the prefetch pipeline so every stage can skip the work
 /// no rule asked for.
 const ActiveRules = struct {
@@ -75,7 +67,7 @@ pub fn prefetchAllWithOptions(
     workflows: []const Workflow,
     opts: Options,
 ) !void {
-    advisory.prefetch();
+    advisory.ensureLoaded();
 
     const active = ActiveRules.detect();
     if (!active.any()) return;
@@ -287,12 +279,7 @@ fn applyCacheEntry(
             var key_buf: [max_ref_key_len]u8 = undefined;
             const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, s.sha }) catch continue;
             if (sets.sha_refs.getPtr(key)) |_| {
-                const mapped: stale_refs.TagResolution = switch (s.resolution) {
-                    .has_tag => .has_tag,
-                    .no_tag => .no_tag,
-                    .unknown => .unknown,
-                };
-                stale_refs.setCachedTagResult(owner, repo, s.sha, mapped);
+                stale_refs.setCachedTagResult(owner, repo, s.sha, s.resolution);
                 // SC005 and SC008 share the (owner, repo, sha) tuple. A cache
                 // file written by a run with SC008 off carries no impostor
                 // verdict, so dropping the SHA here would keep it out of the
@@ -658,12 +645,7 @@ fn applyResults(
         }
         if (active.stale) {
             for (res.sha_results) |sr| {
-                const mapped: stale_refs.TagResolution = switch (sr.resolution) {
-                    .has_tag => .has_tag,
-                    .no_tag => .no_tag,
-                    .unknown => .unknown,
-                };
-                stale_refs.setCachedTagResult(res.owner, res.repo, sr.sha, mapped);
+                stale_refs.setCachedTagResult(res.owner, res.repo, sr.sha, sr.resolution);
             }
         }
         if (active.needsNamedRefs()) {
@@ -1231,7 +1213,7 @@ test "applyResults: persists repo state to the provided cache dir" {
     try testing.expect(!loaded.archived.?);
     try testing.expectEqual(@as(usize, 1), loaded.shas.len);
     try testing.expectEqualStrings(fake_sha, loaded.shas[0].sha);
-    try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, loaded.shas[0].resolution);
     try testing.expectEqual(@as(usize, 1), loaded.named.len);
     try testing.expect(loaded.named[0].is_tag);
     try testing.expect(loaded.named[0].is_branch);
@@ -1396,7 +1378,7 @@ test "mergeEntries: fresh results win over the cached ones for the same key" {
     const merged = mergeEntries(disk_cache.ShaEntry, "sha", alloc, &old, &fresh);
     try testing.expectEqual(@as(usize, 2), merged.len);
     try testing.expectEqualStrings("a", merged[0].sha);
-    try testing.expectEqual(graphql.ShaTagResolution.no_tag, merged[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, merged[0].resolution);
     try testing.expectEqualStrings("b", merged[1].sha);
 }
 

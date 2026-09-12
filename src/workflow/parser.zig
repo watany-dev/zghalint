@@ -660,10 +660,46 @@ fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping, has_tail: bo
         keys[i] = .{
             .name = entry.key.value,
             .span = entry.key.span,
-            .full_span = if (empties) null else entry.full_span,
+            .full_span = if (empties) null else eventKeyFullSpan(m, i),
         };
     }
     return keys;
+}
+
+fn eventKeyFullSpan(mapping: Mapping, index: usize) ?yaml.Span {
+    const entry = mapping.entries[index];
+    if (entry.full_span) |span| return span;
+    if (!mapping.flow or mapping.entries.len < 2) return null;
+    const close = mapping.close_byte orelse return null;
+    var span = entry.key.span;
+    const value_span = entry.value.getSpan();
+    // A wider gap can contain an anchor definition that deletion would remove.
+    if (value_span.start_byte <= span.end_byte or value_span.start_byte - span.end_byte > 2) return null;
+    _ = eventFilterValueEnd(entry.value) orelse return null;
+    if (span.start_byte <= mapping.span.start_byte or span.end_byte >= close) return null;
+    if (index + 1 < mapping.entries.len) {
+        const next = mapping.entries[index + 1].key.span;
+        if (next.start_byte <= span.end_byte or next.start_byte >= close) return null;
+        span.end_byte = next.start_byte;
+        span.end_line = next.start_line;
+        span.end_col = next.start_col;
+    } else {
+        const previous = mapping.entries[index - 1];
+        const start = eventFilterValueEnd(previous.value) orelse return null;
+        const end = eventFilterValueEnd(entry.value) orelse return null;
+        if (start <= previous.key.span.end_byte or start >= span.start_byte or end <= span.end_byte or end >= close) return null;
+        span.start_byte = start;
+        span.end_byte = end;
+    }
+    return span;
+}
+
+fn eventFilterValueEnd(node: Node) ?usize {
+    return switch (node) {
+        .scalar => |s| if (s.unterminated) null else s.span.end_byte,
+        .sequence => |s| if (s.item_deletes.len == s.items.len) s.close_byte else null,
+        else => null,
+    };
 }
 
 /// `types:` is read for every event, not just the ones with a filter, so an
