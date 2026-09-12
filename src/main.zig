@@ -66,10 +66,10 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr
             args.config_path = try optionValue(argv, &i, stderr);
         } else if (std.mem.eql(u8, arg, "--format")) {
             const value = try optionValue(argv, &i, stderr);
-            args.format = OutputFormat.fromString(value) orelse return invalidValue(arg, value, stderr);
+            args.format = std.meta.stringToEnum(OutputFormat, value) orelse return invalidValue(arg, value, stderr);
         } else if (std.mem.eql(u8, arg, "--color")) {
             const value = try optionValue(argv, &i, stderr);
-            args.color = ColorMode.fromString(value) orelse return invalidValue(arg, value, stderr);
+            args.color = std.meta.stringToEnum(ColorMode, value) orelse return invalidValue(arg, value, stderr);
         } else if (std.mem.eql(u8, arg, "--offline") or std.mem.eql(u8, arg, "--quick")) {
             args.offline = true;
         } else if (std.mem.eql(u8, arg, "--no-cache")) {

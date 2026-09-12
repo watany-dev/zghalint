@@ -196,15 +196,11 @@ pub fn setAllowedLabels(labels: []const []const u8) void {
     allowed_labels = labels;
 }
 
-/// Runner labels are matched case-insensitively by GitHub.
-fn eqlLabel(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
+/// GitHub matches runner labels case-insensitively.
 fn hasLabelPrefix(label: []const u8, base: []const u8) bool {
     if (label.len <= base.len + 1) return false;
     if (label[base.len] != '-') return false;
-    return eqlLabel(label[0..base.len], base);
+    return std.ascii.eqlIgnoreCase(label[0..base.len], base);
 }
 
 /// Larger runners and self-hosted fleets extend a known base label with their
@@ -212,11 +208,11 @@ fn hasLabelPrefix(label: []const u8, base: []const u8) bool {
 /// would only produce false positives.
 fn isKnownLabel(label: []const u8) bool {
     for (known_labels) |entry| {
-        if (eqlLabel(label, entry.label)) return true;
+        if (std.ascii.eqlIgnoreCase(label, entry.label)) return true;
         if (entry.kind == .hosted and hasLabelPrefix(label, entry.label)) return true;
     }
     for (allowed_labels) |extra| {
-        if (eqlLabel(label, extra)) return true;
+        if (std.ascii.eqlIgnoreCase(label, extra)) return true;
     }
     return false;
 }
@@ -285,7 +281,7 @@ fn looksLikeHostedLabel(label: []const u8) bool {
 fn hasSelfHostedLabel(job: *const Job) bool {
     var labels = runsOnLabels(job);
     while (labels.next()) |label| {
-        if (eqlLabel(label.value, "self-hosted")) return true;
+        if (std.ascii.eqlIgnoreCase(label.value, "self-hosted")) return true;
     }
     return false;
 }
@@ -451,7 +447,7 @@ fn matrixLabelEdits(
                     .scalar => |s| s,
                     else => continue,
                 };
-                if (!eqlLabel(excluded.value, scalar.value)) continue;
+                if (!std.ascii.eqlIgnoreCase(excluded.value, scalar.value)) continue;
                 const edit = labelEdit(excluded, replacement) orelse continue;
                 edits.append(alloc, edit) catch return null;
             }
@@ -501,9 +497,9 @@ fn labelOs(label: []const u8) ?RunnerOs {
     // A fleet is free to call a Linux box `macos-m1`, so an unrecognised label
     // names no OS: guessing at one would invent conflicts that do not exist.
     if (!isKnownLabel(label)) return null;
-    if (eqlLabel(label, "linux") or eqlLabel(label, "ubuntu") or hasLabelPrefix(label, "ubuntu")) return .linux;
-    if (eqlLabel(label, "windows") or hasLabelPrefix(label, "windows")) return .windows;
-    if (eqlLabel(label, "macos") or hasLabelPrefix(label, "macos")) return .macos;
+    if (std.ascii.eqlIgnoreCase(label, "linux") or std.ascii.eqlIgnoreCase(label, "ubuntu") or hasLabelPrefix(label, "ubuntu")) return .linux;
+    if (std.ascii.eqlIgnoreCase(label, "windows") or hasLabelPrefix(label, "windows")) return .windows;
+    if (std.ascii.eqlIgnoreCase(label, "macos") or hasLabelPrefix(label, "macos")) return .macos;
     return null;
 }
 
