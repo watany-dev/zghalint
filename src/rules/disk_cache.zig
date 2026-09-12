@@ -7,6 +7,7 @@
 //! them to v2.
 
 const std = @import("std");
+const rest_fallback = @import("rest_fallback.zig");
 const runtime = @import("../runtime.zig");
 const json_util = @import("json_util.zig");
 const graphql = @import("graphql.zig");
@@ -162,7 +163,7 @@ fn parseShaEntry(allocator: Allocator, fields: []const std.json.Value) ?ShaEntry
     const sha = stringField(fields, 0) orelse return null;
     const code = stringField(fields, 1) orelse return null;
     if (!engine.isValidSha(sha)) return null;
-    const res = parseTagInitial(graphql.ShaTagResolution, code) orelse return null;
+    const res = parseTagInitial(rest_fallback.TagResolution, code) orelse return null;
     return .{ .sha = allocator.dupe(u8, sha) catch return null, .resolution = res };
 }
 
@@ -307,12 +308,12 @@ test "isFresh: recent timestamp is fresh" {
     try testing.expect(!isFresh(now + 60));
 }
 
-test "parseTagInitial round-trips ShaTagResolution" {
-    try testing.expectEqual(graphql.ShaTagResolution.has_tag, parseTagInitial(graphql.ShaTagResolution, "h").?);
-    try testing.expectEqual(graphql.ShaTagResolution.no_tag, parseTagInitial(graphql.ShaTagResolution, "n").?);
-    try testing.expectEqual(graphql.ShaTagResolution.unknown, parseTagInitial(graphql.ShaTagResolution, "u").?);
-    try testing.expect(parseTagInitial(graphql.ShaTagResolution, "x") == null);
-    try testing.expect(parseTagInitial(graphql.ShaTagResolution, "") == null);
+test "parseTagInitial round-trips TagResolution" {
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, parseTagInitial(rest_fallback.TagResolution, "h").?);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, parseTagInitial(rest_fallback.TagResolution, "n").?);
+    try testing.expectEqual(rest_fallback.TagResolution.unknown, parseTagInitial(rest_fallback.TagResolution, "u").?);
+    try testing.expect(parseTagInitial(rest_fallback.TagResolution, "x") == null);
+    try testing.expect(parseTagInitial(rest_fallback.TagResolution, "") == null);
 }
 
 test "parseTagInitial round-trips ImpostorStatus" {
@@ -362,8 +363,8 @@ test "saveToDir/loadFromDir round-trips all fields" {
     try testing.expect(loaded.archived.?);
     try testing.expectEqual(@as(usize, 2), loaded.shas.len);
     try testing.expectEqualStrings(shas[0].sha, loaded.shas[0].sha);
-    try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
-    try testing.expectEqual(graphql.ShaTagResolution.no_tag, loaded.shas[1].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, loaded.shas[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, loaded.shas[1].resolution);
     try testing.expectEqual(@as(usize, 2), loaded.named.len);
     try testing.expectEqualStrings("main", loaded.named[0].ref);
     try testing.expect(!loaded.named[0].is_tag);
@@ -482,7 +483,7 @@ test "loadFromDir: tolerates malformed shas/named entries" {
     }
     try testing.expectEqual(@as(usize, 1), loaded.shas.len);
     try testing.expectEqualStrings("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", loaded.shas[0].sha);
-    try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, loaded.shas[0].resolution);
     try testing.expectEqual(@as(usize, 2), loaded.named.len);
     try testing.expectEqualStrings("ref", loaded.named[0].ref);
     try testing.expect(!loaded.named[0].is_tag);
