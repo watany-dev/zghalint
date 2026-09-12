@@ -44,6 +44,8 @@ autofix Phase 2 前半（`BP005`, `PERM002`, `DEP001`、`autofix-phase2-insertio
 
 ### `PermissionsMeta` 方式（PERM001）
 
+**#471 による更新**: `PermissionsMeta` は `Permissions` の `?PermissionLevel` フィールドからコンパイル時に生成する。同じ名前・順序で `?yaml_types.Span = null` を保持し、スコープを二重列挙しない。`read_all` / `write_all` / `value_span` は生成対象外。
+
 個別 value span の保持方針として 3 案を検討:
 
 1. **`Workflow.permissions_meta` / `Job.permissions_meta` 並行保持（採用）**
