@@ -43,10 +43,14 @@ pub fn actionProblem(raw: []const u8) ?Problem {
     };
 
     if (isLocalPath(raw)) {
-        if (std.mem.findScalar(u8, raw, '@') != null) return .{
-            .message = "local action reference must not carry a `@ref`; it always runs from the repository the workflow came from",
-            .hint = drop_ref_hint,
-        };
+        var segments = std.mem.splitAny(u8, raw, "/\\");
+        while (segments.next()) |segment| {
+            const suffix = if (std.mem.startsWith(u8, segment, "@")) segment[1..] else segment;
+            if (std.mem.findScalar(u8, suffix, '@') != null) return .{
+                .message = "local action reference must not carry a `@ref`; it always runs from the repository the workflow came from",
+                .hint = drop_ref_hint,
+            };
+        }
         _ = localPath(raw) orelse return .{
             .message = "local action reference must be relative to the repository root",
             .hint = action_formats,
@@ -509,4 +513,20 @@ test "DEP003: end-to-end over a real workflow file" {
     try testing.expectEqual(@as(usize, 2), diags.len());
     // The step diagnostic points at the `uses:` value, not at the step mapping.
     try testing.expect(diags.get(0).span.start_line == 7 or diags.get(1).span.start_line == 7);
+}
+
+test "DEP003: local scoped path segments are not refs" {
+    for ([_][]const u8{ "./", "$/" }) |prefix| {
+        for ([_][]const u8{ "tools/@scope/tool", "@scope/tool", "@one/@two/tool" }) |path| {
+            const raw = try std.mem.concat(testing.allocator, u8, &.{ prefix, path });
+            defer testing.allocator.free(raw);
+            try expectActionOk(raw);
+        }
+        for ([_][]const u8{ "tools/@scope/tool@v1", "tools/@scope@v1/tool", "tool@v1" }) |path| {
+            const raw = try std.mem.concat(testing.allocator, u8, &.{ prefix, path });
+            defer testing.allocator.free(raw);
+            const problem = try expectActionProblem(raw);
+            try testing.expectEqualStrings(drop_ref_hint, problem.hint);
+        }
+    }
 }

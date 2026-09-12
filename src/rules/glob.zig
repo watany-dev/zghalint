@@ -29,18 +29,12 @@ const GlobValidator = struct {
     }
 
     fn deinit(self: *GlobValidator) void {
+        for (self.errs.items) |err| self.allocator.free(err.message);
         self.errs.deinit(self.allocator);
     }
 
-    fn finish(self: *GlobValidator, out_allocator: std.mem.Allocator) []const InvalidGlobPattern {
-        const out = out_allocator.alloc(InvalidGlobPattern, self.errs.items.len) catch return &.{};
-        for (self.errs.items, 0..) |err, i| {
-            out[i] = .{
-                .message = out_allocator.dupe(u8, err.message) catch err.message,
-                .column = err.column,
-            };
-        }
-        return out;
+    fn finish(self: *GlobValidator) []const InvalidGlobPattern {
+        return self.errs.toOwnedSlice(self.allocator) catch &.{};
     }
 
     fn atEof(self: *const GlobValidator) bool {
@@ -65,10 +59,11 @@ const GlobValidator = struct {
     }
 
     fn addError(self: *GlobValidator, msg: []const u8) void {
+        const owned = self.allocator.dupe(u8, msg) catch return;
         self.errs.append(self.allocator, .{
-            .message = msg,
+            .message = owned,
             .column = self.columnAt(),
-        }) catch return;
+        }) catch self.allocator.free(owned);
     }
 
     fn unexpected(self: *GlobValidator, char: ?u8, what: []const u8, why: []const u8) void {
@@ -245,25 +240,27 @@ const GlobValidator = struct {
 };
 
 fn validateGlob(allocator: std.mem.Allocator, pat: []const u8, is_ref: bool) []const InvalidGlobPattern {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    var v = GlobValidator.init(arena.allocator(), pat, is_ref);
+    var v = GlobValidator.init(allocator, pat, is_ref);
     defer v.deinit();
     v.validate();
-    return v.finish(allocator);
+    return v.finish();
 }
 
 pub fn validateRefGlob(allocator: std.mem.Allocator, pat: []const u8) []const InvalidGlobPattern {
     return validateGlob(allocator, pat, true);
 }
 
+fn singleError(allocator: std.mem.Allocator, message: []const u8) []const InvalidGlobPattern {
+    var v = GlobValidator.init(allocator, "", false);
+    defer v.deinit();
+    v.addError(message);
+    return v.finish();
+}
+
 pub fn validatePathGlob(allocator: std.mem.Allocator, pat: []const u8) []const InvalidGlobPattern {
     const trimmed = std.mem.trim(u8, pat, " \t");
     if (!std.mem.eql(u8, pat, trimmed)) {
-        const msg = "leading and trailing spaces are not allowed in glob path";
-        const slice = allocator.alloc(InvalidGlobPattern, 1) catch return &.{};
-        slice[0] = .{ .message = allocator.dupe(u8, msg) catch msg, .column = 0 };
-        return slice;
+        return singleError(allocator, "leading and trailing spaces are not allowed in glob path");
     }
 
     var body = pat;
@@ -273,10 +270,7 @@ pub fn validatePathGlob(allocator: std.mem.Allocator, pat: []const u8) []const I
     if (body.len == 0 or std.mem.eql(u8, body, ".") or std.mem.eql(u8, body, "..") or
         std.mem.startsWith(u8, body, "./") or std.mem.startsWith(u8, body, "../"))
     {
-        const msg = "'.' and '..' are not allowed in glob path";
-        const slice = allocator.alloc(InvalidGlobPattern, 1) catch return &.{};
-        slice[0] = .{ .message = allocator.dupe(u8, msg) catch msg, .column = 0 };
-        return slice;
+        return singleError(allocator, "'.' and '..' are not allowed in glob path");
     }
 
     return validateGlob(allocator, pat, false);
@@ -337,4 +331,18 @@ test "validateRefGlob: empty pattern" {
     defer freeGlobErrors(testing.allocator, errs);
     try testing.expectEqual(@as(usize, 1), errs.len);
     try testing.expectEqualStrings("glob pattern cannot be empty", errs[0].message);
+}
+
+test "glob errors remain owned when allocations fail" {
+    for ([_][]const u8{ "", "[", "/bad~ref", " foo", "../foo" }) |pat| {
+        for (0..12) |fail_index| {
+            var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
+            const allocator = failing.allocator();
+            const ref_errors = validateRefGlob(allocator, pat);
+            freeGlobErrors(allocator, ref_errors);
+            const path_errors = validatePathGlob(allocator, pat);
+            freeGlobErrors(allocator, path_errors);
+            try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        }
+    }
 }

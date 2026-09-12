@@ -1,0 +1,11 @@
+# zghalint:expect SYN012
+name: preserve flow anchor
+on: {push: {branches: [main], branches-ignore: [&skip wip]}, pull_request: {branches: [*skip]}}
+concurrency: test
+permissions: {}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo hi

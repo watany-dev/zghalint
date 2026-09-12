@@ -97,24 +97,16 @@ pub const Permissions = struct {
 /// Per-field value spans for `Permissions` mapping entries. Populated only
 /// when `permissions:` is given as a mapping (not `read-all`/`write-all`).
 /// Used by PERM001 autofix to target the value of a specific scope key.
-pub const PermissionsMeta = struct {
-    actions: ?yaml_types.Span = null,
-    artifact_metadata: ?yaml_types.Span = null,
-    attestations: ?yaml_types.Span = null,
-    checks: ?yaml_types.Span = null,
-    contents: ?yaml_types.Span = null,
-    deployments: ?yaml_types.Span = null,
-    discussions: ?yaml_types.Span = null,
-    id_token: ?yaml_types.Span = null,
-    issues: ?yaml_types.Span = null,
-    models: ?yaml_types.Span = null,
-    packages: ?yaml_types.Span = null,
-    pages: ?yaml_types.Span = null,
-    pull_requests: ?yaml_types.Span = null,
-    repository_projects: ?yaml_types.Span = null,
-    security_events: ?yaml_types.Span = null,
-    statuses: ?yaml_types.Span = null,
-    vulnerability_alerts: ?yaml_types.Span = null,
+pub const PermissionsMeta = blk: {
+    var names: []const []const u8 = &.{};
+    for (std.meta.fields(Permissions)) |field| {
+        if (field.type == ?PermissionLevel) names = names ++ .{field.name};
+    }
+    const types = [_]type{?yaml_types.Span} ** names.len;
+    const attrs = [_]std.builtin.Type.StructField.Attributes{
+        .{ .default_value_ptr = &@as(?yaml_types.Span, null) },
+    } ** names.len;
+    break :blk @Struct(.auto, null, names, &types, &attrs);
 };
 
 /// The `permissions:` scope keys, in schema order. `Permissions` and
@@ -238,7 +230,7 @@ pub const Defaults = struct {
 /// Key spans for the mutually exclusive `EventFilter` entries. A non-null
 /// field means the key appeared in the source, which the value arrays alone
 /// cannot express (`branches: []` yields an empty array but is still present).
-pub const EventFilterSpans = struct {
+const EventFilterSpans = struct {
     branches: ?yaml_types.Span = null,
     branches_ignore: ?yaml_types.Span = null,
     tags: ?yaml_types.Span = null,
@@ -412,7 +404,7 @@ pub const DispatchInputDef = struct {
     default_span: ?yaml_types.Span = null,
 };
 
-pub const WorkflowDispatchInputProblemKind = enum {
+const WorkflowDispatchInputProblemKind = enum {
     invalid_type,
     missing_options,
     empty_options,
