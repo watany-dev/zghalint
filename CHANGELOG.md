@@ -22,6 +22,9 @@ each ID means.
 
 ### Added
 
+- SYN012 offers an unsafe fix that removes the later conflicting branch, tag,
+  or path filter while keeping the earlier one (#412). Guarded flow-mapping
+  deletion spans are shared with SYN011; uncertain or anchored ranges are skipped.
 - ACT001 safely inserts `shell: bash` for composite `run:` steps with a missing
   shell when the insertion position is known (#411).
 
