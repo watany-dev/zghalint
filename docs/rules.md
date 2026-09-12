@@ -1185,7 +1185,7 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入） |
+| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入）。composite の欠落 `shell` は `--fix` で `bash` を挿入 |
 | ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
 | ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
 | ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
@@ -1248,6 +1248,7 @@ composite action の step は、ワークフローの step と同じ実体なの
 
 - `run:` を持つ step には `shell:` が必須。既定のシェルも `defaults.run` も無く、
   GitHub は実行時にエラーにするため、ACT001（必須キーが無い）として報告する。
+  挿入位置が確定できる場合、`--fix` で `shell: bash` を追加する。既存の `shell:` は変更しない。
   `shell:` の値そのものの妥当性は BP004 と同じ表で判定する。
 - 式検証（EXPR 系）は composite 用の context で行う。`inputs.<name>` はその action
   自身の `inputs:` を指すため、宣言されていない名前は ACT005 として報告する

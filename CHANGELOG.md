@@ -15,6 +15,9 @@ each ID means.
 
 ### Added
 
+- ACT001 safely inserts `shell: bash` for composite `run:` steps with a missing
+  shell when the insertion position is known (#411).
+
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
 - `background` / `wait` / `wait-all` / `cancel` / `parallel` are accepted
