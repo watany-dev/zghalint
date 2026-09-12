@@ -166,10 +166,9 @@ pub fn batchQuery(
     var body_sink = http_client.BoundedBody.init(allocator, http_client.max_response_bytes);
     defer body_sink.deinit();
 
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count = http_client.writeStandardHeaders(&headers_buf);
-    headers_buf[header_count] = .{ .name = "Content-Type", .value = "application/json" };
-    header_count += 1;
+    const headers = http_client.standard_headers ++ [_]std.http.Header{
+        .{ .name = "Content-Type", .value = "application/json" },
+    };
     var auth_buf: [1]std.http.Header = undefined;
 
     const result = http_client.fetchBounded(.{
@@ -177,7 +176,7 @@ pub fn batchQuery(
         .method = .POST,
         .payload = body,
         .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
+        .extra_headers = &headers,
         .privileged_headers = http_client.authHeaders(&auth_buf, auth_value),
     }, &body_sink) catch |err| switch (err) {
         error.NetworkUnreachable => return error.NetworkUnreachable,
