@@ -13,12 +13,7 @@ const spans = @import("spans.zig");
 const Step = workflow_types.Step;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
-/// Re-exported from `rest_fallback.zig` so callers and tests that imported
-/// `stale_refs.TagResolution` keep working. The canonical definition lives
-/// alongside the REST resolver to avoid a circular import.
-pub const TagResolution = rest_fallback.TagResolution;
-
-var cache: cache_mod.RefCache(TagResolution) = .{};
+var cache: cache_mod.RefCache(rest_fallback.TagResolution) = .{};
 
 pub fn initStaleRefs(backing_allocator: Allocator, offline: bool) void {
     cache.init(backing_allocator, offline);
@@ -38,7 +33,7 @@ pub fn lookupCachedTagResult(
     owner: []const u8,
     repo: []const u8,
     sha: []const u8,
-) ?TagResolution {
+) ?rest_fallback.TagResolution {
     const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, sha }) orelse return null;
     return cache.get(key);
 }
@@ -47,7 +42,7 @@ pub fn setCachedTagResult(
     owner: []const u8,
     repo: []const u8,
     sha: []const u8,
-    resolution: TagResolution,
+    resolution: rest_fallback.TagResolution,
 ) void {
     const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, sha }) orelse return;
     cache.put(key, resolution);
@@ -66,7 +61,7 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, sha }) orelse return;
 
     const resolution = cache.get(key) orelse blk: {
-        const result = rest_fallback.resolveTagForSha(allocator, owner, repo, sha) catch TagResolution.unknown;
+        const result = rest_fallback.resolveTagForSha(allocator, owner, repo, sha) catch rest_fallback.TagResolution.unknown;
         cache.put(key, result);
         break :blk result;
     };
@@ -101,7 +96,7 @@ const security = @import("security.zig");
 
 const hasDiagnostic = test_support.hasDiagnostic;
 
-const TagCacheEntry = struct { key: []const u8, resolution: TagResolution };
+const TagCacheEntry = struct { key: []const u8, resolution: rest_fallback.TagResolution };
 
 /// Module state is saved and restored so tests stay independent of each other.
 /// Diagnostics only borrow string literals, so the arena can go away here.
