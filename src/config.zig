@@ -12,30 +12,18 @@ pub const OutputFormat = enum {
     terminal,
     json,
     sarif,
-
-    pub fn fromString(s: []const u8) ?OutputFormat {
-        return std.meta.stringToEnum(OutputFormat, s);
-    }
 };
 
 pub const ColorMode = enum {
     auto,
     always,
     never,
-
-    pub fn fromString(s: []const u8) ?ColorMode {
-        return std.meta.stringToEnum(ColorMode, s);
-    }
 };
 
 pub const Visibility = enum {
     public,
     private,
     unknown,
-
-    pub fn fromString(s: []const u8) ?Visibility {
-        return std.meta.stringToEnum(Visibility, s);
-    }
 };
 
 pub const RuleOverride = struct {
@@ -143,17 +131,17 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                     switch (entry.value) {
                         .mapping => |rule_map| {
                             if (rule_map.getScalar("severity")) |sev_str| {
-                                override.severity = parseSeverity(sev_str);
+                                override.severity = std.meta.stringToEnum(Severity, sev_str);
                             }
                             if (rule_map.getScalar("enabled")) |en_str| {
                                 override.enabled = parseBool(en_str);
                             }
                             if (std.mem.eql(u8, rule_id, "PERF001")) {
                                 if (rule_map.getScalar("node_cache_manager")) |v| {
-                                    config.perf001.node_cache_manager = workspace.NodeCache.fromString(v);
+                                    config.perf001.node_cache_manager = std.meta.stringToEnum(workspace.NodeCache, v);
                                 }
                                 if (rule_map.getScalar("python_cache_manager")) |v| {
-                                    config.perf001.python_cache_manager = workspace.PythonCache.fromString(v);
+                                    config.perf001.python_cache_manager = std.meta.stringToEnum(workspace.PythonCache, v);
                                 }
                             }
                         },
@@ -212,12 +200,12 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         switch (output_node) {
             .mapping => |m| {
                 if (m.getScalar("format")) |fmt_str| {
-                    if (OutputFormat.fromString(fmt_str)) |fmt| {
+                    if (std.meta.stringToEnum(OutputFormat, fmt_str)) |fmt| {
                         config.output_format = fmt;
                     }
                 }
                 if (m.getScalar("color")) |color_str| {
-                    if (ColorMode.fromString(color_str)) |mode| {
+                    if (std.meta.stringToEnum(ColorMode, color_str)) |mode| {
                         config.color_mode = mode;
                     }
                 }
@@ -227,16 +215,12 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
     }
 
     if (root.getScalar("repo_visibility")) |vis_str| {
-        if (Visibility.fromString(vis_str)) |v| {
+        if (std.meta.stringToEnum(Visibility, vis_str)) |v| {
             config.repo_visibility = v;
         }
     }
 
     return config;
-}
-
-fn parseSeverity(s: []const u8) ?Severity {
-    return std.meta.stringToEnum(Severity, s);
 }
 
 fn parseBool(s: []const u8) bool {

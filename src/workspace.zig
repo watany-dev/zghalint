@@ -6,14 +6,6 @@ pub const NodeCache = enum {
     npm,
     yarn,
     pnpm,
-
-    pub fn toString(self: NodeCache) []const u8 {
-        return @tagName(self);
-    }
-
-    pub fn fromString(s: []const u8) ?NodeCache {
-        return std.meta.stringToEnum(NodeCache, s);
-    }
 };
 
 /// Package manager that actions/setup-python supports for its `cache` input.
@@ -21,14 +13,6 @@ pub const PythonCache = enum {
     pip,
     pipenv,
     poetry,
-
-    pub fn toString(self: PythonCache) []const u8 {
-        return @tagName(self);
-    }
-
-    pub fn fromString(s: []const u8) ?PythonCache {
-        return std.meta.stringToEnum(PythonCache, s);
-    }
 };
 
 /// Strings (ambiguous lockfile names) are borrowed from a caller-owned arena;

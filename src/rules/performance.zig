@@ -178,7 +178,7 @@ fn dispatchCacheFix(
     inline for (inferred_cache_setups) |setup| {
         if (std.mem.eql(u8, setup_action, setup.action)) {
             if (@field(ctx, setup.manager)) |mgr| {
-                const mgr_str = mgr.toString();
+                const mgr_str = @tagName(mgr);
                 const description = std.fmt.allocPrint(
                     alloc,
                     "add \"cache: {s}\" to {s} step(s)",

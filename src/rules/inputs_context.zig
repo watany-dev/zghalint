@@ -3,7 +3,8 @@
 //! `inputs.<name>` is fed by `workflow_dispatch.inputs` and
 //! `workflow_call.inputs`; a workflow declaring neither trigger has no
 //! `inputs` context at all. Both facts live in `on:`, so this is a
-//! `check_workflow` rule.
+//! `check_workflow` rule. Names match case-insensitively, as the runner
+//! resolves them.
 //!
 //! The legacy `github.event.inputs.<name>` spelling is left alone here: it
 //! only ever carries `workflow_dispatch` inputs, and the generic path walker
@@ -22,12 +23,6 @@ const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
 const Span = spans.Span;
-
-/// Context keys resolve case-insensitively on the runner, so `inputs.Version`
-/// reaches an input declared as `version`.
-fn nameEql(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
 
 const Declared = struct {
     names: []const []const u8,
@@ -66,7 +61,7 @@ fn collectInputs(wf: *const Workflow, alloc: std.mem.Allocator) Declared {
 
 fn appendUnique(names: *std.ArrayList([]const u8), alloc: std.mem.Allocator, name: []const u8) void {
     for (names.items) |seen| {
-        if (nameEql(seen, name)) return;
+        if (std.ascii.eqlIgnoreCase(seen, name)) return;
     }
     names.append(alloc, name) catch return;
 }
@@ -81,7 +76,7 @@ const Resolver = struct {
     pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = identSegment(iter.next()) orelse return;
-        if (!nameEql(root, "inputs")) return;
+        if (!std.ascii.eqlIgnoreCase(root, "inputs")) return;
 
         if (!self.declared.available) {
             self.reportUnavailable(span);
@@ -92,7 +87,7 @@ const Resolver = struct {
         // (`inputs[matrix.key]`) carry no name to resolve.
         const name = identSegment(iter.next()) orelse return;
         for (self.declared.names) |declared| {
-            if (nameEql(declared, name)) return;
+            if (std.ascii.eqlIgnoreCase(declared, name)) return;
         }
         self.reportUnknownInput(path, name, span);
     }

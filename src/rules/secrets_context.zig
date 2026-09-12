@@ -5,7 +5,8 @@
 //! environment can supply any name, so checking would be pure false
 //! positives. That restriction is the whole point of the rule, and it is why
 //! a `workflow_call` without a `secrets:` declaration (the `secrets: inherit`
-//! caller path) is skipped as well.
+//! caller path) is skipped as well. Secret names match case-insensitively,
+//! like every other context key.
 
 const std = @import("std");
 const engine = @import("engine.zig");
@@ -24,11 +25,6 @@ const Span = spans.Span;
 /// Always present, whatever `workflow_call.secrets` declares.
 const builtin_secrets = [_][]const u8{"GITHUB_TOKEN"};
 
-/// Secret names are case-insensitive, like every other context key.
-fn nameEql(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 /// The declared names, or null when this workflow's secret set is open and
 /// nothing can be checked.
 fn collectSecrets(wf: *const Workflow, alloc: std.mem.Allocator) ?[]const []const u8 {
@@ -43,7 +39,7 @@ fn collectSecrets(wf: *const Workflow, alloc: std.mem.Allocator) ?[]const []cons
         declared = true;
         for (event.workflow_call_secrets) |secret| {
             for (names.items) |seen| {
-                if (nameEql(seen, secret.name)) break;
+                if (std.ascii.eqlIgnoreCase(seen, secret.name)) break;
             } else names.append(alloc, secret.name) catch return null;
         }
     }
@@ -63,13 +59,13 @@ const Resolver = struct {
     pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = identSegment(iter.next()) orelse return;
-        if (!nameEql(root, "secrets")) return;
+        if (!std.ascii.eqlIgnoreCase(root, "secrets")) return;
 
         // `secrets` alone (`toJSON(secrets)`) and computed keys
         // (`secrets[matrix.name]`) carry no name to resolve.
         const name = identSegment(iter.next()) orelse return;
         for (self.declared) |declared| {
-            if (nameEql(declared, name)) return;
+            if (std.ascii.eqlIgnoreCase(declared, name)) return;
         }
         self.report(path, name, span);
     }

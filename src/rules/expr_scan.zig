@@ -82,12 +82,8 @@ fn scanExpression(visitor: anytype, text: []const u8, anchor: Anchor, expr_offse
 /// Scans every `${{ }}` block embedded in `text`.
 pub fn scanText(visitor: anytype, text: []const u8, anchor: Anchor) void {
     var pos: usize = 0;
-    while (pos + 2 < text.len) {
-        if (!(text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{')) {
-            pos += 1;
-            continue;
-        }
-        const expr_start = pos + 3;
+    while (std.mem.find(u8, text[pos..], "${{")) |rel| {
+        const expr_start = pos + rel + 3;
         const end_offset = std.mem.find(u8, text[expr_start..], "}}") orelse return;
         const content = text[expr_start .. expr_start + end_offset];
         pos = expr_start + end_offset + 2;
@@ -112,9 +108,8 @@ pub fn scanCondition(
         scanText(visitor, value, anchor);
         return;
     }
+    const leading = std.mem.findNone(u8, value, " \t\n\r") orelse return;
     const trimmed = std.mem.trim(u8, value, " \t\n\r");
-    if (trimmed.len == 0) return;
-    const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(value.ptr);
     scanExpression(visitor, value, anchor, leading, trimmed);
 }
 

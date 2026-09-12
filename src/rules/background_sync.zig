@@ -20,13 +20,9 @@ const StepControl = workflow_types.StepControl;
 const DiagnosticList = engine.DiagnosticList;
 const Span = diagnostics.Span;
 
-fn idEql(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 fn containsId(ids: []const []const u8, id: []const u8) bool {
     for (ids) |candidate| {
-        if (idEql(candidate, id)) return true;
+        if (std.ascii.eqlIgnoreCase(candidate, id)) return true;
     }
     return false;
 }
@@ -43,7 +39,7 @@ fn removeId(pending: *std.ArrayList([]const u8), id: []const u8) void {
     if (std.mem.find(u8, id, "${{") != null) return;
     var n: usize = 0;
     for (pending.items) |item| {
-        if (idEql(item, id)) continue;
+        if (std.ascii.eqlIgnoreCase(item, id)) continue;
         pending.items[n] = item;
         n += 1;
     }
@@ -74,7 +70,7 @@ const Visitor = struct {
 
     fn isUnsynced(self: Visitor, id: []const u8) bool {
         if (self.skip_id) |skip| {
-            if (idEql(skip, id)) return false;
+            if (std.ascii.eqlIgnoreCase(skip, id)) return false;
         }
         return containsId(self.pending, id) or containsId(self.extra, id);
     }

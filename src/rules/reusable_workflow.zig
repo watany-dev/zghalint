@@ -339,12 +339,6 @@ fn checkCallSecrets(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-/// Job IDs and context properties resolve case-insensitively on the runner, so
-/// a case difference is never a finding.
-fn eqlId(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 /// Only a plain identifier names something to resolve; a globbed or computed
 /// segment (`jobs.*`, `needs[matrix.job]`) has no literal name.
 fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
@@ -356,9 +350,10 @@ fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
     };
 }
 
+/// Job IDs match case-insensitively, as the runner resolves them.
 fn findJob(wf: *const Workflow, job_id: []const u8) ?*const Job {
     for (wf.jobs) |*job| {
-        if (eqlId(job.id, job_id)) return job;
+        if (std.ascii.eqlIgnoreCase(job.id, job_id)) return job;
     }
     return null;
 }
@@ -381,14 +376,14 @@ const OutputValueResolver = struct {
         const root = identSegment(iter.next()) orelse return;
         // `jobs` is the only context a `value:` can read; EXPR015 reports the
         // others.
-        if (!eqlId(root, "jobs")) return;
+        if (!std.ascii.eqlIgnoreCase(root, "jobs")) return;
 
         const job_id = identSegment(iter.next()) orelse return;
         const job = findJob(self.wf, job_id) orelse {
             self.reportUnknownJob(job_id, span);
             return;
         };
-        if (!eqlId(identSegment(iter.next()) orelse return, "outputs")) return;
+        if (!std.ascii.eqlIgnoreCase(identSegment(iter.next()) orelse return, "outputs")) return;
         const output = identSegment(iter.next()) orelse return;
 
         // A job that itself calls a workflow declares its outputs in that
@@ -447,7 +442,7 @@ const NeedsOutputResolver = struct {
     pub fn checkPath(self: NeedsOutputResolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = identSegment(iter.next()) orelse return;
-        if (!eqlId(root, "needs")) return;
+        if (!std.ascii.eqlIgnoreCase(root, "needs")) return;
 
         const job_id = identSegment(iter.next()) orelse return;
         // A job the current one does not need is EXPR012's finding; reporting
@@ -456,7 +451,7 @@ const NeedsOutputResolver = struct {
         const dep = findJob(self.wf, job_id) orelse return;
         const uses = dep.uses orelse return;
 
-        if (!eqlId(identSegment(iter.next()) orelse return, "outputs")) return;
+        if (!std.ascii.eqlIgnoreCase(identSegment(iter.next()) orelse return, "outputs")) return;
         const output = identSegment(iter.next()) orelse return;
 
         var arena = std.heap.ArenaAllocator.init(self.list.allocator);
@@ -469,7 +464,7 @@ const NeedsOutputResolver = struct {
 
     fn isNeeded(self: NeedsOutputResolver, job_id: []const u8) bool {
         for (self.job.needs) |dep| {
-            if (eqlId(dep, job_id)) return true;
+            if (std.ascii.eqlIgnoreCase(dep, job_id)) return true;
         }
         return false;
     }

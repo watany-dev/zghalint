@@ -6,6 +6,7 @@
 //! per-job step list is workflow data, not catalog data, so the check lives
 //! here and hangs off `check_job`: only a job knows its steps *and* their
 //! order, and order is what makes `steps.<id>` valid or not at a given step.
+//! Step IDs match case-insensitively (`steps.Setup` reaches `id: setup`).
 //!
 //! It is the first of the contextual-typing rules (EXPR010-EXPR014), so the
 //! reference resolution here is written to be shared by the rest.
@@ -38,12 +39,6 @@ const DefinedStep = struct {
     index: usize,
 };
 
-/// Step IDs are matched case-insensitively because GitHub resolves
-/// expression paths that way (`steps.Setup` reaches a step with `id: setup`).
-fn idEql(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 fn collectStepIds(job: *const Job, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
     for (job.steps, 0..) |step, index| {
         addDefinedStep(step.id, index, buf, alloc);
@@ -55,7 +50,7 @@ fn addDefinedStep(id: ?[]const u8, index: usize, buf: *std.ArrayList(DefinedStep
     const step_id = id orelse return;
     if (step_id.len == 0) return;
     for (buf.items) |seen| {
-        if (idEql(seen.id, step_id)) return;
+        if (std.ascii.eqlIgnoreCase(seen.id, step_id)) return;
     }
     buf.append(alloc, .{ .id = step_id, .index = index }) catch return;
 }
@@ -86,7 +81,7 @@ const Resolver = struct {
 
     fn find(self: Resolver, id: []const u8) ?DefinedStep {
         for (self.defined) |candidate| {
-            if (idEql(candidate.id, id)) return candidate;
+            if (std.ascii.eqlIgnoreCase(candidate.id, id)) return candidate;
         }
         return null;
     }
@@ -198,7 +193,7 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     };
     if (target.index == res.current) {
         if (res.current_id) |own| {
-            if (idEql(own, id)) {
+            if (std.ascii.eqlIgnoreCase(own, id)) {
                 appendSelfReference(res, id, span);
                 return;
             }

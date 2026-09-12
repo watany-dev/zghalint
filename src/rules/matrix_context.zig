@@ -3,7 +3,8 @@
 //! `matrix.<key>` may only name an axis of the job's `strategy.matrix`, or a
 //! key an `include:` entry adds. A job without `strategy.matrix` has no
 //! `matrix` context at all. Both need the job, not just the step, so this
-//! hangs off `check_job` next to EXPR010.
+//! hangs off `check_job` next to EXPR010. Axis names match case-insensitively,
+//! as the runner resolves them (`matrix.OS` reaches an axis declared as `os`).
 //!
 //! A dynamic matrix (`matrix: ${{ fromJSON(...) }}`) carries keys that are
 //! only known at run time, so nothing is reported for such a job.
@@ -35,12 +36,6 @@ fn isMetaAxis(name: []const u8) bool {
     return std.mem.eql(u8, name, "include") or std.mem.eql(u8, name, "exclude");
 }
 
-/// Context keys resolve case-insensitively on the runner, so `matrix.OS`
-/// reaches an axis declared as `os`.
-fn keyEql(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 /// One declared matrix key, with what is known about the values behind it.
 const Key = struct {
     name: []const u8,
@@ -59,7 +54,7 @@ const Keys = struct {
 
     fn find(self: Keys, name: []const u8) ?*const Key {
         for (self.entries) |*key| {
-            if (keyEql(key.name, name)) return key;
+            if (std.ascii.eqlIgnoreCase(key.name, name)) return key;
         }
         return null;
     }
@@ -108,7 +103,7 @@ fn collectKeys(job: *const Job, alloc: std.mem.Allocator) ?Keys {
 /// Null only when the entry could not be allocated.
 fn upsert(keys: *std.ArrayList(Key), alloc: std.mem.Allocator, name: []const u8) ?*Key {
     for (keys.items) |*key| {
-        if (keyEql(key.name, name)) return key;
+        if (std.ascii.eqlIgnoreCase(key.name, name)) return key;
     }
     keys.append(alloc, .{ .name = name }) catch return null;
     return &keys.items[keys.items.len - 1];
@@ -136,7 +131,7 @@ fn absorb(key: *Key, alloc: std.mem.Allocator, value: yaml_types.Node) void {
 
 fn appendUnique(keys: *std.ArrayList([]const u8), alloc: std.mem.Allocator, name: []const u8) void {
     for (keys.items) |seen| {
-        if (keyEql(seen, name)) return;
+        if (std.ascii.eqlIgnoreCase(seen, name)) return;
     }
     keys.append(alloc, name) catch return;
 }
@@ -152,7 +147,7 @@ const Resolver = struct {
     pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = identSegment(iter.next()) orelse return;
-        if (!keyEql(root, "matrix")) return;
+        if (!std.ascii.eqlIgnoreCase(root, "matrix")) return;
 
         const declared = self.keys orelse {
             self.reportUnavailable(span);
@@ -172,7 +167,7 @@ const Resolver = struct {
         if (entry.unknowable or entry.props.items.len == 0) return;
         const prop = identSegment(iter.next()) orelse return;
         for (entry.props.items) |name| {
-            if (keyEql(name, prop)) return;
+            if (std.ascii.eqlIgnoreCase(name, prop)) return;
         }
         self.reportUnknownProperty(path, entry, prop, span);
     }

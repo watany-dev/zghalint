@@ -162,7 +162,7 @@ fn parseShaEntry(allocator: Allocator, fields: []const std.json.Value) ?ShaEntry
     const sha = stringField(fields, 0) orelse return null;
     const code = stringField(fields, 1) orelse return null;
     if (!engine.isValidSha(sha)) return null;
-    const res = parseResolutionCode(code) orelse return null;
+    const res = parseTagInitial(graphql.ShaTagResolution, code) orelse return null;
     return .{ .sha = allocator.dupe(u8, sha) catch return null, .resolution = res };
 }
 
@@ -202,44 +202,17 @@ fn parseImpostorEntry(allocator: Allocator, fields: []const std.json.Value) ?Imp
     const sha = stringField(fields, 0) orelse return null;
     const code = stringField(fields, 1) orelse return null;
     if (!engine.isValidSha(sha)) return null;
-    const status = parseImpostorCode(code) orelse return null;
+    const status = parseTagInitial(ImpostorStatus, code) orelse return null;
     return .{ .sha = allocator.dupe(u8, sha) catch return null, .status = status };
 }
 
-fn parseImpostorCode(code: []const u8) ?ImpostorStatus {
+/// On-disk codes are the first letter of the tag name (`has_tag` → "h").
+fn parseTagInitial(comptime T: type, code: []const u8) ?T {
     if (code.len != 1) return null;
-    return switch (code[0]) {
-        'l' => .legitimate,
-        'i' => .impostor,
-        'u' => .unknown,
-        else => null,
-    };
-}
-
-fn impostorCode(status: ImpostorStatus) []const u8 {
-    return switch (status) {
-        .legitimate => "l",
-        .impostor => "i",
-        .unknown => "u",
-    };
-}
-
-fn parseResolutionCode(code: []const u8) ?graphql.ShaTagResolution {
-    if (code.len != 1) return null;
-    return switch (code[0]) {
-        'h' => .has_tag,
-        'n' => .no_tag,
-        'u' => .unknown,
-        else => null,
-    };
-}
-
-fn resolutionCode(res: graphql.ShaTagResolution) []const u8 {
-    return switch (res) {
-        .has_tag => "h",
-        .no_tag => "n",
-        .unknown => "u",
-    };
+    inline for (std.meta.fields(T)) |field| {
+        if (field.name[0] == code[0]) return @enumFromInt(field.value);
+    }
+    return null;
 }
 
 fn intFieldAsBool(v: std.json.Value) bool {
@@ -285,7 +258,7 @@ pub fn saveToDir(
 
     try js.objectField("shas");
     try js.beginArray();
-    for (entry.shas) |e| try js.write(.{ e.sha, resolutionCode(e.resolution) });
+    for (entry.shas) |e| try js.write(.{ e.sha, @tagName(e.resolution)[0..1] });
     try js.endArray();
 
     try js.objectField("named");
@@ -315,7 +288,7 @@ pub fn saveToDir(
 
     try js.objectField("impostor");
     try js.beginArray();
-    for (entry.impostor) |e| try js.write(.{ e.sha, impostorCode(e.status) });
+    for (entry.impostor) |e| try js.write(.{ e.sha, @tagName(e.status)[0..1] });
     try js.endArray();
 
     try js.endObject();
@@ -334,18 +307,22 @@ test "isFresh: recent timestamp is fresh" {
     try testing.expect(!isFresh(now + 60));
 }
 
-test "parseResolutionCode round-trips" {
-    try testing.expectEqual(graphql.ShaTagResolution.has_tag, parseResolutionCode("h").?);
-    try testing.expectEqual(graphql.ShaTagResolution.no_tag, parseResolutionCode("n").?);
-    try testing.expectEqual(graphql.ShaTagResolution.unknown, parseResolutionCode("u").?);
-    try testing.expect(parseResolutionCode("x") == null);
-    try testing.expect(parseResolutionCode("") == null);
+test "parseTagInitial round-trips ShaTagResolution" {
+    try testing.expectEqual(graphql.ShaTagResolution.has_tag, parseTagInitial(graphql.ShaTagResolution, "h").?);
+    try testing.expectEqual(graphql.ShaTagResolution.no_tag, parseTagInitial(graphql.ShaTagResolution, "n").?);
+    try testing.expectEqual(graphql.ShaTagResolution.unknown, parseTagInitial(graphql.ShaTagResolution, "u").?);
+    try testing.expect(parseTagInitial(graphql.ShaTagResolution, "x") == null);
+    try testing.expect(parseTagInitial(graphql.ShaTagResolution, "") == null);
 }
 
-test "resolutionCode maps each enum variant" {
-    try testing.expectEqualStrings("h", resolutionCode(.has_tag));
-    try testing.expectEqualStrings("n", resolutionCode(.no_tag));
-    try testing.expectEqualStrings("u", resolutionCode(.unknown));
+test "parseTagInitial round-trips ImpostorStatus" {
+    try testing.expectEqual(ImpostorStatus.legitimate, parseTagInitial(ImpostorStatus, "l").?);
+    try testing.expectEqual(ImpostorStatus.impostor, parseTagInitial(ImpostorStatus, "i").?);
+    try testing.expectEqual(ImpostorStatus.unknown, parseTagInitial(ImpostorStatus, "u").?);
+    try testing.expect(parseTagInitial(ImpostorStatus, "L") == null);
+    try testing.expect(parseTagInitial(ImpostorStatus, "li") == null);
+    try testing.expect(parseTagInitial(ImpostorStatus, "") == null);
+    try testing.expect(parseTagInitial(ImpostorStatus, "x") == null);
 }
 
 test "intFieldAsBool decodes JSON variants" {
@@ -594,22 +571,6 @@ test "loadFromDir: invalid git refs are dropped" {
     }
     try testing.expectEqual(@as(usize, 1), loaded.named.len);
     try testing.expectEqualStrings("main", loaded.named[0].ref);
-}
-
-test "parseImpostorCode round-trips" {
-    try testing.expectEqual(ImpostorStatus.legitimate, parseImpostorCode("l").?);
-    try testing.expectEqual(ImpostorStatus.impostor, parseImpostorCode("i").?);
-    try testing.expectEqual(ImpostorStatus.unknown, parseImpostorCode("u").?);
-    try testing.expect(parseImpostorCode("L") == null);
-    try testing.expect(parseImpostorCode("li") == null);
-    try testing.expect(parseImpostorCode("") == null);
-    try testing.expect(parseImpostorCode("x") == null);
-}
-
-test "impostorCode maps each enum variant" {
-    try testing.expectEqualStrings("l", impostorCode(.legitimate));
-    try testing.expectEqualStrings("i", impostorCode(.impostor));
-    try testing.expectEqualStrings("u", impostorCode(.unknown));
 }
 
 test "saveToDir/loadFromDir: v2 round-trips branches/default_branch/impostor" {
