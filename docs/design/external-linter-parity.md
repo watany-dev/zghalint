@@ -661,6 +661,15 @@ zizmor は tag-push を公開ワークフローとして `cache-poisoning` を�
 setup action) を直しても、この判定は残る。`on: push` のブランチだけ
 (タグ無し) は対象外のままにする。
 
+#### G36 (#419). 真偽値関数の結果を SEC002 が注射とみなす — 対応済み
+
+`bench/cases/a-script-injection/boolean-function-in-run.yml`。
+`startsWith(github.event.issue.title, 'fix')` のように、式全体が真偽値を返す
+組み込み呼び出しであれば、展開されるのは `true` / `false` だけである。
+SEC002 は既存の式パーサと関数カタログで戻り値と引数の個数を確認して除外する。
+`&&` / `||` で汚染文字列を返す式、未知の関数、直接の汚染参照は除外しない。
+同じ `run:` に安全な式と危険な式がある場合、autofix も危険な式だけを対象にする。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -1073,3 +1082,4 @@ zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / F
 - [x] G33 (#386): SEC016 の対象に `on.push.tags` を含める
 - [x] G34 (#375): BP007 を `bash <(curl ...)` のプロセス置換にも反応させる
 - [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える
+- [x] G36 (#419): 真偽値を返す組み込み呼び出しを SEC002 から除外する

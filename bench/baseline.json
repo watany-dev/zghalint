@@ -1,5 +1,12 @@
 {
   "cases": {
+    "a-script-injection/boolean-function-in-run.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
     "a-script-injection/dispatch-inputs.yml": {
       "detected": 1,
       "expected": 1,
