@@ -19,6 +19,9 @@ each ID means.
   `startsWith(...)`, `endsWith(...)`, or `contains(...)` as script injection.
   String-valued expressions in the same script remain diagnosed and fixed
   independently (#419).
+- A `${{ }}` whose closing `}}` sits on the next, more-indented line of a
+  plain scalar is one expression. EXPR001 no longer reports it as unclosed,
+  and SEC002 sees untrusted contexts inside it (#421).
 
 ### Added
 

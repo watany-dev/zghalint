@@ -77,6 +77,7 @@ fn loadCorpus(alloc: std.mem.Allocator) ![]const []const u8 {
 /// anchors, and the indicators that drive the tokenizer's state machine.
 const builtin_seeds: []const []const u8 = &.{
     "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ github.event.issue.title }}\n",
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ github.event.issue.title\n          }}\n",
     "a: {b: [1, 2], c: 'x'}\n",
     "a: |\n  one\n  two\n",
     "a: >-\n  folded\n  scalar\n",

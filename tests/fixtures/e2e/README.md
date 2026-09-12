@@ -49,6 +49,8 @@ Two checks run on all fixtures, with no directive needed:
 | File | Purpose |
 |---|---|
 | `sec002-run-plain-scalar.yml` | #131 repro: `${{ }}` in an unquoted `run:` |
+| `plain-scalar-wrapped-expression.yml` | #421: a more-indented continuation closing `${{ }}` is not EXPR001 |
+| `plain-scalar-wrapped-injection.yml` | #421: the same wrapping with an untrusted context still fires SEC002 |
 | `sec002-run-quoted-scalar.yml` | Same injection in a single-quoted scalar |
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
 | `sec002-env-binding.yml` | #327: `--fix-unsafe` binds the tainted expression to the step's `env:` per shell |

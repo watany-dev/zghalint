@@ -1,0 +1,17 @@
+# zghalint:forbid EXPR001
+# #421: a plain-scalar continuation may close `${{ }}` on the next, more-indented
+# line. That used to tokenize as an unclosed expression on the first line.
+name: build
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Print
+        env:
+          REF: ${{ github.sha
+            }}
+        run: echo ok

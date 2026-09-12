@@ -42,9 +42,10 @@ pub const Tokenizer = struct {
     /// indicators only inside a flow context; in block context they are
     /// ordinary plain-scalar characters (e.g. a `run:` command line).
     flow_depth: u32,
-    /// End of the line on which a `${{` was last found to have no closing
-    /// `}}`. Every later `${{` on that line shares the same (empty) search
-    /// range, so it is skipped without rescanning.
+    /// End of the range on which a `${{` was last found to have no closing
+    /// `}}`. Later `${{` in that range share the same (empty) search, so they
+    /// are skipped without rescanning. In block context the range is the
+    /// current line plus more-indented continuation lines (#421).
     expr_unclosed_line_end: usize,
 
     /// UTF-8 byte order mark. Windows editors prepend it; it carries no
@@ -269,7 +270,7 @@ pub const Tokenizer = struct {
         };
     }
 
-    fn lineIndentAt(self: *Tokenizer, at: usize) u32 {
+    fn lineIndentAt(self: *const Tokenizer, at: usize) u32 {
         const line_start = if (std.mem.lastIndexOfScalar(u8, self.source[0..at], '\n')) |i| i + 1 else 0;
         var indent: u32 = 0;
         while (line_start + indent < at and self.source[line_start + indent] == ' ') indent += 1;
@@ -347,24 +348,59 @@ pub const Tokenizer = struct {
 
     /// A `${{ ... }}` expression is opaque to YAML scanning: `}` and `,` inside
     /// it are not flow indicators, and neither `#` nor `: ` inside it ends the
-    /// scalar.
+    /// scalar. In block context the closing `}}` may sit on a later,
+    /// more-indented continuation line (#421).
     fn skipExpressionInterpolation(self: *Tokenizer) bool {
         if (self.pos + 2 >= self.source.len) return false;
         if (self.source[self.pos] != '$') return false;
         if (self.source[self.pos + 1] != '{' or self.source[self.pos + 2] != '{') return false;
 
-        // Unterminated, or closed only on a later line: fall back to normal
-        // plain-scalar scanning. The search is confined to the current line
-        // and its negative result is remembered, so a line full of `${{`
-        // costs one pass rather than one pass per occurrence.
+        // Unterminated: fall back to normal plain-scalar scanning. The negative
+        // result is remembered, so a line full of `${{` costs one pass rather
+        // than one pass per occurrence.
         if (self.pos < self.expr_unclosed_line_end) return false;
-        const line_end = std.mem.findScalarPos(u8, self.source, self.pos + 3, '\n') orelse self.source.len;
-        const close = std.mem.findPos(u8, self.source[0..line_end], self.pos + 3, "}}") orelse {
-            self.expr_unclosed_line_end = line_end;
+        const search_end = self.expressionSearchEnd();
+        const close = std.mem.findPos(u8, self.source[0..search_end], self.pos + 3, "}}") orelse {
+            self.expr_unclosed_line_end = search_end;
             return false;
         };
-        while (self.pos < close + 2) self.advance();
+        while (self.pos < close + 2) {
+            if (self.atBreak()) {
+                self.consumeNewline();
+            } else {
+                self.advance();
+            }
+        }
         return true;
+    }
+
+    /// End of the text in which a `${{` at `pos` may still close. Flow
+    /// collections stay on the current line; block context also takes later
+    /// lines indented past this one, which YAML treats as the same plain
+    /// scalar. A sibling or parent line (indent ≤ this line) stops the
+    /// search, so a later mapping key's `}}` is not stolen.
+    fn expressionSearchEnd(self: *const Tokenizer) usize {
+        const line_end = std.mem.findScalarPos(u8, self.source, self.pos, '\n') orelse return self.source.len;
+        if (self.flow_depth > 0) return line_end;
+
+        const base_indent = self.lineIndentAt(self.pos);
+        var cursor: usize = line_end + 1;
+        while (cursor < self.source.len) {
+            var indent: u32 = 0;
+            while (cursor + indent < self.source.len and self.source[cursor + indent] == ' ') {
+                indent += 1;
+            }
+            const after_indent = cursor + indent;
+            if (after_indent >= self.source.len) return self.source.len;
+            if (self.isBreakAt(after_indent)) {
+                cursor = if (self.source[after_indent] == '\r') after_indent + 2 else after_indent + 1;
+                continue;
+            }
+            if (indent <= base_indent) return cursor;
+            cursor = std.mem.findScalarPos(u8, self.source, after_indent, '\n') orelse return self.source.len;
+            cursor += 1;
+        }
+        return self.source.len;
     }
 
     fn scanPlainScalar(self: *Tokenizer) Token {
@@ -568,6 +604,60 @@ test "tokenizer plain scalar stops at an unterminated interpolation in flow cont
     try std.testing.expectEqual(TokenKind.flow_sequence_start, tokenizer.next().kind);
     const token = tokenizer.next();
     try std.testing.expectEqualStrings("echo $", token.slice(tokenizer.source));
+}
+
+// #421: YAML folds a more-indented continuation into the same plain scalar, so
+// `${{` and `}}` on separate lines are one interpolation, not an unclosed
+// expression on the first line and leftover text on the second.
+test "tokenizer plain scalar keeps a ${{ }} interpolation wrapped onto the next line" {
+    var tokenizer = Tokenizer.init("REF: ${{ github.sha\n  }}\nrun: x\n");
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings("REF", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const value = tokenizer.next();
+    try std.testing.expectEqualStrings("${{ github.sha\n  }}", value.slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("run", tokenizer.next().slice(tokenizer.source));
+}
+
+test "tokenizer plain scalar keeps a wrapped interpolation inside surrounding text" {
+    var tokenizer = Tokenizer.init("run: echo \"${{ github.event.issue.title\n  }}\"\n");
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings("run", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    const value = tokenizer.next();
+    try std.testing.expectEqualStrings("echo \"${{ github.event.issue.title\n  }}\"", value.slice(tokenizer.source));
+}
+
+test "tokenizer counts the line after a wrapped interpolation" {
+    var tokenizer = Tokenizer.init("a: ${{ x\n  }}\nb");
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    const after = tokenizer.next();
+    try std.testing.expectEqualStrings("b", after.slice(tokenizer.source));
+    try std.testing.expectEqual(@as(u32, 3), after.line);
+}
+
+test "tokenizer does not take a less-indented }} as the close of an interpolation" {
+    var tokenizer = Tokenizer.init("a: ${{ oops\n}}\n");
+    _ = tokenizer.next();
+    try std.testing.expectEqualStrings("a", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.mapping_value, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("${{ oops", tokenizer.next().slice(tokenizer.source));
+    try std.testing.expectEqual(TokenKind.newline, tokenizer.next().kind);
+    try std.testing.expectEqualStrings("}}", tokenizer.next().slice(tokenizer.source));
+}
+
+test "tokenizer wrapped interpolation still skips a blank continuation line" {
+    var tokenizer = Tokenizer.init("REF: ${{ github.sha\n\n  }}\n");
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    _ = tokenizer.next();
+    const value = tokenizer.next();
+    try std.testing.expectEqualStrings("${{ github.sha\n\n  }}", value.slice(tokenizer.source));
 }
 
 fn expectFirstScalar(source: []const u8, expected: []const u8) !void {
