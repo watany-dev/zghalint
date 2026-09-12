@@ -1,0 +1,14 @@
+# zghalint:expect ACT001
+name: composite shell
+description: shell insertion
+runs:
+  using: composite
+  steps:
+    - run: echo hello
+      shell: bash
+    - run: |
+        echo block
+      shell: bash
+    - run: echo explicit
+      shell: sh
+    - {run: echo flow}
