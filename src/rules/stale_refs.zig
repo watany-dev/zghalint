@@ -1,11 +1,11 @@
 const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
-const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
 const rest_fallback = @import("rest_fallback.zig");
 const net_status = @import("net_status.zig");
+const cache_mod = @import("ref_cache.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -18,28 +18,18 @@ const isValidGitHubComponent = engine.isValidGitHubComponent;
 /// alongside the REST resolver to avoid a circular import.
 pub const TagResolution = rest_fallback.TagResolution;
 
-/// null means offline mode.
-var tag_cache: ?std.StringHashMap(TagResolution) = null;
-var stale_refs_arena: ?std.heap.ArenaAllocator = null;
+var cache: cache_mod.RefCache(TagResolution) = .{};
 
 pub fn initStaleRefs(backing_allocator: Allocator, offline: bool) void {
-    if (offline) return;
-    stale_refs_arena = std.heap.ArenaAllocator.init(backing_allocator);
-    if (stale_refs_arena) |*arena| {
-        tag_cache = std.StringHashMap(TagResolution).init(arena.allocator());
-    }
+    cache.init(backing_allocator, offline);
 }
 
 pub fn deinitStaleRefs() void {
-    if (stale_refs_arena) |*arena| {
-        arena.deinit();
-        stale_refs_arena = null;
-    }
-    tag_cache = null;
+    cache.deinit();
 }
 
 pub fn isActive() bool {
-    return tag_cache != null;
+    return cache.isActive();
 }
 
 /// Exposed so engine post-processing can tell whether SC005 actually fired
@@ -49,9 +39,7 @@ pub fn lookupCachedTagResult(
     repo: []const u8,
     sha: []const u8,
 ) ?TagResolution {
-    const cache = tag_cache orelse return null;
-    const alloc = if (stale_refs_arena) |*arena| arena.allocator() else return null;
-    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return null;
+    const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, sha }) orelse return null;
     return cache.get(key);
 }
 
@@ -61,14 +49,12 @@ pub fn setCachedTagResult(
     sha: []const u8,
     resolution: TagResolution,
 ) void {
-    if (tag_cache == null) return;
-    const alloc = if (stale_refs_arena) |*arena| arena.allocator() else return;
-    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
-    tag_cache.?.put(key, resolution) catch return;
+    const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, sha }) orelse return;
+    cache.put(key, resolution);
 }
 
 pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
-    var cache = &(tag_cache orelse return);
+    const allocator = cache.allocator() orelse return;
     const action_ref = step.uses orelse return;
     if (!action_ref.is_pinned) return;
     if (action_ref.is_local or action_ref.is_docker) return;
@@ -77,12 +63,11 @@ pub fn checkStaleActionRef(step: *const Step, list: *DiagnosticList) void {
     const sha = action_ref.ref orelse return;
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) return;
 
-    const allocator = if (stale_refs_arena) |*arena| arena.allocator() else return;
-    const key = std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, sha }) catch return;
+    const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, sha }) orelse return;
 
     const resolution = cache.get(key) orelse blk: {
         const result = rest_fallback.resolveTagForSha(allocator, owner, repo, sha) catch TagResolution.unknown;
-        cache.put(key, result) catch return;
+        cache.put(key, result);
         break :blk result;
     };
 
@@ -121,22 +106,15 @@ const TagCacheEntry = struct { key: []const u8, resolution: TagResolution };
 /// Module state is saved and restored so tests stay independent of each other.
 /// Diagnostics only borrow string literals, so the arena can go away here.
 fn runWithTagCache(entries: ?[]const TagCacheEntry, uses_ref: ?[]const u8) DiagnosticList {
-    const prev_cache = tag_cache;
-    const prev_arena = stale_refs_arena;
-    defer {
-        tag_cache = prev_cache;
-        stale_refs_arena = prev_arena;
-    }
+    const prev = cache;
+    defer cache = prev;
 
-    stale_refs_arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer stale_refs_arena.?.deinit();
+    cache = .{};
+    defer if (cache.isActive()) cache.deinit();
 
     if (entries) |es| {
-        var cache = std.StringHashMap(TagResolution).init(stale_refs_arena.?.allocator());
-        for (es) |e| cache.put(e.key, e.resolution) catch unreachable;
-        tag_cache = cache;
-    } else {
-        tag_cache = null;
+        cache.init(testing.allocator, false);
+        for (es) |e| cache.put(e.key, e.resolution);
     }
 
     var steps = [_]Step{.{

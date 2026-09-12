@@ -98,6 +98,7 @@ test {
     _ = @import("rules/dependabot.zig");
     _ = @import("rules/action_metadata.zig");
     _ = @import("rules/archived.zig");
+    _ = @import("rules/ref_cache.zig");
     _ = @import("rules/stale_refs.zig");
     _ = @import("rules/sha_pin.zig");
     _ = @import("rules/impostor.zig");

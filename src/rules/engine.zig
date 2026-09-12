@@ -222,30 +222,26 @@ pub fn requestBudget() std.Io.Timeout {
 /// Guards GitHub API URL path segments; the allowed character set is
 /// GitHub's naming rules for owners, repos, and refs.
 pub fn isValidGitHubComponent(s: []const u8) bool {
-    if (s.len == 0 or s.len > 255) return false;
-    for (s) |c| {
-        switch (c) {
-            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-' => {},
-            else => return false,
-        }
-    }
-    // "." and ".." would enable path traversal in the URL.
-    if (std.mem.eql(u8, s, ".") or std.mem.find(u8, s, "..") != null) return false;
-    return true;
+    return isValidGitPath(s, false);
 }
 
 /// Like isValidGitHubComponent but also allows '/' because branch refs
 /// (e.g. "feature/foo") contain it.
 pub fn isValidGitRef(s: []const u8) bool {
+    return isValidGitPath(s, true);
+}
+
+fn isValidGitPath(s: []const u8, comptime allow_slash: bool) bool {
     if (s.len == 0 or s.len > 255) return false;
     for (s) |c| {
         switch (c) {
-            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-', '/' => {},
+            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-' => {},
+            '/' => if (!allow_slash) return false,
             else => return false,
         }
     }
-    // ".." is the only dot pattern that enables path traversal
     if (std.mem.find(u8, s, "..") != null) return false;
+    if (!allow_slash and std.mem.eql(u8, s, ".")) return false;
     return true;
 }
 

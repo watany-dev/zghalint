@@ -176,11 +176,7 @@ fn permissionProblemMessage(
 ) ?[]const u8 {
     return switch (problem.kind) {
         .unknown_scope => blk: {
-            var suffix_buf: [64]u8 = undefined;
-            const suffix = if (util.didYouMean(problem.text, workflow_types.permission_scope_keys)) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.didYouMeanSuffix(alloc, problem.text, workflow_types.permission_scope_keys);
             break :blk std.fmt.allocPrint(
                 alloc,
                 "unknown permission scope \"{s}\"{s}",

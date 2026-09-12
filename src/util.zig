@@ -1,16 +1,6 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
-const EmptySection = @import("workflow/types.zig").EmptySection;
-
-/// The section key was present in source but empty (`with: {}`, `with:`), so a
-/// rule must not insert a second one of its own.
-pub fn hasEmptySection(sections: []const EmptySection, name: []const u8) bool {
-    for (sections) |section| {
-        if (std.mem.eql(u8, section.name, name)) return true;
-    }
-    return false;
-}
 
 pub fn actionBaseName(raw: []const u8) []const u8 {
     return if (std.mem.find(u8, raw, "@")) |pos| raw[0..pos] else raw;
@@ -82,6 +72,25 @@ pub fn didYouMean(key: []const u8, candidates: []const []const u8) ?[]const u8 {
     return best;
 }
 
+/// Wording is part of the diagnostic contract; callers concatenate this.
+pub fn suggestionSuffix(alloc: std.mem.Allocator, suggestion: ?[]const u8) []const u8 {
+    const near = suggestion orelse return "";
+    return std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{near}) catch "";
+}
+
+/// `didYouMean` plus `suggestionSuffix` for call sites that do not also
+/// need the candidate for a rename fix.
+pub fn didYouMeanSuffix(alloc: std.mem.Allocator, key: []const u8, candidates: []const []const u8) []const u8 {
+    return suggestionSuffix(alloc, didYouMean(key, candidates));
+}
+
+pub fn appendUniqueIgnoreCase(names: *std.ArrayList([]const u8), alloc: std.mem.Allocator, name: []const u8) void {
+    for (names.items) |seen| {
+        if (std.ascii.eqlIgnoreCase(seen, name)) return;
+    }
+    names.append(alloc, name) catch return;
+}
+
 test "levenshteinDistanceBounded matches the exact distance within the bound" {
     try std.testing.expectEqual(@as(usize, 2), levenshteinDistanceBounded("kitten", "sittin", 2));
     try std.testing.expectEqual(@as(usize, 1), levenshteinDistanceBounded("chekout", "checkout", 1));
@@ -112,12 +121,25 @@ test "actionBaseName strips version suffix" {
     try std.testing.expectEqualStrings("", actionBaseName("@v1"));
 }
 
-test "hasEmptySection matches by name" {
-    const yaml_types = @import("yaml/types.zig");
-    const sections = [_]EmptySection{.{ .name = "with", .span = yaml_types.Span.point(1, 1, 0) }};
-    try std.testing.expect(hasEmptySection(&sections, "with"));
-    try std.testing.expect(!hasEmptySection(&sections, "env"));
-    try std.testing.expect(!hasEmptySection(&.{}, "with"));
+test "suggestionSuffix formats a unique candidate and stays empty otherwise" {
+    const alloc = std.testing.allocator;
+    const suffix = suggestionSuffix(alloc, "outputs");
+    defer alloc.free(suffix);
+    try std.testing.expectEqualStrings(". did you mean \"outputs\"?", suffix);
+    try std.testing.expectEqualStrings("", suggestionSuffix(alloc, null));
+}
+
+test "appendUniqueIgnoreCase skips case-insensitive duplicates" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var names: std.ArrayList([]const u8) = .empty;
+    appendUniqueIgnoreCase(&names, alloc, "os");
+    appendUniqueIgnoreCase(&names, alloc, "OS");
+    appendUniqueIgnoreCase(&names, alloc, "arch");
+    try std.testing.expectEqual(@as(usize, 2), names.items.len);
+    try std.testing.expectEqualStrings("os", names.items[0]);
+    try std.testing.expectEqualStrings("arch", names.items[1]);
 }
 
 /// `readLink` is the portable "is this path a symlink" probe, but Windows

@@ -68,6 +68,68 @@ pub fn parseWorkflowSource(allocator: std.mem.Allocator, source: []const u8) !wo
     return workflow_parser.parseWorkflow(allocator, try yp.parse());
 }
 
+pub fn lintSourceAlloc(
+    alloc: std.mem.Allocator,
+    source: []const u8,
+    check: Check,
+    list: *DiagnosticList,
+) !void {
+    switch (check) {
+        .document => |f| {
+            var yp = yaml_parser.Parser.init(alloc, source);
+            f(try yp.parse(), list);
+        },
+        else => {
+            const wf = try parseWorkflowSource(alloc, source);
+            switch (check) {
+                .workflow => |f| f(&wf, list),
+                .job => |f| for (wf.jobs) |*job| f(job, list),
+                .step => |f| for (wf.jobs) |*job| workflow_types.walkSteps(job.steps, struct {
+                    f: *const fn (*const workflow_types.Step, *DiagnosticList) void,
+                    diags: *DiagnosticList,
+                    pub fn visit(self: @This(), step: *const workflow_types.Step) void {
+                        self.f(step, self.diags);
+                    }
+                }{ .f = f, .diags = list }),
+                .document => unreachable,
+            }
+        },
+    }
+}
+
+/// Parse `source` and run `check`. The workflow tree lives in a test arena
+/// that dies before return; diagnostics must copy what they keep into `list`.
+pub fn lintSource(source: []const u8, check: Check, list: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try lintSourceAlloc(arena.allocator(), source, check, list);
+}
+
+pub fn expectNoDiagnostics(source: []const u8, check: Check) !void {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try lintSource(source, check, &list);
+    if (list.len() != 0) {
+        std.debug.print("unexpected diagnostic: {s}\n", .{list.get(0).message});
+    }
+    try std.testing.expectEqual(@as(usize, 0), list.len());
+}
+
+pub fn expectMessage(source: []const u8, check: Check, rule_id: []const u8, needle: []const u8) !void {
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try lintSource(source, check, &list);
+    for (list.items.items) |diag| {
+        if (std.mem.eql(u8, diag.rule_id, rule_id) and std.mem.find(u8, diag.message, needle) != null) {
+            return;
+        }
+    }
+    if (list.len() != 0) {
+        std.debug.print("messages did not contain \"{s}\"; first: {s}\n", .{ needle, list.get(0).message });
+    }
+    return error.MessageNotFound;
+}
+
 pub const Check = union(enum) {
     workflow: *const fn (*const workflow_types.Workflow, *DiagnosticList) void,
     job: *const fn (*const workflow_types.Job, *DiagnosticList) void,
@@ -101,27 +163,7 @@ pub fn lintAndFix(
     const alloc = arena.allocator();
 
     var diags = DiagnosticList.init(alloc);
-    switch (check) {
-        .document => |f| {
-            var yp = yaml_parser.Parser.init(alloc, source);
-            f(try yp.parse(), &diags);
-        },
-        else => {
-            const wf = try parseWorkflowSource(alloc, source);
-            switch (check) {
-                .workflow => |f| f(&wf, &diags),
-                .job => |f| for (wf.jobs) |*job| f(job, &diags),
-                .step => |f| for (wf.jobs) |*job| workflow_types.walkSteps(job.steps, struct {
-                    f: *const fn (*const workflow_types.Step, *DiagnosticList) void,
-                    diags: *DiagnosticList,
-                    pub fn visit(self: @This(), step: *const workflow_types.Step) void {
-                        self.f(step, self.diags);
-                    }
-                }{ .f = f, .diags = &diags }),
-                .document => unreachable,
-            }
-        },
-    }
+    try lintSourceAlloc(alloc, source, check, &diags);
 
     const fixes = try fix_engine.collectFixes(alloc, diags.items.items, include_unsafe);
     const result = try fix_engine.applyFixes(allocator, source, fixes);
