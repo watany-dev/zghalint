@@ -9,6 +9,8 @@ const catalog = @import("expr_catalog.zig");
 const expr_check = @import("expr_check.zig");
 const expr_overlay = @import("expr_overlay.zig");
 const spans = @import("spans.zig");
+const rename = @import("rename.zig");
+const util = @import("../util.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -666,7 +668,7 @@ fn validateNode(
     env: *const expr_check.TypeEnv,
 ) void {
     switch (node.kind) {
-        .context_access => validateContextAccess(allocator, node.value, span, list, env),
+        .context_access => validateContextAccess(allocator, node, span, list, expr_base_byte, env),
         .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent, env),
         .binary_op, .unary_op, .property_access, .index_access => {
             if (node.kind == .binary_op) {
@@ -682,12 +684,13 @@ fn validateNode(
 
 fn validateContextAccess(
     allocator: std.mem.Allocator,
-    path: []const u8,
+    node: *const ExprNode,
     span: Span,
     list: *DiagnosticList,
+    expr_base_byte: ?usize,
     env: *const expr_check.TypeEnv,
 ) void {
-    const result = expr_check.walkPath(path, env);
+    const result = expr_check.walkPath(node.value, env);
     const problem = result.problem orelse return;
 
     var buf: [96]u8 = undefined;
@@ -723,7 +726,42 @@ fn validateContextAccess(
         .severity = severity,
         .message = message,
         .span = span,
+        .fix = buildContextRenameFix(allocator, node, problem, span, list, expr_base_byte, env),
     }) catch return;
+}
+
+fn nameSuggestion(allocator: std.mem.Allocator, name: []const u8, entries: anytype) ?[]const u8 {
+    const names = allocator.alloc([]const u8, entries.len) catch return null;
+    defer allocator.free(names);
+    for (entries, names) |entry, *dest| dest.* = entry.name;
+    return util.didYouMean(name, names);
+}
+
+fn buildContextRenameFix(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    problem: expr_check.Problem,
+    span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: ?usize,
+    env: *const expr_check.TypeEnv,
+) ?Fix {
+    const base = expr_base_byte orelse return null;
+    var segment_index: usize = 0;
+    const suggestion = switch (problem) {
+        .unknown_context => |name| nameSuggestion(allocator, name, &catalog.contexts),
+        .unknown_property => |info| blk: {
+            const receiver = expr_check.walkPath(info.receiver_path, env).ty;
+            var iter = expr_check.SegmentIter{ .path = info.receiver_path };
+            while (iter.next() != null) segment_index += 1;
+            break :blk nameSuggestion(allocator, info.name, receiver.props);
+        },
+        .not_an_object => null,
+    } orelse return null;
+    var path_span = span;
+    path_span.start_byte = base + node.start_byte;
+    path_span.end_byte = base + node.end_byte;
+    return rename.pathSegmentFix(list, path_span, node.value, segment_index, suggestion);
 }
 
 fn checkComparison(
@@ -828,11 +866,20 @@ fn validateFunctionCall(
         }
     } else {
         const msg = std.fmt.allocPrint(allocator, "unknown function: '{s}'", .{name}) catch "unknown function";
+        const fix: ?Fix = fix: {
+            const base = expr_base_byte orelse break :fix null;
+            const suggestion = nameSuggestion(allocator, name, &catalog.functions) orelse break :fix null;
+            var name_span = span;
+            name_span.start_byte = base + node.start_byte;
+            name_span.end_byte = name_span.start_byte + name.len;
+            break :fix rename.tokenFix(list, name_span, name, suggestion);
+        };
         list.append(.{
             .rule_id = "EXPR004",
             .severity = .@"error",
             .message = msg,
             .span = span,
+            .fix = fix,
         }) catch return;
     }
 
@@ -2502,6 +2549,32 @@ test "validate: complex logical expression" {
 
 test "validate: toJSON wrong args" {
     try expectSingleRule("toJSON(github.event, 'extra')", "EXPR005");
+}
+
+test "catalog rename fixes require source offsets and an unambiguous candidate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "githb.ref", "github.refs", "contians('a', 'b')" }) |expr| {
+        var list = DiagnosticList.init(std.testing.allocator);
+        defer list.deinit();
+        validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, null);
+        try std.testing.expectEqual(@as(usize, 1), list.len());
+        try std.testing.expect(list.get(0).fix == null);
+    }
+    for ([_][]const u8{
+        "jobz.status",
+        "github.zzzzzzzzzz",
+        "github.ref.zzzzzzzzzz",
+        "github . refs",
+        "github['refs']",
+        "completelyUnknownFunction()",
+    }) |expr| {
+        var list = DiagnosticList.init(std.testing.allocator);
+        defer list.deinit();
+        validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 100);
+        try std.testing.expectEqual(@as(usize, 1), list.len());
+        try std.testing.expect(list.get(0).fix == null);
+    }
 }
 
 test "EXPR006: contains with string literal second arg" {

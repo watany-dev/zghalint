@@ -55,11 +55,7 @@ pub fn deinitAdvisories() void {
     fetched = false;
 }
 
-pub fn prefetch() void {
-    ensureLoaded();
-}
-
-fn ensureLoaded() void {
+pub fn ensureLoaded() void {
     if (fetched) return;
     fetched = true;
     const arena = &(advisory_arena orelse return);

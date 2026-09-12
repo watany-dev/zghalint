@@ -262,7 +262,7 @@ pub const unknown_context: Type = .{ .kind = .object, .shape = .unknown };
 const ContextEntry = struct { name: []const u8, ty: TypeRef };
 
 /// Sorted by name.
-const contexts = [_]ContextEntry{
+pub const contexts = [_]ContextEntry{
     .{ .name = "env", .ty = &t.type_map_string },
     .{ .name = "github", .ty = &github },
     .{ .name = "inputs", .ty = &unknown_context },
@@ -311,7 +311,7 @@ pub const ArgKind = enum {
 
 /// How `min_args` / `max_args` are interpreted. `case()` is pairs plus a
 /// fallback, so the count must be odd and at least 3.
-pub const ArgCountShape = enum {
+const ArgCountShape = enum {
     range,
     odd_at_least,
     exact,
@@ -346,7 +346,7 @@ pub const FuncSig = struct {
 
 /// Sorted by name. Lookup is ASCII case-insensitive, matching GitHub Actions
 /// and actionlint (#161).
-const functions = [_]FuncSig{
+pub const functions = [_]FuncSig{
     .{ .name = "always", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "cancelled", .min_args = 0, .max_args = 0, .ret = boolean },
     .{ .name = "case", .min_args = 3, .max_args = 255, .shape = .odd_at_least, .ret = any },

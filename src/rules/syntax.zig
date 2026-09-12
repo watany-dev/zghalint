@@ -968,10 +968,8 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-/// Dropping the whole `<key>:` entry is what both halves of SYN011 ask for:
-/// the event does not read the key, so nothing is lost but the lines. Unsafe
-/// because a filter that goes away widens what the workflow runs on — the
-/// author more often meant to move it under an event that accepts it.
+/// Removing an event filter can widen the workflow's trigger scope, whether
+/// the filter is unsupported (SYN011) or conflicts with another (SYN012).
 fn buildEventKeyFix(
     alloc: std.mem.Allocator,
     key: workflow_types.EventConfigKey,
@@ -1103,6 +1101,13 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
                 .message = pair.message,
                 .span = span,
                 .fix_hint = pair.fix_hint,
+                .fix = blk: {
+                    for (event.config_keys) |key| {
+                        if (key.span.start_byte == span.start_byte)
+                            break :blk buildEventKeyFix(list.fixAllocator(), key, "remove the later conflicting event filter");
+                    }
+                    break :blk null;
+                },
             }) catch return;
         }
     }

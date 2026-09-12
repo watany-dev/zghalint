@@ -43,7 +43,7 @@ issue #402）。原因は zghalint 側の設計の穴が std の挙動変更で�
 | 予算の設定 | `src/main.zig:772` | prefetch の前に 10 s。`defer clearNetworkDeadline()` |
 | 共有クライアント | `src/rules/http_client.zig:164-175` | `fetch` は deadline 超過を先に見て、std の全エラーを `error.FetchFailed` に潰す |
 | body 上限 | `src/rules/http_client.zig` `BoundedBody` | 上限超過で writer が `error.WriteFailed` を返す。std の `fetch` はこれも `WriteFailed` で返すので送信失敗と区別できない |
-| GraphQL バッチ | `src/rules/graphql.zig:148-192` | `http_client.fetch` の失敗は一律 `error.RequestFailed` |
+| GraphQL バッチ | `src/rules/graphql.zig:148-192` | `http_client.fetchBounded` の失敗は一律 `error.RequestFailed` |
 | prefetch の短絡 | `src/rules/prefetch.zig:495,681,715,734` | 各ループの先頭で `isNetworkDeadlineExceeded()`。GraphQL が `RequestFailed` なら `used_graphql=false` として **REST フォールバックへ進む** |
 | REST の sticky フラグ | `src/rules/rest_fallback.zig:40-43,246,331` | `rate_limited` を 403/429 で立て、以後の `queryRefStatus` を `.fetch_failed` にする。今回のフラグの前例 |
 | 遅延 fetch | `archived.zig:96` / `stale_refs.zig:84` / `refconfusion.zig:73` | prefetch で埋まらなかった ref を lint 中に個別取得 |
@@ -68,7 +68,7 @@ REST fallback   deadline 超過で短絡    REST fallback   deadline 超過で�
 
 ## 設計方針
 
-### 1. `http_client.fetch` が std のエラーを分類する
+### 1. `http_client.fetchBounded` が std のエラーを分類する
 
 `error.FetchFailed` 一本にしていたのをやめ、トランスポート失敗を分ける。
 分類は `http_client` の中で閉じる。呼び出し側（graphql / rest_fallback /
@@ -161,7 +161,7 @@ fn recordFailure(err: FetchError) FetchError {
     return err;
 }
 
-pub fn fetch(opts: std.http.Client.FetchOptions) FetchError!std.http.Client.FetchResult {
+pub fn fetchBounded(opts: std.http.Client.FetchOptions, sink: *BoundedBody) FetchError!std.http.Client.FetchResult {
     if (network_unreachable) return error.NetworkUnreachable;
     if (engine.isNetworkDeadlineExceeded()) return error.NetworkDeadlineExceeded;
     ...
@@ -169,7 +169,7 @@ pub fn fetch(opts: std.http.Client.FetchOptions) FetchError!std.http.Client.Fetc
 ```
 
 `rest_fallback.rate_limited` と違い、GraphQL・REST・advisory・遅延 fetch の
-全経路が `http_client.fetch` を通るので、ここに置けば呼び出し側は何も
+全経路が `http_client.fetchBounded` を通るので、ここに置けば呼び出し側は何も
 しなくても短絡される。`prefetch` 側で覚える案（issue の (1) の文面）は
 遅延 fetch を取りこぼす。
 
@@ -346,7 +346,7 @@ pub fn requestBudget() std.Io.Timeout {
 
 ### 5. prefetch と遅延 fetch への伝播
 
-`http_client.fetch` が短絡するので、原理的には呼び出し側の変更は要らない。
+`http_client.fetchBounded` が短絡するので、原理的には呼び出し側の変更は要らない。
 それでも `prefetch.zig` には 2 箇所手を入れる。
 
 1. `tryGraphQlBatch` が `RequestFailed` を受けたとき、`http_client
@@ -382,7 +382,7 @@ SSL_CERT_FILE)」と出る。fail-fast で早く諦めても bit の立ち方は
   分類。`inline for` で全メンバーを回し、`NetworkUnreachable` に落ちる集合を
   明示の表と突き合わせる（std のエラー集合が増減したときに `switch` の
   網羅性エラーで気付く）。
-- `http_client.fetch`: `network_unreachable` を立てた状態で
+- `http_client.fetchBounded`: `network_unreachable` を立てた状態で
   `NetworkUnreachable` を返し、`init` / `deinit` / `resetNetworkState` で
   戻ること。既存の `network_deadline_ns = now - 1` のパターンに揃える。
 - `http_client.fetchBounded`: `BoundedBody` が溢れた `WriteFailed` は

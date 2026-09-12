@@ -26,7 +26,7 @@ pub const Problem = union(enum) {
     },
 };
 
-pub const WalkResult = struct {
+const WalkResult = struct {
     ty: TypeRef,
     problem: ?Problem = null,
 };

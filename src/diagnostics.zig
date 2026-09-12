@@ -98,13 +98,6 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, d);
     }
 
-    pub fn allocEdit(self: *DiagnosticList, edit: Edit) ?[]const Edit {
-        const alloc = self.fix_arena.allocator();
-        const edits = alloc.alloc(Edit, 1) catch return null;
-        edits[0] = edit;
-        return edits;
-    }
-
     pub fn sort(self: *DiagnosticList) void {
         std.mem.sort(Diagnostic, self.items.items, {}, lessThan);
     }
@@ -220,22 +213,6 @@ test "diagnostic list sort by file then line then col" {
     try std.testing.expectEqualStrings("R3", list.get(3).rule_id);
 }
 
-test "allocEdit returns valid slice" {
-    var list = DiagnosticList.init(std.testing.allocator);
-    defer list.deinit();
-
-    const edits = list.allocEdit(.{
-        .start_byte = 10,
-        .end_byte = 20,
-        .replacement = "replacement text",
-    });
-    try std.testing.expect(edits != null);
-    try std.testing.expectEqual(@as(usize, 1), edits.?.len);
-    try std.testing.expectEqual(@as(usize, 10), edits.?[0].start_byte);
-    try std.testing.expectEqual(@as(usize, 20), edits.?[0].end_byte);
-    try std.testing.expectEqualStrings("replacement text", edits.?[0].replacement);
-}
-
 test "fixAllocator returns valid allocator" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -276,11 +253,11 @@ test "appendOwning deep-clones fix across lists" {
         defer src.deinit();
 
         const replacement = try src.fixAllocator().dupe(u8, "replacement-text");
-        const edits = src.allocEdit(.{
+        const edits = try src.fixAllocator().dupe(Edit, &.{.{
             .start_byte = 10,
             .end_byte = 20,
             .replacement = replacement,
-        }) orelse return error.OutOfMemory;
+        }});
 
         const description = try src.fixAllocator().dupe(u8, "description-text");
         try src.append(.{
