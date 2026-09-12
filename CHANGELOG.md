@@ -22,6 +22,9 @@ each ID means.
 
 ### Added
 
+- EXPR002 / EXPR003 / EXPR004 offer safe rename fixes for a unique nearby
+  context, strict-object property, or function name from the expression
+  catalog, when the source token can be located (#410).
 - SEC014 offers an unsafe fix for a whole `if:` condition comparing
   `github.actor` or `github.triggering_actor` to a bot name with `==` / `!=`.
   It preserves YAML quotes and expression wrappers, replacing the comparison
