@@ -53,6 +53,9 @@ each ID means.
 - SEC024 warns when `cache-mode: write` or `write-only` is declared on a
   low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
   which overrides GitHub's restore-only default. No autofix (#434).
+- SYN026 reports YAML merge key `<<`, which GitHub Actions rejects. The
+  parser still expands the merge so other rules see the folded keys.
+  Anchors and aliases without `<<` stay quiet. No autofix (#439).
 
 ### Changed
 

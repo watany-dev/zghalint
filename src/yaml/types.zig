@@ -166,6 +166,10 @@ pub const Mapping = struct {
     close_byte: ?usize = null,
     /// Written with `{ }` rather than as a block. See `Sequence.flow`.
     flow: bool = false,
+    /// `<<` key tokens folded by `applyMergeKeys`. Empty when the mapping
+    /// never used a merge key. GitHub Actions rejects `<<`, so SYN026 reports
+    /// these spans after the parser has already expanded them.
+    merge_key_spans: []const Span = &.{},
 
     pub fn get(self: Mapping, key: []const u8) ?Node {
         const entry = self.findEntry(key) orelse return null;

@@ -1059,10 +1059,9 @@ CI / bench のピンを actionlint 1.7.12 と zizmor 1.30.1 に揃えた。歴�
   actionlint 1.7.10 以降は alias を解決するので、1.7.7 時代の型エラーは
   再現しない。`missing-timeout` は actionlint 非対応のまま zghalint の
   unique-win。
-- YAML merge key `<<:` は actionlint 1.7.12 が
+- YAML merge key `<<:` is actionlint 1.7.12 が
   `GitHub Actions does not support YAML merge key "<<"` で拒否する。
-  zghalint はまだ検出しない。これは既に GA12 (#439) として切り出してあり、
-  本 issue では実装しない。
+  zghalint は SYN026 `unsupported-yaml-merge` で同じキーを報告する（GA12 / #439）。
 
 zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / FP は
 出なかった。空ワークフローで exit 3 になる既知の挙動は変わっていない。
