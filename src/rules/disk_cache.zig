@@ -1,10 +1,6 @@
 //! Per-repository disk cache for GraphQL/REST prefetch results, so warm runs
 //! (re-lint without code changes) can skip GraphQL entirely when every
 //! queried SHA / named ref is already present in a fresh cache file.
-//!
-//! v1 entries (no `cache_format` field, or `cache_format=1`) are loaded
-//! with empty branches/impostor/default_branch. The next save promotes
-//! them to v2.
 
 const std = @import("std");
 const runtime = @import("../runtime.zig");
@@ -18,11 +14,6 @@ const Allocator = std.mem.Allocator;
 
 pub const cache_ttl_s: i64 = 24 * 60 * 60;
 const cache_subdir = "zghalint/repos";
-
-/// Current on-disk schema version. Bumped when adding fields that older
-/// readers would silently misinterpret. Older files (no field, or =1)
-/// are tolerated and migrated on the next save.
-pub const cache_format_current: u8 = 2;
 
 // The cache stores exactly what the fetch layers produce, so the entry types
 // are those layers' types rather than field-compatible copies. Sharing them
@@ -249,8 +240,6 @@ pub fn saveToDir(
     var js: std.json.Stringify = .{ .writer = &doc.writer };
 
     try js.beginObject();
-    try js.objectField("cache_format");
-    try js.write(cache_format_current);
     try js.objectField("cached_at");
     try js.write(entry.cached_at);
     try js.objectField("archived");
@@ -573,7 +562,7 @@ test "loadFromDir: invalid git refs are dropped" {
     try testing.expectEqualStrings("main", loaded.named[0].ref);
 }
 
-test "saveToDir/loadFromDir: v2 round-trips branches/default_branch/impostor" {
+test "saveToDir/loadFromDir: round-trips branches/default_branch/impostor" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -621,33 +610,35 @@ test "saveToDir/loadFromDir: v2 round-trips branches/default_branch/impostor" {
     try testing.expectEqual(ImpostorStatus.unknown, loaded.impostor[2].status);
 }
 
-test "loadFromDir: v1 legacy entry (no cache_format/branches/impostor) loads with empty SC008 fields" {
+test "loadFromDir: legacy entry without branches/impostor loads with empty SC008 fields" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const name = try repoFilename(testing.allocator, "o", "r");
-    defer testing.allocator.free(name);
-    const file = try tmp.dir.createFile(runtime.io(), name, .{});
-    defer file.close(runtime.io());
+    for ([_][]const u8{ "", "\"cache_format\":1,", "\"cache_format\":2," }) |legacy_field| {
+        const name = try repoFilename(testing.allocator, "o", "r");
+        defer testing.allocator.free(name);
+        const file = try tmp.dir.createFile(runtime.io(), name, .{});
+        defer file.close(runtime.io());
 
-    const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
-    const body = try std.fmt.allocPrint(
-        testing.allocator,
-        "{{\"cached_at\":{d},\"archived\":false,\"shas\":[[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[[\"main\",0,1]]}}",
-        .{now},
-    );
-    defer testing.allocator.free(body);
-    try file.writeStreamingAll(runtime.io(), body);
+        const now = std.Io.Clock.real.now(runtime.io()).toSeconds();
+        const body = try std.fmt.allocPrint(
+            testing.allocator,
+            "{{{s}\"cached_at\":{d},\"archived\":false,\"shas\":[[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"h\"]],\"named\":[[\"main\",0,1]]}}",
+            .{ legacy_field, now },
+        );
+        defer testing.allocator.free(body);
+        try file.writeStreamingAll(runtime.io(), body);
 
-    const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
-        return error.TestExpectedNonNull;
-    defer freeLoaded(loaded);
+        const loaded = loadFromDir(tmp.dir, testing.allocator, "o", "r") orelse
+            return error.TestExpectedNonNull;
+        defer freeLoaded(loaded);
 
-    try testing.expectEqual(@as(usize, 1), loaded.shas.len);
-    try testing.expectEqual(@as(usize, 1), loaded.named.len);
-    try testing.expectEqual(@as(usize, 0), loaded.branches.len);
-    try testing.expectEqual(@as(usize, 0), loaded.impostor.len);
-    try testing.expect(loaded.default_branch == null);
+        try testing.expectEqual(@as(usize, 1), loaded.shas.len);
+        try testing.expectEqual(@as(usize, 1), loaded.named.len);
+        try testing.expectEqual(@as(usize, 0), loaded.branches.len);
+        try testing.expectEqual(@as(usize, 0), loaded.impostor.len);
+        try testing.expect(loaded.default_branch == null);
+    }
 }
 
 test "loadFromDir: tolerates malformed branches/impostor/default_branch entries" {
