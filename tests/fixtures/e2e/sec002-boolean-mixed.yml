@@ -1,0 +1,16 @@
+# zghalint:expect SEC002
+name: mixed output
+on:
+  issues:
+    types: [opened]
+permissions: {}
+concurrency: test
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Mixed expressions
+        run: |
+          echo "${{ startsWith(github.event.issue.title, 'fix') }}"
+          echo "${{ github.event.issue.title }}"

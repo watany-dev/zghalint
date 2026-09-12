@@ -161,11 +161,11 @@ fn checkDeprecatedRunner(job: *const Job, diag_list: *DiagnosticList) void {
 
             const span = label.value_span orelse job.span;
             const fix: ?Fix = if (label.value_span) |vs| blk: {
-                const edits = diag_list.allocEdit(.{
+                const edits = diag_list.fixAllocator().dupe(Edit, &.{.{
                     .start_byte = vs.start_byte,
                     .end_byte = vs.end_byte,
                     .replacement = entry.replacement,
-                }) orelse break :blk null;
+                }}) catch break :blk null;
                 break :blk Fix{
                     .description = "Replace with supported runner label",
                     .safety = .unsafe,
@@ -478,11 +478,11 @@ fn checkUnknownLabel(job: *const Job, label: LabelRef, diag_list: *DiagnosticLis
     const unknown = classifyLabel(label.value) orelse return;
     const edits: ?[]const Edit = if (unknown.suggestion) |name| blk: {
         const value_span = label.value_span orelse break :blk null;
-        break :blk diag_list.allocEdit(.{
+        break :blk diag_list.fixAllocator().dupe(Edit, &.{.{
             .start_byte = value_span.start_byte,
             .end_byte = value_span.end_byte,
             .replacement = name,
-        });
+        }}) catch null;
     } else null;
     reportUnknownLabel(unknown, label.value_span orelse job.span, edits, diag_list);
 }

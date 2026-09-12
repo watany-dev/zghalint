@@ -16,6 +16,7 @@
 //!     ACT005 reports both halves of that.
 
 const std = @import("std");
+const fix_builder = @import("../fix/builder.zig");
 const engine = @import("engine.zig");
 const best_practices = @import("best_practices.zig");
 const security = @import("security.zig");
@@ -183,6 +184,20 @@ fn checkShell(step: *const Step, list: *DiagnosticList) void {
         .message = "\"shell\" is required on a composite action step that uses \"run\"",
         .span = step.span,
         .fix_hint = "add `shell: bash` to the step",
+        .fix = if (step.shell_insertion_byte) |byte| blk: {
+            if (step.span.start_col == 0) break :blk null;
+            const edits = fix_builder.insertMappingEntry(
+                list.fixAllocator(),
+                .{ .byte = byte, .indent = step.span.start_col - 1 },
+                "shell",
+                "bash",
+            ) orelse break :blk null;
+            break :blk .{
+                .description = "add shell: bash to the composite run step",
+                .safety = .safe,
+                .edits = edits,
+            };
+        } else null,
     }) catch return;
 }
 
@@ -600,4 +615,14 @@ test "a non-sequence steps value is left to the metadata checks" {
     defer lint.deinit();
 
     try testing.expectEqual(@as(usize, 0), lint.diags.len());
+}
+
+test "ACT001: missing shell has no fix without a reliable insertion point" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkShell(&.{ .run = "echo hi" }, &list);
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expect(list.get(0).fix == null);
+    checkShell(&.{ .run = "echo hi", .shell_insertion_byte = 42 }, &list);
+    try testing.expect(list.get(1).fix == null);
 }

@@ -26,7 +26,7 @@ GitHub API に到達できない環境で 80 ファイルのコーパスをオ�
 
 ### D1. トランスポート失敗を 1 回で確定し、以後の全リクエストを短絡する
 
-`http_client.fetch` が `std.http.Client.FetchError` を分類し、接続・名前
+`http_client.fetchBounded` が `std.http.Client.FetchError` を分類し、接続・名前
 解決・TLS・送受信の失敗を `error.NetworkUnreachable` として返す。同時に
 sticky なフラグを立て、以後の `fetch` は接続を試みずに同じエラーを返す。
 
@@ -45,7 +45,7 @@ sticky なフラグを立て、以後の `fetch` は接続を試みずに同じ�
 
 issue の文面は「`prefetch.zig` に記録する」だが、prefetch の後に走る遅延
 fetch（archived / stale_refs / refconfusion）が取りこぼされる。GraphQL・REST・
-advisory・遅延 fetch の全経路が `http_client.fetch` を通るので、そこに
+advisory・遅延 fetch の全経路が `http_client.fetchBounded` を通るので、そこに
 置けば呼び出し側は変更なしで短絡される。寿命は `rest_fallback.rate_limited`
 と同じで、`init` / `deinit` で戻す。
 

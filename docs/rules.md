@@ -56,6 +56,14 @@ Detect security vulnerabilities in workflow definitions.
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 | SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
 
+### SEC002 と真偽値の展開
+
+SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式全体が
+`startsWith(...)` / `endsWith(...)` / `contains(...)` など真偽値を返す組み込みの
+呼び出しであれば、引数の汚染値を理由に報告しない。返る値は `true` / `false`
+だけであり、引数そのものはコードへ届かない。`&&` / `||` で汚染文字列を返す
+条件式や、別の `${{ }}` にある直接参照は引き続き診断・autofix の対象になる。
+
 ### SEC016 の対象
 
 成果物を公開するワークフローだけを対象にする。`on: release` を持つもの、
@@ -530,6 +538,8 @@ action / reusable workflow references.
 - `./{path}` — ローカルアクション（`@ref` を付けられない）
 - `$/{path}` — ワークフロー自身のリポジトリの実行中コミット（`@ref` を付けられない）
 - `docker://{image}`
+
+ローカルアクションのパス要素先頭の `@`（例: `./tools/@scope/tool`、`$/tools/@scope/tool`）はディレクトリ名として受理する。`tool@v1` のような途中の `@` は ref として報告する。
 
 ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
 
@@ -1185,7 +1195,7 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入） |
+| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入）。composite の欠落 `shell` は `--fix` で `bash` を挿入 |
 | ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
 | ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
 | ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
@@ -1248,6 +1258,7 @@ composite action の step は、ワークフローの step と同じ実体なの
 
 - `run:` を持つ step には `shell:` が必須。既定のシェルも `defaults.run` も無く、
   GitHub は実行時にエラーにするため、ACT001（必須キーが無い）として報告する。
+  挿入位置が確定できる場合、`--fix` で `shell: bash` を追加する。既存の `shell:` は変更しない。
   `shell:` の値そのものの妥当性は BP004 と同じ表で判定する。
 - 式検証（EXPR 系）は composite 用の context で行う。`inputs.<name>` はその action
   自身の `inputs:` を指すため、宣言されていない名前は ACT005 として報告する

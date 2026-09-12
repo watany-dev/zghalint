@@ -1,0 +1,17 @@
+# zghalint:forbid SEC002
+name: boolean output
+on:
+  issues:
+    types: [opened]
+permissions: {}
+concurrency: test
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Boolean functions
+        run: |
+          echo "${{ startsWith(github.event.issue.title, 'fix') }}"
+          echo "${{ endsWith(github.event.issue.title, 'fix') }}"
+          echo "${{ (STARTSWITH(github.event.issue.title, 'fix')) }}"

@@ -13,11 +13,20 @@ each ID means.
 
 ## [Unreleased]
 
+### Fixed
+
+- SEC002 no longer treats a whole boolean-returning builtin call such as
+  `startsWith(...)`, `endsWith(...)`, or `contains(...)` as script injection.
+  String-valued expressions in the same script remain diagnosed and fixed
+  independently (#419).
+
 ### Added
 
 - SYN012 offers an unsafe fix that removes the later conflicting branch, tag,
   or path filter while keeping the earlier one (#412). Guarded flow-mapping
   deletion spans are shared with SYN011; uncertain or anchored ranges are skipped.
+- ACT001 safely inserts `shell: bash` for composite `run:` steps with a missing
+  shell when the insertion position is known (#411).
 
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
@@ -95,6 +104,9 @@ rule IDs may still be renumbered before 1.0.
   Once the network is unreachable, the REST fallback is skipped.
 
 ### Fixed
+
+- DEP003 accepts scoped local action paths such as `./tools/@scope/tool` and
+  `$/tools/@scope/tool`, while still rejecting `tool@v1` ref suffixes (#425).
 
 - A `steps:` holding a mapping instead of a sequence no longer aborts the
   workflow parse and silences every diagnostic in the file. It now reports

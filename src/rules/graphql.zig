@@ -4,6 +4,7 @@
 //! done inline here via the `... on Tag { target { oid } }` fragment.
 
 const std = @import("std");
+const rest_fallback = @import("rest_fallback.zig");
 const http_client = @import("http_client.zig");
 const json_util = @import("json_util.zig");
 
@@ -15,7 +16,7 @@ pub const GraphQlError = error{
     RateLimited,
     OutOfMemory,
     NoToken,
-    /// Passed through from `http_client.fetch`: the transport failed and
+    /// Passed through from `http_client.fetchBounded`: the transport failed and
     /// every later request will too, so callers skip their REST fallback.
     NetworkUnreachable,
 };
@@ -30,11 +31,9 @@ pub const RepoInput = struct {
     needs_impostor: bool = false,
 };
 
-pub const ShaTagResolution = enum { has_tag, no_tag, unknown };
-
 pub const ShaTagResult = struct {
     sha: []const u8,
-    resolution: ShaTagResolution,
+    resolution: rest_fallback.TagResolution,
 };
 
 pub const NamedRefResult = struct {
@@ -160,16 +159,15 @@ pub fn batchQuery(
     const query = buildQuery(allocator, repos) catch return error.OutOfMemory;
     defer allocator.free(query);
 
-    const body = encodeRequestBody(allocator, query) catch return error.OutOfMemory;
+    const body = std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{}) catch return error.OutOfMemory;
     defer allocator.free(body);
 
     var body_sink = http_client.BoundedBody.init(allocator, http_client.max_response_bytes);
     defer body_sink.deinit();
 
-    var headers_buf: [3]std.http.Header = undefined;
-    var header_count = http_client.writeStandardHeaders(&headers_buf);
-    headers_buf[header_count] = .{ .name = "Content-Type", .value = "application/json" };
-    header_count += 1;
+    const headers = http_client.standard_headers ++ [_]std.http.Header{
+        .{ .name = "Content-Type", .value = "application/json" },
+    };
     var auth_buf: [1]std.http.Header = undefined;
 
     const result = http_client.fetchBounded(.{
@@ -177,7 +175,7 @@ pub fn batchQuery(
         .method = .POST,
         .payload = body,
         .headers = .{ .user_agent = .{ .override = http_client.user_agent } },
-        .extra_headers = headers_buf[0..header_count],
+        .extra_headers = &headers,
         .privileged_headers = http_client.authHeaders(&auth_buf, auth_value),
     }, &body_sink) catch |err| switch (err) {
         error.NetworkUnreachable => return error.NetworkUnreachable,
@@ -194,10 +192,6 @@ pub fn batchQuery(
         error.RateLimited => error.RateLimited,
         else => error.ParseFailed,
     };
-}
-
-fn encodeRequestBody(allocator: Allocator, query: []const u8) ![]const u8 {
-    return std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{});
 }
 
 fn parseResponse(
@@ -312,7 +306,7 @@ fn parseRepoObject(
                     break;
                 }
             }
-            const resolution: ShaTagResolution = if (found) .has_tag else if (!result.tag_oids_complete) .unknown else .no_tag;
+            const resolution: rest_fallback.TagResolution = if (found) .has_tag else if (!result.tag_oids_complete) .unknown else .no_tag;
             resolutions[j] = .{ .sha = sha, .resolution = resolution };
         }
         result.sha_results = resolutions;
@@ -473,8 +467,8 @@ test "parseResponse: sha match resolves to has_tag" {
     defer arena.deinit();
 
     const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
-    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[1].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, results[0].sha_results[1].resolution);
 }
 
 test "parseResponse: annotated tag inner oid matched" {
@@ -487,7 +481,7 @@ test "parseResponse: annotated tag inner oid matched" {
     defer arena.deinit();
 
     const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, results[0].sha_results[0].resolution);
 }
 
 test "parseResponse: missing repo reported as missing=true" {
@@ -555,8 +549,8 @@ test "parseResponse: pageInfo.hasNextPage=true marks non-match unknown even unde
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
-    try testing.expectEqual(ShaTagResolution.unknown, results[0].sha_results[1].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.unknown, results[0].sha_results[1].resolution);
     try testing.expect(!results[0].tag_oids_complete);
 }
 
@@ -569,8 +563,8 @@ test "parseResponse: pageInfo.hasNextPage=false keeps no_tag for non-match" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
-    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[1].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, results[0].sha_results[1].resolution);
     try testing.expect(results[0].tag_oids_complete);
 }
 
@@ -590,7 +584,7 @@ test "parseResponse: 100 tag nodes without match yields unknown (legacy heuristi
     defer arena.deinit();
 
     const results = try parseResponse(arena.allocator(), buf.items, &repos);
-    try testing.expectEqual(ShaTagResolution.unknown, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.unknown, results[0].sha_results[0].resolution);
 }
 
 test "parseResponse: non-bool isArchived leaves archived = null" {
@@ -613,9 +607,9 @@ test "parseResponse: malformed root JSON returns ParseFailed" {
     try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
 }
 
-test "encodeRequestBody escapes quotes, backslashes, and newlines" {
+test "GraphQL request body escapes quotes, backslashes, and newlines" {
     const q = "query { a \"b\" \\c\nd }";
-    const body = try encodeRequestBody(testing.allocator, q);
+    const body = try std.json.Stringify.valueAlloc(testing.allocator, .{ .query = q }, .{});
     defer testing.allocator.free(body);
     try testing.expect(std.mem.startsWith(u8, body, "{\"query\":\""));
     try testing.expect(std.mem.endsWith(u8, body, "\"}"));
@@ -677,8 +671,8 @@ test "parseResponse: sha_refs but no tagNodes -> no_tag for every sha" {
     defer arena.deinit();
     const results = try parseResponse(arena.allocator(), body, &repos);
     try testing.expectEqual(@as(usize, 2), results[0].sha_results.len);
-    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[0].resolution);
-    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[1].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, results[0].sha_results[1].resolution);
 }
 
 test "parseResponse: tagNodes non-object is tolerated" {
@@ -688,7 +682,7 @@ test "parseResponse: tagNodes non-object is tolerated" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, results[0].sha_results[0].resolution);
 }
 
 test "parseResponse: tagNodes.nodes is non-array is tolerated" {
@@ -698,7 +692,7 @@ test "parseResponse: tagNodes.nodes is non-array is tolerated" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expectEqual(ShaTagResolution.no_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, results[0].sha_results[0].resolution);
 }
 
 test "parseResponse: tag node malformed entries are skipped" {
@@ -717,7 +711,7 @@ test "parseResponse: tag node malformed entries are skipped" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const results = try parseResponse(arena.allocator(), body, &repos);
-    try testing.expectEqual(ShaTagResolution.has_tag, results[0].sha_results[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, results[0].sha_results[0].resolution);
 }
 
 test "parseResponse: named ref alias with non-object value reads as false" {
