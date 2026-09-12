@@ -429,10 +429,7 @@ fn reportUnknownStepRef(ref: workflow_types.StepRef, keyword: []const u8, ids: [
 
     const alloc = list.fixAllocator();
     const nearest = if (ref.id.len == 0) null else util.didYouMean(ref.id, ids);
-    const suffix = if (nearest) |near|
-        std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{near}) catch ""
-    else
-        "";
+    const suffix = util.suggestionSuffix(alloc, nearest);
     const message = std.fmt.allocPrint(
         alloc,
         "\"{s}\" in \"{s}\" is not a step id in this job{s}",
@@ -731,12 +728,8 @@ fn checkMatrixExclude(
             if (std.mem.find(u8, key, "${{") != null) continue;
 
             const axis = findMatrixAxis(matrix, key) orelse {
-                var suffix_buf: [64]u8 = undefined;
                 const suggestion = util.didYouMean(key, axis_names);
-                const suffix = if (suggestion) |s|
-                    std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-                else
-                    "";
+                const suffix = util.suggestionSuffix(alloc, suggestion);
 
                 list.append(.{
                     .rule_id = "SYN019",
@@ -872,12 +865,8 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
         if (std.mem.find(u8, event.name, "${{") != null) continue;
         if (workflow_events.isKnown(event.name)) continue;
 
-        var suffix_buf: [64]u8 = undefined;
         const suggestion = util.didYouMean(event.name, &workflow_events.trigger_names);
-        const suffix = if (suggestion) |s|
-            std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-        else
-            "";
+        const suffix = util.suggestionSuffix(alloc, suggestion);
 
         list.append(.{
             .rule_id = "SYN009",
@@ -948,12 +937,8 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
             }
             if (found) continue;
 
-            var suffix_buf: [64]u8 = undefined;
             const suggestion = util.didYouMean(value, known);
-            const suffix = if (suggestion) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.suggestionSuffix(alloc, suggestion);
             const value_span: ?Span = if (i < event.activity_types.spans.len)
                 event.activity_types.spans[i]
             else
@@ -1035,12 +1020,8 @@ fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
                 continue;
             }
 
-            var suffix_buf: [64]u8 = undefined;
             const suggestion = util.didYouMean(key.name, candidates);
-            const suffix = if (suggestion) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.suggestionSuffix(alloc, suggestion);
             // "filter" reads wrong for a key that is not one: `workflows` under
             // `workflow_run`, or `inputs` under `workflow_call`.
             const noun = if (suggestion) |s|
@@ -1222,12 +1203,8 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
             if (std.mem.find(u8, tz, "${{") != null) continue;
             if (timezones.isKnown(tz)) continue;
 
-            var suffix_buf: [96]u8 = undefined;
             const suggestion = util.didYouMean(tz, &timezones.timezone_names);
-            const suffix = if (suggestion) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.suggestionSuffix(alloc, suggestion);
 
             list.append(.{
                 .rule_id = "SYN016",
@@ -1253,12 +1230,8 @@ fn reportInvalidCacheMode(
     value: []const u8,
     span: Span,
 ) void {
-    var suffix_buf: [64]u8 = undefined;
     const suggestion = util.didYouMean(value, &workflow_types.cache_mode_values);
-    const suffix = if (suggestion) |s|
-        std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-    else
-        "";
+    const suffix = util.suggestionSuffix(list.fixAllocator(), suggestion);
 
     list.append(.{
         .rule_id = "SYN023",

@@ -216,10 +216,7 @@ fn checkUnknownKeys(
 
         const alloc = list.fixAllocator();
         const suggestion = util.didYouMean(key, allowed);
-        const suffix = if (suggestion) |s|
-            std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
-        else
-            "";
+        const suffix = util.suggestionSuffix(alloc, suggestion);
         const message = std.fmt.allocPrint(
             alloc,
             "unknown key \"{s}\" in {s}{s}",
@@ -247,10 +244,7 @@ fn classifyUsing(using: []const u8) ?Runtime {
 fn reportUnknownUsing(list: *DiagnosticList, using: []const u8, span: Span) void {
     const alloc = list.fixAllocator();
     const suggestion = util.didYouMean(using, &supported_using);
-    const suffix = if (suggestion) |s|
-        std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
-    else
-        "";
+    const suffix = util.suggestionSuffix(alloc, suggestion);
     const message = std.fmt.allocPrint(
         alloc,
         "invalid value \"{s}\" for \"using\". expected one of " ++ using_expected ++ "{s}",
