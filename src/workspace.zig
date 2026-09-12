@@ -24,6 +24,9 @@ pub const Context = struct {
     bun_lockfile_present: bool = false,
     ambiguous_node_lockfiles: []const []const u8 = &.{},
     ambiguous_python_lockfiles: []const []const u8 = &.{},
+    /// `package.json` names npm via `packageManager` or `devEngines.packageManager`.
+    /// That is the setup-node auto-cache trigger; lockfiles alone do not count.
+    package_json_npm: bool = false,
 };
 
 /// Mirrors the `engine.network_deadline_ns` pattern: a module-scope variable
@@ -152,6 +155,7 @@ pub fn detectFromRoot(allocator: std.mem.Allocator, root: []const u8) !Context {
     var ctx = Context{
         .go_sum_present = present.go_sum,
         .bun_lockfile_present = present.bun,
+        .package_json_npm = packageJsonDeclaresNpm(&dir, allocator),
     };
 
     const node_unique = node_manager_set.count();
@@ -216,6 +220,54 @@ fn matches(dir: *std.Io.Dir, entry: std.Io.Dir.Entry, candidate: []const u8) boo
     // on Windows a dangling reparse point still satisfies.
     _ = dir.statFile(runtime.io(), entry.name, .{}) catch return false;
     return true;
+}
+
+fn packageJsonDeclaresNpm(dir: *std.Io.Dir, allocator: std.mem.Allocator) bool {
+    const text = dir.readFileAlloc(runtime.io(), "package.json", allocator, .limited(1024 * 1024)) catch return false;
+    defer allocator.free(text);
+    return packageJsonTextDeclaresNpm(allocator, text);
+}
+
+fn packageJsonTextDeclaresNpm(allocator: std.mem.Allocator, text: []const u8) bool {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, text, .{}) catch return false;
+    defer parsed.deinit();
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return false,
+    };
+    if (valueNamesNpm(obj.get("packageManager"))) return true;
+    const dev_engines = switch (obj.get("devEngines") orelse return false) {
+        .object => |o| o,
+        else => return false,
+    };
+    return valueNamesNpm(dev_engines.get("packageManager"));
+}
+
+fn valueNamesNpm(value: ?std.json.Value) bool {
+    const v = value orelse return false;
+    switch (v) {
+        .string => |s| return nameIsNpm(s),
+        .object => |o| {
+            const name = switch (o.get("name") orelse return false) {
+                .string => |s| s,
+                else => return false,
+            };
+            return nameIsNpm(name);
+        },
+        .array => |a| {
+            for (a.items) |item| {
+                if (valueNamesNpm(item)) return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn nameIsNpm(raw: []const u8) bool {
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    const name = if (std.mem.findScalar(u8, trimmed, '@')) |i| trimmed[0..i] else trimmed;
+    return std.ascii.eqlIgnoreCase(name, "npm");
 }
 
 fn dupeLockfiles(allocator: std.mem.Allocator, names: []const []const u8) ![]const []const u8 {
@@ -424,6 +476,64 @@ test "detectFromRoot returns empty Context for missing dir" {
     const ctx = try detectFromRoot(testing.allocator, "/nonexistent/zghalint/probe");
     try testing.expect(ctx.node_cache == null);
     try testing.expect(!ctx.go_sum_present);
+    try testing.expect(!ctx.package_json_npm);
+}
+
+test "detectFromRoot reads packageManager npm from package.json" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{
+        .sub_path = "package.json",
+        .data = "{\"packageManager\":\"npm@10.9.2\"}",
+    });
+
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.package_json_npm);
+}
+
+test "detectFromRoot reads devEngines.packageManager npm" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{
+        .sub_path = "package.json",
+        .data = "{\"devEngines\":{\"packageManager\":{\"name\":\"npm\"}}}",
+    });
+
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.package_json_npm);
+}
+
+test "detectFromRoot does not treat yarn packageManager as npm auto-cache" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{
+        .sub_path = "package.json",
+        .data = "{\"packageManager\":\"yarn@4.0.0\"}",
+    });
+
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(!ctx.package_json_npm);
+}
+
+test "detectFromRoot ignores invalid package.json" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "package.json", .data = "{not json" });
+
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(!ctx.package_json_npm);
 }
 
 test "findWorkspaceRoot returns dir containing .git" {

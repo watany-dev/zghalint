@@ -92,9 +92,12 @@ SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式
 キャッシュ入力を持つ setup 系 action を見る。入力を書かなくても既定で
 キャッシュする `astral-sh/setup-uv` (`enable-cache`) と `mlugg/setup-zig`
 (`use-cache`) は、入力の省略そのものを指摘する。入力が書かれている場合は
-値を opt-out として読み、`false` のときだけ沈黙する
-(`actions/setup-node` などの `cache:` は指定して初めて有効になるので、
-省略は指摘しない)。
+値を opt-out として読み、`false` のときだけ沈黙する。
+`actions/setup-node` は `cache:` を指定したとき、または action が
+`package-manager-cache` を宣言していて `package.json` の
+`packageManager` / `devEngines.packageManager` が npm のとき、キャッシュが
+有効とみなす。major だけ、または解決できない SHA だけでは有効と断定しない。
+`package-manager-cache: false` は自動キャッシュを切る。
 
 `cache-mode` は restore / save の 2 能力として読む（PERF001 と同じ resolver）。
 `none` はどちらもできないので SEC016 は沈黙する。`read` は restore できるので
@@ -400,7 +403,7 @@ Detect CI performance issues and resource waste.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただし `cache-mode: none` のジョブ、およびリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は指摘しない（後者は SEC016 と逆向きの助言になるため） |
+| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただし `cache-mode: none` のジョブ、setup-node が `package.json` の npm 指定から自動キャッシュする場合、およびリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は指摘しない（後者は SEC016 と逆向きの助言になるため） |
 | PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job (`--fix-unsafe` で 2 つ目のステップを削除) |
 | PERF003 | fail-fast-disabled | warning | Strategy has `fail-fast` disabled, wasting CI resources on failures |
 

@@ -93,6 +93,8 @@ Two checks run on all fixtures, with no directive needed:
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `ga1-accepted-syntax.yml` | #428: `cache-mode` / `vulnerability-alerts: read\|none` / `job.workflow_*` stay quiet |
 | `ga1-rejected-syntax.yml` | #428: unknown `cache-mode`, `vulnerability-alerts: write`, `github.workflow_repository` |
+| `ga8-setup-node-without-cache.yml` | #435: setup-node without `cache:` and without package.json npm still PERF001 |
+| `ga8-setup-node-release-no-pkg.yml` | #435: the same in a release workflow is not SEC016 |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `runner001-macos-13.yml` | #430: retired `macos-13` is RUNNER001, not a current image |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |
