@@ -1173,19 +1173,6 @@ def as_json(results: list[CaseResult]) -> dict:
     }
 
 
-def render_kind_table() -> str:
-    """The `DEFAULT_KIND_MAP` as Markdown, so the docs never restate it."""
-    out = ["| kind | zghalint | actionlint | zizmor |", "|---|---|---|---|"]
-
-    def cell(ids: list[str] | None) -> str:
-        return "–" if ids is None else ", ".join(f"`{i}`" for i in ids)
-
-    for kind, mapping in DEFAULT_KIND_MAP.items():
-        row = (cell(mapping[tool]) for tool in ("zghalint", "actionlint", "zizmor"))
-        out.append(f"| `{kind}` | " + " | ".join(row) + " |")
-    return "\n".join(out)
-
-
 # ============================================================
 # Entry point
 # ============================================================
@@ -1206,16 +1193,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("-o", "--out", type=Path, help="write the Markdown matrix here")
     parser.add_argument("--json", type=Path, help="also write the raw scores as JSON")
-    parser.add_argument(
-        "--fail-on-fp",
-        action="store_true",
-        help="exit non-zero when zghalint violates a `bench:forbid`",
-    )
-    parser.add_argument(
-        "--kinds",
-        action="store_true",
-        help="print the neutral kind -> per-tool ID table and exit",
-    )
     perf = parser.add_argument_group("performance (--perf)")
     perf.add_argument(
         "--perf",
@@ -1239,10 +1216,6 @@ def main(argv: list[str] | None = None) -> int:
     # Every tool runs with cwd set to a staged copy, so a relative --zghalint
     # (`./zig-out/bin/zghalint`) would not resolve from there.
     args.zghalint = args.zghalint.resolve()
-
-    if args.kinds:
-        print(render_kind_table())
-        return 0
 
     if args.perf and args.fix:
         print("use --perf or --fix, not both", file=sys.stderr)
@@ -1294,10 +1267,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         args.json.write_text(json.dumps(as_json(results), indent=2, ensure_ascii=False) + "\n")
 
-    if args.fail_on_fp and any(
-        tool == "zghalint" for r in results for tool, _, _ in r.false_positives
-    ):
-        return 1
     return 0
 
 

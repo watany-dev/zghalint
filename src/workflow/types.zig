@@ -958,3 +958,10 @@ test "vulnerability-alerts rejects write" {
     try std.testing.expect(isAllowedPermissionLevel("vulnerability-alerts", .none));
     try std.testing.expect(isAllowedPermissionLevel("contents", .write));
 }
+
+test "hasEmptySection matches by name" {
+    const sections = [_]EmptySection{.{ .name = "with", .span = yaml_types.Span.point(1, 1, 0) }};
+    try std.testing.expect(hasEmptySection(&sections, "with"));
+    try std.testing.expect(!hasEmptySection(&sections, "env"));
+    try std.testing.expect(!hasEmptySection(&.{}, "with"));
+}

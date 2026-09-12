@@ -347,25 +347,11 @@ fn eqlId(a: []const u8, b: []const u8) bool {
 
 /// Only a plain identifier names something to resolve; a globbed or computed
 /// segment (`jobs.*`, `needs[matrix.job]`) has no literal name.
-fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
-    const seg = segment orelse return null;
-    return switch (seg) {
-        .ident => |name| name,
-        .index_string => |name| name,
-        .star => null,
-    };
-}
-
 fn findJob(wf: *const Workflow, job_id: []const u8) ?*const Job {
     for (wf.jobs) |*job| {
         if (eqlId(job.id, job_id)) return job;
     }
     return null;
-}
-
-fn suggestionSuffix(alloc: std.mem.Allocator, name: []const u8, candidates: []const []const u8) []const u8 {
-    const suggestion = util.didYouMean(name, candidates) orelse return "";
-    return std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{suggestion}) catch "";
 }
 
 /// RW005, definition side: `on.workflow_call.outputs.<name>.value` may only
@@ -378,18 +364,18 @@ const OutputValueResolver = struct {
 
     pub fn checkPath(self: OutputValueResolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        const root = identSegment(iter.next()) orelse return;
+        const root = iter.nextName() orelse return;
         // `jobs` is the only context a `value:` can read; EXPR015 reports the
         // others.
         if (!eqlId(root, "jobs")) return;
 
-        const job_id = identSegment(iter.next()) orelse return;
+        const job_id = iter.nextName() orelse return;
         const job = findJob(self.wf, job_id) orelse {
             self.reportUnknownJob(job_id, span);
             return;
         };
-        if (!eqlId(identSegment(iter.next()) orelse return, "outputs")) return;
-        const output = identSegment(iter.next()) orelse return;
+        if (!eqlId(iter.nextName() orelse return, "outputs")) return;
+        const output = iter.nextName() orelse return;
 
         // A job that itself calls a workflow declares its outputs in that
         // file, which this workflow's parse tree does not carry.
@@ -405,7 +391,7 @@ const OutputValueResolver = struct {
         const message = std.fmt.allocPrint(
             alloc,
             "\"{s}\" is not a job in this workflow{s}",
-            .{ job_id, suggestionSuffix(alloc, job_id, names) },
+            .{ job_id, util.didYouMeanSuffix(alloc, job_id, names) },
         ) catch return;
 
         self.list.append(.{
@@ -422,7 +408,7 @@ const OutputValueResolver = struct {
         const message = std.fmt.allocPrint(
             alloc,
             "output \"{s}\" is not defined in job \"{s}\"{s}",
-            .{ output, job.id, suggestionSuffix(alloc, output, declaredNames(alloc, job.outputs)) },
+            .{ output, job.id, util.didYouMeanSuffix(alloc, output, declaredNames(alloc, job.outputs)) },
         ) catch return;
 
         self.list.append(.{
@@ -446,18 +432,18 @@ const NeedsOutputResolver = struct {
 
     pub fn checkPath(self: NeedsOutputResolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        const root = identSegment(iter.next()) orelse return;
+        const root = iter.nextName() orelse return;
         if (!eqlId(root, "needs")) return;
 
-        const job_id = identSegment(iter.next()) orelse return;
+        const job_id = iter.nextName() orelse return;
         // A job the current one does not need is EXPR012's finding; reporting
         // its outputs too would double up on one mistake.
         if (!self.isNeeded(job_id)) return;
         const dep = findJob(self.wf, job_id) orelse return;
         const uses = dep.uses orelse return;
 
-        if (!eqlId(identSegment(iter.next()) orelse return, "outputs")) return;
-        const output = identSegment(iter.next()) orelse return;
+        if (!eqlId(iter.nextName() orelse return, "outputs")) return;
+        const output = iter.nextName() orelse return;
 
         var arena = std.heap.ArenaAllocator.init(self.list.allocator);
         defer arena.deinit();
@@ -485,7 +471,7 @@ const NeedsOutputResolver = struct {
         const message = std.fmt.allocPrint(
             alloc,
             "output \"{s}\" is not defined in \"{s}\" called by job \"{s}\"{s}",
-            .{ output, dep.uses.?, dep.id, suggestionSuffix(alloc, output, declaredNames(alloc, declared)) },
+            .{ output, dep.uses.?, dep.id, util.didYouMeanSuffix(alloc, output, declaredNames(alloc, declared)) },
         ) catch return;
 
         self.list.append(.{

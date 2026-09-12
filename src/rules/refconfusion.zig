@@ -5,6 +5,7 @@ const engine = @import("engine.zig");
 const rest_fallback = @import("rest_fallback.zig");
 const net_status = @import("net_status.zig");
 const sha_pin = @import("sha_pin.zig");
+const cache_mod = @import("ref_cache.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -19,29 +20,20 @@ const isValidGitRef = engine.isValidGitRef;
 /// alongside the REST resolver to avoid a circular import.
 pub const RefStatus = rest_fallback.RefStatus;
 
-var ref_cache: ?std.StringHashMap(RefStatus) = null;
-var ref_arena: ?std.heap.ArenaAllocator = null;
+var cache: cache_mod.RefCache(RefStatus) = .{};
 
 pub fn initRefConfusion(backing_allocator: Allocator, offline: bool) void {
-    if (offline) return;
-    ref_arena = std.heap.ArenaAllocator.init(backing_allocator);
-    if (ref_arena) |*arena| {
-        ref_cache = std.StringHashMap(RefStatus).init(arena.allocator());
-    }
+    cache.init(backing_allocator, offline);
     rest_fallback.resetRateLimit();
 }
 
 pub fn deinitRefConfusion() void {
-    if (ref_arena) |*arena| {
-        arena.deinit();
-        ref_arena = null;
-    }
-    ref_cache = null;
+    cache.deinit();
     rest_fallback.resetRateLimit();
 }
 
 pub fn isActive() bool {
-    return ref_cache != null;
+    return cache.isActive();
 }
 
 pub fn setCachedRefResult(
@@ -50,10 +42,8 @@ pub fn setCachedRefResult(
     ref: []const u8,
     status: RefStatus,
 ) void {
-    if (ref_cache == null) return;
-    const alloc = if (ref_arena) |*arena| arena.allocator() else return;
-    const key = std.fmt.allocPrint(alloc, "{s}/{s}@{s}", .{ owner, repo, ref }) catch return;
-    ref_cache.?.put(key, status) catch return;
+    const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, ref }) orelse return;
+    cache.put(key, status);
 }
 
 pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
@@ -64,14 +54,12 @@ pub fn checkRefConfusion(step: *const Step, list: *DiagnosticList) void {
     const ref = action_ref.ref orelse return;
     if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo) or !isValidGitRef(ref)) return;
 
-    const allocator = if (ref_arena) |*arena| arena.allocator() else return;
-    var cache = ref_cache orelse return;
-
-    const key = std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ owner, repo, ref }) catch return;
+    const allocator = cache.allocator() orelse return;
+    const key = cache.makeKey("{s}/{s}@{s}", .{ owner, repo, ref }) orelse return;
 
     const status = cache.get(key) orelse blk: {
         const fetched = rest_fallback.queryRefStatus(allocator, owner, repo, ref);
-        cache.put(key, fetched) catch return;
+        cache.put(key, fetched);
         break :blk fetched;
     };
 
@@ -121,22 +109,15 @@ const RefCacheEntry = struct { key: []const u8, status: RefStatus };
 /// other; the diagnostic's message lives in the returned list's own arena, so
 /// the cache arena can go away here.
 fn runWithRefCache(entries: ?[]const RefCacheEntry, uses_ref: ?[]const u8) DiagnosticList {
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
+    const prev = cache;
+    defer cache = prev;
 
-    ref_arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer ref_arena.?.deinit();
+    cache = .{};
+    defer if (cache.isActive()) cache.deinit();
 
     if (entries) |es| {
-        var cache = std.StringHashMap(RefStatus).init(ref_arena.?.allocator());
-        for (es) |e| cache.put(e.key, e.status) catch unreachable;
-        ref_cache = cache;
-    } else {
-        ref_cache = null;
+        cache.init(testing.allocator, false);
+        for (es) |e| cache.put(e.key, e.status);
     }
 
     const step = Step{
@@ -243,18 +224,13 @@ const sc006_source =
 /// `lintAndFix` needs a real parsed step (the rewrite addresses source bytes),
 /// which `runWithRefCache`'s synthetic `Step` cannot provide.
 fn fixWithAmbiguousRef(include_unsafe: bool) !test_support.FixOutcome {
-    const prev_cache = ref_cache;
-    const prev_arena = ref_arena;
-    defer {
-        ref_cache = prev_cache;
-        ref_arena = prev_arena;
-    }
+    const prev = cache;
+    defer cache = prev;
 
-    ref_arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer ref_arena.?.deinit();
-    var cache = std.StringHashMap(RefStatus).init(ref_arena.?.allocator());
-    try cache.put("owner/repo@v4", .ambiguous);
-    ref_cache = cache;
+    cache = .{};
+    defer if (cache.isActive()) cache.deinit();
+    cache.init(testing.allocator, false);
+    cache.put("owner/repo@v4", .ambiguous);
 
     return test_support.lintAndFix(testing.allocator, sc006_source, .{ .step = &checkRefConfusion }, include_unsafe);
 }

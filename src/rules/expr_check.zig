@@ -35,6 +35,22 @@ pub const Segment = union(enum) {
     ident: []const u8,
     star,
     index_string: []const u8,
+
+    pub fn name(self: Segment) ?[]const u8 {
+        return switch (self) {
+            .ident, .index_string => |n| n,
+            .star => null,
+        };
+    }
+
+    /// Bracket keys (`needs['x']`) stay unresolved so EXPR012 does not start
+    /// diagnosing computed or quoted segments.
+    pub fn plainIdent(self: Segment) ?[]const u8 {
+        return switch (self) {
+            .ident => |n| n,
+            .star, .index_string => null,
+        };
+    }
 };
 
 pub const SegmentIter = struct {
@@ -67,6 +83,10 @@ pub const SegmentIter = struct {
         if (text.len == 0) return null;
         if (std.mem.eql(u8, text, "*")) return Segment.star;
         return Segment{ .ident = text };
+    }
+
+    pub fn nextName(self: *SegmentIter) ?[]const u8 {
+        return (self.next() orelse return null).name();
     }
 };
 
@@ -535,4 +555,24 @@ test "segments: dotted, star and bracket forms" {
     try testing.expectEqual(Segment.star, iter.next().?);
     try testing.expectEqualStrings("c", iter.next().?.index_string);
     try testing.expectEqual(@as(?Segment, null), iter.next());
+}
+
+test "SegmentIter.nextName skips star and unwraps ident" {
+    var iter = SegmentIter{ .path = "steps.setup.outputs" };
+    try testing.expectEqualStrings("steps", iter.nextName().?);
+    try testing.expectEqualStrings("setup", iter.nextName().?);
+    try testing.expectEqualStrings("outputs", iter.nextName().?);
+    try testing.expectEqual(@as(?[]const u8, null), iter.nextName());
+
+    var starred = SegmentIter{ .path = "steps.*" };
+    try testing.expectEqualStrings("steps", starred.nextName().?);
+    try testing.expectEqual(@as(?[]const u8, null), starred.nextName());
+}
+
+test "Segment.name accepts ident and index, not star" {
+    try testing.expectEqualStrings("a", (Segment{ .ident = "a" }).name().?);
+    try testing.expectEqualStrings("b", (Segment{ .index_string = "b" }).name().?);
+    try testing.expectEqual(@as(?[]const u8, null), (@as(Segment, .star)).name());
+    try testing.expectEqualStrings("a", (Segment{ .ident = "a" }).plainIdent().?);
+    try testing.expectEqual(@as(?[]const u8, null), (Segment{ .index_string = "b" }).plainIdent());
 }

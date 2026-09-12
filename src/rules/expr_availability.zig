@@ -294,37 +294,19 @@ pub const rules = [_]Rule{
 
 const testing = std.testing;
 
-fn runOnSource(source: []const u8, list: *DiagnosticList) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
-    checkContexts(&wf, list);
-    checkFunctions(&wf, list);
+fn checkAvailability(wf: *const Workflow, list: *DiagnosticList) void {
+    checkContexts(wf, list);
+    checkFunctions(wf, list);
 }
 
-fn expectMessage(source: []const u8, rule_id: []const u8, needle: []const u8) !void {
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-    try runOnSource(source, &list);
+const availability_check: test_support.Check = .{ .workflow = &checkAvailability };
 
-    const diag = test_support.findDiagnostic(&list, rule_id) orelse {
-        std.debug.print("no {s} diagnostic for source:\n{s}\n", .{ rule_id, source });
-        return error.MissingDiagnostic;
-    };
-    if (std.mem.find(u8, diag.message, needle) == null) {
-        std.debug.print("message \"{s}\" does not contain \"{s}\"\n", .{ diag.message, needle });
-        return error.UnexpectedMessage;
-    }
+fn expectMessage(source: []const u8, rule_id: []const u8, needle: []const u8) !void {
+    try test_support.expectMessage(source, availability_check, rule_id, needle);
 }
 
 fn expectNoDiagnostics(source: []const u8) !void {
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-    try runOnSource(source, &list);
-    if (list.len() != 0) {
-        std.debug.print("unexpected diagnostic: {s}\n", .{list.get(0).message});
-        return error.UnexpectedDiagnostic;
-    }
+    try test_support.expectNoDiagnostics(source, availability_check);
 }
 
 test "EXPR015: secrets is not available in runs-on" {

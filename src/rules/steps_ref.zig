@@ -175,22 +175,12 @@ fn appendUnknownProperty(res: Resolver, path: []const u8, id: []const u8, prop: 
 
 /// `steps.*` and `steps[expr]` carry no resolvable id, so they are skipped
 /// rather than guessed at.
-fn segmentName(seg: expr_check.Segment) ?[]const u8 {
-    return switch (seg) {
-        .ident => |name| name,
-        .index_string => |name| name,
-        .star => null,
-    };
-}
-
 fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     var iter = expr_check.SegmentIter{ .path = path };
-    const root = iter.next() orelse return;
-    const root_name = segmentName(root) orelse return;
+    const root_name = iter.nextName() orelse return;
     if (!std.ascii.eqlIgnoreCase(root_name, "steps")) return;
 
-    const id_seg = iter.next() orelse return;
-    const id = segmentName(id_seg) orelse return;
+    const id = iter.nextName() orelse return;
 
     const target = res.find(id) orelse {
         appendUnknownStep(res, path, id, span);
@@ -211,8 +201,7 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
         return;
     }
 
-    const prop_seg = iter.next() orelse return;
-    const prop = segmentName(prop_seg) orelse return;
+    const prop = iter.nextName() orelse return;
     for (step_properties) |valid| {
         if (std.ascii.eqlIgnoreCase(prop, valid)) return;
     }
@@ -267,36 +256,18 @@ pub const rules = [_]Rule{step_reference_rule};
 
 const testing = std.testing;
 
+const job_check: test_support.Check = .{ .job = &checkJob };
+
 fn runOnSource(source: []const u8, list: *DiagnosticList) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
-    for (wf.jobs) |*job| checkJob(job, list);
+    try test_support.lintSource(source, job_check, list);
 }
 
 fn expectMessage(source: []const u8, needle: []const u8) !void {
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-    try runOnSource(source, &list);
-
-    const diag = test_support.findDiagnostic(&list, "EXPR010") orelse {
-        std.debug.print("no EXPR010 diagnostic for source:\n{s}\n", .{source});
-        return error.MissingDiagnostic;
-    };
-    if (std.mem.find(u8, diag.message, needle) == null) {
-        std.debug.print("message \"{s}\" does not contain \"{s}\"\n", .{ diag.message, needle });
-        return error.UnexpectedMessage;
-    }
+    try test_support.expectMessage(source, job_check, "EXPR010", needle);
 }
 
 fn expectNoDiagnostics(source: []const u8) !void {
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-    try runOnSource(source, &list);
-    if (list.len() != 0) {
-        std.debug.print("unexpected diagnostic: {s}\n", .{list.get(0).message});
-        return error.UnexpectedDiagnostic;
-    }
+    try test_support.expectNoDiagnostics(source, job_check);
 }
 
 test "EXPR010: a misspelled step id is reported with a suggestion" {

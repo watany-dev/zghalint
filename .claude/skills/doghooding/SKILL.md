@@ -27,7 +27,7 @@ which actionlint zizmor        # 無ければ ci.yml の lint ジョブと同じ
 ```
 
 - 外部ツールの版は `.github/workflows/ci.yml` の `lint` ジョブに合わせる
-  (actionlint は SHA256、zizmor は `.github/lint-requirements.txt`)。
+  (actionlint は SHA256、zizmor は `.github/requirements.txt`)。
   版が違うと差分がツール更新由来か zghalint 由来か切り分けられない。
 - 取得したワークフローは**リポジトリの外**（スクラッチ領域）に置く。上流の
   ライセンスを持つファイルをこのリポジトリに入れない。`bench/corpus/` は

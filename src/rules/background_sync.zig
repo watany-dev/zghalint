@@ -57,14 +57,6 @@ fn collectIds(steps: []const Step, buf: *std.ArrayList([]const u8), alloc: std.m
     }
 }
 
-fn segmentName(seg: expr_check.Segment) ?[]const u8 {
-    return switch (seg) {
-        .ident => |name| name,
-        .index_string => |name| name,
-        .star => null,
-    };
-}
-
 const Visitor = struct {
     pending: []const []const u8,
     extra: []const []const u8,
@@ -81,11 +73,11 @@ const Visitor = struct {
 
     pub fn checkPath(self: Visitor, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        const root = segmentName(iter.next() orelse return) orelse return;
+        const root = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "steps")) return;
 
-        const id = segmentName(iter.next() orelse return) orelse return;
-        const prop = segmentName(iter.next() orelse return) orelse return;
+        const id = iter.nextName() orelse return;
+        const prop = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(prop, "outputs")) return;
         if (!self.isUnsynced(id)) return;
 
@@ -212,28 +204,14 @@ pub const rules = [_]Rule{background_output_rule};
 
 const testing = std.testing;
 
+const job_check: test_support.Check = .{ .job = &checkJob };
+
 fn runOnSource(source: []const u8, list: *DiagnosticList) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
-    for (wf.jobs) |*job| checkJob(job, list);
+    try test_support.lintSource(source, job_check, list);
 }
 
 fn expectMessage(source: []const u8, needle: []const u8) !void {
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-    try runOnSource(source, &list);
-
-    const diag = test_support.findDiagnostic(&list, "EXPR019") orelse {
-        std.debug.print("no EXPR019 diagnostic for source:\n{s}\n", .{source});
-        return error.MissingDiagnostic;
-    };
-    try testing.expect(diag.severity == .warning);
-    try testing.expect(diag.fix == null);
-    if (std.mem.find(u8, diag.message, needle) == null) {
-        std.debug.print("message \"{s}\" does not contain \"{s}\"\n", .{ diag.message, needle });
-        return error.UnexpectedMessage;
-    }
+    try test_support.expectMessage(source, job_check, "EXPR019", needle);
 }
 
 fn expectNoExpr019(source: []const u8) !void {
