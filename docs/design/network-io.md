@@ -56,7 +56,7 @@
 - Advisory API は GraphQL スキーマ上で公開されていないため、REST で
   一括取得する既存フローを維持する。
 - GitHub の二次レート制限は HTTP 200 + `errors[].type == "RATE_LIMITED"`
-  で通知される（一次レート制限は 403/429 で返るので `http_client.fetch`
+  で通知される（一次レート制限は 403/429 で返るので `http_client.fetchBounded`
   層で検出可能）。`parseResponse` は body 内の `errors` 配列を走査し、
   `RATE_LIMITED` を見つけたら `error.RateLimited` を返して orchestrator に
   伝搬する。
@@ -118,7 +118,7 @@ pub fn init(allocator: Allocator) void;
 pub fn deinit() void;
 pub fn getAuthHeader(allocator: Allocator) ?[]const u8;
 pub fn writeStandardHeaders(buf: []std.http.Header, auth: ?[]const u8) usize;
-pub fn fetch(opts: std.http.Client.FetchOptions) FetchError!std.http.Client.FetchResult;
+pub fn fetchBounded(opts: std.http.Client.FetchOptions, sink: *BoundedBody) FetchError!std.http.Client.FetchResult;
 
 pub const FetchError = error{
     NotInitialized,
@@ -252,7 +252,7 @@ pub fn isRateLimited() bool;
 
 `queryRefStatus` 内のレート制限フラグ（`rate_limited`）は本モジュールが
 所有する。`refconfusion.{init,deinit}` から `resetRateLimit()` を呼び、
-`http_client.fetch` が 403/429 を返した時点で以降のリクエストを短絡する。
+`http_client.fetchBounded` が 403/429 を返した時点で以降のリクエストを短絡する。
 
 ### 4.5 `prefetch.zig`
 

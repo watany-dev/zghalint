@@ -311,7 +311,7 @@ pub const ArgKind = enum {
 
 /// How `min_args` / `max_args` are interpreted. `case()` is pairs plus a
 /// fallback, so the count must be odd and at least 3.
-pub const ArgCountShape = enum {
+const ArgCountShape = enum {
     range,
     odd_at_least,
     exact,

@@ -141,7 +141,7 @@ pub fn scanStep(visitor: anytype, step: *const Step) void {
 /// `runs-on: ${{ matrix.os }}` is the canonical matrix reference; job-level
 /// `with:` feeds a reusable workflow call and has no per-entry spans, so the
 /// job span anchors it.
-pub fn scanJobFields(visitor: anytype, job: *const Job) void {
+fn scanJobFields(visitor: anytype, job: *const Job) void {
     scanCondition(visitor, job.if_condition, job.if_condition_meta, job.span);
     scanScalarMap(visitor, job.env, job.env_meta, job.span);
     scanScalarMap(visitor, job.with, null, job.span);
