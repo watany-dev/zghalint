@@ -219,7 +219,7 @@ test "latestMajor answers for a major the table has no entry for (#358)" {
     try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v1")));
     try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v9")));
     // Several majors: the newest wins, whichever one is referenced.
-    try testing.expectEqual(@as(?u16, 5), latestMajor(ActionRef.parse("actions/checkout@v2")));
+    try testing.expectEqual(@as(?u16, 7), latestMajor(ActionRef.parse("actions/checkout@v2")));
     // Sub-directory actions are their own entries.
     try testing.expectEqual(@as(?u16, 4), latestMajor(ActionRef.parse("actions/cache/restore@v3")));
 
@@ -510,6 +510,9 @@ test "lookupByMajor and hasInput read the generated table" {
     try testing.expect(hasInput(lookupByMajor("actions", "setup-node", "", 6).?, "package-manager-cache"));
     try testing.expect(hasInput(lookupByMajor("actions", "setup-node", "", 7).?, "package-manager-cache"));
     try testing.expect(lookupByMajor("actions", "setup-node", "", 99) == null);
+    try testing.expect(hasInput(lookupByMajor("actions", "checkout", "", 6).?, "allow-unsafe-pr-checkout"));
+    try testing.expect(hasInput(lookupByMajor("actions", "checkout", "", 7).?, "allow-unsafe-pr-checkout"));
+    try testing.expect(lookupByMajor("actions", "checkout", "", 6).?.using.len > 0);
 }
 
 test "every entry declares a runtime" {

@@ -1,0 +1,17 @@
+# zghalint:expect SEC015 SEC001
+# zghalint:forbid SEC018
+# path: names runner.temp, so a v6 persist still leaks via the artifact.
+name: ga9 v6 runner temp upload
+on: push
+permissions:
+  contents: read
+jobs:
+  leak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: creds
+          path: ${{ runner.temp }}
