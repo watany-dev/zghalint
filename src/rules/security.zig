@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const engine = @import("engine.zig");
 const expressions = @import("expressions.zig");
+const expr_catalog = @import("expr_catalog.zig");
 const spans = @import("spans.zig");
 const fix_builder = @import("../fix/builder.zig");
 const advisory = @import("advisory.zig");
@@ -527,7 +528,7 @@ fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *Diagn
         // One `Fix` per step, on the first diagnostic only: it rewrites every
         // offending expression at once, and `fix/engine.zig` would drop a
         // second fix covering the same bytes anyway (design doc §5).
-        const fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table));
+        const fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table, list.fixAllocator()));
         checkContextsInString(run_body, spans.runAnchor(step), table, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list, fix);
     }
     checkScriptInputInjection(step, table, list);
@@ -535,12 +536,13 @@ fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *Diagn
 
 /// Every untrusted `${{ ... }}` in the step's `run:`, which is exactly the set
 /// the env binding has to cover for the step to come out clean.
-fn taintedRunOccurrences(step: *const Step, table: ContextTable) env_binding.Occurrences {
+fn taintedRunOccurrences(step: *const Step, table: ContextTable, allocator: std.mem.Allocator) env_binding.Occurrences {
     var occs: env_binding.Occurrences = .{ .buf = undefined };
     const run_body = step.run orelse return occs;
     var it: ExprIter = .{ .s = run_body };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), table)) continue;
+        if (returnsBooleanBuiltin(allocator, e.inner)) continue;
         occs.append(.{ .offset = e.match.offset, .len = e.match.len });
     }
     return occs;
@@ -1036,7 +1038,7 @@ fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *Diagno
         .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
         // Binding the untrusted value to `env:` removes the interpolation the
         // write is built from; the write itself stays as the author wrote it.
-        .fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table)),
+        .fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table, list.fixAllocator())),
     }) catch return;
 }
 
@@ -2012,6 +2014,7 @@ fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *Diagn
                 .severity = .warning,
                 .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
                 .span = anchor.whole(),
+                .fix = buildBotConditionFix(cond, anchor, list),
                 .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
             }) catch return;
         }
@@ -2025,8 +2028,57 @@ fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
         .severity = .warning,
         .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
         .span = anchor.at(s, match.offset, match.len),
+        .fix = buildBotConditionFix(s, anchor, list),
         .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
     }) catch return;
+}
+
+fn buildBotConditionFix(cond: []const u8, anchor: Anchor, list: *DiagnosticList) ?Fix {
+    const token = anchor.scalar orelse return null;
+    const quote: []const u8 = switch (anchor.style) {
+        .plain => "",
+        .single_quoted => "'",
+        .double_quoted => "\"",
+        .literal, .folded => return null,
+    };
+    const alloc = list.fixAllocator();
+    // Scalar values retain YAML escapes; parse the expression after unescaping
+    // the surrounding single-quoted YAML scalar.
+    const decoded = if (anchor.style == .single_quoted)
+        std.mem.replaceOwned(u8, alloc, cond, "''", "'") catch return null
+    else
+        cond;
+    var parser = expressions.ExprParser.init(alloc, conditionExpressionSource(decoded));
+    const root = parser.parse() catch return null;
+    if (root.kind != .binary_op or root.children.len != 2) return null;
+    if (!std.mem.eql(u8, root.value, "==") and !std.mem.eql(u8, root.value, "!=")) return null;
+    const actor, const bot = if (root.children[0].kind == .context_access)
+        .{ root.children[0], root.children[1] }
+    else
+        .{ root.children[1], root.children[0] };
+    if (actor.kind != .context_access or bot.kind != .string_literal) return null;
+    if (!std.ascii.eqlIgnoreCase(actor.value, "github.actor") and
+        !std.ascii.eqlIgnoreCase(actor.value, "github.triggering_actor")) return null;
+    if (!std.mem.endsWith(u8, bot.value, "[bot]'")) return null;
+
+    const bot_literal: []const u8 = if (anchor.style == .single_quoted) "''Bot''" else "'Bot'";
+    const wrapped = std.mem.startsWith(u8, std.mem.trim(u8, decoded, " \t\r\n"), "${{");
+    const replacement = std.fmt.allocPrint(alloc, "{s}{s}github.event.sender.type {s} {s}{s}{s}", .{
+        quote, if (wrapped) "${{ " else "", root.value, bot_literal, if (wrapped) " }}" else "", quote,
+    }) catch return null;
+    const expected = std.mem.concat(alloc, u8, &.{ quote, cond, quote }) catch return null;
+    if (token.end_byte < token.start_byte or token.end_byte - token.start_byte != expected.len) return null;
+    const edits = alloc.dupe(Edit, &.{.{
+        .start_byte = token.start_byte,
+        .end_byte = token.end_byte,
+        .replacement = replacement,
+        .expects = expected,
+    }}) catch return null;
+    return .{
+        .description = "replace the named bot comparison with a generic sender type check",
+        .safety = .unsafe,
+        .edits = edits,
+    };
 }
 
 fn isActorBotExpr(inner: []const u8) bool {
@@ -2230,6 +2282,16 @@ fn checkTyposquatAction(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
+fn returnsBooleanBuiltin(allocator: std.mem.Allocator, expr: []const u8) bool {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var parser = expressions.ExprParser.init(arena.allocator(), expr);
+    const root = parser.parse() catch return false;
+    if (root.kind != .function_call) return false;
+    const sig = expr_catalog.lookupFunction(root.value) orelse return false;
+    return sig.ret.kind == .bool and sig.acceptsArgCount(root.children.len);
+}
+
 /// Every offending expression is reported separately: a single `run:` block can
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
@@ -2238,6 +2300,7 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, 
     var it: ExprIter = .{ .s = s };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
+        if (std.mem.eql(u8, rule_id, "SEC002") and returnsBooleanBuiltin(list.fixAllocator(), e.inner)) continue;
         list.append(.{
             .rule_id = rule_id,
             .severity = severity,
@@ -5201,6 +5264,36 @@ test "multiple security rules fire together" {
     try testing.expect(hasDiagnostic(&list, "SEC007"));
 }
 
+test "SEC002: boolean builtins do not interpolate their untrusted arguments" {
+    try testing.expect(!sec002UsesFires("actions/github-script@v7", "script", "console.log(${{ contains(github.event.issue.title, 'fix') }});", null));
+    for ([_][]const u8{
+        "echo '${{ startsWith(github.event.issue.title, 'fix') }}'",
+        "echo '${{ endsWith(github.event.issue.title, 'fix') }}'",
+        "echo '${{ contains(github.event.issue.title, 'fix') }}'",
+    }) |run| {
+        var list = runStep(.{ .run = run });
+        defer list.deinit();
+        try testing.expect(!hasDiagnostic(&list, "SEC002"));
+    }
+}
+
+test "SEC002: boolean function suppression never hides a string-valued expression" {
+    for ([_][]const u8{
+        "echo '${{ github.event.issue.title }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') && github.event.issue.title }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') || github.event.issue.title }}'",
+        "echo '${{ format('{0}', github.event.issue.title) }}'",
+        "echo '${{ unknown(github.event.issue.title) }}'",
+        "echo '${{ startsWith(github.event.issue.title) }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') trailing }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') }} ${{ github.event.issue.title }}'",
+    }) |run| {
+        var list = runStep(.{ .run = run });
+        defer list.deinit();
+        try testing.expect(hasDiagnostic(&list, "SEC002"));
+    }
+}
+
 test "SEC014: github.actor == dependabot[bot] in step condition" {
     var list = runStep(.{ .run = "echo skip", .if_condition = "github.actor == 'dependabot[bot]'" });
     defer list.deinit();
@@ -5247,6 +5340,28 @@ test "SEC014: safe condition with github.ref (no false positive)" {
     var list = runStep(.{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: autofix refuses compound, unsupported, or unlocated conditions" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    for ([_][]const u8{
+        "github.actor == 'dependabot[bot]' && success()",
+        "github.actor == 'dependabot[bot]' || failure()",
+        "contains(github.actor, '[bot]')",
+        "github.actor == 'octocat'",
+        "github.actor == 'dependabot[bot]' + 1",
+        "${{ github.actor == 'dependabot[bot]' }} extra",
+    }) |cond| {
+        var token = Span.point(1, 1, 0);
+        token.end_byte = cond.len;
+        try testing.expect(buildBotConditionFix(cond, .{ .scalar = token, .fallback = token }, &list) == null);
+    }
+    const cond = "github.actor == 'dependabot[bot]'";
+    const point = Span.point(1, 1, 0);
+    try testing.expect(buildBotConditionFix(cond, .{ .fallback = point }, &list) == null);
+    try testing.expect(buildBotConditionFix(cond, .{ .scalar = point, .fallback = point }, &list) == null);
+    try testing.expect(buildBotConditionFix(cond, .{ .scalar = point, .fallback = point, .style = .folded }, &list) == null);
 }
 
 test "containsActorBotCheck detects actor with bot pattern" {

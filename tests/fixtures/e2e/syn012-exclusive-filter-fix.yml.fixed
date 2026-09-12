@@ -1,0 +1,18 @@
+# zghalint:expect SYN012
+name: exclusive filters
+on:
+  push:
+    branches: [main]
+    branches-ignore: [wip]
+    tags-ignore: [draft]
+    tags: [v1]
+    paths: [src]
+    paths-ignore: [vendor]
+concurrency: test
+permissions: {}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo hi

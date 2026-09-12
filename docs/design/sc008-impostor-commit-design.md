@@ -232,11 +232,10 @@ pub const CachedRepo = struct {
     branches: []const BranchEntry = &.{},
     impostor: []const ImpostorEntry = &.{},
     default_branch: ?BranchEntry = null,
-    cache_format: u32 = 2,
 };
 ```
 
-JSON 書き込み時は常に `cache_format: 2`。読み込み時は `cache_format` フィールド不在 / `= 1` を v1 として扱い、新フィールドを空初期化する。次回 prefetch で v2 に昇格。
+旧形式で欠けている `branches` / `impostor` / `default_branch` は空初期化する。読み込みはバージョンフィールドに依存せず、未知フィールドを無視する。#483 で未参照の `cache_format` の書き込みを廃止した。旧ファイルは引き続き読み込め、不正な JSON はキャッシュミスとして扱う。
 
 `ImpostorStatus` ↔ `status_code` の変換表:
 
@@ -323,7 +322,7 @@ SC006 エントリの直後、BP007 の直前に挿入:
   - `applyResults` で step1/step2 即時キャッシュ
   - `fetchImpostorCompares` / `compareRest` / `compareAllRefs` を新設
 - `src/rules/disk_cache.zig`
-  - `CachedRepo` に `branches` / `impostor` / `default_branch` / `cache_format` 追加
+  - `CachedRepo` に `branches` / `impostor` / `default_branch` 追加
   - JSON round-trip / v1 legacy load テスト
 - `src/rules/engine.zig`
   - `postProcess(&list)` 新設
@@ -378,7 +377,7 @@ SC006 エントリの直後、BP007 の直前に挿入:
 #### `disk_cache.zig`
 
 18. v2 round-trip（`branches` / `impostor` / `default_branch` を保存・復元）
-19. v1 legacy load（`cache_format` 不在のファイルを読んで新フィールド空初期化）
+19. legacy load（バージョンフィールド不在 / 旧値 1・2 のファイルを読んで欠落フィールドを空初期化）
 20. `status_code` `'l'`/`'i'`/`'u'` 相互変換
 
 #### `engine.postProcess`

@@ -13,7 +13,27 @@ each ID means.
 
 ## [Unreleased]
 
+### Fixed
+
+- SEC002 no longer treats a whole boolean-returning builtin call such as
+  `startsWith(...)`, `endsWith(...)`, or `contains(...)` as script injection.
+  String-valued expressions in the same script remain diagnosed and fixed
+  independently (#419).
+
 ### Added
+
+- EXPR002 / EXPR003 / EXPR004 offer safe rename fixes for a unique nearby
+  context, strict-object property, or function name from the expression
+  catalog, when the source token can be located (#410).
+- SEC014 offers an unsafe fix for a whole `if:` condition comparing
+  `github.actor` or `github.triggering_actor` to a bot name with `==` / `!=`.
+  It preserves YAML quotes and expression wrappers, replacing the comparison
+  with `github.event.sender.type` and the generic `Bot` type (#413).
+- SYN012 offers an unsafe fix that removes the later conflicting branch, tag,
+  or path filter while keeping the earlier one (#412). Guarded flow-mapping
+  deletion spans are shared with SYN011; uncertain or anchored ranges are skipped.
+- ACT001 safely inserts `shell: bash` for composite `run:` steps with a missing
+  shell when the insertion position is known (#411).
 
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
@@ -91,6 +111,11 @@ rule IDs may still be renumbered before 1.0.
   Once the network is unreachable, the REST fallback is skipped.
 
 ### Fixed
+
+- EXPR001 accepts numeric context indices and mixed dot/bracket paths such as
+  `github.event.workflow_run.pull_requests[0].number` (#424).
+- DEP003 accepts scoped local action paths such as `./tools/@scope/tool` and
+  `$/tools/@scope/tool`, while still rejecting `tool@v1` ref suffixes (#425).
 
 - A `steps:` holding a mapping instead of a sequence no longer aborts the
   workflow parse and silences every diagnostic in the file. It now reports

@@ -9,6 +9,8 @@ const catalog = @import("expr_catalog.zig");
 const expr_check = @import("expr_check.zig");
 const expr_overlay = @import("expr_overlay.zig");
 const spans = @import("spans.zig");
+const rename = @import("rename.zig");
+const util = @import("../util.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;
 pub const DiagnosticList = diagnostics.DiagnosticList;
@@ -519,41 +521,38 @@ pub const ExprParser = struct {
         parts.appendSlice(self.allocator, first) catch return ParseError.OutOfMemory;
         var last_end: usize = first_start + first.len;
 
-        while (self.current.kind == .dot) {
-            last_end = self.current.pos + 1;
-            parts.append(self.allocator, '.') catch return ParseError.OutOfMemory;
-            self.advance();
-            if (self.current.kind == .identifier) {
-                last_end = self.current.pos + self.current.value.len;
-                parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
-                self.advance();
-            } else if (self.current.kind == .star) {
-                last_end = self.current.pos + 1;
-                parts.append(self.allocator, '*') catch return ParseError.OutOfMemory;
-                self.advance();
-            } else {
-                self.error_message = "expected property name after '.'";
-                return ParseError.UnexpectedToken;
+        while (true) {
+            switch (self.current.kind) {
+                .dot => {
+                    parts.append(self.allocator, '.') catch return ParseError.OutOfMemory;
+                    self.advance();
+                    if (self.current.kind != .identifier and self.current.kind != .star) {
+                        self.error_message = "expected property name after '.'";
+                        return ParseError.UnexpectedToken;
+                    }
+                    last_end = self.current.pos + self.current.value.len;
+                    parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
+                    self.advance();
+                },
+                .open_bracket => {
+                    self.advance();
+                    if (self.current.kind != .string_literal and self.current.kind != .number) {
+                        self.error_message = "expected string or number in bracket access";
+                        return ParseError.UnexpectedToken;
+                    }
+                    parts.append(self.allocator, '[') catch return ParseError.OutOfMemory;
+                    parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
+                    parts.append(self.allocator, ']') catch return ParseError.OutOfMemory;
+                    self.advance();
+                    if (self.current.kind != .close_bracket) {
+                        self.error_message = "missing closing bracket";
+                        return ParseError.UnexpectedToken;
+                    }
+                    last_end = self.current.pos + 1;
+                    self.advance();
+                },
+                else => break,
             }
-        }
-
-        while (self.current.kind == .open_bracket) {
-            self.advance();
-            if (self.current.kind == .string_literal) {
-                parts.append(self.allocator, '[') catch return ParseError.OutOfMemory;
-                parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
-                parts.append(self.allocator, ']') catch return ParseError.OutOfMemory;
-                self.advance();
-            } else {
-                self.error_message = "expected string in bracket access";
-                return ParseError.UnexpectedToken;
-            }
-            if (self.current.kind != .close_bracket) {
-                self.error_message = "missing closing bracket";
-                return ParseError.UnexpectedToken;
-            }
-            last_end = self.current.pos + 1;
-            self.advance();
         }
 
         const path = parts.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
@@ -669,7 +668,7 @@ fn validateNode(
     env: *const expr_check.TypeEnv,
 ) void {
     switch (node.kind) {
-        .context_access => validateContextAccess(allocator, node.value, span, list, env),
+        .context_access => validateContextAccess(allocator, node, span, list, expr_base_byte, env),
         .function_call => validateFunctionCall(allocator, node, span, list, expr_base_byte, parent, env),
         .binary_op, .unary_op, .property_access, .index_access => {
             if (node.kind == .binary_op) {
@@ -685,12 +684,13 @@ fn validateNode(
 
 fn validateContextAccess(
     allocator: std.mem.Allocator,
-    path: []const u8,
+    node: *const ExprNode,
     span: Span,
     list: *DiagnosticList,
+    expr_base_byte: ?usize,
     env: *const expr_check.TypeEnv,
 ) void {
-    const result = expr_check.walkPath(path, env);
+    const result = expr_check.walkPath(node.value, env);
     const problem = result.problem orelse return;
 
     var buf: [96]u8 = undefined;
@@ -726,7 +726,42 @@ fn validateContextAccess(
         .severity = severity,
         .message = message,
         .span = span,
+        .fix = buildContextRenameFix(allocator, node, problem, span, list, expr_base_byte, env),
     }) catch return;
+}
+
+fn nameSuggestion(allocator: std.mem.Allocator, name: []const u8, entries: anytype) ?[]const u8 {
+    const names = allocator.alloc([]const u8, entries.len) catch return null;
+    defer allocator.free(names);
+    for (entries, names) |entry, *dest| dest.* = entry.name;
+    return util.didYouMean(name, names);
+}
+
+fn buildContextRenameFix(
+    allocator: std.mem.Allocator,
+    node: *const ExprNode,
+    problem: expr_check.Problem,
+    span: Span,
+    list: *DiagnosticList,
+    expr_base_byte: ?usize,
+    env: *const expr_check.TypeEnv,
+) ?Fix {
+    const base = expr_base_byte orelse return null;
+    var segment_index: usize = 0;
+    const suggestion = switch (problem) {
+        .unknown_context => |name| nameSuggestion(allocator, name, &catalog.contexts),
+        .unknown_property => |info| blk: {
+            const receiver = expr_check.walkPath(info.receiver_path, env).ty;
+            var iter = expr_check.SegmentIter{ .path = info.receiver_path };
+            while (iter.next() != null) segment_index += 1;
+            break :blk nameSuggestion(allocator, info.name, receiver.props);
+        },
+        .not_an_object => null,
+    } orelse return null;
+    var path_span = span;
+    path_span.start_byte = base + node.start_byte;
+    path_span.end_byte = base + node.end_byte;
+    return rename.pathSegmentFix(list, path_span, node.value, segment_index, suggestion);
 }
 
 fn checkComparison(
@@ -831,11 +866,20 @@ fn validateFunctionCall(
         }
     } else {
         const msg = std.fmt.allocPrint(allocator, "unknown function: '{s}'", .{name}) catch "unknown function";
+        const fix: ?Fix = fix: {
+            const base = expr_base_byte orelse break :fix null;
+            const suggestion = nameSuggestion(allocator, name, &catalog.functions) orelse break :fix null;
+            var name_span = span;
+            name_span.start_byte = base + node.start_byte;
+            name_span.end_byte = name_span.start_byte + name.len;
+            break :fix rename.tokenFix(list, name_span, name, suggestion);
+        };
         list.append(.{
             .rule_id = "EXPR004",
             .severity = .@"error",
             .message = msg,
             .span = span,
+            .fix = fix,
         }) catch return;
     }
 
@@ -2507,6 +2551,32 @@ test "validate: toJSON wrong args" {
     try expectSingleRule("toJSON(github.event, 'extra')", "EXPR005");
 }
 
+test "catalog rename fixes require source offsets and an unambiguous candidate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{ "githb.ref", "github.refs", "contians('a', 'b')" }) |expr| {
+        var list = DiagnosticList.init(std.testing.allocator);
+        defer list.deinit();
+        validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, null);
+        try std.testing.expectEqual(@as(usize, 1), list.len());
+        try std.testing.expect(list.get(0).fix == null);
+    }
+    for ([_][]const u8{
+        "jobz.status",
+        "github.zzzzzzzzzz",
+        "github.ref.zzzzzzzzzz",
+        "github . refs",
+        "github['refs']",
+        "completelyUnknownFunction()",
+    }) |expr| {
+        var list = DiagnosticList.init(std.testing.allocator);
+        defer list.deinit();
+        validateExpression(arena.allocator(), expr, Span.point(1, 1, 0), &list, 100);
+        try std.testing.expectEqual(@as(usize, 1), list.len());
+        try std.testing.expect(list.get(0).fix == null);
+    }
+}
+
 test "EXPR006: contains with string literal second arg" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -3804,4 +3874,34 @@ test "typeOf: logical operators merge operand types" {
     var parser = ExprParser.init(arena.allocator(), "github.sha || github.ref");
     const node = try parser.parse();
     try std.testing.expectEqual(expr_type.TypeKind.string, expr_check.typeOf(&node, &expr_check.TypeEnv.empty).kind);
+}
+
+test "parser: context paths alternate numeric and string indices with properties" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{
+        "github.event.workflow_run.pull_requests[0].number",
+        "github.event['workflow_run'].pull_requests[0]['head'].ref",
+        "github.event.items[0][1].name",
+    }) |source| {
+        var parser = ExprParser.init(arena.allocator(), source);
+        const node = try parser.parse();
+        try std.testing.expectEqual(NodeKind.context_access, node.kind);
+        try std.testing.expectEqualStrings(source, node.value);
+        try std.testing.expectEqual(@as(u32, @intCast(source.len)), node.end_byte);
+    }
+    for ([_][]const u8{ "github.event.items[0", "github.event.items[]", "github.event.items[true]", "github.event.items[0]." }) |source| {
+        var parser = ExprParser.init(arena.allocator(), source);
+        try std.testing.expectError(ParseError.UnexpectedToken, parser.parse());
+    }
+}
+
+test "parser: flattened numeric context paths do not grow AST depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "github.event" ++ "[0]" ** 300;
+    var parser = ExprParser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.context_access, node.kind);
+    try std.testing.expectEqual(@as(u16, 0), node.height);
 }
