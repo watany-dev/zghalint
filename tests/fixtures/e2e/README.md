@@ -103,6 +103,8 @@ Two checks run on all fixtures, with no directive needed:
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
 | `bp008-workflow-commands.yml` | #326: every deprecated workflow command rewritten by `--fix`, with a piped line left alone |
+| `ga13-prefer-self.yml` | #440: job-level `uses: ./` of an on-disk workflow is BP009 |
+| `ga13-workspace-uses.yml` | #440 FP guard: missing `./` workflow, `$/`, and step-level `./` stay quiet |
 | `bp003-behind-current-major.yml` | #358: a third-party action older than its current major, with `actions/checkout@v4` as the FP guard |
 | `rw001-input-type-fix.yml` | #326: `--fix-unsafe` infers a `workflow_call` input `type:` from its `default:` |
 | `clean.yml` | A well-formed workflow: nothing may fire |

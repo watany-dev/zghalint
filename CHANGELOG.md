@@ -53,6 +53,9 @@ each ID means.
 - SEC024 warns when `cache-mode: write` or `write-only` is declared on a
   low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
   which overrides GitHub's restore-only default. No autofix (#434).
+- BP009 suggests `$/` instead of `./` on a job-level reusable workflow call
+  when that workflow file exists in the repository being linted. Step-level
+  `uses: ./` is GITHUB_WORKSPACE and stays quiet. No autofix (#440).
 
 ### Changed
 

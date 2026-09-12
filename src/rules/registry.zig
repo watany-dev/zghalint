@@ -19,6 +19,7 @@ const composite_steps = @import("composite_steps.zig");
 const runner = @import("runner.zig");
 const syntax = @import("syntax.zig");
 const uses = @import("uses.zig");
+const prefer_self_repo = @import("prefer_self_repo.zig");
 const local_action = @import("local_action.zig");
 const popular_actions = @import("popular_actions.zig");
 const reusable_workflow = @import("reusable_workflow.zig");
@@ -45,6 +46,7 @@ pub const all_rules = security.security_rules ++
     syntax.rules ++
     needs_graph.rules ++
     uses.rules ++
+    prefer_self_repo.rules ++
     local_action.rules ++
     popular_actions.rules ++
     reusable_workflow.rules;
