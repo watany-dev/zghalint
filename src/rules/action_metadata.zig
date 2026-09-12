@@ -741,7 +741,7 @@ test "ACT002: unknown using value without a near candidate" {
 }
 
 test "ACT002: deprecated node runtimes are a warning, not an error" {
-    for ([_][]const u8{ "node12", "node16" }) |using| {
+    for ([_][]const u8{ "node12", "node16", "node20" }) |using| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
         const source = try std.fmt.allocPrint(
@@ -765,7 +765,7 @@ test "ACT002: supported runtimes are not reported" {
     var lint = try Lint.run(
         \\name: My Action
         \\runs:
-        \\  using: node20
+        \\  using: node24
         \\  main: dist/index.js
     );
     defer lint.deinit();

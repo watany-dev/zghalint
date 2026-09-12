@@ -3,7 +3,7 @@
 # `name` is absent from the document, and the node runtime needs `main`.
 description: Set up the toolchain
 runs:
-  using: node20
+  using: node24
 inputs:
   version:
     description: Toolchain version to install

@@ -70,6 +70,10 @@ each ID means.
   they cannot point at another retired label.
 - CI and bench now pin actionlint 1.7.12 and zizmor 1.30.1, the versions used
   as the comparison baseline (#431).
+- ACT002 / BP003 treat `runs.using: node20` as deprecated (removal 2026-09-23).
+  Severity is warning, not the error used for already-retired `node12` /
+  `node16`. `node24` is unchanged. `actions/setup-node`'s `node-version: 20`
+  is not `runs.using`. No autofix (#437).
 
 ## [0.0.1] - 2026-09-10
 
