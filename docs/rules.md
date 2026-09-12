@@ -531,6 +531,8 @@ action / reusable workflow references.
 - `$/{path}` — ワークフロー自身のリポジトリの実行中コミット（`@ref` を付けられない）
 - `docker://{image}`
 
+ローカルアクションのパス要素先頭の `@`（例: `./tools/@scope/tool`、`$/tools/@scope/tool`）はディレクトリ名として受理する。`tool@v1` のような途中の `@` は ref として報告する。
+
 ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
 
 - `{owner}/{repo}/.github/workflows/{file}.yml@{ref}`
