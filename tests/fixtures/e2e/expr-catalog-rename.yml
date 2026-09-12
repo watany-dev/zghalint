@@ -1,0 +1,23 @@
+# zghalint:expect EXPR002 EXPR003 EXPR004
+name: expression typos
+on: push
+concurrency: test
+permissions: {}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: githb.ref == 'refs/heads/main'
+    steps:
+      - name: Property typo
+        if: "github.refs == 'refs/heads/main'"
+        run: echo hi
+      - name: Function typo
+        if: ${{ contians(github.ref, 'main') }}
+        run: echo hi
+      - name: Nested property typo
+        if: job.container.ide == 'container'
+        run: echo hi
+      - name: Unknown name without candidate
+        if: completelyUnknownFunction()
+        run: echo hi

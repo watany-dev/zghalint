@@ -20,6 +20,12 @@ zghalint includes **107 rules** across 11 categories to help you write secure, e
 ないため `--fix-unsafe` でのみ適用する。候補が定まらない場合は診断のみで、
 autofix は付かない。
 
+EXPR002 / EXPR003 / EXPR004 も、既存の式カタログから最短編集距離が 2 以内で
+候補が一意なら `--fix` でコンテキスト名・strict object のプロパティ名・関数名を
+置き換える。ソース位置が無い場合や、空白によって再構成されたパスとソースの
+長さが異なる場合は fix を付けない。プロパティはドット記法が対象。
+`github.event` 配下は従来どおり EXPR003 の対象外。
+
 対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023 / SYN024、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 

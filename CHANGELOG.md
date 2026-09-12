@@ -15,6 +15,10 @@ each ID means.
 
 ### Added
 
+- EXPR002 / EXPR003 / EXPR004 offer safe rename fixes for a unique nearby
+  context, strict-object property, or function name from the expression
+  catalog, when the source token can be located (#410).
+
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
 - `background` / `wait` / `wait-all` / `cancel` / `parallel` are accepted
