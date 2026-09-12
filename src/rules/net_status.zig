@@ -24,22 +24,18 @@ pub const Rule = enum {
 
 pub const rule_count = @typeInfo(Rule).@"enum".fields.len;
 
-var unavailable: u8 = 0;
-
-fn bit(rule: Rule) u8 {
-    return @as(u8, 1) << @intFromEnum(rule);
-}
+var unavailable = std.EnumSet(Rule).initEmpty();
 
 pub fn markUnavailable(rule: Rule) void {
-    unavailable |= bit(rule);
+    unavailable.insert(rule);
 }
 
 pub fn isUnavailable(rule: Rule) bool {
-    return unavailable & bit(rule) != 0;
+    return unavailable.contains(rule);
 }
 
 pub fn reset() void {
-    unavailable = 0;
+    unavailable = std.EnumSet(Rule).initEmpty();
 }
 
 /// Names HTTPS_PROXY / SSL_CERT_FILE because those are the usual miss when

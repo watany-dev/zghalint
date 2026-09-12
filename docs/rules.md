@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **106 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **107 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -54,6 +54,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
+| SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
 
 ### SEC016 の対象
 
@@ -72,6 +73,11 @@ Detect security vulnerabilities in workflow definitions.
 値を opt-out として読み、`false` のときだけ沈黙する
 (`actions/setup-node` などの `cache:` は指定して初めて有効になるので、
 省略は指摘しない)。
+
+`cache-mode` は restore / save の 2 能力として読む（PERF001 と同じ resolver）。
+`none` はどちらもできないので SEC016 は沈黙する。`read` は restore できるので
+「read-only だから安全」としては抑制しない。式や未知の値は不確定として、
+既存のステップ判定を変えない。
 
 ### SEC015 vs SEC018
 
@@ -282,6 +288,18 @@ publish するのかを静的に決められないため対象外。また
 ある可能性があるので報告しない — crates.io の trusted publishing は
 まさにこの形（auth step が短命トークンを出力する）を取る。
 
+### SEC024 untrusted-cache-write
+
+低信頼トリガ（`pull_request_target` / `issue_comment` / `workflow_run`）では
+GitHub の既定キャッシュ権限は restore-only。そこに `cache-mode: write` または
+`write-only` を明示すると、その既定を解除して cache poisoning のリスクが上がる。
+GitHub 自身も同じ組み合わせに warning annotation を付ける。
+
+`cache-mode` を省略したワークフローは既定のままなので報告しない。`read` /
+`none` も報告しない。`on: push` だけのように信頼できるトリガへ `write` を書く
+のも既定と同じなので報告しない。式や未知の値は不確定として報告しない。
+`--fix` は付けない — キーを消すと実行時のキャッシュ権限が変わる。
+
 ## Supply Chain Security Rules (SC)
 
 Detect supply chain risks in action and container image references.
@@ -360,7 +378,7 @@ Detect CI performance issues and resource waste.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただしリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は SEC016 と逆向きの助言になるため指摘しない |
+| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただし `cache-mode: none` のジョブ、およびリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は指摘しない（後者は SEC016 と逆向きの助言になるため） |
 | PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job (`--fix-unsafe` で 2 つ目のステップを削除) |
 | PERF003 | fail-fast-disabled | warning | Strategy has `fail-fast` disabled, wasting CI resources on failures |
 
@@ -1131,6 +1149,9 @@ jobs:
 受理されるのは `none` / `read` / `write` / `write-only` だけ。未知の値は実行時に
 拒否されるので error とし、編集距離 2 以内で候補が一意なら `did you mean` と
 `--fix` の rename を付ける。値の推論（`read-write` → `write` など）はしない。
+
+意味は線形な強弱ではなく restore / save の 2 能力である（`read` は restore のみ、
+`write-only` は save のみ）。SEC016 / PERF001 / SEC024 が同じ resolver を使う。
 
 ```yaml
 cache-mode: reed          # error: did you mean "read"?

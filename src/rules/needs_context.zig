@@ -4,7 +4,8 @@
 //! its only properties are `outputs` and `result`, and `needs.<job>.outputs.<name>`
 //! must name an output the referenced job declares. All three need the whole
 //! workflow, so this is a `check_workflow` rule rather than part of the
-//! per-step expression rule.
+//! per-step expression rule. Job IDs and context properties match
+//! case-insensitively, as the runner resolves them.
 
 const std = @import("std");
 const engine = @import("engine.zig");
@@ -24,12 +25,6 @@ const Span = yaml.Span;
 /// The two properties GitHub exposes under `needs.<job>`.
 const needs_properties = [_][]const u8{ "outputs", "result" };
 
-/// Job IDs and context properties are matched case-insensitively, the way the
-/// runner resolves context keys, so a case difference is never reported.
-fn eqlId(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 const NeedsVisitor = struct {
     wf: *const Workflow,
     job: *const Job,
@@ -44,7 +39,7 @@ const NeedsVisitor = struct {
     pub fn checkPath(self: NeedsVisitor, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = (iter.next() orelse return).plainIdent() orelse return;
-        if (!eqlId(root, "needs")) return;
+        if (!std.ascii.eqlIgnoreCase(root, "needs")) return;
 
         // `needs` alone (`toJSON(needs)`) and computed keys
         // (`needs[matrix.job]`) carry nothing to check.
@@ -64,28 +59,28 @@ const NeedsVisitor = struct {
             self.reportUnknownProperty(path, job_id, property, span);
             return;
         }
-        if (!eqlId(property, "outputs")) return;
+        if (!std.ascii.eqlIgnoreCase(property, "outputs")) return;
 
         // Outputs of a reusable workflow live in the called file; RW005 owns them.
         if (dep.uses != null) return;
 
         const output = (iter.next() orelse return).plainIdent() orelse return;
         for (dep.outputs) |declared| {
-            if (eqlId(declared.name, output)) return;
+            if (std.ascii.eqlIgnoreCase(declared.name, output)) return;
         }
         self.reportUnknownOutput(path, dep, output, span);
     }
 
     fn findJob(self: NeedsVisitor, job_id: []const u8) ?*const Job {
         for (self.wf.jobs) |*candidate| {
-            if (eqlId(candidate.id, job_id)) return candidate;
+            if (std.ascii.eqlIgnoreCase(candidate.id, job_id)) return candidate;
         }
         return null;
     }
 
     fn isNeeded(self: NeedsVisitor, job_id: []const u8) bool {
         for (self.job.needs) |dep| {
-            if (eqlId(dep, job_id)) return true;
+            if (std.ascii.eqlIgnoreCase(dep, job_id)) return true;
         }
         return false;
     }
@@ -195,7 +190,7 @@ const NeedsVisitor = struct {
 
 fn isKnownProperty(name: []const u8) bool {
     for (needs_properties) |known| {
-        if (eqlId(known, name)) return true;
+        if (std.ascii.eqlIgnoreCase(known, name)) return true;
     }
     return false;
 }

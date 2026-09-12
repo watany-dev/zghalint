@@ -178,7 +178,7 @@ fn dispatchCacheFix(
     inline for (inferred_cache_setups) |setup| {
         if (std.mem.eql(u8, setup_action, setup.action)) {
             if (@field(ctx, setup.manager)) |mgr| {
-                const mgr_str = mgr.toString();
+                const mgr_str = @tagName(mgr);
                 const description = std.fmt.allocPrint(
                     alloc,
                     "add \"cache: {s}\" to {s} step(s)",
@@ -232,6 +232,10 @@ fn formatAmbiguity(
 
 fn checkCacheNotUsedWorkflow(wf: *const Workflow, diag_list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
+        // `cache-mode: none` cannot restore or save, so "add a cache" is
+        // advice the job cannot take. Unknown / expression values stay on
+        // the existing path (ADR-0009).
+        if (!workflow_types.jobAllowsCache(wf, job)) continue;
         checkCacheNotUsedInJob(job, diag_list, security.isCachePoisoningScope(wf, job));
     }
 }
@@ -1022,6 +1026,112 @@ test "PERF001: a missing cache is still reported in a release workflow" {
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "PERF001: cache-mode none does not ask to add a cache" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: none
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: workflow cache-mode none is inherited" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\cache-mode: none
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/setup-python@v5
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: cache-mode read still asks to enable restore" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: read
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
+}
+
+test "PERF001: job write overrides workflow none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\cache-mode: none
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: write
+        \\    steps:
+        \\      - uses: actions/setup-go@v5
         \\
     ;
 

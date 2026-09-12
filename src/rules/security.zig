@@ -1851,6 +1851,7 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         const job_at_risk = has_release_trigger or isDeployJob(job);
         if (!job_at_risk) continue;
+        if (!workflow_types.jobAllowsCache(wf, job)) continue;
 
         const Ctx = struct {
             list: *DiagnosticList,
@@ -1866,6 +1867,48 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
             }
         };
         workflow_types.walkSteps(job.steps, Ctx{ .list = list });
+    }
+}
+
+/// Events whose default cache access is restore-only. An explicit
+/// `cache-mode: write` / `write-only` overrides that default and is what
+/// GitHub itself annotates as a poisoning risk.
+fn hasLowTrustCacheTrigger(wf: *const Workflow) bool {
+    return wf.hasEvent(.pull_request_target) or
+        wf.hasEvent(.issue_comment) or
+        wf.hasEvent(.workflow_run);
+}
+
+fn declaredModeGrantsWrite(mode: ?[]const u8) bool {
+    const raw = mode orelse return false;
+    const cap = workflow_types.CacheCapability.fromMode(raw) orelse return false;
+    return cap.can_save;
+}
+
+fn reportUntrustedCacheWrite(list: *DiagnosticList, mode: []const u8, span: ?Span) void {
+    list.append(.{
+        .rule_id = "SEC024",
+        .severity = .warning,
+        .message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "cache-mode \"{s}\" grants cache writes on a low-trust trigger; the default for these events is restore-only",
+            .{mode},
+        ) catch "cache-mode grants cache writes on a low-trust trigger",
+        .span = span orelse spans.workflow_head,
+        .fix_hint = "omit cache-mode to keep the restore-only default, or set 'cache-mode: read' / 'none'",
+    }) catch return;
+}
+
+fn checkUntrustedCacheWrite(wf: *const Workflow, list: *DiagnosticList) void {
+    if (!hasLowTrustCacheTrigger(wf)) return;
+
+    if (declaredModeGrantsWrite(wf.cache_mode)) {
+        reportUntrustedCacheWrite(list, wf.cache_mode.?, wf.cache_mode_span);
+    }
+    for (wf.jobs) |*job| {
+        if (declaredModeGrantsWrite(job.cache_mode)) {
+            reportUntrustedCacheWrite(list, job.cache_mode.?, job.cache_mode_span);
+        }
     }
 }
 
@@ -2944,6 +2987,14 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_workflow = &checkCachePoisoning,
+    },
+    .{
+        .id = "SEC024",
+        .name = "untrusted-cache-write",
+        .description = "Explicit cache-mode write on a low-trust trigger overrides the restore-only default",
+        .severity = .warning,
+        .category = .security,
+        .check_workflow = &checkUntrustedCacheWrite,
     },
     .{
         .id = "SEC014",
@@ -5484,6 +5535,171 @@ test "SEC016: emits one diagnostic per offending step" {
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC016"));
+}
+
+test "SEC016: cache-mode none suppresses even with actions/cache" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "none" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: cache-mode read still reports restore poisoning" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "cache", "npm") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@v4"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "read" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: cache-mode write-only still reports save poisoning" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "write-only" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: job cache-mode none overrides workflow write" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "none" },
+    };
+    const wf = Workflow{
+        .name = "Release",
+        .on = release_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: unknown cache-mode is not treated as a disable" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "reed" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC024: explicit write on pull_request_target is reported" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{
+        .name = "PR",
+        .on = pr_target_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+        .cache_mode_span = test_support.dummySpan(0, 5),
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: write-only on issue_comment is reported" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{}, .cache_mode = "write-only", .cache_mode_span = test_support.dummySpan(0, 5) },
+    };
+    const wf = Workflow{ .name = "comment", .on = issue_comment_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: omitted cache-mode on pull_request_target is silent" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "PR", .on = pr_target_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: explicit read on pull_request_target is silent" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{}, .cache_mode = "read" },
+    };
+    const wf = Workflow{ .name = "PR", .on = pr_target_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: explicit write on push is silent" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{
+        .name = "CI",
+        .on = push_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: job-level write is reported when the workflow omits cache-mode" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{}, .cache_mode = "write", .cache_mode_span = test_support.dummySpan(0, 5) },
+        .{ .id = "other", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "PR", .on = pr_target_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC024"));
+}
+
+test "SEC024: workflow_run with write is reported" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{
+        .name = "after",
+        .on = workflow_run_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+        .cache_mode_span = test_support.dummySpan(0, 5),
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC024"));
 }
 
 test "SEC013: plaintext credentials in container" {

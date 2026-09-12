@@ -4,7 +4,7 @@
 //! cycle in the graph both make the run fail before a single step executes, so
 //! they are errors even though the YAML itself parses. Both need the whole
 //! workflow, which is why they live here instead of in the per-job checks of
-//! `syntax.zig`.
+//! `syntax.zig`. Job IDs match case-insensitively, as the runner resolves them.
 
 const std = @import("std");
 const engine = @import("engine.zig");
@@ -19,14 +19,9 @@ const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml.Span;
 
-/// Job IDs are matched case-insensitively, the way the runner resolves them.
-fn eqlId(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 fn findJob(wf: *const Workflow, job_id: []const u8) ?usize {
     for (wf.jobs, 0..) |*candidate, i| {
-        if (eqlId(candidate.id, job_id)) return i;
+        if (std.ascii.eqlIgnoreCase(candidate.id, job_id)) return i;
     }
     return null;
 }
@@ -111,7 +106,7 @@ fn nearestJobId(
     var names = alloc.alloc([]const u8, wf.jobs.len) catch return null;
     var n: usize = 0;
     for (wf.jobs) |*candidate| {
-        if (eqlId(candidate.id, job.id)) continue;
+        if (std.ascii.eqlIgnoreCase(candidate.id, job.id)) continue;
         names[n] = candidate.id;
         n += 1;
     }

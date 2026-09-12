@@ -1,0 +1,18 @@
+# zghalint:expect SEC016@15
+# zghalint:forbid PERF001
+name: release
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+cache-mode: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
