@@ -22,7 +22,7 @@ python3 scripts/bench.py --fix -o /tmp/fix.md --json /tmp/fix.json
 
 `actionlint` / `zizmor` が PATH になければ、そのツールは採点対象から外れる
 (zghalint だけでも実行できる)。導入手順は `.github/workflows/ci.yml` の
-`lint` ジョブと `.github/lint-requirements.txt` を参照。`--perf` の rival
+`lint` ジョブと `.github/requirements.txt` を参照。`--perf` の rival
 (ghalint / octoscan / poutine / action-validator) は
 `scripts/install-perf-rivals.sh` (Linux x86_64、SHA256 ピン)。PATH に無い
 rival は「見つからない」として表に載り、計測は続く。
@@ -92,11 +92,7 @@ actionlint はこれでプロジェクトルートを判定しており、無い
 3 ツールすべての対応づけが必要。よく使う種別は `scripts/bench.py` の
 `DEFAULT_KIND_MAP` に登録済みで、ヘッダ側の指定がそれを上書きする。
 どちらにもない種別はエラーになる — 対応づけ漏れが黙って recall 0 になるのを
-防ぐため。登録済みの対応表は次で出せる (ここに転記すると腐るため置かない)。
-
-```bash
-python3 scripts/bench.py --kinds
-```
+防ぐため。登録済みの対応表は `DEFAULT_KIND_MAP` を見る (ここに転記すると腐る)。
 
 ### `bench:forbid <kind> [<tool>=<IDs>]...`
 
@@ -141,10 +137,8 @@ autofix 交差検証 (`--fix` モード) 専用。`<flag>` (`--fix` / `--fix-uns
 パースできない場合は「実行エラー」として記録する — 黙って 0 件として
 採点しない (堅牢性の観察点)。zghalint の終了コード 2 (「そのファイルを
 lint できなかった」) も同じ扱いにする。JSON 自体は正常に出るため、
-そうしないと解析を拒否したファイルが「指摘なし」に化ける。
-
-`--fail-on-fp` を付けると、zghalint が `forbid` に反した時点で非ゼロ終了
-する。CI で誤検出の混入を止める用途。
+そうしないと解析を拒否したファイルが「指摘なし」に化ける。回帰時の非ゼロ
+終了は `scripts/bench_gate.py` が担う。
 
 ## autofix 交差検証 (`--fix`)
 
@@ -284,7 +278,7 @@ PR では回さない。
   記録だけ残す。
 
 外部ツールの版は `ci.yml` の `lint` ジョブと同じピン留めにする (actionlint は
-SHA256、zizmor は `.github/lint-requirements.txt`)。`--perf` の rival は
+SHA256、zizmor は `.github/requirements.txt`)。`--perf` の rival は
 `scripts/install-perf-rivals.sh` にピンする。上げ方と結果の扱いは
 `docs/design/external-linter-parity.md` §4.8。
 

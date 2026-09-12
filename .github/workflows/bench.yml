@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: .github/lint-requirements.txt
+          cache-dependency-path: .github/requirements.txt
 
       # 版は ci.yml の lint ジョブと同じピン留めにする。ここだけ新しい版に
       # なると、スコアの増減がツール更新由来なのか zghalint の変更由来なのか
@@ -58,9 +58,9 @@ jobs:
           tar -xzf actionlint.tar.gz actionlint
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
 
-      # zizmor の版は .github/lint-requirements.txt に固定してある。
+      # zizmor の版は .github/requirements.txt に固定してある。
       - name: Install zizmor
-        run: pip install -r .github/lint-requirements.txt
+        run: pip install -r .github/requirements.txt
 
       # 採点自体は落とさない。回帰かどうかは baseline との比較で決める。
       - name: Score the bench cases
@@ -157,7 +157,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: .github/lint-requirements.txt
+          cache-dependency-path: .github/requirements.txt
 
       - name: Install actionlint
         env:
@@ -171,7 +171,7 @@ jobs:
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
 
       - name: Install zizmor
-        run: pip install -r .github/lint-requirements.txt
+        run: pip install -r .github/requirements.txt
 
       # ghalint / octoscan / poutine / action-validator。版は
       # scripts/install-perf-rivals.sh にピンしてある。採点ジョブには入れない

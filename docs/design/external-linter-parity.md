@@ -972,7 +972,7 @@ python3 scripts/bench.py --fix
 
 外部ツールの版は `ci.yml` の `lint` ジョブと `bench.yml` の両方に同じ
 ピン留めで書いてある (actionlint は SHA256、zizmor は
-`.github/lint-requirements.txt`)。`--perf` の rival は
+`.github/requirements.txt`)。`--perf` の rival は
 `scripts/install-perf-rivals.sh` にピンする。版を上げるときは両方を同時に動かし、
 上げる前後で `scripts/bench.py` を回して増減を §4 に記録する。数字が動いても
 gate は zghalint の列しか見ないので赤くならない。

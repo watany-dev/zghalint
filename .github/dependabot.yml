@@ -31,3 +31,18 @@ updates:
           - "*"
     commit-message:
       prefix: "test"
+  # lint ジョブ (ruff / zizmor / pyyaml) は PBT と目的が違うので
+  # requirements は分けたまま、更新経路だけ揃える。
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      lint:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
