@@ -15,7 +15,7 @@ pub const GraphQlError = error{
     RateLimited,
     OutOfMemory,
     NoToken,
-    /// Passed through from `http_client.fetch`: the transport failed and
+    /// Passed through from `http_client.fetchBounded`: the transport failed and
     /// every later request will too, so callers skip their REST fallback.
     NetworkUnreachable,
 };
