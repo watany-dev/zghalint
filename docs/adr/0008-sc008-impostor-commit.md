@@ -103,6 +103,8 @@ SC006 と同格。`--quick` / `--offline` 時は `isActive() = false` で全パ�
 
 `cache_format` フィールドで versioning。v1 既存ファイルは `branches` / `impostor` / `default_branch` を空で読み込み、次回 fetch で v2 に昇格。後方互換を保持しつつ段階移行。
 
+**#483 による更新**: 実装はバージョンフィールドを参照せず、欠落フィールドを空初期化していたため、`cache_format` の書き込みを廃止する。旧フィールドを持つファイルも未知フィールドとして無視して読み込む。JSON の解析失敗はキャッシュミスとし、既存形式との互換性を維持する。
+
 - **v1 の欠落データ**: `branches = &.{}`, `impostor = &.{}`, `default_branch = null`
 - **SC005 の挙動**: v1 データからも通常通り動作（tags のみ使用）
 - **SC008 の挙動**: v1 データでは常に `unknown`（初回実行時に refetch で v2 化）
