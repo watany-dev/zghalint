@@ -68,10 +68,7 @@ fn reportUndefined(
 ) void {
     const alloc = list.fixAllocator();
     const nearest = nearestJobId(wf, job, need, list);
-    const suffix = if (nearest) |near|
-        std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{near}) catch ""
-    else
-        "";
+    const suffix = util.suggestionSuffix(alloc, nearest);
     const message = std.fmt.allocPrint(
         alloc,
         "\"{s}\" in \"needs\" is not a job in this workflow{s}",

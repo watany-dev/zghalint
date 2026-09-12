@@ -58,12 +58,12 @@ const Resolver = struct {
 
     pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        const root = identSegment(iter.next()) orelse return;
+        const root = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "secrets")) return;
 
         // `secrets` alone (`toJSON(secrets)`) and computed keys
         // (`secrets[matrix.name]`) carry no name to resolve.
-        const name = identSegment(iter.next()) orelse return;
+        const name = iter.nextName() orelse return;
         for (self.declared) |declared| {
             if (std.ascii.eqlIgnoreCase(declared, name)) return;
         }
@@ -73,10 +73,7 @@ const Resolver = struct {
     fn report(self: Resolver, path: []const u8, name: []const u8, span: Span) void {
         const alloc = self.list.fixAllocator();
         const suggestion = util.didYouMean(name, self.declared);
-        const suffix = if (suggestion) |s|
-            std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
-        else
-            "";
+        const suffix = util.suggestionSuffix(alloc, suggestion);
         const message = std.fmt.allocPrint(
             alloc,
             "secret \"{s}\" is not declared in \"workflow_call.secrets\"{s}",
@@ -96,15 +93,6 @@ const Resolver = struct {
 
 /// Only plain identifiers are resolved: a globbed or computed segment
 /// (`secrets.*`, `secrets[matrix.name]`) has no literal name.
-fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
-    const seg = segment orelse return null;
-    return switch (seg) {
-        .ident => |name| name,
-        .index_string => |name| name,
-        .star => null,
-    };
-}
-
 pub fn checkWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     // Scratch for the expression parser: no diagnostic points at it, and
     // the list's allocator keeps it under the run's leak detection (#159).
@@ -132,41 +120,14 @@ pub const rules = [_]Rule{
 
 const testing = std.testing;
 
-fn diagnose(arena: std.mem.Allocator, source: []const u8, list: *DiagnosticList) !void {
-    const wf = try test_support.parseWorkflowSource(arena, source);
-    checkWorkflow(&wf, list);
-}
+const workflow_check: test_support.Check = .{ .workflow = &checkWorkflow };
 
 fn expectNoDiagnostics(source: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-
-    try diagnose(arena.allocator(), source, &list);
-    if (list.len() != 0) {
-        std.debug.print("unexpected diagnostic: {s}\n", .{list.get(0).message});
-    }
-    try testing.expectEqual(@as(usize, 0), list.len());
+    try test_support.expectNoDiagnostics(source, workflow_check);
 }
 
 fn expectMessage(source: []const u8, needle: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-
-    try diagnose(arena.allocator(), source, &list);
-    for (list.items.items) |diag| {
-        if (std.mem.find(u8, diag.message, needle) != null) {
-            try testing.expectEqualStrings("EXPR014", diag.rule_id);
-            return;
-        }
-    }
-    if (list.len() != 0) {
-        std.debug.print("messages did not contain \"{s}\"; first: {s}\n", .{ needle, list.get(0).message });
-    }
-    return error.MessageNotFound;
+    try test_support.expectMessage(source, workflow_check, "EXPR014", needle);
 }
 
 test "EXPR014: a misspelled secret is reported with a suggestion" {

@@ -188,15 +188,6 @@ fn checkShell(step: *const Step, list: *DiagnosticList) void {
 
 /// Only plain identifiers carry a name to resolve; a globbed or computed
 /// segment (`inputs[github.event_name]`) does not.
-fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
-    const seg = segment orelse return null;
-    return switch (seg) {
-        .ident => |name| name,
-        .index_string => |name| name,
-        .star => null,
-    };
-}
-
 const ContextResolver = struct {
     /// Backs the expression parse trees; diagnostic text comes from the list's
     /// own arena instead.
@@ -206,7 +197,7 @@ const ContextResolver = struct {
 
     pub fn checkPath(self: ContextResolver, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        const root = identSegment(iter.next()) orelse return;
+        const root = iter.nextName() orelse return;
 
         for (unavailable_contexts) |name| {
             if (std.ascii.eqlIgnoreCase(root, name)) return self.reportContext(name, span);
@@ -214,7 +205,7 @@ const ContextResolver = struct {
 
         if (!std.ascii.eqlIgnoreCase(root, "inputs")) return;
         const declared = self.declared_inputs orelse return;
-        const input = identSegment(iter.next()) orelse return;
+        const input = iter.nextName() orelse return;
         for (declared) |name| {
             if (std.ascii.eqlIgnoreCase(name, input)) return;
         }
@@ -247,10 +238,7 @@ const ContextResolver = struct {
     ) void {
         const alloc = self.list.fixAllocator();
         const suggestion = util.didYouMean(name, declared);
-        const suffix = if (suggestion) |s|
-            std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
-        else
-            "";
+        const suffix = util.suggestionSuffix(alloc, suggestion);
         const message = std.fmt.allocPrint(
             alloc,
             "input \"{s}\" is not declared by this action{s}",

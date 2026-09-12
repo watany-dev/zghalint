@@ -38,12 +38,12 @@ const NeedsVisitor = struct {
     /// segments.
     pub fn checkPath(self: NeedsVisitor, path: []const u8, span: Span) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        const root = identSegment(iter.next()) orelse return;
+        const root = (iter.next() orelse return).plainIdent() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "needs")) return;
 
         // `needs` alone (`toJSON(needs)`) and computed keys
         // (`needs[matrix.job]`) carry nothing to check.
-        const job_id = identSegment(iter.next()) orelse return;
+        const job_id = (iter.next() orelse return).plainIdent() orelse return;
 
         const target = self.findJob(job_id);
         if (!self.isNeeded(job_id)) {
@@ -54,7 +54,7 @@ const NeedsVisitor = struct {
         // expression one.
         const dep = target orelse return;
 
-        const property = identSegment(iter.next()) orelse return;
+        const property = (iter.next() orelse return).plainIdent() orelse return;
         if (!isKnownProperty(property)) {
             self.reportUnknownProperty(path, job_id, property, span);
             return;
@@ -64,7 +64,7 @@ const NeedsVisitor = struct {
         // Outputs of a reusable workflow live in the called file; RW005 owns them.
         if (dep.uses != null) return;
 
-        const output = identSegment(iter.next()) orelse return;
+        const output = (iter.next() orelse return).plainIdent() orelse return;
         for (dep.outputs) |declared| {
             if (std.ascii.eqlIgnoreCase(declared.name, output)) return;
         }
@@ -104,7 +104,7 @@ const NeedsVisitor = struct {
             std.fmt.allocPrint(
                 alloc,
                 "\"{s}\" is not a job in this workflow{s}",
-                .{ job_id, suggestionSuffix(alloc, nearest) },
+                .{ job_id, util.suggestionSuffix(alloc, nearest) },
             ) catch return;
 
         self.list.append(.{
@@ -128,12 +128,8 @@ const NeedsVisitor = struct {
         span: Span,
     ) void {
         const alloc = self.list.fixAllocator();
-        var suffix_buf: [64]u8 = undefined;
         const suggestion = util.didYouMean(property, &needs_properties);
-        const suffix = if (suggestion) |s|
-            std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-        else
-            "";
+        const suffix = util.suggestionSuffix(alloc, suggestion);
         const message = std.fmt.allocPrint(
             alloc,
             "unknown property \"{s}\" on \"needs.{s}\"{s}",
@@ -162,7 +158,7 @@ const NeedsVisitor = struct {
         const message = std.fmt.allocPrint(
             alloc,
             "output \"{s}\" is not defined in job \"{s}\"{s}",
-            .{ output, dep.id, suggestionSuffix(alloc, nearest) },
+            .{ output, dep.id, util.suggestionSuffix(alloc, nearest) },
         ) catch return;
 
         self.list.append(.{
@@ -192,11 +188,6 @@ const NeedsVisitor = struct {
     }
 };
 
-fn suggestionSuffix(alloc: std.mem.Allocator, suggestion: ?[]const u8) []const u8 {
-    const near = suggestion orelse return "";
-    return std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{near}) catch "";
-}
-
 fn isKnownProperty(name: []const u8) bool {
     for (needs_properties) |known| {
         if (std.ascii.eqlIgnoreCase(known, name)) return true;
@@ -204,16 +195,8 @@ fn isKnownProperty(name: []const u8) bool {
     return false;
 }
 
-/// Only plain identifiers are checked: a computed or globbed segment
+/// Only a dotted identifier is checked: a computed or globbed segment
 /// (`needs['a']`, `needs.*`) has no literal name to compare.
-fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
-    const seg = segment orelse return null;
-    return switch (seg) {
-        .ident => |name| name,
-        .star, .index_string => null,
-    };
-}
-
 fn checkNeedsContext(wf: *const Workflow, list: *DiagnosticList) void {
     var arena = std.heap.ArenaAllocator.init(list.allocator);
     defer arena.deinit();
@@ -242,39 +225,18 @@ pub const rules = [_]Rule{
 
 const testing = std.testing;
 
+const workflow_check: test_support.Check = .{ .workflow = &checkNeedsContext };
+
 fn diagnose(arena: std.mem.Allocator, source: []const u8, list: *DiagnosticList) !void {
-    const wf = try test_support.parseWorkflowSource(arena, source);
-    checkNeedsContext(&wf, list);
+    try test_support.lintSourceAlloc(arena, source, workflow_check, list);
 }
 
 fn expectNoDiagnostics(source: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-
-    try diagnose(arena.allocator(), source, &list);
-    if (list.len() != 0) {
-        std.debug.print("unexpected diagnostic: {s}\n", .{list.get(0).message});
-        return error.UnexpectedDiagnostic;
-    }
+    try test_support.expectNoDiagnostics(source, workflow_check);
 }
 
 fn expectMessage(source: []const u8, needle: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-
-    try diagnose(arena.allocator(), source, &list);
-    try testing.expectEqual(@as(usize, 1), list.len());
-    const diag = list.get(0);
-    try testing.expectEqualStrings("EXPR012", diag.rule_id);
-    try testing.expectEqual(engine.Severity.@"error", diag.severity);
-    if (std.mem.find(u8, diag.message, needle) == null) {
-        std.debug.print("message '{s}' does not contain '{s}'\n", .{ diag.message, needle });
-        return error.UnexpectedMessage;
-    }
+    try test_support.expectMessage(source, workflow_check, "EXPR012", needle);
 }
 
 const issue_88_source =

@@ -136,12 +136,12 @@
   および `contents: write` を持つ PAT を zghalint 側の secret
   `HOMEBREW_TAP_TOKEN` に置くこと。secret が空ならジョブは `::warning::` を
   出して何もせず成功する（リリース自体は止めない）
-- 生成物の妥当性は `ci.yml` の `lint` が毎回確認する（ダミーの `SHA256SUMS` で
-  生成して `ruby -c`、およびエントリ欠落時に落ちること）
+- 生成物の妥当性は `tests/pbt/test_gen_homebrew_formula.py` が毎回確認する
+  （ダミーの `SHA256SUMS` で生成して `ruby -c`、およびエントリ欠落時に落ちること）
 
 ## 依存の更新
 
-- GitHub Actions（SHA ピン）と `tests/pbt/requirements.txt` は
+- GitHub Actions（SHA ピン）、`tests/pbt/requirements.txt`、`.github/requirements.txt` は
   `.github/dependabot.yml` により weekly でグループ化された PR が作られる
 - action の更新 PR では SHA と `# vX.Y.Z` コメントの両方が書き換わることを確認する
 - PBT の依存は `==` で固定する。Hypothesis はバージョン間で生成戦略と
@@ -158,13 +158,13 @@
 | ツール | 真 | 写し |
 |---|---|---|
 | actionlint | `.github/workflows/ci.yml` の `ACTIONLINT_VERSION` / `ACTIONLINT_SHA256`（linux amd64） | `.github/workflows/bench.yml` の同名 env（score ジョブと perf ジョブの 2 箇所） |
-| zizmor | `.github/lint-requirements.txt` の `zizmor==` | `ci.yml` と `bench.yml` がこのファイルを `pip install -r` する |
+| zizmor | `.github/requirements.txt` の `zizmor==` | `ci.yml` と `bench.yml` がこのファイルを `pip install -r` する |
 
 手順:
 
 1. actionlint は GitHub Releases の `checksums.txt` から `linux_amd64.tar.gz` の SHA256 を取る
 2. ci.yml と bench.yml（2 箇所）を同じ VERSION / SHA256 に揃える
-3. zizmor は `lint-requirements.txt` だけを上げる
+3. zizmor は `.github/requirements.txt` だけを上げる
 4. `python3 scripts/bench.py` を回し、新たな FP / FN は別 issue にする。本更新で parity 差分を黙って吸収しない
 5. `docs/design/external-linter-parity.md` §2 の版表を同じ数字に直す
 
