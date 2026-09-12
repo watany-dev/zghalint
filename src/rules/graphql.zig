@@ -160,7 +160,7 @@ pub fn batchQuery(
     const query = buildQuery(allocator, repos) catch return error.OutOfMemory;
     defer allocator.free(query);
 
-    const body = encodeRequestBody(allocator, query) catch return error.OutOfMemory;
+    const body = std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{}) catch return error.OutOfMemory;
     defer allocator.free(body);
 
     var body_sink = http_client.BoundedBody.init(allocator, http_client.max_response_bytes);
@@ -193,10 +193,6 @@ pub fn batchQuery(
         error.RateLimited => error.RateLimited,
         else => error.ParseFailed,
     };
-}
-
-fn encodeRequestBody(allocator: Allocator, query: []const u8) ![]const u8 {
-    return std.json.Stringify.valueAlloc(allocator, .{ .query = query }, .{});
 }
 
 fn parseResponse(
@@ -612,9 +608,9 @@ test "parseResponse: malformed root JSON returns ParseFailed" {
     try testing.expectError(error.ParseFailed, parseResponse(arena.allocator(), body, &repos));
 }
 
-test "encodeRequestBody escapes quotes, backslashes, and newlines" {
+test "GraphQL request body escapes quotes, backslashes, and newlines" {
     const q = "query { a \"b\" \\c\nd }";
-    const body = try encodeRequestBody(testing.allocator, q);
+    const body = try std.json.Stringify.valueAlloc(testing.allocator, .{ .query = q }, .{});
     defer testing.allocator.free(body);
     try testing.expect(std.mem.startsWith(u8, body, "{\"query\":\""));
     try testing.expect(std.mem.endsWith(u8, body, "\"}"));
