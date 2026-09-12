@@ -519,41 +519,38 @@ pub const ExprParser = struct {
         parts.appendSlice(self.allocator, first) catch return ParseError.OutOfMemory;
         var last_end: usize = first_start + first.len;
 
-        while (self.current.kind == .dot) {
-            last_end = self.current.pos + 1;
-            parts.append(self.allocator, '.') catch return ParseError.OutOfMemory;
-            self.advance();
-            if (self.current.kind == .identifier) {
-                last_end = self.current.pos + self.current.value.len;
-                parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
-                self.advance();
-            } else if (self.current.kind == .star) {
-                last_end = self.current.pos + 1;
-                parts.append(self.allocator, '*') catch return ParseError.OutOfMemory;
-                self.advance();
-            } else {
-                self.error_message = "expected property name after '.'";
-                return ParseError.UnexpectedToken;
+        while (true) {
+            switch (self.current.kind) {
+                .dot => {
+                    parts.append(self.allocator, '.') catch return ParseError.OutOfMemory;
+                    self.advance();
+                    if (self.current.kind != .identifier and self.current.kind != .star) {
+                        self.error_message = "expected property name after '.'";
+                        return ParseError.UnexpectedToken;
+                    }
+                    last_end = self.current.pos + self.current.value.len;
+                    parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
+                    self.advance();
+                },
+                .open_bracket => {
+                    self.advance();
+                    if (self.current.kind != .string_literal and self.current.kind != .number) {
+                        self.error_message = "expected string or number in bracket access";
+                        return ParseError.UnexpectedToken;
+                    }
+                    parts.append(self.allocator, '[') catch return ParseError.OutOfMemory;
+                    parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
+                    parts.append(self.allocator, ']') catch return ParseError.OutOfMemory;
+                    self.advance();
+                    if (self.current.kind != .close_bracket) {
+                        self.error_message = "missing closing bracket";
+                        return ParseError.UnexpectedToken;
+                    }
+                    last_end = self.current.pos + 1;
+                    self.advance();
+                },
+                else => break,
             }
-        }
-
-        while (self.current.kind == .open_bracket) {
-            self.advance();
-            if (self.current.kind == .string_literal) {
-                parts.append(self.allocator, '[') catch return ParseError.OutOfMemory;
-                parts.appendSlice(self.allocator, self.current.value) catch return ParseError.OutOfMemory;
-                parts.append(self.allocator, ']') catch return ParseError.OutOfMemory;
-                self.advance();
-            } else {
-                self.error_message = "expected string in bracket access";
-                return ParseError.UnexpectedToken;
-            }
-            if (self.current.kind != .close_bracket) {
-                self.error_message = "missing closing bracket";
-                return ParseError.UnexpectedToken;
-            }
-            last_end = self.current.pos + 1;
-            self.advance();
         }
 
         const path = parts.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
@@ -3804,4 +3801,24 @@ test "typeOf: logical operators merge operand types" {
     var parser = ExprParser.init(arena.allocator(), "github.sha || github.ref");
     const node = try parser.parse();
     try std.testing.expectEqual(expr_type.TypeKind.string, expr_check.typeOf(&node, &expr_check.TypeEnv.empty).kind);
+}
+
+test "parser: context paths alternate numeric and string indices with properties" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{
+        "github.event.workflow_run.pull_requests[0].number",
+        "github.event['workflow_run'].pull_requests[0]['head'].ref",
+        "github.event.items[0][1].name",
+    }) |source| {
+        var parser = ExprParser.init(arena.allocator(), source);
+        const node = try parser.parse();
+        try std.testing.expectEqual(NodeKind.context_access, node.kind);
+        try std.testing.expectEqualStrings(source, node.value);
+        try std.testing.expectEqual(@as(u32, @intCast(source.len)), node.end_byte);
+    }
+    for ([_][]const u8{ "github.event.items[0", "github.event.items[]", "github.event.items[true]", "github.event.items[0]." }) |source| {
+        var parser = ExprParser.init(arena.allocator(), source);
+        try std.testing.expectError(ParseError.UnexpectedToken, parser.parse());
+    }
 }

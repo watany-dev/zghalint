@@ -92,6 +92,9 @@ rule IDs may still be renumbered before 1.0.
 
 ### Fixed
 
+- EXPR001 accepts numeric context indices and mixed dot/bracket paths such as
+  `github.event.workflow_run.pull_requests[0].number` (#424).
+
 - A `steps:` holding a mapping instead of a sequence no longer aborts the
   workflow parse and silences every diagnostic in the file. It now reports
   SYN004 and parsing continues, the same treatment `services:` and

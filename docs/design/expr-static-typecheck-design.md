@@ -378,6 +378,7 @@ pub const Segment = union(enum) {
     ident: []const u8,
     star,
     index_string: []const u8,
+    index_number,
 };
 
 pub fn walkPath(path: []const u8, env: *const TypeEnv) TypeRef {
@@ -391,6 +392,7 @@ fn applySegment(recv: TypeRef, seg: Segment) TypeRef {
         .ident => |name| return derefProp(recv, name),
         .star => return objectFilter(recv),
         .index_string => |key| return indexString(recv, key),
+        .index_number => return if (recv.kind == .array) recv.elem orelse any else any,
     }
 }
 ```
@@ -420,7 +422,7 @@ fn applySegment(recv: TypeRef, seg: Segment) TypeRef {
 - array → 文字列添字は GitHub では通常使われない。V1 は `any` + 診断なし（誤検出回避）
 - それ以外 → EXPR003、結果 `any`
 
-数値添字 `arr[0]` は現行パーサが弾く（EXPR001）。型規則だけ先に定義する: receiver が array なら `elem`、object なら `any`（キーが静的に不明）、それ以外は EXPR003。パーサ拡張は Follow-up。
+数値添字 `arr[0]` は #424 でコンテキストパスでも受理する。文字列添字とドットアクセスを交互に使える。数値添字の receiver が array なら `elem`、それ以外は `any` に倒す。文字列キーと数値添字は `Segment` で区別する。
 
 ### 6. 比較規則（EXPR017 / ADR D6）
 

@@ -35,11 +35,12 @@ pub const Segment = union(enum) {
     ident: []const u8,
     star,
     index_string: []const u8,
+    index_number,
 
     pub fn name(self: Segment) ?[]const u8 {
         return switch (self) {
             .ident, .index_string => |n| n,
-            .star => null,
+            .star, .index_number => null,
         };
     }
 
@@ -48,7 +49,7 @@ pub const Segment = union(enum) {
     pub fn plainIdent(self: Segment) ?[]const u8 {
         return switch (self) {
             .ident => |n| n,
-            .star, .index_string => null,
+            .star, .index_string, .index_number => null,
         };
     }
 };
@@ -71,6 +72,7 @@ pub const SegmentIter = struct {
             const raw = self.path[self.pos + 1 .. close];
             self.pos = close + 1;
             self.prev_end = self.pos;
+            if (raw.len > 0 and raw[0] != '\'' and raw[0] != '"') return .index_number;
             return Segment{ .index_string = stripQuotes(raw) };
         }
 
@@ -171,6 +173,7 @@ fn applySegment(recv: TypeRef, seg: Segment, receiver_path: []const u8, origin: 
         .ident => |name| derefProp(recv, name, receiver_path, origin),
         .star => objectFilter(recv, receiver_path),
         .index_string => |key| indexString(recv, key, receiver_path, origin),
+        .index_number => .{ .ty = if (recv.kind == .array) recv.elem orelse any else any },
     };
 }
 
@@ -575,4 +578,15 @@ test "Segment.name accepts ident and index, not star" {
     try testing.expectEqual(@as(?[]const u8, null), (@as(Segment, .star)).name());
     try testing.expectEqualStrings("a", (Segment{ .ident = "a" }).plainIdent().?);
     try testing.expectEqual(@as(?[]const u8, null), (Segment{ .index_string = "b" }).plainIdent());
+}
+
+test "numeric context index preserves array element type" {
+    var iter = SegmentIter{ .path = "github.event.items[0].name" };
+    _ = iter.next();
+    _ = iter.next();
+    _ = iter.next();
+    try testing.expectEqual(Segment.index_number, iter.next().?);
+    try testing.expectEqualStrings("name", iter.next().?.ident);
+    try testing.expectEqual(&t.type_string, applySegment(&t.type_array_string, .index_number, "", .builtin).ty);
+    try testing.expectEqual(any, applySegment(&t.type_any, .index_number, "", .builtin).ty);
 }
