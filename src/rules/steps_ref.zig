@@ -238,7 +238,7 @@ fn scanStepTree(step: *const Step, resolver: Resolver) void {
     for (step.nestedSteps()) |*child| scanStepTree(child, resolver);
 }
 
-pub const step_reference_rule = Rule{
+const step_reference_rule = Rule{
     .id = "EXPR010",
     .name = "undefined-step-reference",
     .description = "`steps.<id>` must name a step defined earlier in the same job",

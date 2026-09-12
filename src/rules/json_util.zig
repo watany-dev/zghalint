@@ -15,14 +15,14 @@ pub fn asObject(value: Value) ?ObjectMap {
     };
 }
 
-pub fn asString(value: Value) ?[]const u8 {
+fn asString(value: Value) ?[]const u8 {
     return switch (value) {
         .string => |s| s,
         else => null,
     };
 }
 
-pub fn asArray(value: Value) ?[]const Value {
+fn asArray(value: Value) ?[]const Value {
     return switch (value) {
         .array => |a| a.items,
         else => null,
