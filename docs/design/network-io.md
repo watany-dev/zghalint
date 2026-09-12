@@ -286,7 +286,7 @@ main.zig
   ├─ prefetchNetworkData
   │    ├─ 全 workflow を YAML → Workflow へ parse（捨て用 arena）
   │    └─ prefetchAllWithOptions
-  │         ├─ advisory.prefetch()
+  │         ├─ advisory.ensureLoaded()
   │         ├─ collectRefs → {repos, sha_refs, named_refs}
   │         ├─ applyDiskCache
   │         │    └─ repo ごとに disk_cache.load → applyCacheEntry で
@@ -356,7 +356,7 @@ main.zig
   == "RATE_LIMITED"` で `error.RateLimited`（データ併存時も含む）、100 件
   タグノードでページ上限フォールバック、非 bool `isArchived`、malformed
   JSON。
-- `graphql.encodeRequestBody`: `"` / `\` / `\n` のエスケープ。
+- GraphQL リクエストの `std.json.Stringify.valueAlloc`: `"` / `\` / `\n` のエスケープ。
 - `graphql.batchQuery`: 空入力の短絡。
 - `disk_cache.isFresh`: 範囲内 / 期限切れ / 未来タイムスタンプ。
 - `disk_cache.loadFromDir`/`saveToDir`: `std.testing.tmpDir` を使った

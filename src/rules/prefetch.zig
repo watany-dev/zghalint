@@ -75,7 +75,7 @@ pub fn prefetchAllWithOptions(
     workflows: []const Workflow,
     opts: Options,
 ) !void {
-    advisory.prefetch();
+    advisory.ensureLoaded();
 
     const active = ActiveRules.detect();
     if (!active.any()) return;
