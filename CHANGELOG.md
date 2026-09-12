@@ -22,6 +22,10 @@ each ID means.
 
 ### Added
 
+- SEC014 offers an unsafe fix for a whole `if:` condition comparing
+  `github.actor` or `github.triggering_actor` to a bot name with `==` / `!=`.
+  It preserves YAML quotes and expression wrappers, replacing the comparison
+  with `github.event.sender.type` and the generic `Bot` type (#413).
 - SYN012 offers an unsafe fix that removes the later conflicting branch, tag,
   or path filter while keeping the earlier one (#412). Guarded flow-mapping
   deletion spans are shared with SYN011; uncertain or anchored ranges are skipped.

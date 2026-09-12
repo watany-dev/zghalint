@@ -1,0 +1,23 @@
+# zghalint:expect SEC014
+name: bot checks
+on: push
+concurrency: test
+permissions: {}
+jobs:
+  bot:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wrapped reverse comparison
+        if: ${{ 'renovate[bot]' != github.triggering_actor }}
+        run: echo hi
+      - name: Double quoted
+        if: "github.actor == 'service[bot]'"
+        run: echo hi
+      - name: Single quoted
+        if: 'github.actor == ''service[bot]'''
+        run: echo hi
+      - name: Compound condition
+        if: github.actor == 'dependabot[bot]' && success()
+        run: echo hi

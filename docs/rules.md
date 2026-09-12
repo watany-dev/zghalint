@@ -44,7 +44,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |
 | SEC012 | unredacted-secrets | error | Secrets processed via `toJSON()`/`fromJSON()` bypass masking and may be exposed in logs |
 | SEC013 | hardcoded-container-credentials | error | Plaintext `username` / `password` in `container.credentials` / `services.*.credentials`. `${{ }}` expressions (including `github.actor` + `secrets.GITHUB_TOKEN`, the documented GHCR login) are not hardcoded |
-| SEC014 | bot-conditions | warning | Bot account checks using `github.actor` are spoofable |
+| SEC014 | bot-conditions | warning | Bot account checks using `github.actor` are spoofable（単純比較は `--fix-unsafe` で `github.event.sender.type` 比較へ置換） |
 | SEC015 | artipacked | warning | Checkout with persisted credentials followed by `upload-artifact` can leak `GITHUB_TOKEN` |
 | SEC016 | cache-poisoning | warning | Cache usage in release/deploy workflows risks cache poisoning attacks |
 | SEC017 | insecure-commands | warning | `ACTIONS_ALLOW_UNSECURE_COMMANDS` re-enables deprecated insecure workflow commands |
@@ -56,6 +56,14 @@ Detect security vulnerabilities in workflow definitions.
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 | SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
 
+### SEC014 の自動修正
+
+SEC014 の `--fix-unsafe` は、`if:` 全体が `github.actor` または
+`github.triggering_actor` と `'…[bot]'` の `==` / `!=` 比較である場合に、
+`github.event.sender.type == 'Bot'` / `!= 'Bot'` へ置き換える。左右の順序は
+どちらでもよく、plain / quoted scalar と `${{ }}` を保持する。特定 bot 名から
+汎用の bot 判定へ意味が変わるため unsafe。AND / OR を含む条件、`contains()`、
+block scalar、ソース位置を取得できない条件には fix を付けない。
 ### SEC002 と真偽値の展開
 
 SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式全体が

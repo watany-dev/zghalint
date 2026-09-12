@@ -2014,6 +2014,7 @@ fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *Diagn
                 .severity = .warning,
                 .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
                 .span = anchor.whole(),
+                .fix = buildBotConditionFix(cond, anchor, list),
                 .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
             }) catch return;
         }
@@ -2027,8 +2028,57 @@ fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
         .severity = .warning,
         .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
         .span = anchor.at(s, match.offset, match.len),
+        .fix = buildBotConditionFix(s, anchor, list),
         .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
     }) catch return;
+}
+
+fn buildBotConditionFix(cond: []const u8, anchor: Anchor, list: *DiagnosticList) ?Fix {
+    const token = anchor.scalar orelse return null;
+    const quote: []const u8 = switch (anchor.style) {
+        .plain => "",
+        .single_quoted => "'",
+        .double_quoted => "\"",
+        .literal, .folded => return null,
+    };
+    const alloc = list.fixAllocator();
+    // Scalar values retain YAML escapes; parse the expression after unescaping
+    // the surrounding single-quoted YAML scalar.
+    const decoded = if (anchor.style == .single_quoted)
+        std.mem.replaceOwned(u8, alloc, cond, "''", "'") catch return null
+    else
+        cond;
+    var parser = expressions.ExprParser.init(alloc, conditionExpressionSource(decoded));
+    const root = parser.parse() catch return null;
+    if (root.kind != .binary_op or root.children.len != 2) return null;
+    if (!std.mem.eql(u8, root.value, "==") and !std.mem.eql(u8, root.value, "!=")) return null;
+    const actor, const bot = if (root.children[0].kind == .context_access)
+        .{ root.children[0], root.children[1] }
+    else
+        .{ root.children[1], root.children[0] };
+    if (actor.kind != .context_access or bot.kind != .string_literal) return null;
+    if (!std.ascii.eqlIgnoreCase(actor.value, "github.actor") and
+        !std.ascii.eqlIgnoreCase(actor.value, "github.triggering_actor")) return null;
+    if (!std.mem.endsWith(u8, bot.value, "[bot]'")) return null;
+
+    const bot_literal: []const u8 = if (anchor.style == .single_quoted) "''Bot''" else "'Bot'";
+    const wrapped = std.mem.startsWith(u8, std.mem.trim(u8, decoded, " \t\r\n"), "${{");
+    const replacement = std.fmt.allocPrint(alloc, "{s}{s}github.event.sender.type {s} {s}{s}{s}", .{
+        quote, if (wrapped) "${{ " else "", root.value, bot_literal, if (wrapped) " }}" else "", quote,
+    }) catch return null;
+    const expected = std.mem.concat(alloc, u8, &.{ quote, cond, quote }) catch return null;
+    if (token.end_byte < token.start_byte or token.end_byte - token.start_byte != expected.len) return null;
+    const edits = alloc.dupe(Edit, &.{.{
+        .start_byte = token.start_byte,
+        .end_byte = token.end_byte,
+        .replacement = replacement,
+        .expects = expected,
+    }}) catch return null;
+    return .{
+        .description = "replace the named bot comparison with a generic sender type check",
+        .safety = .unsafe,
+        .edits = edits,
+    };
 }
 
 fn isActorBotExpr(inner: []const u8) bool {
@@ -5290,6 +5340,28 @@ test "SEC014: safe condition with github.ref (no false positive)" {
     var list = runStep(.{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: autofix refuses compound, unsupported, or unlocated conditions" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    for ([_][]const u8{
+        "github.actor == 'dependabot[bot]' && success()",
+        "github.actor == 'dependabot[bot]' || failure()",
+        "contains(github.actor, '[bot]')",
+        "github.actor == 'octocat'",
+        "github.actor == 'dependabot[bot]' + 1",
+        "${{ github.actor == 'dependabot[bot]' }} extra",
+    }) |cond| {
+        var token = Span.point(1, 1, 0);
+        token.end_byte = cond.len;
+        try testing.expect(buildBotConditionFix(cond, .{ .scalar = token, .fallback = token }, &list) == null);
+    }
+    const cond = "github.actor == 'dependabot[bot]'";
+    const point = Span.point(1, 1, 0);
+    try testing.expect(buildBotConditionFix(cond, .{ .fallback = point }, &list) == null);
+    try testing.expect(buildBotConditionFix(cond, .{ .scalar = point, .fallback = point }, &list) == null);
+    try testing.expect(buildBotConditionFix(cond, .{ .scalar = point, .fallback = point, .style = .folded }, &list) == null);
 }
 
 test "containsActorBotCheck detects actor with bot pattern" {
