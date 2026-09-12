@@ -482,7 +482,7 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| EXPR001 | invalid-syntax | error | Empty expression, syntax error, or nesting deeper than 256 levels in `${{ }}` |
+| EXPR001 | invalid-syntax | error | Empty expression, syntax error, or nesting deeper than 256 levels in `${{ }}`; context paths accept numeric/string brackets mixed with dot access |
 | EXPR002 | unknown-context | error | Unknown context reference (e.g. `${{ foo.bar }}`) |
 | EXPR003 | unknown-property | warning | Unknown context property at any depth (e.g. `${{ github.unknown }}`, `${{ job.container.i }}`) |
 | EXPR004 | unknown-function | error | Unknown function name |

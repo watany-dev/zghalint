@@ -134,7 +134,7 @@ const ContextVisitor = struct {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = switch (iter.next() orelse return) {
             .ident => |name| name,
-            .star, .index_string => return,
+            .star, .index_string, .index_number => return,
         };
         // A context nobody knows is EXPR002's finding, not this rule's.
         // Context names are case-insensitive on GitHub, and `lookupContext` is

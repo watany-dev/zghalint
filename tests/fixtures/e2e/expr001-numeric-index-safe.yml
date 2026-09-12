@@ -1,0 +1,12 @@
+# zghalint:forbid EXPR001 SEC002
+name: numeric-index
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.event.workflow_run.pull_requests[0].number }}"

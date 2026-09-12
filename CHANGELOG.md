@@ -112,6 +112,8 @@ rule IDs may still be renumbered before 1.0.
 
 ### Fixed
 
+- EXPR001 accepts numeric context indices and mixed dot/bracket paths such as
+  `github.event.workflow_run.pull_requests[0].number` (#424).
 - DEP003 accepts scoped local action paths such as `./tools/@scope/tool` and
   `$/tools/@scope/tool`, while still rejecting `tool@v1` ref suffixes (#425).
 
