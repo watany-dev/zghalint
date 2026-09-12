@@ -765,18 +765,16 @@ const privileged_pr_head_events = [_]EventType{
 };
 
 fn hasPrivilegedPRHeadTrigger(wf: *const Workflow) bool {
-    return privilegedPRHeadMessage(wf) != null;
+    inline for (privileged_pr_head_events) |event| {
+        if (wf.hasEvent(event)) return true;
+    }
+    return false;
 }
 
-/// The SEC005 message for the first such trigger the workflow declares, or
-/// null when it declares none. The trigger is named in the text so a
-/// `pull_request_review` finding does not read as if it were about
-/// `pull_request_target`.
+/// The SEC005 message for the first such trigger the workflow declares.
+/// The trigger is named in the text so a `pull_request_review` finding
+/// does not read as if it were about `pull_request_target`.
 const PrHeadKind = enum { exploit, refused, bypassed };
-
-fn privilegedPRHeadMessage(wf: *const Workflow) ?[]const u8 {
-    return privilegedPRHeadMessageKind(wf, .exploit);
-}
 
 fn privilegedPRHeadMessageKind(wf: *const Workflow, kind: PrHeadKind) ?[]const u8 {
     inline for (privileged_pr_head_events) |event| {
@@ -800,7 +798,7 @@ fn checkoutGateCoversPrivilegedPrHead(wf: *const Workflow) bool {
 }
 
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
-    if (privilegedPRHeadMessage(wf) == null) return;
+    if (!hasPrivilegedPRHeadTrigger(wf)) return;
     const gate_covers = checkoutGateCoversPrivilegedPrHead(wf);
 
     for (wf.jobs) |*job| {

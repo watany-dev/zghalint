@@ -17,9 +17,7 @@ const Step = workflow_types.Step;
 pub const UnsafePrCheckout = enum {
     /// No metadata, or an expression so the runtime flag is unknown.
     unknown,
-    /// The action declares the gate and the caller did not set it true.
     blocked,
-    /// The action declares the gate and the caller set it true.
     bypassed,
 };
 
@@ -36,7 +34,7 @@ pub fn unsafePrCheckout(step: *const Step) UnsafePrCheckout {
     if (!popular_actions.hasInput(meta, "allow-unsafe-pr-checkout")) return .unknown;
     return switch (allowUnsafeFlag(step)) {
         .on => .bypassed,
-        .off, .absent => .blocked,
+        .absent => .blocked,
         .unknown => .unknown,
     };
 }
@@ -56,14 +54,12 @@ fn pathReachesRunnerTemp(value: []const u8) bool {
         std.mem.find(u8, value, "runner.temp") != null;
 }
 
-const AllowUnsafe = enum { on, off, absent, unknown };
+const AllowUnsafe = enum { on, absent, unknown };
 
 fn allowUnsafeFlag(step: *const Step) AllowUnsafe {
     const value = withTrimmed(step, "allow-unsafe-pr-checkout") orelse return .absent;
-    if (value.len == 0) return .absent;
+    if (value.len == 0 or std.ascii.eqlIgnoreCase(value, "false")) return .absent;
     if (std.ascii.eqlIgnoreCase(value, "true")) return .on;
-    if (std.ascii.eqlIgnoreCase(value, "false")) return .off;
-    if (std.mem.startsWith(u8, value, "${{")) return .unknown;
     return .unknown;
 }
 
