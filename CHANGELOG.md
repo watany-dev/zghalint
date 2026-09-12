@@ -53,6 +53,9 @@ each ID means.
 - SEC024 warns when `cache-mode: write` or `write-only` is declared on a
   low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
   which overrides GitHub's restore-only default. No autofix (#434).
+- `ga*.yml` e2e fixtures carry a `*.yml.meta.yml` sidecar (introduction date,
+  spec URL, valid/invalid, category, competitor support, autofix). Existing
+  non-`ga*` fixtures are unchanged (#441).
 
 ### Changed
 

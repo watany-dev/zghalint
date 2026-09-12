@@ -233,6 +233,7 @@ fn runFixtures(
     while (try it.next(runtime.io())) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".yml")) continue;
+        if (std.mem.endsWith(u8, entry.name, ".meta.yml")) continue;
 
         const source = try dir.readFileAlloc(runtime.io(), entry.name, alloc, .limited(256 * 1024));
         const directives = try Directives.parse(alloc, source);
