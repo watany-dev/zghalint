@@ -3,8 +3,8 @@ const yaml = @import("../yaml/types.zig");
 const workflow_types = @import("../workflow/types.zig");
 
 pub const Span = yaml.Span;
-pub const ScalarStyle = yaml.ScalarStyle;
-pub const ScalarValueMeta = workflow_types.ScalarValueMeta;
+const ScalarStyle = yaml.ScalarStyle;
+const ScalarValueMeta = workflow_types.ScalarValueMeta;
 
 /// Workflow-level findings ("this workflow is missing X") have no single
 /// offending token; they point at the head of the file.

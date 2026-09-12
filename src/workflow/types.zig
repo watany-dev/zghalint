@@ -238,7 +238,7 @@ pub const Defaults = struct {
 /// Key spans for the mutually exclusive `EventFilter` entries. A non-null
 /// field means the key appeared in the source, which the value arrays alone
 /// cannot express (`branches: []` yields an empty array but is still present).
-pub const EventFilterSpans = struct {
+const EventFilterSpans = struct {
     branches: ?yaml_types.Span = null,
     branches_ignore: ?yaml_types.Span = null,
     tags: ?yaml_types.Span = null,
@@ -412,7 +412,7 @@ pub const DispatchInputDef = struct {
     default_span: ?yaml_types.Span = null,
 };
 
-pub const WorkflowDispatchInputProblemKind = enum {
+const WorkflowDispatchInputProblemKind = enum {
     invalid_type,
     missing_options,
     empty_options,
