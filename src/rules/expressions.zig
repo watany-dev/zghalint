@@ -3822,3 +3822,13 @@ test "parser: context paths alternate numeric and string indices with properties
         try std.testing.expectError(ParseError.UnexpectedToken, parser.parse());
     }
 }
+
+test "parser: flattened numeric context paths do not grow AST depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = "github.event" ++ "[0]" ** 300;
+    var parser = ExprParser.init(arena.allocator(), source);
+    const node = try parser.parse();
+    try std.testing.expectEqual(NodeKind.context_access, node.kind);
+    try std.testing.expectEqual(@as(u16, 0), node.height);
+}

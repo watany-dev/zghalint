@@ -604,7 +604,8 @@ def deeply_nested_expression(draw: st.DrawFn) -> str:
     elif kind == "not":
         expr = "!" * depth + "true"
     else:
-        expr = "github" + "[0]" * depth
+        # Context paths are flat AST leaves; indexing a call grows the tree.
+        expr = "fromJSON('[]')" + "[0]" * depth
     return (
         "name: test\n"
         "on: push\n"
