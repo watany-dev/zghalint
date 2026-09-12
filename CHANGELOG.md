@@ -13,6 +13,13 @@ each ID means.
 
 ## [Unreleased]
 
+### Fixed
+
+- SEC002 no longer treats a whole boolean-returning builtin call such as
+  `startsWith(...)`, `endsWith(...)`, or `contains(...)` as script injection.
+  String-valued expressions in the same script remain diagnosed and fixed
+  independently (#419).
+
 ### Added
 
 - ACT001 safely inserts `shell: bash` for composite `run:` steps with a missing

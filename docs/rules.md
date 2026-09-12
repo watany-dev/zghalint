@@ -56,6 +56,14 @@ Detect security vulnerabilities in workflow definitions.
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 | SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
 
+### SEC002 と真偽値の展開
+
+SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式全体が
+`startsWith(...)` / `endsWith(...)` / `contains(...)` など真偽値を返す組み込みの
+呼び出しであれば、引数の汚染値を理由に報告しない。返る値は `true` / `false`
+だけであり、引数そのものはコードへ届かない。`&&` / `||` で汚染文字列を返す
+条件式や、別の `${{ }}` にある直接参照は引き続き診断・autofix の対象になる。
+
 ### SEC016 の対象
 
 成果物を公開するワークフローだけを対象にする。`on: release` を持つもの、
