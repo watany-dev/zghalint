@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **107 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **108 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -26,7 +26,7 @@ EXPR002 / EXPR003 / EXPR004 も、既存の式カタログから最短編集距�
 長さが異なる場合は fix を付けない。プロパティはドット記法が対象。
 `github.event` 配下は従来どおり EXPR003 の対象外。
 
-対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023 / SYN024、EXPR010–EXPR014、
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023 / SYN024 / SYN025、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 
 ---
@@ -695,6 +695,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
 | SYN023 | invalid-cache-mode | error | `cache-mode` が `none` / `read` / `write` / `write-only` のいずれでもない |
 | SYN024 | undefined-step-control-ref | error | `wait` / `cancel` がこのジョブに無い step id を指している（`--fix` で綴りを修正） |
+| SYN025 | invalid-concurrency-configuration | error | `concurrency.queue` が `single` / `max` でない、または `queue: max` と `cancel-in-progress: true` が同時に指定されている |
 
 ### SYN001 unknown-key
 
@@ -1200,6 +1201,32 @@ steps:
 ```
 
 SYN006 が既に拒否する不正な id と、`${{ }}` 式で作った値はここでは見ない。
+
+### SYN025 invalid-concurrency-configuration
+
+`concurrency.queue` は 2026-05-07 から使える。受理されるのは `single`（既定）と
+`max`（同じグループに最大 100 件まで pending を積む）だけ。未知の値は実行時に
+拒否されるので error とし、編集距離 2 以内で候補が一意なら `did you mean` と
+`--fix` の rename を付ける。
+
+`queue: max` と `cancel-in-progress: true` は GitHub がワークフロー検証で拒否する
+組み合わせなので、同じブロックに両方あるときも error とする。矛盾するキーの
+削除は実行意味が変わるため autofix は付けない。`cancel-in-progress: false` か
+省略との組み合わせ、および `queue: single` との組み合わせは合法。
+
+```yaml
+concurrency:
+  group: deploy-production
+  queue: max
+  cancel-in-progress: true   # error: cannot combine with queue: max
+
+concurrency:
+  group: ci
+  queue: huge                # error: expected "single" or "max"
+```
+
+`${{ }}` 式で作った `queue` / `cancel-in-progress` は実行時まで決まらないので
+検査しない。deploy ジョブへ `queue: max` を強制するスタイルルールにはしない。
 
 ## Action Metadata Rules (ACT)
 

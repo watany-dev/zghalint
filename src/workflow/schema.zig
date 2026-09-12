@@ -129,6 +129,12 @@ pub const strategy_keys = [_][]const u8{
     "max-parallel",
 };
 
+pub const concurrency_keys = [_][]const u8{
+    "cancel-in-progress",
+    "group",
+    "queue",
+};
+
 const defaults_keys = [_][]const u8{
     "run",
 };
@@ -271,6 +277,14 @@ pub const UnknownKeyCollector = struct {
         }
     }
 
+    pub fn checkConcurrency(self: *UnknownKeyCollector, node: yaml.Node) !void {
+        const m = switch (node) {
+            .mapping => |mp| mp,
+            else => return,
+        };
+        try self.checkMapping(m, "concurrency", &concurrency_keys, &.{});
+    }
+
     pub fn checkDefaults(self: *UnknownKeyCollector, node: yaml.Node) !void {
         const m = switch (node) {
             .mapping => |mp| mp,
@@ -312,6 +326,7 @@ test "schema key tables are sorted" {
         &step_parallel_keys,
         &step_all_keys,
         &strategy_keys,
+        &concurrency_keys,
         &defaults_keys,
         &defaults_run_keys,
         &container_keys,
@@ -329,6 +344,8 @@ test "isAllowedKey exact match" {
     try std.testing.expect(isAllowedKey("runs-on", &job_keys));
     try std.testing.expect(isAllowedKey("cache-mode", &workflow_keys));
     try std.testing.expect(isAllowedKey("cache-mode", &job_keys));
+    try std.testing.expect(isAllowedKey("queue", &concurrency_keys));
+    try std.testing.expect(isAllowedKey("cancel-in-progress", &concurrency_keys));
     try std.testing.expect(!isAllowedKey("runs-on", &step_run_keys));
     try std.testing.expect(!isAllowedKey("Shell", &step_run_keys));
     try std.testing.expect(!isAllowedKey(workflow_on_key_alias, &workflow_keys));

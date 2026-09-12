@@ -1265,6 +1265,57 @@ fn checkCacheMode(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
+fn reportInvalidConcurrencyQueue(
+    list: *DiagnosticList,
+    value: []const u8,
+    span: Span,
+) void {
+    const suggestion = util.didYouMean(value, &workflow_types.concurrency_queue_values);
+    const suffix = util.suggestionSuffix(list.fixAllocator(), suggestion);
+
+    list.append(.{
+        .rule_id = "SYN025",
+        .severity = .@"error",
+        .message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "invalid concurrency queue \"{s}\". expected \"single\" or \"max\"{s}",
+            .{ value, suffix },
+        ) catch "invalid concurrency queue",
+        .span = span,
+        .fix_hint = "use 'single' or 'max'",
+        .fix = if (suggestion) |s| rename.tokenFix(list, span, value, s) else null,
+    }) catch return;
+}
+
+fn reportConcurrencyQueueConflict(list: *DiagnosticList, span: Span) void {
+    list.append(.{
+        .rule_id = "SYN025",
+        .severity = .@"error",
+        .message = "\"queue: max\" cannot be combined with \"cancel-in-progress: true\"",
+        .span = span,
+        .fix_hint = "set 'cancel-in-progress: false', omit it, or drop 'queue: max'",
+    }) catch return;
+}
+
+fn checkOneConcurrency(c: workflow_types.Concurrency, list: *DiagnosticList) void {
+    const queue = c.queue orelse return;
+    if (type_validation.containsExpression(queue)) return;
+    if (!workflow_types.isConcurrencyQueue(queue)) {
+        if (c.queue_span) |span| reportInvalidConcurrencyQueue(list, queue, span);
+        return;
+    }
+    if (!std.mem.eql(u8, queue, "max") or c.cancel_in_progress != true) return;
+    const span = c.cancel_in_progress_span orelse c.queue_span orelse return;
+    reportConcurrencyQueueConflict(list, span);
+}
+
+fn checkConcurrencyConfiguration(wf: *const Workflow, list: *DiagnosticList) void {
+    if (wf.concurrency) |c| checkOneConcurrency(c, list);
+    for (wf.jobs) |job| {
+        if (job.concurrency) |c| checkOneConcurrency(c, list);
+    }
+}
+
 fn workflowDispatchInputMessage(
     alloc: std.mem.Allocator,
     problem: workflow_types.WorkflowDispatchInputProblem,
@@ -1524,6 +1575,14 @@ pub const rules = [_]Rule{
         .category = .syntax,
         .check_job = &checkUndefinedStepControlRefs,
     },
+    .{
+        .id = "SYN025",
+        .name = "invalid-concurrency-configuration",
+        .description = "concurrency.queue is not single or max, or queue: max is combined with cancel-in-progress: true",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkConcurrencyConfiguration,
+    },
 };
 
 const testing = std.testing;
@@ -1711,6 +1770,54 @@ test "SYN001: unknown strategy key is reported" {
     try testing.expect(std.mem.find(u8, diag.message, "fail_fast") != null);
     try testing.expect(std.mem.find(u8, diag.message, "\"strategy\"") != null);
     try testing.expect(std.mem.find(u8, diag.message, "did you mean \"fail-fast\"") != null);
+}
+
+test "SYN001: unknown concurrency key is reported" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queues: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: max
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.find(u8, diag.message, "queues") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"concurrency\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"queue\"") != null);
+}
+
+test "SYN001: documented concurrency keys are clean" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  cancel-in-progress: false
+        \\  queue: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
 test "SYN001: unknown container key is reported" {
@@ -3022,6 +3129,23 @@ test "SYN004: mapping value type validation" {
             \\      - run: echo hi
             ,
             .want = 2,
+        },
+        .{
+            .name = "non-scalar concurrency queue",
+            .source =
+            \\on: push
+            \\concurrency:
+            \\  group: ci
+            \\  queue:
+            \\    size: max
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 1,
+            .message_contains = "queue",
         },
         .{
             .name = "wrong node kinds",
@@ -4708,6 +4832,120 @@ test "SYN023: documented modes and expressions are clean" {
     ;
 
     var diags = try runSyn023(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn025(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkConcurrencyConfiguration(&wf, &list);
+    return list;
+}
+
+test "SYN025: unknown queue values are reported" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queue: mx
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: huge
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN025"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean \"max\"") != null);
+    try testing.expectEqual(@as(usize, 4), diags.get(0).span.start_line);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"huge\"") != null);
+    try testing.expect(diags.get(0).fix != null);
+    try testing.expect(diags.get(1).fix == null);
+}
+
+test "SYN025: queue max with cancel-in-progress true is reported" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: deploy-production
+        \\  queue: max
+        \\  cancel-in-progress: true
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: job-deploy
+        \\      queue: max
+        \\      cancel-in-progress: true
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN025"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "cancel-in-progress") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN025: documented queue values and expressions are clean" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queue: max
+        \\  cancel-in-progress: false
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: max
+        \\    steps:
+        \\      - run: echo
+        \\  b:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: pr
+        \\      queue: single
+        \\      cancel-in-progress: true
+        \\    steps:
+        \\      - run: echo
+        \\  c:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: maybe
+        \\      queue: ${{ inputs.queue }}
+        \\      cancel-in-progress: true
+        \\    steps:
+        \\      - run: echo
+        \\  d:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: expr-cancel
+        \\      queue: max
+        \\      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+        \\    steps:
+        \\      - run: echo
+        \\  e:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency: ${{ github.workflow }}-${{ github.ref }}
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());

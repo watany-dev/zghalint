@@ -212,11 +212,30 @@ pub const PermissionProblem = struct {
     span: yaml_types.Span,
 };
 
+/// `concurrency.queue` (2026-05-07). `single` is the historical default;
+/// `max` allows up to 100 pending runs in the group.
+pub const concurrency_queue_values = [_][]const u8{ "max", "single" };
+
+pub fn isConcurrencyQueue(value: []const u8) bool {
+    for (concurrency_queue_values) |allowed| {
+        if (std.mem.eql(u8, value, allowed)) return true;
+    }
+    return false;
+}
+
 pub const Concurrency = struct {
     group: []const u8,
     /// Value span and style of the `group` scalar, so an expression inside it
     /// can be reported where it appears (EXPR015/EXPR016).
     group_meta: ?ScalarValueMeta = null,
+    /// Present only when `cancel-in-progress` is a static bool. Expressions
+    /// leave this null so SYN025 does not guess (ADR-0009).
+    cancel_in_progress: ?bool = null,
+    cancel_in_progress_span: ?yaml_types.Span = null,
+    /// `queue:` scalar as written. Invalid values are kept so SYN025 can
+    /// report them instead of dropping the key.
+    queue: ?[]const u8 = null,
+    queue_span: ?yaml_types.Span = null,
 };
 
 /// `defaults:` at workflow or job level. Only `run.shell` is modelled, since
@@ -1003,6 +1022,13 @@ test "every cache_mode_values entry has a capability" {
         try std.testing.expect(CacheCapability.fromMode(mode) != null);
         try std.testing.expect(isCacheMode(mode));
     }
+}
+
+test "isConcurrencyQueue accepts only documented values" {
+    try std.testing.expect(isConcurrencyQueue("max"));
+    try std.testing.expect(isConcurrencyQueue("single"));
+    try std.testing.expect(!isConcurrencyQueue("huge"));
+    try std.testing.expect(!isConcurrencyQueue("Max"));
 }
 
 test "resolveCacheCapability: job overrides workflow" {

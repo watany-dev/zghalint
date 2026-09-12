@@ -53,6 +53,10 @@ each ID means.
 - SEC024 warns when `cache-mode: write` or `write-only` is declared on a
   low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
   which overrides GitHub's restore-only default. No autofix (#434).
+- SYN025 reports an unknown `concurrency.queue` value and the illegal
+  combination of `queue: max` with `cancel-in-progress: true`. Documented
+  values are `single` and `max`. Unknown-value typos get a safe rename when
+  the candidate is unique. The conflicting keys are not deleted (#438).
 
 ### Changed
 
@@ -64,6 +68,9 @@ each ID means.
   `job.workflow_file_path` are known job-context properties and no longer
   fire EXPR003. They are not the same as `github.workflow_ref` /
   `github.workflow_sha` (#428).
+- `concurrency.queue` is a known key under `concurrency:`, so `queue: max`
+  no longer fires SYN001. Nested unknown keys under `concurrency:` are
+  reported as SYN001 (#438).
 - EXPR005 rejects `case()` calls with an even number of arguments. `case()` is
   pairs of `(condition, result)` plus a fallback, so the count must be odd and
   at least 3 (#429).
