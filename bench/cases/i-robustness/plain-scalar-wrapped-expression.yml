@@ -1,0 +1,16 @@
+# YAML の plain scalar は次のより深い行へ続く。`${{` と `}}` が別行になる書き方。
+# bench:forbid expression-syntax zghalint=EXPR001 zizmor=- actionlint=-
+name: build
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Print
+        env:
+          REF: ${{ github.sha
+            }}
+        run: echo ok
