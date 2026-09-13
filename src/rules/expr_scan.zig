@@ -5,10 +5,11 @@
 //! context paths inside it against workflow data. Only the resolution differs,
 //! so the walk lives here and the caller supplies a visitor with an `alloc`
 //! field backing the expression parse trees and either or both of
-//! `checkPath(path, span)` and `checkCall(name, span)`.
+//! `checkPath(path, loc)` and `checkCall(name, loc)`.
 //!
-//! Spans are node-precise: a path is reported at its own byte range inside the
-//! scalar, not at the whole step.
+//! `Loc` is unresolved: `Anchor.at` only runs when the visitor emits a
+//! diagnostic (#527). Paths are node-precise: a finding points at the path's
+//! own byte range inside the scalar, not at the whole step.
 
 const std = @import("std");
 const expressions = @import("expressions.zig");
@@ -20,6 +21,19 @@ const Step = workflow_types.Step;
 const Span = spans.Span;
 const Anchor = spans.Anchor;
 const ExprNode = expressions.ExprNode;
+
+/// Byte range of a path or call inside a scalar. `resolve` runs `Anchor.at`
+/// only for a finding (#527).
+pub const Loc = struct {
+    anchor: Anchor,
+    text: []const u8,
+    offset: usize,
+    len: usize,
+
+    pub fn resolve(self: Loc) Span {
+        return self.anchor.at(self.text, self.offset, self.len);
+    }
+};
 
 fn Walk(comptime Visitor: type) type {
     return struct {
@@ -40,23 +54,28 @@ fn Walk(comptime Visitor: type) type {
             }
         }
 
-        fn spanOf(self: Self, node: *const ExprNode) Span {
+        fn locOf(self: Self, node: *const ExprNode) Loc {
             const start = self.expr_offset + node.start_byte;
             const len = if (node.end_byte > node.start_byte) node.end_byte - node.start_byte else 0;
-            return self.anchor.at(self.text, start, len);
+            return .{
+                .anchor = self.anchor,
+                .text = self.text,
+                .offset = start,
+                .len = len,
+            };
         }
 
         fn walk(self: Self, node: *const ExprNode) void {
             switch (node.kind) {
                 .context_access => {
                     if (@hasDecl(Visitor, "checkPath")) {
-                        self.visitor.checkPath(node.value, self.spanOf(node));
+                        self.visitor.checkPath(node.value, self.locOf(node));
                     }
                     return;
                 },
                 .function_call => {
                     if (@hasDecl(Visitor, "checkCall")) {
-                        self.visitor.checkCall(node.value, self.spanOf(node));
+                        self.visitor.checkCall(node.value, self.locOf(node));
                     }
                 },
                 else => {},
@@ -170,4 +189,26 @@ fn scanStepTree(visitor: anytype, steps: []const Step) void {
         scanStep(visitor, step);
         scanStepTree(visitor, step.nestedSteps());
     }
+}
+
+test "Loc.resolve matches Anchor.at" {
+    const token = Span{
+        .start_line = 3,
+        .start_col = 9,
+        .end_line = 3,
+        .end_col = 24,
+        .start_byte = 100,
+        .end_byte = 115,
+    };
+    const value = "github.head_ref";
+    const loc = Loc{
+        .anchor = Anchor.fromMeta(.{ .value_span = token, .style = .plain }, Span.point(1, 1, 0)),
+        .text = value,
+        .offset = 7,
+        .len = 8,
+    };
+    const s = loc.resolve();
+    try std.testing.expectEqual(@as(u32, 3), s.start_line);
+    try std.testing.expectEqual(@as(u32, 16), s.start_col);
+    try std.testing.expectEqual(@as(usize, 107), s.start_byte);
 }

@@ -36,7 +36,7 @@ const NeedsVisitor = struct {
     /// The hook `expr_scan` calls for every context access it finds. The span
     /// covers the path alone, which is what lets a rename land on one of its
     /// segments.
-    pub fn checkPath(self: NeedsVisitor, path: []const u8, span: Span) void {
+    pub fn checkPath(self: NeedsVisitor, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = (iter.next() orelse return).plainIdent() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "needs")) return;
@@ -47,7 +47,7 @@ const NeedsVisitor = struct {
 
         const target = self.findJob(job_id);
         if (!self.isNeeded(job_id)) {
-            self.reportNotNeeded(path, job_id, target != null, span);
+            self.reportNotNeeded(path, job_id, target != null, loc.resolve());
             return;
         }
         // A `needs:` entry naming no job is a workflow-level problem, not an
@@ -56,7 +56,7 @@ const NeedsVisitor = struct {
 
         const property = (iter.next() orelse return).plainIdent() orelse return;
         if (!isKnownProperty(property)) {
-            self.reportUnknownProperty(path, job_id, property, span);
+            self.reportUnknownProperty(path, job_id, property, loc.resolve());
             return;
         }
         if (!std.ascii.eqlIgnoreCase(property, "outputs")) return;
@@ -68,7 +68,7 @@ const NeedsVisitor = struct {
         for (dep.outputs) |declared| {
             if (std.ascii.eqlIgnoreCase(declared.name, output)) return;
         }
-        self.reportUnknownOutput(path, dep, output, span);
+        self.reportUnknownOutput(path, dep, output, loc.resolve());
     }
 
     fn findJob(self: NeedsVisitor, job_id: []const u8) ?*const Job {

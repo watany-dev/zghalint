@@ -8,7 +8,6 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const expr_check = @import("expr_check.zig");
 const expr_scan = @import("expr_scan.zig");
-const diagnostics = @import("../diagnostics.zig");
 const test_support = @import("../test_support.zig");
 
 const workflow_types = @import("../workflow/types.zig");
@@ -18,7 +17,6 @@ const Job = engine.Job;
 const Step = engine.Step;
 const StepControl = workflow_types.StepControl;
 const DiagnosticList = engine.DiagnosticList;
-const Span = diagnostics.Span;
 
 fn containsId(ids: []const []const u8, id: []const u8) bool {
     for (ids) |candidate| {
@@ -67,7 +65,7 @@ const Visitor = struct {
         return containsId(self.pending, id) or containsId(self.extra, id);
     }
 
-    pub fn checkPath(self: Visitor, path: []const u8, span: Span) void {
+    pub fn checkPath(self: Visitor, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "steps")) return;
@@ -88,7 +86,7 @@ const Visitor = struct {
             .rule_id = "EXPR019",
             .severity = .warning,
             .message = message,
-            .span = span,
+            .span = loc.resolve(),
             .fix_hint = "wait for the referenced step before reading its outputs",
         }) catch return;
     }

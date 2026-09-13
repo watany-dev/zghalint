@@ -917,10 +917,7 @@ pub const Parser = struct {
             const is_block = (scalar.style == .literal or scalar.style == .folded) and at_line_start;
             var end_byte = scalar.span.end_byte;
             if (!is_block) {
-                while (end_byte < self.source.len and self.source[end_byte] != '\n') {
-                    end_byte += 1;
-                }
-                if (end_byte < self.source.len) end_byte += 1;
+                end_byte = self.scanLineEndInclusive(end_byte);
             }
             // Junk left on the value's line is normally contained by it, so the
             // newline ends the entry. A token that opens on the line and closes
@@ -1178,10 +1175,9 @@ pub const Parser = struct {
     }
 
     fn scanLineEndInclusive(self: *Parser, start: usize) usize {
-        var end = start;
-        while (end < self.source.len and self.source[end] != '\n') end += 1;
-        if (end < self.source.len and self.source[end] == '\n') end += 1;
-        return end;
+        if (start >= self.source.len) return start;
+        const nl = std.mem.findScalarPos(u8, self.source, start, '\n') orelse return self.source.len;
+        return nl + 1;
     }
 
     fn lineIndentAt(self: *Parser, at: usize) u32 {
@@ -1192,11 +1188,10 @@ pub const Parser = struct {
     }
 
     fn lineStartByte(self: *Parser, byte_offset: usize) usize {
-        var start = byte_offset;
-        while (start > 0 and self.source[start - 1] != '\n') {
-            start -= 1;
-        }
-        return start;
+        if (byte_offset == 0) return 0;
+        const prefix = self.source[0..@min(byte_offset, self.source.len)];
+        if (std.mem.findScalarLast(u8, prefix, '\n')) |i| return i + 1;
+        return 0;
     }
 };
 
