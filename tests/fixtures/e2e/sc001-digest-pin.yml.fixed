@@ -1,0 +1,17 @@
+# zghalint:expect SC001@12 SC001@15 SC001@17
+# #417: `--fix` pins Docker Hub tags to the digest the e2e harness stored.
+# Unsupported registries and `--offline` are covered by unit tests.
+name: sc001 digest pin
+on: push
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: alpine@sha256:1c4eef651f65e2f7daee7ea7320b2504cd83545e8f5da6c45b8c4911eb1aea61 # 3.19
+    services:
+      redis:
+        image: redis@sha256:1c4eef651f65e2f7daee7ea7320b2504cd83545e8f5da6c45b8c4911eb1aea61 # 7
+    steps:
+      - uses: docker://alpine@sha256:1c4eef651f65e2f7daee7ea7320b2504cd83545e8f5da6c45b8c4911eb1aea61 # 3.19

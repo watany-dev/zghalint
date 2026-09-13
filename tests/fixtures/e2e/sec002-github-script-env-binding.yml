@@ -1,0 +1,25 @@
+# zghalint:expect SEC002@21 SEC002@25
+# #416: `--fix-unsafe` binds a lone JS string in github-script `script:` to
+# the step's `env:` and reads it as `process.env`. `--fix` (safe only) leaves
+# the file unchanged. Mixed strings and bare embeddings are covered by unit tests.
+name: github-script env binding
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+concurrency:
+  group: github-script-env
+jobs:
+  bind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const title = "${{ github.event.issue.title }}";
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const title = "prefix ${{ github.event.issue.body }}";

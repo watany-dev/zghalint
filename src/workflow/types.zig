@@ -769,6 +769,11 @@ pub const Credentials = struct {
 
 pub const Container = struct {
     image: ?[]const u8 = null,
+    /// Value span and style of `container` / `container.image` (SC001).
+    image_meta: ?ScalarValueMeta = null,
+    /// Nothing but blanks or a comment follows the image scalar, so a digest
+    /// pin may append `# <tag>` after it. False inside a flow collection.
+    image_ends_line: bool = false,
     credentials: ?Credentials = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},
@@ -777,6 +782,8 @@ pub const Container = struct {
 pub const Service = struct {
     name: []const u8,
     image: ?[]const u8 = null,
+    image_meta: ?ScalarValueMeta = null,
+    image_ends_line: bool = false,
     credentials: ?Credentials = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},

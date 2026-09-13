@@ -1763,6 +1763,15 @@ fn parseCredentials(
     };
 }
 
+fn parseImageScalar(s: yaml.Scalar, span_trusted: bool) struct {
+    image: []const u8,
+    image_meta: ?types.ScalarValueMeta,
+    image_ends_line: bool,
+} {
+    if (!span_trusted) return .{ .image = s.value, .image_meta = null, .image_ends_line = false };
+    return .{ .image = s.value, .image_meta = scalarMeta(s), .image_ends_line = s.ends_line };
+}
+
 fn parseContainer(
     allocator: std.mem.Allocator,
     node: Node,
@@ -1770,11 +1779,30 @@ fn parseContainer(
 ) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
-            return .{ .image = s.value };
+            const parsed = parseImageScalar(s, !s.unterminated);
+            return .{
+                .image = parsed.image,
+                .image_meta = parsed.image_meta,
+                .image_ends_line = parsed.image_ends_line,
+            };
         },
         .mapping => |m| {
+            var image: ?[]const u8 = null;
+            var image_meta: ?types.ScalarValueMeta = null;
+            var image_ends_line = false;
+            if (m.get("image")) |n| switch (n) {
+                .scalar => |s| {
+                    const parsed = parseImageScalar(s, !s.unterminated and !m.hasIndentedTail("image"));
+                    image = parsed.image;
+                    image_meta = parsed.image_meta;
+                    image_ends_line = parsed.image_ends_line;
+                },
+                else => {},
+            };
             return .{
-                .image = m.getScalar("image"),
+                .image = image,
+                .image_meta = image_meta,
+                .image_ends_line = image_ends_line,
                 .credentials = if (m.get("credentials")) |n|
                     try parseCredentials(allocator, n, mismatches)
                 else
@@ -1801,9 +1829,23 @@ fn parseServices(
     for (m.entries, 0..) |entry, i| {
         switch (entry.value) {
             .mapping => |vm| {
+                var image: ?[]const u8 = null;
+                var image_meta: ?types.ScalarValueMeta = null;
+                var image_ends_line = false;
+                if (vm.get("image")) |n| switch (n) {
+                    .scalar => |s| {
+                        const parsed = parseImageScalar(s, !s.unterminated and !vm.hasIndentedTail("image"));
+                        image = parsed.image;
+                        image_meta = parsed.image_meta;
+                        image_ends_line = parsed.image_ends_line;
+                    },
+                    else => {},
+                };
                 services[i] = .{
                     .name = entry.key.value,
-                    .image = vm.getScalar("image"),
+                    .image = image,
+                    .image_meta = image_meta,
+                    .image_ends_line = image_ends_line,
                     .credentials = if (vm.get("credentials")) |n|
                         try parseCredentials(allocator, n, mismatches)
                     else
@@ -1812,9 +1854,12 @@ fn parseServices(
                 };
             },
             .scalar => |s| {
+                const parsed = parseImageScalar(s, !s.unterminated);
                 services[i] = .{
                     .name = entry.key.value,
-                    .image = s.value,
+                    .image = parsed.image,
+                    .image_meta = parsed.image_meta,
+                    .image_ends_line = parsed.image_ends_line,
                 };
             },
             // A service written with nothing under it names no image. It is
@@ -2662,6 +2707,69 @@ test "parseJob captures runs_on_value_span for scalar runs-on" {
 
     const span = wf.jobs[0].runs_on_value_span.?;
     try testing.expectEqualStrings("ubuntu-20.04", source[span.start_byte..span.end_byte]);
+}
+
+test "parseJob captures image_meta for container and service image scalars" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container: alpine:3.19
+        \\    services:
+        \\      redis: redis:7
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    const container = wf.jobs[0].container.?;
+    try testing.expectEqualStrings("alpine:3.19", container.image.?);
+    const cspan = container.image_meta.?.value_span;
+    try testing.expectEqualStrings("alpine:3.19", source[cspan.start_byte..cspan.end_byte]);
+    try testing.expect(container.image_ends_line);
+
+    try testing.expectEqualStrings("redis:7", wf.jobs[0].services[0].image.?);
+    const sspan = wf.jobs[0].services[0].image_meta.?.value_span;
+    try testing.expectEqualStrings("redis:7", source[sspan.start_byte..sspan.end_byte]);
+}
+
+test "parseJob captures image_meta for container.image mapping form" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    const container = wf.jobs[0].container.?;
+    try testing.expectEqualStrings("node:20", container.image.?);
+    const span = container.image_meta.?.value_span;
+    try testing.expectEqualStrings("node:20", source[span.start_byte..span.end_byte]);
+    try testing.expect(container.image_ends_line);
 }
 
 test "parseDefaults captures defaults.run.shell at workflow and job level" {

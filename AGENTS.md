@@ -82,6 +82,8 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
   - `stale_refs.zig` — SHA-to-tag resolution (SC005)
   - `refconfusion.zig` — Tag/branch ref confusion (SC006)
   - `dependabot.zig` — Dependabot configuration checks
+  - `sha_pin.zig` — Tag-to-SHA pin store (SEC001 / SC006)
+  - `image_digest.zig` — Registry digest pin store (SC001)
   - `http_client.zig` — Shared `std.http.Client` for GitHub API reuse
   - `graphql.zig` — GitHub GraphQL batching (SC004-SC006 in 1-2 POSTs)
   - `disk_cache.zig` — Per-repo JSON cache (24h TTL) for warm runs

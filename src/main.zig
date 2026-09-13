@@ -401,7 +401,9 @@ fn prefetchNetworkData(
         scratch,
         workflows.items,
         .{ .no_cache = no_cache },
-    ) catch return;
+    ) catch {};
+
+    zghalint.rules.image_digest.prefetch(scratch, workflows.items, no_cache);
 }
 
 /// 注記を出すだけで終了コードは変えない — 既存の 0/1/2 の意味を動かすと
@@ -796,6 +798,9 @@ pub fn main(init: std.process.Init) !u8 {
     // plain lint never pays for the extra lookups.
     zghalint.rules.sha_pin.initTagOids(allocator, cli_args.offline, cli_args.fix_mode != .off);
     defer zghalint.rules.sha_pin.deinitTagOids();
+
+    zghalint.rules.image_digest.initDigests(allocator, cli_args.offline, cli_args.fix_mode != .off);
+    defer zghalint.rules.image_digest.deinitDigests();
 
     zghalint.rules.net_status.reset();
     defer zghalint.rules.net_status.reset();

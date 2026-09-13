@@ -38,6 +38,7 @@ pub const rules = struct {
     pub const stale_refs = @import("rules/stale_refs.zig");
     pub const impostor = @import("rules/impostor.zig");
     pub const sha_pin = @import("rules/sha_pin.zig");
+    pub const image_digest = @import("rules/image_digest.zig");
     pub const http_client = @import("rules/http_client.zig");
     pub const net_status = @import("rules/net_status.zig");
     pub const prefetch = @import("rules/prefetch.zig");
@@ -100,6 +101,7 @@ test {
     _ = @import("rules/ref_cache.zig");
     _ = @import("rules/stale_refs.zig");
     _ = @import("rules/sha_pin.zig");
+    _ = @import("rules/image_digest.zig");
     _ = @import("rules/impostor.zig");
     _ = @import("rules/impostor_compare.zig");
     _ = @import("rules/runner.zig");

@@ -349,17 +349,26 @@ fn shutdownUsedConnections(io: std.Io) void {
 fn fetchRecorded(
     opts: std.http.Client.FetchOptions,
     sink: *const BoundedBody,
+    sticky: bool,
 ) FetchError!std.http.Client.FetchResult {
-    if (network_unreachable) return error.NetworkUnreachable;
-    if (engine.isNetworkDeadlineExceeded()) return error.NetworkDeadlineExceeded;
+    if (sticky and network_unreachable) return error.NetworkUnreachable;
+    if (sticky and engine.isNetworkDeadlineExceeded()) return error.NetworkDeadlineExceeded;
     if (!client_initialized) return error.NotInitialized;
     client_mutex.lockUncancelable(runtime.io());
     defer client_mutex.unlock(runtime.io());
     applyPendingCustomCa();
-    const result = fetchWithBudget(opts, engine.requestBudget()) catch |err| {
+    const budget: std.Io.Timeout = if (sticky)
+        engine.requestBudget()
+    else
+        .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } };
+    const result = fetchWithBudget(opts, budget) catch |err| {
         if (sink.overflowed) {
             last_fetch_succeeded = true;
             return error.FetchFailed;
+        }
+        if (!sticky) {
+            last_fetch_succeeded = false;
+            return classify(err);
         }
         return recordFailure(err);
     };
@@ -374,7 +383,40 @@ pub fn fetchBounded(
 ) FetchError!std.http.Client.FetchResult {
     var bounded = opts;
     bounded.response_writer = &sink.writer;
-    return fetchRecorded(bounded, sink);
+    return fetchRecorded(bounded, sink, true);
+}
+
+/// Like `fetchBounded`, but a transport failure is this request's miss
+/// rather than a sticky `NetworkUnreachable`. Registry I/O must not poison
+/// GitHub API reachability (ADR 0017 D4). Isolated fetches also ignore the
+/// GitHub overall deadline so `--fix` digest lookup is not starved by it.
+pub fn fetchBoundedIsolated(
+    opts: std.http.Client.FetchOptions,
+    sink: *BoundedBody,
+) FetchError!std.http.Client.FetchResult {
+    var bounded = opts;
+    bounded.response_writer = &sink.writer;
+    return fetchRecorded(bounded, sink, false);
+}
+
+pub fn fetchBodyIsolated(
+    allocator: Allocator,
+    url: []const u8,
+    extra_headers: []const std.http.Header,
+    privileged_headers: []const std.http.Header,
+) FetchedError!FetchedBody {
+    var body_sink = BoundedBody.init(allocator, max_response_bytes);
+    errdefer body_sink.deinit();
+
+    const result = try fetchBoundedIsolated(.{
+        .location = .{ .url = url },
+        .headers = .{ .user_agent = .{ .override = user_agent } },
+        .extra_headers = extra_headers,
+        .privileged_headers = privileged_headers,
+    }, &body_sink);
+
+    const body = try body_sink.toOwnedSlice();
+    return .{ .status = result.status, .body = body, .allocator = allocator };
 }
 
 pub const FetchedError = FetchError || error{OutOfMemory};
