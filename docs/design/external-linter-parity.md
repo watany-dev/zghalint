@@ -618,7 +618,9 @@ jobs:
 形式不正とするが、github.com では正規の構文である。
 
 §4.3 の `self-repository` (zizmor が `./` を `$/` へ書き換えろと勧める指摘)
-は引き続き採用しない。こちらは既に書かれた `$/` を誤って弾く誤検出。
+のうち、job の `uses: ./` でディスク上にその workflow がある場合は BP009
+(info、autofix なし) で勧める (GA13 / #440)。step の `uses: ./` は
+GITHUB_WORKSPACE なので対象外。`$/` を DEP003 が弾く誤検出は G31 で解消済み。
 
 #### G32 (#384). RUNNER002 が `ubuntu-slim` を未知ラベルにする — 対応済み
 
@@ -725,10 +727,10 @@ YAML の plain scalar は次のより深い行へ続き、改行は空白に畳�
   (`i-robustness/comments-only.yml`) と `timeout-minutes: "10m"`
   (`f-syntax-schema/shell-and-timeout-types.yml`) でクラッシュする (exit 3)。
 - zizmor pedantic / auditor の `anonymous-definition` (workflow / action に
-  `name:` が無い) と `self-repository` (`uses: ./` を `$/.` に書き換えろ) は
-  採用しない。前者は GitHub UI の表示の話で、後者は公式ドキュメントが
-  `./` を正規のローカル参照として載せており、zghalint が DEP004 で見ている
-  のもその形である。
+  `name:` が無い) は採用しない。GitHub UI の表示の話である。
+  `self-repository` は job の on-disk `uses: ./` を BP009 で info にする。
+  step の `./` と autofix は採用しない — step の `./` は GITHUB_WORKSPACE で、
+  `$/` に置き換えると意味が変わる。
 - zizmor の `superfluous-actions` (`softprops/action-gh-release` を `gh release`
   の `run:` に書き換えろ) は informational で、第三者アクションの好みの話
   なので採用しない。
@@ -877,7 +879,7 @@ zizmor regular が出して zghalint がカバーしていない主なものは�
 | `dangerous-triggers` | 4 | 意図的。zizmor はトリガ自体、zghalint は危険な checkout |
 | `unpinned-uses` | 36 | 多くは `actions/*@vN` と `actions/reusable-workflows@main`。SEC001 が GitHub 公式を外している |
 | `template-injection` | 28 | 多くは `steps.*.outputs`。SEC002 は汚染源からの 1 hop に限定 |
-| `self-repository` | 50 | `uses: ./` に対し `$/.` 構文を勧める。採用しない |
+| `self-repository` | 50 | job の on-disk `uses: ./` は BP009。step の `./` と autofix は採用しない |
 | `adhoc-packages` | 2 | `npm install --global` 等。新監査。未採用 |
 | `misfeature` | 1 | `shell: cmd`。未採用 |
 | `bot-conditions` | 1 | G25 (#349) で解消。ファイル名判定を直し SEC014 が出るようになった |

@@ -441,12 +441,29 @@ Enforce workflow best practices for maintainability and reliability.
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
+| BP009 | prefer-self-repository | info | Job-level `uses: ./…` that names a workflow file in this repository can use `$/` instead. No autofix |
 
 ### BP002 missing-step-name
 
 `uses:`-only steps are skipped: GitHub Actions already labels them with the
 action name, and requiring `name:` there is not the usual style. Unnamed
 `run:` steps are still reported, because the log label is the command text.
+
+### BP009 prefer-self-repository
+
+Job-level `uses: ./.github/workflows/…` は、ワークフローファイルがあるリポジトリ
+を指す。`$/.github/workflows/…` は同じリポジトリの、そのワークフローが載っている
+コミットを指す。ディスク上にそのファイルがあるときだけ info で `$/` を勧める。
+
+step の `uses: ./` は GITHUB_WORKSPACE なので対象外。checkout 後の生成物や別
+リポジトリの作業コピーを指している可能性がある。`./` → `$/` の書き換えは参照先
+が変わるので `--fix` / `--fix-unsafe` は付けない。
+
+```yaml
+jobs:
+  call:
+    uses: ./.github/workflows/ci.yml   # info: prefer "$/.github/workflows/ci.yml"
+```
 
 ### BP003 の 3 つの判定
 

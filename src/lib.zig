@@ -106,6 +106,7 @@ test {
     _ = @import("rules/syntax.zig");
     _ = @import("rules/yaml_merge.zig");
     _ = @import("rules/uses.zig");
+    _ = @import("rules/prefer_self_repo.zig");
     _ = @import("rules/composite_steps.zig");
     _ = @import("rules/local_action.zig");
     _ = @import("rules/reusable_workflow.zig");

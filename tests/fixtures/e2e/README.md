@@ -107,6 +107,8 @@ Two checks run on all fixtures, with no directive needed:
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
 | `bp008-workflow-commands.yml` | #326: every deprecated workflow command rewritten by `--fix`, with a piped line left alone |
+| `ga13-prefer-self.yml` | #440: job-level `uses: ./` of an on-disk workflow is BP009 |
+| `ga13-workspace-uses.yml` | #440 FP guard: missing `./` workflow, `$/`, and step-level `./` stay quiet |
 | `bp003-behind-current-major.yml` | #358: a third-party action older than its current major, with `actions/checkout@v4` as the FP guard |
 | `ga10-node20-runtime.yml` | #437: `actions/checkout@v4` (`runs.using: node20`) is BP003 warning |
 | `ga10-node-version-not-using.yml` | #437: setup-node `node-version: 20` is not `runs.using` |

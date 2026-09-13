@@ -215,9 +215,9 @@ Unpinned container images, compromised action SHAs, known CVEs, archived reposit
 
 Missing caching, redundant checkout, fail-fast disabled.
 
-### Best Practices (7 rules)
+### Best Practices (8 rules)
 
-Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection, deprecated workflow commands.
+Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection, deprecated workflow commands, preferring `$/` for same-repository reusable workflow calls.
 
 ### Permissions (3 rules)
 
