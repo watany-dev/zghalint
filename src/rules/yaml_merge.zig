@@ -1,8 +1,7 @@
 //! SYN026 — GitHub Actions does not accept YAML merge key `<<` (issue #439).
 //!
 //! The YAML parser still folds `<<:` so the rest of the linter can see the
-//! merged keys. This rule reports the `<<` token itself. Anchors and aliases
-//! without a merge key stay quiet.
+//! merged keys.
 
 const std = @import("std");
 const engine = @import("engine.zig");
@@ -12,29 +11,22 @@ const test_support = @import("../test_support.zig");
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
 const DiagnosticList = engine.DiagnosticList;
-const Node = yaml.Node;
-
-fn scan(node: Node, list: *DiagnosticList) void {
-    switch (node) {
-        .mapping => |m| {
-            for (m.merge_key_spans) |span| {
-                list.append(.{
-                    .rule_id = "SYN026",
-                    .severity = .@"error",
-                    .message = "GitHub Actions does not support YAML merge key \"<<\"",
-                    .span = span,
-                    .fix_hint = "inline the mapping, or use an alias without <<",
-                }) catch return;
-            }
-            for (m.entries) |entry| scan(entry.value, list);
-        },
-        .sequence => |s| for (s.items) |item| scan(item, list),
-        .scalar, .null_value => {},
-    }
-}
 
 fn checkMergeKeys(wf: *const Workflow, list: *DiagnosticList) void {
-    scan(wf.yaml_root orelse return, list);
+    const root = wf.yaml_root orelse return;
+    const mapping = switch (root) {
+        .mapping => |m| m,
+        else => return,
+    };
+    for (mapping.merge_key_spans) |span| {
+        list.append(.{
+            .rule_id = "SYN026",
+            .severity = .@"error",
+            .message = "GitHub Actions does not support YAML merge key \"<<\"",
+            .span = span,
+            .fix_hint = "inline the mapping, or use an alias without <<",
+        }) catch return;
+    }
 }
 
 pub const rules = [_]Rule{
@@ -116,4 +108,43 @@ test "SYN026: a flow merge key is reported" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "SYN026"));
+}
+
+test "SYN026: nested merge under an anchored mapping is reported once" {
+    const source =
+        \\x-common: &common
+        \\  env:
+        \\    <<: {FOO: bar}
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    <<: *common
+        \\    runs-on: ubuntu-latest
+        \\    timeout-minutes: 5
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn026(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN026"));
+}
+
+test "SYN026: nested merge used only as a merge source is reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    <<:
+        \\      <<: {timeout-minutes: 5}
+        \\      runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = try runSyn026(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN026"));
 }
