@@ -70,6 +70,9 @@ pub const Parser = struct {
     /// their item ranges span the commas, so a comment sitting between two
     /// items falls inside one of them.
     comments_seen: usize,
+    /// `<<` token spans collected while folding. Copied onto the document
+    /// root after parse so SYN026 can report them without re-walking copies.
+    merge_key_spans: std.ArrayList(Span) = .empty,
 
     pub const Failure = struct {
         span: Span,
@@ -110,7 +113,10 @@ pub const Parser = struct {
 
         const node = try self.parseNode(0);
         try self.rejectTrailingDocument();
-        return node;
+        if (node != .mapping) return node;
+        var root = node;
+        root.mapping.merge_key_spans = self.merge_key_spans.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        return root;
     }
 
     /// A workflow file holds exactly one YAML document; GitHub never runs a
@@ -278,18 +284,20 @@ pub const Parser = struct {
 
     /// Folds `<<:` sources into `entries`. Explicit keys win over merged ones
     /// and, among several sources, the earlier one wins — the YAML 1.1 merge
-    /// rule. Returns `entries` untouched when the mapping holds no merge key,
-    /// which is every mapping in a workflow that uses no anchors.
+    /// rule. Returns `entries` untouched when the mapping holds no merge key.
     fn applyMergeKeys(self: *Parser, entries: []MappingEntry) ParseError![]MappingEntry {
-        var has_merge = false;
+        var merge_count: usize = 0;
         for (entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, merge_key)) has_merge = true;
+            if (std.mem.eql(u8, entry.key.value, merge_key)) merge_count += 1;
         }
-        if (!has_merge) return entries;
+        if (merge_count == 0) return entries;
 
         var merged = std.ArrayList(MappingEntry).empty;
         for (entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, merge_key)) continue;
+            if (std.mem.eql(u8, entry.key.value, merge_key)) {
+                self.merge_key_spans.append(self.allocator, entry.key.span) catch return ParseError.OutOfMemory;
+                continue;
+            }
             merged.append(self.allocator, entry) catch return ParseError.OutOfMemory;
         }
 
@@ -306,7 +314,7 @@ pub const Parser = struct {
             }
         }
 
-        return merged.toOwnedSlice(self.allocator) catch ParseError.OutOfMemory;
+        return merged.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
     }
 
     fn mergeMappingInto(self: *Parser, merged: *std.ArrayList(MappingEntry), source: Mapping) ParseError!void {
@@ -402,7 +410,10 @@ pub const Parser = struct {
             self.spanFromToken(first_key_token);
         const owned_entries = try self.applyMergeKeys(parsed_entries);
 
-        return Node{ .mapping = .{ .entries = owned_entries, .span = span } };
+        return Node{ .mapping = .{
+            .entries = owned_entries,
+            .span = span,
+        } };
     }
 
     fn parseBlockSequence(self: *Parser) ParseError!Node {
@@ -536,7 +547,12 @@ pub const Parser = struct {
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const owned_entries = try self.applyMergeKeys(parsed_entries);
-        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span, .close_byte = close_byte, .flow = true } };
+        return Node{ .mapping = .{
+            .entries = owned_entries,
+            .span = start_span,
+            .close_byte = close_byte,
+            .flow = true,
+        } };
     }
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
@@ -2143,9 +2159,11 @@ test "parse merges an anchored mapping through a merge key" {
     const root = try parser.parse();
     const jobs = root.mapping.get("jobs").?.mapping;
 
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.merge_key_spans.len);
     for ([_][]const u8{ "build", "test" }) |job_id| {
         const job = jobs.get(job_id).?.mapping;
         try std.testing.expect(job.get(merge_key) == null);
+        try std.testing.expectEqual(@as(usize, 0), job.merge_key_spans.len);
         try std.testing.expectEqualStrings("ubuntu-latest", job.getScalar("runs-on").?);
         try std.testing.expectEqualStrings("10", job.getScalar("timeout-minutes").?);
         try std.testing.expect(job.get("steps") != null);
@@ -2215,6 +2233,8 @@ test "parse applies several merge keys in order" {
 
     try std.testing.expectEqualStrings("1", job.getScalar("x").?);
     try std.testing.expectEqualStrings("3", job.getScalar("y").?);
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.merge_key_spans.len);
+    try std.testing.expectEqual(@as(usize, 0), job.merge_key_spans.len);
 }
 
 test "parse merges an inline mapping given directly to a merge key" {

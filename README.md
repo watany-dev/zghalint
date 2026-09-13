@@ -201,7 +201,7 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **107 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **108 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
 ### Security (23 rules)
 
@@ -215,9 +215,9 @@ Unpinned container images, compromised action SHAs, known CVEs, archived reposit
 
 Missing caching, redundant checkout, fail-fast disabled.
 
-### Best Practices (7 rules)
+### Best Practices (8 rules)
 
-Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection, deprecated workflow commands.
+Missing timeouts, step naming, deprecated actions, cross-platform shell, concurrency, obfuscation detection, deprecated workflow commands, preferring `$/` for same-repository reusable workflow calls.
 
 ### Permissions (3 rules)
 
@@ -245,9 +245,9 @@ Required keys in `action.yml` / `action.yaml`, supported and deprecated
 `runs.using` runtimes, unknown metadata keys, and the shape of `inputs` /
 `outputs` definitions.
 
-### Syntax (21 rules)
+### Syntax (22 rules)
 
-Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `cache-mode` values, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency, workflow files with no content at all.
+Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `cache-mode` values, `concurrency.queue` values and conflict with `cancel-in-progress: true`, YAML merge key `<<`, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency, workflow files with no content at all.
 
 ## Configuration
 

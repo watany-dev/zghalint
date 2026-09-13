@@ -1,0 +1,16 @@
+# zghalint:forbid BP009
+name: ga13 workspace local uses
+on: push
+permissions:
+  contents: read
+jobs:
+  missing-workflow:
+    uses: ./.github/workflows/reusable.yml
+  already-self:
+    uses: $/.github/workflows/ci.yml
+  workspace-action:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Generated or checkout path
+        uses: ./action-under-test

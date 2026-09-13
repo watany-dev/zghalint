@@ -1,0 +1,9 @@
+introduced: 2026-03-01
+spec: https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+runner: github.com
+kind: valid
+category: syntax
+actionlint: unknown
+zizmor: unknown
+ghalint: unknown
+autofix: none

@@ -104,7 +104,9 @@ test {
     _ = @import("rules/impostor_compare.zig");
     _ = @import("rules/runner.zig");
     _ = @import("rules/syntax.zig");
+    _ = @import("rules/yaml_merge.zig");
     _ = @import("rules/uses.zig");
+    _ = @import("rules/prefer_self_repo.zig");
     _ = @import("rules/composite_steps.zig");
     _ = @import("rules/local_action.zig");
     _ = @import("rules/reusable_workflow.zig");
@@ -117,6 +119,8 @@ test {
     _ = @import("rules/cache_dir.zig");
     _ = @import("rules/rest_fallback.zig");
     _ = @import("rules/json_util.zig");
+    _ = @import("rules/setup_node_cache.zig");
+    _ = @import("rules/checkout_capability.zig");
     _ = @import("rules/rename.zig");
     _ = @import("rules/data/compromised_actions.zig");
     _ = @import("rules/data/trusted_actions.zig");

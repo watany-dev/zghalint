@@ -22,7 +22,7 @@ const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const ActionRef = workflow_types.ActionRef;
 
-const ActionMeta = data.ActionMeta;
+pub const ActionMeta = data.ActionMeta;
 const Input = data.Input;
 
 /// The metadata for `action`, or null when nothing can be said about it.
@@ -38,17 +38,26 @@ pub fn lookup(action: ActionRef) ?ActionMeta {
     const owner = action.owner orelse return null;
     const repo = action.repo orelse return null;
     const major = majorFromRef(action.ref orelse return null) orelse return null;
-    const path = action.path orelse "";
+    return lookupByMajor(owner, repo, action.path orelse "", major);
+}
 
+/// Paths are case-sensitive; owner and repo are not.
+pub fn lookupByMajor(owner: []const u8, repo: []const u8, path: []const u8, major: u16) ?ActionMeta {
     for (data.popular_actions) |meta| {
         if (meta.major != major) continue;
         if (!std.ascii.eqlIgnoreCase(meta.owner, owner)) continue;
         if (!std.ascii.eqlIgnoreCase(meta.repo, repo)) continue;
-        // Paths inside a repository are case-sensitive, unlike owner and repo.
         if (!std.mem.eql(u8, meta.path, path)) continue;
         return meta;
     }
     return null;
+}
+
+pub fn hasInput(meta: ActionMeta, name: []const u8) bool {
+    for (meta.inputs) |input| {
+        if (std.mem.eql(u8, input.name, name)) return true;
+    }
+    return false;
 }
 
 /// The newest major of `action` the table knows, or null when the action is
@@ -209,7 +218,7 @@ test "latestMajor answers for a major the table has no entry for (#358)" {
     try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v1")));
     try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v9")));
     // Several majors: the newest wins, whichever one is referenced.
-    try testing.expectEqual(@as(?u16, 5), latestMajor(ActionRef.parse("actions/checkout@v2")));
+    try testing.expectEqual(@as(?u16, 7), latestMajor(ActionRef.parse("actions/checkout@v2")));
     // Sub-directory actions are their own entries.
     try testing.expectEqual(@as(?u16, 4), latestMajor(ActionRef.parse("actions/cache/restore@v3")));
 
@@ -490,6 +499,19 @@ test "every manifest entry is present in the generated table" {
     }
 
     try testing.expectEqual(data.popular_actions.len, seen);
+}
+
+test "lookupByMajor and hasInput read the generated table" {
+    const v5 = lookupByMajor("actions", "setup-node", "", 5) orelse return error.TestExpectedEqual;
+    try testing.expect(hasInput(v5, "package-manager-cache"));
+    const v4 = lookupByMajor("actions", "setup-node", "", 4) orelse return error.TestExpectedEqual;
+    try testing.expect(!hasInput(v4, "package-manager-cache"));
+    try testing.expect(hasInput(lookupByMajor("actions", "setup-node", "", 6).?, "package-manager-cache"));
+    try testing.expect(hasInput(lookupByMajor("actions", "setup-node", "", 7).?, "package-manager-cache"));
+    try testing.expect(lookupByMajor("actions", "setup-node", "", 99) == null);
+    try testing.expect(hasInput(lookupByMajor("actions", "checkout", "", 6).?, "allow-unsafe-pr-checkout"));
+    try testing.expect(hasInput(lookupByMajor("actions", "checkout", "", 7).?, "allow-unsafe-pr-checkout"));
+    try testing.expect(lookupByMajor("actions", "checkout", "", 6).?.using.len > 0);
 }
 
 test "every entry declares a runtime" {

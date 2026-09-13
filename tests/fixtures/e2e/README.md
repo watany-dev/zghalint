@@ -105,6 +105,10 @@ a `.fixed` / `.fixed-unsafe` sibling (`none` must not have one).
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
 | `ga1-accepted-syntax.yml` | #428: `cache-mode` / `vulnerability-alerts: read\|none` / `job.workflow_*` stay quiet |
 | `ga1-rejected-syntax.yml` | #428: unknown `cache-mode`, `vulnerability-alerts: write`, `github.workflow_repository` |
+| `ga8-setup-node-without-cache.yml` | #435: setup-node without `cache:` and without package.json npm still PERF001 |
+| `ga8-setup-node-release-no-pkg.yml` | #435: the same in a release workflow is not SEC016 |
+| `ga11-accepted-concurrency.yml` | #438: `queue: max` / `single` and `cancel-in-progress: false` stay quiet |
+| `ga11-rejected-concurrency.yml` | #438: `queue: max` + `cancel-in-progress: true`, unknown queue value/key, non-scalar `queue` |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
 | `runner001-macos-13.yml` | #430: retired `macos-13` is RUNNER001, not a current image |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |
@@ -113,12 +117,18 @@ a `.fixed` / `.fixed-unsafe` sibling (`none` must not have one).
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
 | `bp008-workflow-commands.yml` | #326: every deprecated workflow command rewritten by `--fix`, with a piped line left alone |
+| `ga13-prefer-self.yml` | #440: job-level `uses: ./` of an on-disk workflow is BP009 |
+| `ga13-workspace-uses.yml` | #440 FP guard: missing `./` workflow, `$/`, and step-level `./` stay quiet |
 | `bp003-behind-current-major.yml` | #358: a third-party action older than its current major, with `actions/checkout@v4` as the FP guard |
+| `ga10-node20-runtime.yml` | #437: `actions/checkout@v4` (`runs.using: node20`) is BP003 warning |
+| `ga10-node-version-not-using.yml` | #437: setup-node `node-version: 20` is not `runs.using` |
 | `rw001-input-type-fix.yml` | #326: `--fix-unsafe` infers a `workflow_call` input `type:` from its `default:` |
 | `clean.yml` | A well-formed workflow: nothing may fire |
 | `rename-fix-schema.yml` | #323: every did-you-mean rename on schema keys and values, with its `--fix` result pinned |
 | `rename-fix-contexts.yml` | #323: the same for the `needs` / `inputs` / `secrets` expression contexts |
 | `merge-key-job-span.yml` | #367 repro: a job built from `<<:` must report a forward span |
+| `ga12-merge-key.yml` | #439: YAML merge key `<<` is SYN026 |
+| `ga12-alias-only.yml` | #439 FP guard: an alias without `<<` stays quiet |
 | `on-block-nested-sequence-insert.yml` | #368 repro: the SEC007 insertion lands after the `on:` block, not inside a nested sequence item |
 | `expr010-rename-invalid-id.yml` | #369 repro: a step id that is not a path identifier gets no rename fix |
 | `sec018-with-not-a-block-mapping.yml` | #370 repro: `with:` that is not a block mapping gets no persist-credentials fix |

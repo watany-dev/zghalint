@@ -50,9 +50,23 @@ each ID means.
 - SEC016 and PERF001 share a `cache-mode` capability model (`can_restore` /
   `can_save`). `cache-mode: none` silences PERF001 and SEC016. `cache-mode:
   read` does not silence SEC016 (#434).
+- SEC016 treats `actions/setup-node` as caching when `cache:` is set or when
+  the resolved action declares `package-manager-cache` and `package.json`
+  names npm via `packageManager` / `devEngines.packageManager`. Unresolved
+  refs are not treated as enabled (#435).
 - SEC024 warns when `cache-mode: write` or `write-only` is declared on a
   low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
   which overrides GitHub's restore-only default. No autofix (#434).
+- BP009 suggests `$/` instead of `./` on a job-level reusable workflow call
+  when that workflow file exists in the repository being linted. Step-level
+  `uses: ./` is GITHUB_WORKSPACE and stays quiet. No autofix (#440).
+- SYN025 reports an unknown `concurrency.queue` value and the illegal
+  combination of `queue: max` with `cancel-in-progress: true`. Documented
+  values are `single` and `max`. Unknown-value typos get a safe rename when
+  the candidate is unique. The conflicting keys are not deleted (#438).
+- SYN026 reports YAML merge key `<<`, which GitHub Actions rejects. The
+  parser still expands the merge so other rules see the folded keys.
+  Anchors and aliases without `<<` stay quiet. No autofix (#439).
 - `ga*.yml` e2e fixtures carry a `*.yml.meta.yml` sidecar (introduction date,
   spec URL, valid/invalid, category, competitor support, autofix). Existing
   non-`ga*` fixtures are unchanged (#441).
@@ -61,12 +75,26 @@ each ID means.
 
 - `cache-mode` is a known workflow and job key, so it no longer fires SYN001
   (#428).
+- PERF001 no longer asks to add a cache when setup-node would enable npm
+  caching from `package.json` and the action declares `package-manager-cache`
+  (#435).
+- SEC018 reports that later steps can still use persisted checkout credentials,
+  without assuming they live in `.git/config`. SEC015 no longer treats a
+  workspace `upload-artifact` as a leak when the resolved checkout stores
+  credentials under `$RUNNER_TEMP` (v6+). Unresolved SHAs keep the previous
+  artipacked behavior (#436).
+- SEC005 / SEC009 distinguish a checkout that `allow-unsafe-pr-checkout` will
+  refuse at runtime from an explicit bypass. Unresolved SHAs and `run:` `git
+  checkout` stay on the original exploit wording (#436).
 - `permissions.vulnerability-alerts` is a known scope. `read` and `none` are
   accepted; `write` is PERM003 (#428).
 - `job.workflow_ref` / `job.workflow_sha` / `job.workflow_repository` /
   `job.workflow_file_path` are known job-context properties and no longer
   fire EXPR003. They are not the same as `github.workflow_ref` /
   `github.workflow_sha` (#428).
+- `concurrency.queue` is a known key under `concurrency:`, so `queue: max`
+  no longer fires SYN001. Nested unknown keys under `concurrency:` are
+  reported as SYN001 (#438).
 - EXPR005 rejects `case()` calls with an even number of arguments. `case()` is
   pairs of `(condition, result)` plus a fallback, so the count must be odd and
   at least 3 (#429).
@@ -76,6 +104,10 @@ each ID means.
   they cannot point at another retired label.
 - CI and bench now pin actionlint 1.7.12 and zizmor 1.30.1, the versions used
   as the comparison baseline (#431).
+- ACT002 / BP003 treat `runs.using: node20` as deprecated (removal 2026-09-23).
+  Severity is warning, not the error used for already-retired `node12` /
+  `node16`. `node24` is unchanged. `actions/setup-node`'s `node-version: 20`
+  is not `runs.using`. No autofix (#437).
 
 ## [0.0.1] - 2026-09-10
 
