@@ -36,7 +36,8 @@ for the workflow fixtures.
 |---|---|
 | `act001-missing-keys.yml` | ACT001: no `name`, and a node action without `main` |
 | `act001-composite-steps-fix.yml` | ACT001: `--fix-unsafe` inserts a placeholder `steps:` item under a composite `runs:` |
-| `act002-deprecated-and-unknown-using.yml` | ACT002: `node16`, a runtime GitHub is retiring |
+| `act002-deprecated-and-unknown-using.yml` | ACT002: `node16`, a runtime GitHub has stopped |
+| `act002-node20-using.yml` | #437: `node20` is warning, not unknown |
 | `act002-unknown-using.yml` | ACT002: a `using` value that is not a runtime, with a suggestion |
 | `act003-unknown-keys.yml` | ACT003: misspelled document key and input key |
 | `act004-invalid-definitions.yml` | ACT004: non-boolean `required`, `value` outside a composite action |

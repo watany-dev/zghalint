@@ -27,15 +27,32 @@ const Rule = engine.Rule;
 const Step = engine.Step;
 const Node = yaml_types.Node;
 
-/// `runs.using` values GitHub has retired. Kept as data so a future runtime
-/// retirement is a one-line change instead of a new branch.
-pub const deprecated_runtimes = [_][]const u8{ "node12", "node16" };
+/// `runs.using` values GitHub has already stopped running.
+pub const retired_runtimes = [_][]const u8{ "node12", "node16" };
+
+/// Still accepted, but GitHub has announced removal (`node20`: 2026-09-23).
+pub const ending_runtimes = [_][]const u8{"node20"};
+
+/// ACT002 warns on both: retired runtimes and ones whose removal is dated.
+pub const deprecated_runtimes = retired_runtimes ++ ending_runtimes;
 
 /// What a deprecated runtime should migrate to.
 pub const recommended_runtime = "node24";
 
+pub fn isRetiredRuntime(using: []const u8) bool {
+    return containsRuntime(&retired_runtimes, using);
+}
+
+pub fn isEndingRuntime(using: []const u8) bool {
+    return containsRuntime(&ending_runtimes, using);
+}
+
 pub fn isDeprecatedRuntime(using: []const u8) bool {
-    for (deprecated_runtimes) |candidate| {
+    return containsRuntime(&deprecated_runtimes, using);
+}
+
+fn containsRuntime(list: []const []const u8, using: []const u8) bool {
+    for (list) |candidate| {
         if (std.mem.eql(u8, candidate, using)) return true;
     }
     return false;
@@ -378,10 +395,16 @@ const test_support = @import("../test_support.zig");
 const ActionRef = workflow_types.ActionRef;
 const hasDiagnostic = test_support.hasDiagnostic;
 
-test "isDeprecatedRuntime recognises the retired Node runtimes" {
+test "isDeprecatedRuntime recognises retired and ending Node runtimes" {
+    try testing.expect(isRetiredRuntime("node12"));
+    try testing.expect(isRetiredRuntime("node16"));
+    try testing.expect(!isRetiredRuntime("node20"));
+    try testing.expect(isEndingRuntime("node20"));
+    try testing.expect(!isEndingRuntime("node24"));
     try testing.expect(isDeprecatedRuntime("node12"));
     try testing.expect(isDeprecatedRuntime("node16"));
-    try testing.expect(!isDeprecatedRuntime("node20"));
+    try testing.expect(isDeprecatedRuntime("node20"));
+    try testing.expect(!isDeprecatedRuntime("node24"));
     try testing.expect(!isDeprecatedRuntime("composite"));
 }
 

@@ -436,7 +436,7 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
 | BP002 | missing-step-name | info | `run:` step is missing a `name` field. `uses:`-only steps are skipped |
-| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (error), or a major older than the newest one the metadata table knows (info) |
+| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (`node12` / `node16`, error), a still-running but ending runtime (`node20`, warning), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
@@ -454,9 +454,12 @@ action name, and requiring `name:` there is not the usual style. Unnamed
   固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
   `--fix` で `@vN` を書き換えられる。
 - **ランタイム判定**: アクションの `runs.using` が GitHub の廃止済みランタイム
-  （`node12` / `node16`）なら `error` で報告する。ローカルアクション
-  （`uses: ./{path}`）は `action.yml` を読み、リモートアクションは DEP005 の
-  埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
+  （`node12` / `node16`）なら `error` で報告する。まだ動くが削除予定の
+  `node20`（2026-09-23）は `warning`。`runs.using: node20` を `node24` に
+  書き換える autofix は付けない（Action 本体の互換確認が必要）。
+  `actions/setup-node` の `node-version: 20` は Action の実行ランタイムではない。
+  ローカルアクション（`uses: ./{path}`）は `action.yml` を読み、リモートアクションは
+  DEP005 の埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
 - **現行 major との比較**: 参照している major が、埋め込みメタデータが知る最新の
   major より古ければ `info` で報告する（#358）。第三者アクションは現行 major しか
   表に無いため、古い major は `using` が分からずランタイム判定に掛からない。この
@@ -1253,10 +1256,11 @@ GitHub 自身が案内しているのはこの 2 つの配置なので既定は�
 
 ### ACT002 が受理する `using`
 
-`node20` / `node24` / `docker` / `composite` の 4 つ。`node12` / `node16` は
-GitHub が実行を停止するランタイムなので warning として報告し、それ以外の未知の値は
+`node20` / `node24` / `docker` / `composite` の 4 つを受理する。`node12` /
+`node16` は GitHub が実行を停止したランタイム、`node20` は 2026-09-23 に
+削除予定なので、いずれも warning として報告する。それ以外の未知の値は
 error として報告する（編集距離 2 以内で候補が一意に定まるときは
-`did you mean ...?` を添える）。
+`did you mean ...?` を添える）。`node20` → `node24` の autofix は付けない。
 
 ### 個々の定義に対する検査
 
