@@ -1384,6 +1384,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                 step.uses_value_style = s.style;
                 step.uses_value_ends_line = s.ends_line;
                 step.uses_line_comment = s.line_comment;
+                step.uses_line_comment_start_byte = s.line_comment_start_byte;
             },
             else => {},
         }

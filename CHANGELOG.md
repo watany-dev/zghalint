@@ -40,6 +40,11 @@ each ID means.
 - SEC010 offers an unsafe fix that expands `secrets: inherit` into the secrets
   declared by a local reusable workflow (#414). Remote, unreadable, or empty
   callees, and quoted or flow-style `inherit`, keep the diagnostic without a rewrite.
+- SC003 offers an unsafe fix that bumps a vulnerable action tag to the
+  advisory's `patched_version` (#415). SHA pins are re-pinned only when
+  `--fix-unsafe` can resolve that tag's commit; `--quick` / `--offline` leave
+  SHA pins as diagnostics. An undetermined SHA pin (no `# vX.Y.Z` comment)
+  still has no fix.
 
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).

@@ -790,7 +790,7 @@ pub const Parser = struct {
     /// The `#` comment trailing the token on its own line, `#` and surrounding
     /// blanks stripped. Only a comment separated from the token by a blank is
     /// one: `a#b` is a single plain scalar in YAML, not a value and a comment.
-    fn tokenLineComment(self: *Parser, token: Token) ?[]const u8 {
+    fn tokenLineComment(self: *Parser, token: Token) ?struct { text: []const u8, start_byte: usize } {
         // A block scalar ends at the start of the line that closes it, so what
         // follows `end` is a separate line whose comment belongs to no scalar.
         if (std.mem.findScalar(u8, token.slice(self.source), '\n') != null) return null;
@@ -804,8 +804,11 @@ pub const Parser = struct {
         const start = i + 1;
         var end = start;
         while (end < self.source.len and self.source[end] != '\n' and self.source[end] != '\r') : (end += 1) {}
-        const text = std.mem.trim(u8, self.source[start..end], " \t");
-        return if (text.len == 0) null else text;
+        const region = self.source[start..end];
+        const text = std.mem.trim(u8, region, " \t");
+        if (text.len == 0) return null;
+        const start_byte = start + (@intFromPtr(text.ptr) - @intFromPtr(region.ptr));
+        return .{ .text = text, .start_byte = start_byte };
     }
 
     /// True when a quoted token never met its closing quote and so ran to the
@@ -831,7 +834,8 @@ pub const Parser = struct {
                 .style = if (raw[0] == '\'') .single_quoted else .double_quoted,
                 .span = self.spanFromToken(token),
                 .ends_line = ends_line,
-                .line_comment = line_comment,
+                .line_comment = if (line_comment) |c| c.text else null,
+                .line_comment_start_byte = if (line_comment) |c| c.start_byte else null,
                 .unterminated = quotedIsUnterminated(raw),
             };
         }
@@ -843,7 +847,8 @@ pub const Parser = struct {
                 .style = style,
                 .span = self.spanFromToken(token),
                 .ends_line = ends_line,
-                .line_comment = line_comment,
+                .line_comment = if (line_comment) |c| c.text else null,
+                .line_comment_start_byte = if (line_comment) |c| c.start_byte else null,
             };
         }
         return .{
@@ -851,7 +856,8 @@ pub const Parser = struct {
             .style = .plain,
             .span = self.spanFromToken(token),
             .ends_line = ends_line,
-            .line_comment = line_comment,
+            .line_comment = if (line_comment) |c| c.text else null,
+            .line_comment_start_byte = if (line_comment) |c| c.start_byte else null,
         };
     }
 

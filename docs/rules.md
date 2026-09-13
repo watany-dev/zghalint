@@ -364,7 +364,7 @@ Detect supply chain risks in action and container image references.
 |----|------|----------|-------------|
 | SC001 | unpinned-images | warning | Container images (`container.image`, `services.*.image`, `uses: docker://...`) should be pinned to a SHA256 digest for supply chain security |
 | SC002 | compromised-action-sha | error | Action references a SHA or tag of a known-compromised release |
-| SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database |
+| SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database（`--fix-unsafe` で `patched_version` へ bump。SHA ピンは oid が取れるときだけ再ピン） |
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
 | SC005 | stale-action-refs | info | SHA-pinned action does not correspond to any known Git tag |
 | SC006 | ref-confusion | warning | Action ref matches both a tag and branch, creating exploitable ambiguity |
@@ -399,6 +399,25 @@ semver 判定する。SEC001 の autofix も、ほかのピン止めツールも
 求めている以上、既に修正済みのバージョンにピンした利用者を warning で罰しては
 ならない。ただしバージョン範囲を持たない advisory（全バージョンが対象）は、版が
 分からなくても該当するため warning のままにする。
+
+### SC003 の自動修正
+
+SC003 の `--fix-unsafe` は advisory の `patched_version` があるときに `uses:` の
+ref を書き換える。
+
+- タグ参照（`@v1.2.3` / `@v1`）はネットワークなしで `@<patched_version>` へ bump
+  する。`--quick` / `--offline` でも、アドバイザリ表が既に載っているなら出す。
+- その patched タグの commit oid が SEC001 と同じ `tag_oids` ストアにあるときは、
+  `@<oid> # <patched_version>` へ一度にピンする。SEC001 が同じ `uses:` をピン
+  しようとしても、SC003 の編集が `@` を含む分だけ先に始まり、重なりでは SC003
+  が残る（脆弱タグへピンするのは誤りのため）。
+- SHA ピンは `--fix-unsafe` かつ patched タグの oid が取れるときだけ、SHA と
+  `# vX.Y.Z` コメントを差し替える。`--quick` / `--offline` では SHA 再ピンは
+  出ない。版が取れず info に落ちている SHA ピン、`patched_version` が null の
+  advisory は診断のみ。
+
+major を跨ぐ更新も抑止しない。パッチが次 major にしか無い advisory で fix が
+消えるより、unsafe として出す。
 
 ### SEC001 / SC006 の SHA ピン止め autofix
 

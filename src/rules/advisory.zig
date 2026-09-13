@@ -8,9 +8,12 @@ const http_client = @import("http_client.zig");
 const json_util = @import("json_util.zig");
 const cache_dir = @import("cache_dir.zig");
 const net_status = @import("net_status.zig");
+const sha_pin = @import("sha_pin.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
+const Edit = diagnostics.Edit;
+const Fix = diagnostics.Fix;
 const spans = @import("spans.zig");
 const Step = workflow_types.Step;
 const ActionRef = workflow_types.ActionRef;
@@ -53,6 +56,18 @@ pub fn deinitAdvisories() void {
     advisory_cache = null;
     is_offline = true;
     fetched = false;
+}
+
+pub fn loadedAdvisories() []const Advisory {
+    return advisory_cache orelse &.{};
+}
+
+/// Test seam: e2e fixtures inject a local advisory table so SC003 can fire
+/// without talking to GitHub. Production never calls this.
+pub fn overrideCacheForTest(advisories: []const Advisory) void {
+    advisory_cache = advisories;
+    fetched = true;
+    is_offline = false;
 }
 
 pub fn ensureLoaded() void {
@@ -110,9 +125,88 @@ pub fn checkKnownVulnerableAction(step: *const Step, list: *DiagnosticList) void
             .message = adv.diagnostic_message,
             .span = spans.usesSpan(step),
             .fix_hint = if (undetermined) undetermined_hint else adv.diagnostic_hint,
+            .fix = if (undetermined) null else buildBumpFix(list, step, action_ref, adv.patched_version),
         }) catch return;
         return; // One diagnostic per step
     }
+}
+
+/// Tag refs bump to `patched_version` with no network. SHA pins (and a tag
+/// whose patched oid is already in the SEC001 store) rewrite to that oid.
+/// The `@` is included so the edit starts before SEC001's ref-only pin and
+/// wins the overlap: pinning the vulnerable tag would be the wrong survivor.
+fn buildBumpFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    action_ref: ActionRef,
+    patched_version: ?[]const u8,
+) ?Fix {
+    const patched = patched_version orelse return null;
+    if (!engine.isValidGitRef(patched)) return null;
+    const ref = action_ref.ref orelse return null;
+    if (std.mem.eql(u8, ref, patched)) return null;
+
+    const end_byte = step.uses_value_end_byte orelse return null;
+    const style = step.uses_value_style orelse return null;
+    const quote_offset: usize = switch (style) {
+        .plain => 0,
+        .single_quoted, .double_quoted => 1,
+        .literal, .folded => return null,
+    };
+    if (end_byte < quote_offset + ref.len) return null;
+    const ref_end = end_byte - quote_offset;
+    const ref_start = ref_end - ref.len;
+    if (ref_start == 0) return null;
+
+    const alloc = list.fixAllocator();
+    const owner = action_ref.owner orelse return null;
+    const repo = action_ref.repo orelse return null;
+    const pin = sha_pin.lookupTagOid(owner, repo, patched);
+
+    if (action_ref.is_pinned) {
+        const entry = pin orelse return null;
+        if (!step.uses_value_ends_line) return null;
+        const oid = alloc.dupe(u8, entry.oid) catch return null;
+        if (step.uses_line_comment) |comment| {
+            const comment_start = step.uses_line_comment_start_byte orelse return null;
+            const word_len = std.mem.findAny(u8, comment, " \t") orelse comment.len;
+            const edits = alloc.alloc(Edit, 2) catch return null;
+            edits[0] = .{ .start_byte = ref_start, .end_byte = ref_end, .replacement = oid, .expects = ref };
+            edits[1] = .{
+                .start_byte = comment_start,
+                .end_byte = comment_start + word_len,
+                .replacement = patched,
+                .expects = comment[0..word_len],
+            };
+            return .{ .description = "pin to the advisory's patched version", .safety = .unsafe, .edits = edits };
+        }
+        const comment = std.fmt.allocPrint(alloc, " # {s}", .{patched}) catch return null;
+        const edits = alloc.alloc(Edit, 2) catch return null;
+        edits[0] = .{ .start_byte = ref_start, .end_byte = ref_end, .replacement = oid, .expects = ref };
+        edits[1] = .{ .start_byte = end_byte, .end_byte = end_byte, .replacement = comment };
+        return .{ .description = "pin to the advisory's patched version", .safety = .unsafe, .edits = edits };
+    }
+
+    const old_at = std.fmt.allocPrint(alloc, "@{s}", .{ref}) catch return null;
+    if (pin) |entry| {
+        if (step.uses_value_ends_line) {
+            const new_at = std.fmt.allocPrint(alloc, "@{s}", .{entry.oid}) catch return null;
+            const comment = std.fmt.allocPrint(alloc, " # {s}", .{patched}) catch return null;
+            const edits = alloc.alloc(Edit, 2) catch return null;
+            edits[0] = .{ .start_byte = ref_start - 1, .end_byte = ref_end, .replacement = new_at, .expects = old_at };
+            edits[1] = .{ .start_byte = end_byte, .end_byte = end_byte, .replacement = comment };
+            return .{
+                .description = "bump to the advisory's patched version and pin its commit",
+                .safety = .unsafe,
+                .edits = edits,
+            };
+        }
+    }
+
+    const new_at = std.fmt.allocPrint(alloc, "@{s}", .{patched}) catch return null;
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{ .start_byte = ref_start - 1, .end_byte = ref_end, .replacement = new_at, .expects = old_at };
+    return .{ .description = "bump to the advisory's patched version", .safety = .unsafe, .edits = edits };
 }
 
 const undetermined_hint = "the SHA pin hides the version; add a '# v<x.y.z>' comment on the uses: line so the advisory range can be checked";
@@ -423,6 +517,7 @@ pub fn isVersionVulnerable(ref: []const u8, range: []const u8) bool {
 }
 
 const testing = std.testing;
+const test_support = @import("../test_support.zig");
 
 test "parseSemver: v1.2.3" {
     const v = parseSemver("v1.2.3").?;
@@ -911,4 +1006,192 @@ test "SC003: lazy fetch with deadline exceeded produces no diagnostics" {
     checkKnownVulnerableAction(&step, &list);
     try testing.expectEqual(@as(usize, 0), list.len());
     try testing.expect(fetched);
+}
+
+const sc003_tag_source =
+    \\name: t
+    \\on: push
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - uses: evil/action@v0.9.0
+    \\
+;
+
+const sc003_patched_oid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn withMockAdvisories() void {
+    advisory_cache = &mock_advisories;
+    is_offline = false;
+    fetched = true;
+}
+
+test "SC003: --fix-unsafe bumps a vulnerable tag to patched_version" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+    withMockAdvisories();
+
+    const result = try test_support.lintAndFix(testing.allocator, sc003_tag_source, .{ .step = &checkKnownVulnerableAction }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expect(std.mem.find(u8, result.content, "uses: evil/action@1.0.0") != null);
+    try testing.expect(std.mem.find(u8, result.content, "evil/action@v0.9.0") == null);
+}
+
+test "SC003: --fix without unsafe leaves the tag alone" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+    withMockAdvisories();
+
+    const result = try test_support.lintAndFix(testing.allocator, sc003_tag_source, .{ .step = &checkKnownVulnerableAction }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sc003_tag_source, result.content);
+}
+
+test "SC003: a tag whose patched oid is known is SHA-pinned in one rewrite" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+        sha_pin.deinitTagOids();
+    }
+    withMockAdvisories();
+    sha_pin.initTagOids(testing.allocator, false, true);
+    sha_pin.setCachedTagOid("evil", "action", "1.0.0", sc003_patched_oid, false);
+
+    const result = try test_support.lintAndFix(testing.allocator, sc003_tag_source, .{ .step = &checkKnownVulnerableAction }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.find(u8, result.content, "uses: evil/action@" ++ sc003_patched_oid ++ " # 1.0.0") != null);
+}
+
+test "SC003: SHA pin with a vulnerable comment is re-pinned when the patched oid is known" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+        sha_pin.deinitTagOids();
+    }
+    withMockAdvisories();
+    sha_pin.initTagOids(testing.allocator, false, true);
+    sha_pin.setCachedTagOid("evil", "action", "1.0.0", sc003_patched_oid, false);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: evil/action@a5ac7e51b41094c92402da3b24376905380afc29 # v0.9.0
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkKnownVulnerableAction }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(std.mem.find(u8, result.content, "uses: evil/action@" ++ sc003_patched_oid ++ " # 1.0.0") != null);
+}
+
+test "SC003: SHA re-pin is skipped when the patched oid is unknown (--offline store)" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+        sha_pin.deinitTagOids();
+    }
+    withMockAdvisories();
+    sha_pin.initTagOids(testing.allocator, true, true);
+    sha_pin.setCachedTagOid("evil", "action", "1.0.0", sc003_patched_oid, false);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: evil/action@a5ac7e51b41094c92402da3b24376905380afc29 # v0.9.0
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkKnownVulnerableAction }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SC003: undetermined SHA pin (no version comment) gets no fix" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+    withMockAdvisories();
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: evil/action@a5ac7e51b41094c92402da3b24376905380afc29
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkKnownVulnerableAction }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "SC003: no patched_version means no fix" {
+    const prev_cache = advisory_cache;
+    const prev_offline = is_offline;
+    const prev_fetched = fetched;
+    defer {
+        advisory_cache = prev_cache;
+        is_offline = prev_offline;
+        fetched = prev_fetched;
+    }
+    advisory_cache = &unbounded_advisories;
+    is_offline = false;
+    fetched = true;
+
+    const result = try test_support.lintAndFix(testing.allocator, sc003_tag_source, .{ .step = &checkKnownVulnerableAction }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
 }

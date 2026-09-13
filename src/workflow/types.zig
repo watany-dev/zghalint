@@ -712,6 +712,9 @@ pub const Step = struct {
     /// pin hides the version it stands for, so SC003 reads the `# v1.2.3`
     /// convention that SEC001's autofix (and every pinning tool) writes.
     uses_line_comment: ?[]const u8 = null,
+    /// Byte of the first non-blank of `uses_line_comment`, for SC003's rewrite
+    /// of an existing `# v1.2.3` pin comment.
+    uses_line_comment_start_byte: ?usize = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
     /// Start byte and column of the step mapping's first key. A new `env:`
