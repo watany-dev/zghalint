@@ -54,7 +54,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC015 | artipacked | warning | Checkout with persisted credentials followed by `upload-artifact` can leak `GITHUB_TOKEN` |
 | SEC016 | cache-poisoning | warning | Cache usage in release/deploy workflows risks cache poisoning attacks |
 | SEC017 | insecure-commands | warning | `ACTIONS_ALLOW_UNSECURE_COMMANDS` re-enables deprecated insecure workflow commands |
-| SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
+| SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists credentials by default so later steps can still use the token |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:`（`--fix-unsafe` で `run:` 中の参照を step の `env:` に束縛する） |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
 | SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
@@ -111,6 +111,15 @@ the same `actions/checkout` step, plus a later `upload-artifact` in the same
 job. Both recommend `persist-credentials: false`. When SEC015 fires, SEC018 on
 that step is suppressed so the more specific artifact-leakage message is the
 one shown. Disabling SEC015 in `.zghalint.yml` restores SEC018 on those steps.
+
+SEC018 does not assume the token is written to `.git/config`. checkout v6 and
+later store persisted credentials under `$RUNNER_TEMP`; later steps can still
+use git auth, which is what SEC018 reports. SEC015 only treats a workspace
+upload as a leak when the resolved checkout still stores credentials in the
+workspace (`.git/config`). A v6+ checkout plus `upload-artifact` of `dist` /
+`.` is not artipacked unless `path:` names `$RUNNER_TEMP` / `runner.temp`.
+Capability comes from the resolved action metadata (or a SHA that resolves to
+a tag in that table), not from `major >= 6` on an unresolved pin.
 
 ### SEC002 / SEC008 vs. SEC006
 
@@ -191,6 +200,18 @@ SEC005 reports a checkout whose `ref` / `repository` names the PR head:
 `github.event.pull_request.number` / `github.event.number` used to build one,
 and `github.event.pull_request.merge_commit_sha` — the test merge of the head
 into the base carries the fork's changes just as `refs/pull/<n>/merge` does.
+
+When the resolved checkout declares `allow-unsafe-pr-checkout` (the gate
+backported onto current floating majors, and present from v7), SEC005 and
+SEC009 distinguish three cases. A dangerous `actions/checkout` without
+`allow-unsafe-pr-checkout: true` is described as a fetch the action refuses at
+runtime, not as arbitrary code execution that succeeded. Setting the flag is
+the explicit bypass and keeps the strong security warning. An unresolved SHA,
+or a checkout whose metadata does not declare the input, keeps the original
+exploit message. The gate does not run on `pull_request_review` /
+`pull_request_review_comment`, so those triggers stay on the exploit wording
+even with checkout v7. A `run:` `git checkout` of the same ref is SEC002's
+sink and is never silenced by the action's gate.
 
 SEC009 reports `github.event.workflow_run.head_*`, `.display_title` and
 `.pull_requests[*].*`. The last one keeps SEC009 in step with SEC002, which

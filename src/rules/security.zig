@@ -21,6 +21,7 @@ const trusted_data = @import("data/trusted_actions.zig");
 const permissions = @import("permissions.zig");
 const runner = @import("runner.zig");
 const setup_node_cache = @import("setup_node_cache.zig");
+const checkout_capability = @import("checkout_capability.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -764,44 +765,66 @@ const privileged_pr_head_events = [_]EventType{
 };
 
 fn hasPrivilegedPRHeadTrigger(wf: *const Workflow) bool {
-    return privilegedPRHeadMessage(wf) != null;
+    return privilegedPRHeadMessageKind(wf, .exploit) != null;
 }
 
-/// The SEC005 message for the first such trigger the workflow declares, or
-/// null when it declares none. The trigger is named in the text so a
-/// `pull_request_review` finding does not read as if it were about
-/// `pull_request_target`.
-fn privilegedPRHeadMessage(wf: *const Workflow) ?[]const u8 {
+/// The SEC005 message for the first such trigger the workflow declares.
+/// The trigger is named in the text so a `pull_request_review` finding
+/// does not read as if it were about `pull_request_target`.
+const PrHeadKind = enum { exploit, refused, bypassed };
+
+fn privilegedPRHeadMessageKind(wf: *const Workflow, kind: PrHeadKind) ?[]const u8 {
     inline for (privileged_pr_head_events) |event| {
         if (wf.hasEvent(event)) {
-            return "dangerous: " ++ @tagName(event) ++ " workflow checks out PR head, allowing arbitrary code execution from forks";
+            return switch (kind) {
+                .exploit => "dangerous: " ++ @tagName(event) ++ " workflow checks out PR head, allowing arbitrary code execution from forks",
+                .refused => @tagName(event) ++ " workflow requests a fork PR checkout that this actions/checkout version refuses at runtime",
+                .bypassed => "dangerous: " ++ @tagName(event) ++ " workflow sets allow-unsafe-pr-checkout and checks out PR head, allowing arbitrary code execution from forks",
+            };
         }
     }
     return null;
 }
 
+/// The checkout action only refuses fork PR fetches on `pull_request_target`
+/// (and `workflow_run`, which SEC009 owns). `pull_request_review*` still
+/// executes the fetch, so a gate on the action is not a defense there.
+fn checkoutGateCoversPrivilegedPrHead(wf: *const Workflow) bool {
+    if (wf.hasEvent(.pull_request_review) or wf.hasEvent(.pull_request_review_comment)) return false;
+    return wf.hasEvent(.pull_request_target);
+}
+
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
-    const message = privilegedPRHeadMessage(wf) orelse return;
+    if (!hasPrivilegedPRHeadTrigger(wf)) return;
+    const gate_covers = checkoutGateCoversPrivilegedPrHead(wf);
 
     for (wf.jobs) |*job| {
         const Ctx = struct {
             wf: *const Workflow,
             job: *const Job,
             list: *DiagnosticList,
-            message: []const u8,
+            gate_covers: bool,
             pub fn visit(self: @This(), step: *const Step) void {
                 const input = checkoutCodeInput(step, isPRHeadValue) orelse return;
                 if (forkGuarded(self.list.allocator, self.job, step, pull_request_head_anchors)) return;
+                const kind: PrHeadKind = if (self.gate_covers) switch (checkout_capability.unsafePrCheckout(step)) {
+                    .blocked => .refused,
+                    .bypassed => .bypassed,
+                    .unknown => .exploit,
+                } else .exploit;
                 self.list.append(.{
                     .rule_id = "SEC005",
                     .severity = .@"error",
-                    .message = self.message,
+                    .message = privilegedPRHeadMessageKind(self.wf, kind).?,
                     .span = withAnchor(step, input.key).whole(),
-                    .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
+                    .fix_hint = switch (kind) {
+                        .refused => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
+                        .exploit, .bypassed => "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
+                    },
                 }) catch return;
             }
         };
-        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list, .message = message });
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list, .gate_covers = gate_covers });
     }
 }
 
@@ -1267,12 +1290,21 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
                 const input = checkoutCodeInput(step, isWorkflowRunValue) orelse return;
                 if (forkGuarded(self.list.allocator, self.job, step, workflow_run_anchors)) return;
                 if (hasPrivilegedPRHeadTrigger(self.wf) and checkoutCodeInput(step, isPRHeadValue) != null) return;
+                const kind = checkout_capability.unsafePrCheckout(step);
+                const message: []const u8 = switch (kind) {
+                    .blocked => "workflow_run job requests a checkout of a triggering-workflow ref that this actions/checkout version refuses for fork pull requests at runtime",
+                    .bypassed => "dangerous: workflow_run job sets allow-unsafe-pr-checkout and checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                    .unknown => "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                };
                 self.list.append(.{
                     .rule_id = "SEC009",
                     .severity = .@"error",
-                    .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                    .message = message,
                     .span = withAnchor(step, input.key).whole(),
-                    .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+                    .fix_hint = switch (kind) {
+                        .blocked => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
+                        .bypassed, .unknown => "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+                    },
                 }) catch return;
             }
         };
@@ -2096,25 +2128,32 @@ fn containsActorBotCheck(expr: []const u8) bool {
     return std.mem.find(u8, expr, "[bot]") != null;
 }
 
+const ArtipackedUpload = struct {
+    any: bool = false,
+    runner_temp: bool = false,
+};
+
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
-    var has_upload_after = false;
-    checkArtipackedSteps(job.steps, &has_upload_after, list);
+    var upload = ArtipackedUpload{};
+    checkArtipackedSteps(job.steps, &upload, list);
 }
 
-fn checkArtipackedSteps(steps: []const Step, has_upload_after: *bool, list: *DiagnosticList) void {
+fn checkArtipackedSteps(steps: []const Step, upload: *ArtipackedUpload, list: *DiagnosticList) void {
     var i = steps.len;
     while (i > 0) {
         i -= 1;
         const step = &steps[i];
-        checkArtipackedSteps(step.nestedSteps(), has_upload_after, list);
+        checkArtipackedSteps(step.nestedSteps(), upload, list);
         if (step.uses) |ref| {
             if (isAction(ref, "actions/upload-artifact")) {
-                has_upload_after.* = true;
+                upload.any = true;
+                if (checkout_capability.uploadPathReachesRunnerTemp(step)) upload.runner_temp = true;
                 continue;
             }
 
-            if (has_upload_after.* and isAction(ref, "actions/checkout") and
-                classifyPersistCredentials(step) != .explicit_false)
+            if (isAction(ref, "actions/checkout") and
+                classifyPersistCredentials(step) != .explicit_false and
+                artipackedLeak(step, upload.*))
             {
                 var diag = Diagnostic{
                     .rule_id = "SEC015",
@@ -2132,6 +2171,13 @@ fn checkArtipackedSteps(steps: []const Step, has_upload_after: *bool, list: *Dia
             }
         }
     }
+}
+
+fn artipackedLeak(step: *const Step, upload: ArtipackedUpload) bool {
+    // v6+ stores the token under $RUNNER_TEMP. Uploading the workspace does
+    // not take that file unless `path:` names it.
+    if (checkout_capability.credentialsInRunnerTemp(step)) return upload.runner_temp;
+    return upload.any;
 }
 
 fn buildPersistCredentialsFalseFix(
@@ -2188,7 +2234,7 @@ fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) voi
     const state = classifyPersistCredentials(step);
     if (state == .explicit_false) return;
 
-    const message_base = "actions/checkout persists GITHUB_TOKEN in .git/config by default; subsequent steps can read the token";
+    const message_base = "actions/checkout persists credentials by default; later steps can still use the token";
     const message = if (state == .explicit_true)
         message_base ++ " (explicitly set to true)"
     else
@@ -3084,7 +3130,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC018",
         .name = "checkout-persist-credentials",
-        .description = "actions/checkout persists GITHUB_TOKEN in .git/config by default",
+        .description = "actions/checkout persists credentials by default so later steps can still use the token",
         .severity = .warning,
         .category = .security,
         .check_step = &checkCheckoutPersistCredentials,
@@ -3321,6 +3367,20 @@ test "SEC002: untrusted contexts in run block" {
     for (bodies) |body| {
         try testing.expect(sec002Fires(body, null));
     }
+}
+
+test "SEC002: shell git checkout is not silenced by checkout@v7" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "persist-credentials", "false") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+        .{ .run = "git checkout ${{ github.head_ref }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
 
 test "SEC002: free text a fork owner or a commit author writes (#313)" {
@@ -3892,6 +3952,64 @@ test "SEC005: PR target with checkout of head" {
     var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC005"));
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "refuses at runtime") != null);
+}
+
+test "SEC005: PR target checkout@v7 without bypass describes runtime refusal" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "refuses at runtime") != null);
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") == null);
+}
+
+test "SEC005: allow-unsafe-pr-checkout true is a strong warning" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    with.put(testing.allocator, "allow-unsafe-pr-checkout", "true") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "allow-unsafe-pr-checkout") != null);
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+}
+
+test "SEC005: unresolved SHA keeps the exploit message" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+    try testing.expect(std.mem.find(u8, d.message, "refuses at runtime") == null);
+}
+
+test "SEC005: pull_request_review is not covered by the checkout gate" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(pr_review_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
 }
 
 test "SEC005: PR target with checkout of head ref" {
@@ -4115,8 +4233,38 @@ test "SEC009: workflow_run with checkout of workflow_run head_sha" {
             try testing.expect(d.severity == .@"error");
             try testing.expect(d.fix_hint != null);
             try testing.expect(d.fix_hint.?.len > 0);
+            try testing.expect(std.mem.find(u8, d.message, "refuses for fork pull requests") != null);
         }
     }
+}
+
+test "SEC009: allow-unsafe-pr-checkout true keeps the exploit message" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    with.put(testing.allocator, "allow-unsafe-pr-checkout", "true") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC009").?;
+    try testing.expect(std.mem.find(u8, d.message, "allow-unsafe-pr-checkout") != null);
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+}
+
+test "SEC009: unresolved SHA keeps the exploit message" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC009").?;
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+    try testing.expect(std.mem.find(u8, d.message, "refuses for fork pull requests") == null);
 }
 
 test "SEC009: workflow_run with checkout of workflow_run head_branch" {
@@ -6181,6 +6329,30 @@ test "SEC015: checkout + upload-artifact triggers rule" {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: checkout@v6 workspace upload is not artipacked" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v6") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
+    try testing.expect(hasDiagnostic(&list, "SEC018"));
+}
+
+test "SEC015: checkout@v6 upload of runner.temp still fires" {
+    var upload_with: workflow_types.StringMap = .empty;
+    upload_with.put(testing.allocator, "path", "${{ runner.temp }}") catch unreachable;
+    defer upload_with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v6") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4"), .with = upload_with },
     };
     var list = runSteps(&steps);
     defer list.deinit();

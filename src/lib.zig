@@ -118,6 +118,7 @@ test {
     _ = @import("rules/rest_fallback.zig");
     _ = @import("rules/json_util.zig");
     _ = @import("rules/setup_node_cache.zig");
+    _ = @import("rules/checkout_capability.zig");
     _ = @import("rules/rename.zig");
     _ = @import("rules/data/compromised_actions.zig");
     _ = @import("rules/data/trusted_actions.zig");

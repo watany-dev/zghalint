@@ -65,6 +65,14 @@ each ID means.
 - PERF001 no longer asks to add a cache when setup-node would enable npm
   caching from `package.json` and the action declares `package-manager-cache`
   (#435).
+- SEC018 reports that later steps can still use persisted checkout credentials,
+  without assuming they live in `.git/config`. SEC015 no longer treats a
+  workspace `upload-artifact` as a leak when the resolved checkout stores
+  credentials under `$RUNNER_TEMP` (v6+). Unresolved SHAs keep the previous
+  artipacked behavior (#436).
+- SEC005 / SEC009 distinguish a checkout that `allow-unsafe-pr-checkout` will
+  refuse at runtime from an explicit bypass. Unresolved SHAs and `run:` `git
+  checkout` stay on the original exploit wording (#436).
 - `permissions.vulnerability-alerts` is a known scope. `read` and `none` are
   accepted; `write` is PERM003 (#428).
 - `job.workflow_ref` / `job.workflow_sha` / `job.workflow_repository` /
