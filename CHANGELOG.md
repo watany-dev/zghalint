@@ -73,6 +73,7 @@ each ID means.
 
 ### Changed
 
+- The v0.2.0 GitHub Actions spec-follow track (GA1–GA14) is complete (#427).
 - `cache-mode` is a known workflow and job key, so it no longer fires SYN001
   (#428).
 - PERF001 no longer asks to add a cache when setup-node would enable npm
