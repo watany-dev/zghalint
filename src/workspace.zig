@@ -265,7 +265,10 @@ fn valueNamesNpm(value: ?std.json.Value) bool {
 }
 
 fn nameIsNpm(raw: []const u8) bool {
-    const trimmed = std.mem.trim(u8, raw, " \t");
+    var trimmed = std.mem.trim(u8, raw, " \t");
+    // setup-node's detector is /^(\^)?npm(@.*)?$/; the caret is a Corepack
+    // "latest compatible" prefix, not part of the tool name.
+    if (trimmed.len > 0 and trimmed[0] == '^') trimmed = trimmed[1..];
     const name = if (std.mem.findScalar(u8, trimmed, '@')) |i| trimmed[0..i] else trimmed;
     return std.ascii.eqlIgnoreCase(name, "npm");
 }
@@ -500,6 +503,36 @@ test "detectFromRoot reads devEngines.packageManager npm" {
     try tmp.dir.writeFile(runtime.io(), .{
         .sub_path = "package.json",
         .data = "{\"devEngines\":{\"packageManager\":{\"name\":\"npm\"}}}",
+    });
+
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.package_json_npm);
+}
+
+test "detectFromRoot reads Corepack caret packageManager npm" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{
+        .sub_path = "package.json",
+        .data = "{\"packageManager\":\"^npm@10.9.2\"}",
+    });
+
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+
+    const ctx = try detectFromRoot(testing.allocator, abs);
+    try testing.expect(ctx.package_json_npm);
+}
+
+test "detectFromRoot reads devEngines.packageManager array npm" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{
+        .sub_path = "package.json",
+        .data = "{\"devEngines\":{\"packageManager\":[{\"name\":\"yarn\"},{\"name\":\"npm\"}]}}",
     });
 
     const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);

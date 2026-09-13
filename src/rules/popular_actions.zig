@@ -41,8 +41,7 @@ pub fn lookup(action: ActionRef) ?ActionMeta {
     return lookupByMajor(owner, repo, action.path orelse "", major);
 }
 
-/// Direct table lookup when the major is already known (a version tag, or a
-/// SHA that resolved to one). Paths are case-sensitive; owner and repo are not.
+/// Paths are case-sensitive; owner and repo are not.
 pub fn lookupByMajor(owner: []const u8, repo: []const u8, path: []const u8, major: u16) ?ActionMeta {
     for (data.popular_actions) |meta| {
         if (meta.major != major) continue;

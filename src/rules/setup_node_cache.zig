@@ -1,9 +1,7 @@
 //! setup-node cache capability shared by PERF001 and SEC016 (#435).
 //!
-//! Caching is on when `cache:` is an explicit non-false value, or when the
-//! resolved action declares `package-manager-cache` and package.json names
-//! npm. Capability comes from that input, not from `major >= 5`. A missing
-//! metadata match is not treated as enabled (ADR-0009).
+//! Capability comes from the `package-manager-cache` input, not from
+//! `major >= 5`. A missing metadata match is not treated as enabled (ADR-0009).
 
 const std = @import("std");
 const popular_actions = @import("popular_actions.zig");
@@ -18,7 +16,6 @@ const Step = workflow_types.Step;
 pub const auto_cache_hint = "setup-node enables npm caching from package.json; set 'package-manager-cache: false' in this release/deploy job, or build from a dedicated cache scope";
 
 const ExplicitCache = enum { on, off, absent };
-const AutoCacheGate = enum { off, unknown, allow };
 
 fn isSetupNode(step: *const Step) bool {
     const action = step.uses orelse return false;
@@ -32,10 +29,7 @@ pub fn enabled(step: *const Step) bool {
         .off => return false,
         .absent => {},
     }
-    switch (autoCacheGate(step)) {
-        .off, .unknown => return false,
-        .allow => {},
-    }
+    if (!autoCacheAllowed(step)) return false;
     return autoCacheCapable(step) and workspace.current.package_json_npm;
 }
 
@@ -50,12 +44,12 @@ fn explicitCache(step: *const Step) ExplicitCache {
     return .on;
 }
 
-fn autoCacheGate(step: *const Step) AutoCacheGate {
-    const value = withTrimmed(step, "package-manager-cache") orelse return .allow;
-    if (value.len == 0) return .allow;
-    if (isFalse(value)) return .off;
-    if (std.mem.startsWith(u8, value, "${{")) return .unknown;
-    return .allow;
+fn autoCacheAllowed(step: *const Step) bool {
+    const value = withTrimmed(step, "package-manager-cache") orelse return true;
+    if (value.len == 0) return true;
+    if (isFalse(value)) return false;
+    if (std.mem.startsWith(u8, value, "${{")) return false;
+    return true;
 }
 
 fn autoCacheCapable(step: *const Step) bool {
