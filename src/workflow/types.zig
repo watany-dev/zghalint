@@ -228,12 +228,11 @@ pub const Concurrency = struct {
     /// Value span and style of the `group` scalar, so an expression inside it
     /// can be reported where it appears (EXPR015/EXPR016).
     group_meta: ?ScalarValueMeta = null,
-    /// Present only when `cancel-in-progress` is a static bool. Expressions
-    /// leave this null so SYN025 does not guess (ADR-0009).
+    /// Expressions leave this null so SYN025 does not guess (ADR-0009).
     cancel_in_progress: ?bool = null,
     cancel_in_progress_span: ?yaml_types.Span = null,
-    /// `queue:` scalar as written. Invalid values are kept so SYN025 can
-    /// report them instead of dropping the key.
+    /// Invalid values are kept so SYN025 can report them instead of dropping
+    /// the key.
     queue: ?[]const u8 = null,
     queue_span: ?yaml_types.Span = null,
 };

@@ -1305,7 +1305,7 @@ fn checkOneConcurrency(c: workflow_types.Concurrency, list: *DiagnosticList) voi
         return;
     }
     if (!std.mem.eql(u8, queue, "max") or c.cancel_in_progress != true) return;
-    const span = c.cancel_in_progress_span orelse c.queue_span orelse return;
+    const span = c.cancel_in_progress_span orelse return;
     reportConcurrencyQueueConflict(list, span);
 }
 
@@ -4941,6 +4941,25 @@ test "SYN025: documented queue values and expressions are clean" {
         \\  e:
         \\    runs-on: ubuntu-latest
         \\    concurrency: ${{ github.workflow }}-${{ github.ref }}
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN025: cancel-in-progress true without queue is the default single" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: ci
+        \\      cancel-in-progress: true
         \\    steps:
         \\      - run: echo
     ;
