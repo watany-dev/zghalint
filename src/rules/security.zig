@@ -2612,8 +2612,7 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
 }
 
 /// The pattern only needs to be a prefix of the reference, because everything
-/// below an untrusted node is untrusted too. Segments are walked in place
-/// rather than `splitScalar`'d on every call; `ContextPath` is pointer-passed
+/// below an untrusted node is untrusted too. `ContextPath` is pointer-passed
 /// so the 16-segment buffer is not copied (#527).
 fn pathMatchesPattern(path: *const ContextPath, pattern: []const u8) bool {
     // Most references in a real workflow are `steps.*`, `matrix.*` or a

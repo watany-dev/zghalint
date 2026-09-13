@@ -22,8 +22,8 @@ const Span = spans.Span;
 const Anchor = spans.Anchor;
 const ExprNode = expressions.ExprNode;
 
-/// Byte range of a path or call inside a scalar, resolved only when a
-/// diagnostic is emitted so nodes that are not findings skip `Anchor.at`.
+/// Byte range of a path or call inside a scalar. `resolve` runs `Anchor.at`
+/// only for a finding (#527).
 pub const Loc = struct {
     anchor: Anchor,
     text: []const u8,
