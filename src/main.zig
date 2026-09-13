@@ -664,9 +664,8 @@ fn initWorkspaceContext(
     // whether or not the lockfile probe below runs.
     zghalint.workspace.setRepoRoot(root);
 
-    // PERF001 is the sole consumer of the probe, so a disabled rule makes the
-    // directory scan pure startup cost.
-    if (!config.isRuleEnabled("PERF001")) return;
+    // PERF001 (lockfiles) and SEC016 (setup-node auto-cache) share this probe.
+    if (!config.isRuleEnabled("PERF001") and !config.isRuleEnabled("SEC016")) return;
 
     var ctx = zghalint.workspace.detectFromRoot(arena, root) catch zghalint.workspace.Context{};
 

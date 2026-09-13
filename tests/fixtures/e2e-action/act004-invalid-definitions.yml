@@ -2,7 +2,7 @@
 name: Invalid definitions
 description: Wrong shapes and value types throughout
 runs:
-  using: node20
+  using: node24
   main: dist/index.js
 inputs:
   version:

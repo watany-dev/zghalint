@@ -1,0 +1,17 @@
+# zghalint:expect SEC002 SEC001
+# zghalint:forbid SEC005
+# checkout v7's gate does not cover a shell `git checkout` of PR head.
+name: ga9 shell git checkout
+on:
+  pull_request_target:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: git checkout ${{ github.head_ref }}
