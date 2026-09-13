@@ -1,0 +1,14 @@
+# zghalint:expect SYN026@9
+# zghalint:forbid SYN001
+name: ga12 merge key
+on: push
+permissions:
+  contents: read
+jobs:
+  a:
+    <<: &defaults
+      timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run
+        run: echo hi

@@ -26,7 +26,7 @@ EXPR002 / EXPR003 / EXPR004 も、既存の式カタログから最短編集距�
 長さが異なる場合は fix を付けない。プロパティはドット記法が対象。
 `github.event` 配下は従来どおり EXPR003 の対象外。
 
-対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023 / SYN024、EXPR010–EXPR014、
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023 / SYN024 / SYN025、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 
 ---
@@ -54,7 +54,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC015 | artipacked | warning | Checkout with persisted credentials followed by `upload-artifact` can leak `GITHUB_TOKEN` |
 | SEC016 | cache-poisoning | warning | Cache usage in release/deploy workflows risks cache poisoning attacks |
 | SEC017 | insecure-commands | warning | `ACTIONS_ALLOW_UNSECURE_COMMANDS` re-enables deprecated insecure workflow commands |
-| SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
+| SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists credentials by default so later steps can still use the token |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:`（`--fix-unsafe` で `run:` 中の参照を step の `env:` に束縛する） |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
 | SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
@@ -92,9 +92,12 @@ SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式
 キャッシュ入力を持つ setup 系 action を見る。入力を書かなくても既定で
 キャッシュする `astral-sh/setup-uv` (`enable-cache`) と `mlugg/setup-zig`
 (`use-cache`) は、入力の省略そのものを指摘する。入力が書かれている場合は
-値を opt-out として読み、`false` のときだけ沈黙する
-(`actions/setup-node` などの `cache:` は指定して初めて有効になるので、
-省略は指摘しない)。
+値を opt-out として読み、`false` のときだけ沈黙する。
+`actions/setup-node` は `cache:` を指定したとき、または action が
+`package-manager-cache` を宣言していて `package.json` の
+`packageManager` / `devEngines.packageManager` が npm のとき、キャッシュが
+有効とみなす。major だけ、または解決できない SHA だけでは有効と断定しない。
+`package-manager-cache: false` は自動キャッシュを切る。
 
 `cache-mode` は restore / save の 2 能力として読む（PERF001 と同じ resolver）。
 `none` はどちらもできないので SEC016 は沈黙する。`read` は restore できるので
@@ -108,6 +111,15 @@ the same `actions/checkout` step, plus a later `upload-artifact` in the same
 job. Both recommend `persist-credentials: false`. When SEC015 fires, SEC018 on
 that step is suppressed so the more specific artifact-leakage message is the
 one shown. Disabling SEC015 in `.zghalint.yml` restores SEC018 on those steps.
+
+SEC018 does not assume the token is written to `.git/config`. checkout v6 and
+later store persisted credentials under `$RUNNER_TEMP`; later steps can still
+use git auth, which is what SEC018 reports. SEC015 only treats a workspace
+upload as a leak when the resolved checkout still stores credentials in the
+workspace (`.git/config`). A v6+ checkout plus `upload-artifact` of `dist` /
+`.` is not artipacked unless `path:` names `$RUNNER_TEMP` / `runner.temp`.
+Capability comes from the resolved action metadata (or a SHA that resolves to
+a tag in that table), not from `major >= 6` on an unresolved pin.
 
 ### SEC002 / SEC008 vs. SEC006
 
@@ -188,6 +200,18 @@ SEC005 reports a checkout whose `ref` / `repository` names the PR head:
 `github.event.pull_request.number` / `github.event.number` used to build one,
 and `github.event.pull_request.merge_commit_sha` — the test merge of the head
 into the base carries the fork's changes just as `refs/pull/<n>/merge` does.
+
+When the resolved checkout declares `allow-unsafe-pr-checkout` (the gate
+backported onto current floating majors, and present from v7), SEC005 and
+SEC009 distinguish three cases. A dangerous `actions/checkout` without
+`allow-unsafe-pr-checkout: true` is described as a fetch the action refuses at
+runtime, not as arbitrary code execution that succeeded. Setting the flag is
+the explicit bypass and keeps the strong security warning. An unresolved SHA,
+or a checkout whose metadata does not declare the input, keeps the original
+exploit message. The gate does not run on `pull_request_review` /
+`pull_request_review_comment`, so those triggers stay on the exploit wording
+even with checkout v7. A `run:` `git checkout` of the same ref is SEC002's
+sink and is never silenced by the action's gate.
 
 SEC009 reports `github.event.workflow_run.head_*`, `.display_title` and
 `.pull_requests[*].*`. The last one keeps SEC009 in step with SEC002, which
@@ -400,7 +424,7 @@ Detect CI performance issues and resource waste.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただし `cache-mode: none` のジョブ、およびリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は指摘しない（後者は SEC016 と逆向きの助言になるため） |
+| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただし `cache-mode: none` のジョブ、setup-node が `package.json` の npm 指定から自動キャッシュする場合、およびリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は指摘しない（後者は SEC016 と逆向きの助言になるため） |
 | PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job (`--fix-unsafe` で 2 つ目のステップを削除) |
 | PERF003 | fail-fast-disabled | warning | Strategy has `fail-fast` disabled, wasting CI resources on failures |
 
@@ -412,7 +436,7 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
 | BP002 | missing-step-name | info | `run:` step is missing a `name` field. `uses:`-only steps are skipped |
-| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (error), or a major older than the newest one the metadata table knows (info) |
+| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (`node12` / `node16`, error), a still-running but ending runtime (`node20`, warning), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
@@ -447,9 +471,12 @@ jobs:
   固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
   `--fix` で `@vN` を書き換えられる。
 - **ランタイム判定**: アクションの `runs.using` が GitHub の廃止済みランタイム
-  （`node12` / `node16`）なら `error` で報告する。ローカルアクション
-  （`uses: ./{path}`）は `action.yml` を読み、リモートアクションは DEP005 の
-  埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
+  （`node12` / `node16`）なら `error` で報告する。まだ動くが削除予定の
+  `node20`（2026-09-23）は `warning`。`runs.using: node20` を `node24` に
+  書き換える autofix は付けない（Action 本体の互換確認が必要）。
+  `actions/setup-node` の `node-version: 20` は Action の実行ランタイムではない。
+  ローカルアクション（`uses: ./{path}`）は `action.yml` を読み、リモートアクションは
+  DEP005 の埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
 - **現行 major との比較**: 参照している major が、埋め込みメタデータが知る最新の
   major より古ければ `info` で報告する（#358）。第三者アクションは現行 major しか
   表に無いため、古い major は `using` が分からずランタイム判定に掛からない。この
@@ -712,6 +739,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
 | SYN023 | invalid-cache-mode | error | `cache-mode` が `none` / `read` / `write` / `write-only` のいずれでもない |
 | SYN024 | undefined-step-control-ref | error | `wait` / `cancel` がこのジョブに無い step id を指している（`--fix` で綴りを修正） |
+| SYN025 | invalid-concurrency-configuration | error | `concurrency.queue` が `single` / `max` でない、または `queue: max` と `cancel-in-progress: true` が同時に指定されている |
+| SYN026 | unsupported-yaml-merge | error | GitHub Actions が受理しない YAML merge key `<<` が使われている |
 
 ### SYN001 unknown-key
 
@@ -1218,6 +1247,46 @@ steps:
 
 SYN006 が既に拒否する不正な id と、`${{ }}` 式で作った値はここでは見ない。
 
+### SYN025 invalid-concurrency-configuration
+
+`concurrency.queue` は 2026-05-07 から使える。受理されるのは `single`（既定）と
+`max`（同じグループに最大 100 件まで pending を積む）だけ。未知の値は実行時に
+拒否されるので error とし、編集距離 2 以内で候補が一意なら `did you mean` と
+`--fix` の rename を付ける。
+
+`queue: max` と `cancel-in-progress: true` は GitHub がワークフロー検証で拒否する
+組み合わせなので、同じブロックに両方あるときも error とする。矛盾するキーの
+削除は実行意味が変わるため autofix は付けない。`cancel-in-progress: false` か
+省略との組み合わせ、および `queue: single` との組み合わせは合法。
+
+```yaml
+concurrency:
+  group: deploy-production
+  queue: max
+  cancel-in-progress: true   # error: cannot combine with queue: max
+
+concurrency:
+  group: ci
+  queue: huge                # error: expected "single" or "max"
+```
+
+`${{ }}` 式で作った `queue` / `cancel-in-progress` は実行時まで決まらないので
+検査しない。deploy ジョブへ `queue: max` を強制するスタイルルールにはしない。
+
+### SYN026 unsupported-yaml-merge
+
+GitHub Actions のワークフロー YAML は merge key `<<` を受理しない。zghalint の
+パーサは `<<:` を展開したまま他のルールを走らせるが、`<<` 自体は error とする。
+展開結果をファイルへ書き戻す autofix は付けない。anchor / alias だけで merge
+していないファイルは報告しない。
+
+```yaml
+jobs:
+  a:
+    <<: *defaults   # error: GitHub Actions does not support YAML merge key "<<"
+    runs-on: ubuntu-latest
+```
+
 ## Action Metadata Rules (ACT)
 
 Validate action metadata files (`action.yml` / `action.yaml`) — the manifest of
@@ -1246,10 +1315,11 @@ GitHub 自身が案内しているのはこの 2 つの配置なので既定は�
 
 ### ACT002 が受理する `using`
 
-`node20` / `node24` / `docker` / `composite` の 4 つ。`node12` / `node16` は
-GitHub が実行を停止するランタイムなので warning として報告し、それ以外の未知の値は
+`node20` / `node24` / `docker` / `composite` の 4 つを受理する。`node12` /
+`node16` は GitHub が実行を停止したランタイム、`node20` は 2026-09-23 に
+削除予定なので、いずれも warning として報告する。それ以外の未知の値は
 error として報告する（編集距離 2 以内で候補が一意に定まるときは
-`did you mean ...?` を添える）。
+`did you mean ...?` を添える）。`node20` → `node24` の autofix は付けない。
 
 ### 個々の定義に対する検査
 

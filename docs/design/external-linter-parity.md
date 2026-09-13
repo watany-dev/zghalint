@@ -105,10 +105,10 @@ publish ジョブで複数出た。G33 の tag-push 判定とは別経路。
 した (`astral-sh/setup-uv` の `enable-cache`、`mlugg/setup-zig` の
 `use-cache`)。入力があるときは値を opt-out として読み、`false` のときだけ
 沈黙する。これに伴い、opt-in 側 (`cache: false` など) の明示的な無効化も
-指摘しなくなった。`actions/setup-node` の `package-manager-cache` は
-`cache:` を指定して初めてキャッシュが働くという本リポジトリの前提
-(PERF001、`bench/cases/h-practices/setup-node-without-cache.yml`) と
-矛盾するため、opt-in のまま据え置いた。
+指摘しなくなった。`actions/setup-node` の自動 npm キャッシュ
+(`package-manager-cache` + `package.json` の `packageManager` /
+`devEngines.packageManager`) は GA8 (#435) で PERF001 / SEC016 の判定に
+入れた。major や未解決 SHA だけでは有効と断定しない。
 
 #### G2. `action.yml` (composite action) を解析できない — 対応済み
 
@@ -1061,10 +1061,9 @@ CI / bench のピンを actionlint 1.7.12 と zizmor 1.30.1 に揃えた。歴�
   actionlint 1.7.10 以降は alias を解決するので、1.7.7 時代の型エラーは
   再現しない。`missing-timeout` は actionlint 非対応のまま zghalint の
   unique-win。
-- YAML merge key `<<:` は actionlint 1.7.12 が
+- YAML merge key `<<:` is actionlint 1.7.12 が
   `GitHub Actions does not support YAML merge key "<<"` で拒否する。
-  zghalint はまだ検出しない。これは既に GA12 (#439) として切り出してあり、
-  本 issue では実装しない。
+  zghalint は SYN026 `unsupported-yaml-merge` で同じキーを報告する（GA12 / #439）。
 
 zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / FP は
 出なかった。空ワークフローで exit 3 になる既知の挙動は変わっていない。

@@ -220,7 +220,7 @@ pub fn parseWorkflowTracked(
     var cache_mode: ?[]const u8 = null;
     var cache_mode_span: ?yaml.Span = null;
     if (root.get("cache-mode")) |n| {
-        applyCacheMode(&ctx, n, &cache_mode, &cache_mode_span);
+        applyOptionalScalar(&ctx, n, "cache-mode", &cache_mode, &cache_mode_span);
     }
 
     var workflow = types.Workflow{
@@ -270,6 +270,7 @@ pub fn parseWorkflowTracked(
 
     try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys, &.{schema.workflow_on_key_alias});
     if (root.get("defaults")) |n| try unknown_collector.checkDefaults(n);
+    if (root.get("concurrency")) |n| try unknown_collector.checkConcurrency(n);
 
     workflow.unknown_keys = try unknown_collector.toOwnedSlice();
     workflow.empty_sections = try empty.toOwnedSlice(allocator);
@@ -1137,12 +1138,13 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         job.defaults = parseDefaults(n);
     }
     if (m.get("cache-mode")) |n| {
-        applyCacheMode(ctx, n, &job.cache_mode, &job.cache_mode_span);
+        applyOptionalScalar(ctx, n, "cache-mode", &job.cache_mode, &job.cache_mode_span);
     }
 
     if (ctx.unknown_collector) |c| {
         try c.checkMapping(m, "job", &schema.job_keys, &.{});
         if (m.get("defaults")) |n| try c.checkDefaults(n);
+        if (m.get("concurrency")) |n| try c.checkConcurrency(n);
         if (m.get("strategy")) |n| {
             if (n == .mapping) try c.checkMapping(n.mapping, "strategy", &schema.strategy_keys, &.{});
         }
@@ -1564,9 +1566,10 @@ fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedP
     }
 }
 
-fn applyCacheMode(
+fn applyOptionalScalar(
     ctx: *ParseContext,
     node: Node,
+    field: []const u8,
     value: *?[]const u8,
     span: *?yaml.Span,
 ) void {
@@ -1578,7 +1581,7 @@ fn applyCacheMode(
         else => {
             const mismatches = ctx.type_mismatches orelse return;
             mismatches.append(ctx.allocator, .{
-                .field = "cache-mode",
+                .field = field,
                 .expected = "string",
                 .actual = switch (node) {
                     .mapping => "mapping",
@@ -1618,17 +1621,21 @@ fn parseConcurrency(ctx: *ParseContext, node: Node) ParseError!types.Concurrency
                 .scalar => |s| s,
                 else => return error.MissingField,
             };
-            const concurrency = types.Concurrency{
+            var concurrency = types.Concurrency{
                 .group = group.value,
                 .group_meta = scalarMeta(group),
             };
             if (m.get("cancel-in-progress")) |n| {
-                _ = type_validation.checkBool(
+                concurrency.cancel_in_progress = type_validation.checkBool(
                     n,
                     "cancel-in-progress",
                     ctx.type_mismatches,
                     ctx.allocator,
                 );
+                concurrency.cancel_in_progress_span = n.getSpan();
+            }
+            if (m.get("queue")) |n| {
+                applyOptionalScalar(ctx, n, "queue", &concurrency.queue, &concurrency.queue_span);
             }
             return concurrency;
         },
@@ -2225,11 +2232,26 @@ test "parseConcurrency mapping" {
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("group"), .value = mkScalar("ci"), .span = mkSpan() },
         .{ .key = mkScalarS("cancel-in-progress"), .value = mkScalar("true"), .span = mkSpan() },
+        .{ .key = mkScalarS("queue"), .value = mkScalar("max"), .span = mkSpan() },
     };
 
     var ctx = testCtx(testing.allocator);
     const c = try parseConcurrency(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("ci", c.group);
+    try testing.expectEqual(true, c.cancel_in_progress.?);
+    try testing.expectEqualStrings("max", c.queue.?);
+}
+
+test "parseConcurrency keeps an unknown queue value" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("group"), .value = mkScalar("ci"), .span = mkSpan() },
+        .{ .key = mkScalarS("queue"), .value = mkScalar("huge"), .span = mkSpan() },
+    };
+
+    var ctx = testCtx(testing.allocator);
+    const c = try parseConcurrency(&ctx, mkMapping(&entries));
+    try testing.expectEqualStrings("huge", c.queue.?);
+    try testing.expect(c.cancel_in_progress == null);
 }
 
 test "parseStep with uses" {
@@ -3489,6 +3511,66 @@ test "parseWorkflow reports a non-scalar cache-mode as a type mismatch" {
     try testing.expect(wf.cache_mode == null);
     try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
     try testing.expectEqualStrings("cache-mode", wf.type_mismatches[0].field);
+    try testing.expectEqualStrings("mapping", wf.type_mismatches[0].actual);
+}
+
+test "parseWorkflow captures concurrency queue and cancel-in-progress" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  cancel-in-progress: false
+        \\  queue: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: single
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqual(false, wf.concurrency.?.cancel_in_progress.?);
+    try testing.expectEqualStrings("max", wf.concurrency.?.queue.?);
+    try testing.expectEqualStrings("single", wf.jobs[0].concurrency.?.queue.?);
+    try testing.expect(wf.jobs[0].concurrency.?.cancel_in_progress == null);
+    try testing.expectEqual(@as(usize, 0), wf.unknown_keys.len);
+}
+
+test "parseWorkflow reports a non-scalar concurrency queue as a type mismatch" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queue:
+        \\    size: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expect(wf.concurrency.?.queue == null);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("queue", wf.type_mismatches[0].field);
     try testing.expectEqualStrings("mapping", wf.type_mismatches[0].actual);
 }
 

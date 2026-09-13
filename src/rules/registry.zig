@@ -26,6 +26,7 @@ const reusable_workflow = @import("reusable_workflow.zig");
 const steps_ref = @import("steps_ref.zig");
 const expr_availability = @import("expr_availability.zig");
 const background_sync = @import("background_sync.zig");
+const yaml_merge = @import("yaml_merge.zig");
 
 pub const all_rules = security.security_rules ++
     best_practices.rules ++
@@ -44,6 +45,7 @@ pub const all_rules = security.security_rules ++
     composite_steps.rules ++
     runner.rules ++
     syntax.rules ++
+    yaml_merge.rules ++
     needs_graph.rules ++
     uses.rules ++
     prefer_self_repo.rules ++
