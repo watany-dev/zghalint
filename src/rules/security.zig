@@ -20,6 +20,7 @@ const compromised_data = @import("data/compromised_actions.zig");
 const trusted_data = @import("data/trusted_actions.zig");
 const permissions = @import("permissions.zig");
 const runner = @import("runner.zig");
+const setup_node_cache = @import("setup_node_cache.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -309,7 +310,6 @@ const CacheSetupAction = struct {
 };
 
 const cache_setup_actions = [_]CacheSetupAction{
-    .{ .name = "actions/setup-node", .cache_input = "cache" },
     .{ .name = "actions/setup-python", .cache_input = "cache" },
     .{ .name = "actions/setup-java", .cache_input = "cache" },
     .{ .name = "actions/setup-go", .cache_input = "cache" },
@@ -1969,6 +1969,11 @@ fn cachePoisoningHint(step: *const Step) ?[]const u8 {
     if (isCacheAction(step)) return generic_cache_hint;
     const action_ref = step.uses orelse return null;
     const base = util.actionBaseName(action_ref.raw);
+    if (std.mem.eql(u8, base, "actions/setup-node")) {
+        if (!setup_node_cache.enabled(step)) return null;
+        if (setup_node_cache.usesAutoCache(step)) return setup_node_cache.auto_cache_hint;
+        return generic_cache_hint;
+    }
     for (cache_setup_actions) |setup| {
         if (!std.mem.eql(u8, base, setup.name)) continue;
         if (!setupCachingEnabled(step, setup)) return null;
@@ -5606,6 +5611,38 @@ test "SEC016: opt-in setup action with cache disabled (no false positive)" {
 test "SEC016: setup-node without cache input in release (no false positive)" {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/setup-node@v4") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: setup-node auto-cache in release is a poisoning risk" {
+    const workspace = @import("../workspace.zig");
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@v5") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: unresolved setup-node SHA is not treated as auto-cache" {
+    const workspace = @import("../workspace.zig");
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020") },
     };
     const jobs = [_]Job{
         .{ .id = "build", .steps = &steps, .permissions = Permissions{} },

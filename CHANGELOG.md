@@ -50,6 +50,10 @@ each ID means.
 - SEC016 and PERF001 share a `cache-mode` capability model (`can_restore` /
   `can_save`). `cache-mode: none` silences PERF001 and SEC016. `cache-mode:
   read` does not silence SEC016 (#434).
+- SEC016 treats `actions/setup-node` as caching when `cache:` is set or when
+  the resolved action declares `package-manager-cache` and `package.json`
+  names npm via `packageManager` / `devEngines.packageManager`. Unresolved
+  refs are not treated as enabled (#435).
 - SEC024 warns when `cache-mode: write` or `write-only` is declared on a
   low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
   which overrides GitHub's restore-only default. No autofix (#434).
@@ -58,6 +62,9 @@ each ID means.
 
 - `cache-mode` is a known workflow and job key, so it no longer fires SYN001
   (#428).
+- PERF001 no longer asks to add a cache when setup-node would enable npm
+  caching from `package.json` and the action declares `package-manager-cache`
+  (#435).
 - `permissions.vulnerability-alerts` is a known scope. `read` and `none` are
   accepted; `write` is PERM003 (#428).
 - `job.workflow_ref` / `job.workflow_sha` / `job.workflow_repository` /
