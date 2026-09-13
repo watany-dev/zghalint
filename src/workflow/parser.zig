@@ -1115,6 +1115,18 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         if (!isEmptyContainer(n)) {
             job.secrets = try parseSecretsConfig(ctx.allocator, n);
             job.secrets_args = try parseCallArgs(ctx.allocator, n);
+            // A flow `{secrets: inherit}` cannot take a block mapping, and a
+            // quoted `'inherit'` would leave the quotes around the rewrite.
+            if (job.secrets) |secrets| {
+                if (secrets == .inherit and !m.flow) {
+                    switch (n) {
+                        .scalar => |s| {
+                            if (s.style == .plain) job.secrets_inherit_span = s.span;
+                        },
+                        else => {},
+                    }
+                }
+            }
         }
     }
     if (m.get("container")) |n| {
@@ -2408,6 +2420,61 @@ test "parseJob reusable workflow" {
     switch (job.secrets.?) {
         .inherit => {},
         .map => unreachable,
+    }
+}
+
+test "parseJob records secrets_inherit_span for a block-style plain inherit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets: inherit
+        \\
+    ;
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    const job = wf.jobs[0];
+    try testing.expect(job.secrets.? == .inherit);
+    const span = job.secrets_inherit_span orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("inherit", source[span.start_byte..span.end_byte]);
+}
+
+test "parseJob leaves secrets_inherit_span null for quoted and flow inherit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    {
+        const source =
+            \\on: push
+            \\jobs:
+            \\  call:
+            \\    uses: ./.github/workflows/reusable.yml
+            \\    secrets: "inherit"
+            \\
+        ;
+        var yp = yaml_parser_mod.Parser.init(alloc, source);
+        const wf = try parseWorkflow(alloc, try yp.parse());
+        try testing.expect(wf.jobs[0].secrets.? == .inherit);
+        try testing.expect(wf.jobs[0].secrets_inherit_span == null);
+    }
+    {
+        const source =
+            \\on: push
+            \\jobs:
+            \\  call: { uses: ./.github/workflows/reusable.yml, secrets: inherit }
+            \\
+        ;
+        var yp = yaml_parser_mod.Parser.init(alloc, source);
+        const wf = try parseWorkflow(alloc, try yp.parse());
+        try testing.expect(wf.jobs[0].secrets.? == .inherit);
+        try testing.expect(wf.jobs[0].secrets_inherit_span == null);
     }
 }
 

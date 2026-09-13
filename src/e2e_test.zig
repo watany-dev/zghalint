@@ -290,6 +290,8 @@ test "E2E: fixtures produce the declared diagnostics" {
     // a `forbid DEP004` directive could never fail (#305).
     local_action.init(std.testing.allocator, ".");
     defer local_action.deinit();
+    workspace.setRepoRoot(".");
+    defer workspace.clear();
 
     // Same root the CLI sets before rules run. BP009 and the RW checks stay
     // quiet when it is missing (fail-closed), so fixtures that name an

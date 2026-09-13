@@ -37,6 +37,9 @@ each ID means.
   deletion spans are shared with SYN011; uncertain or anchored ranges are skipped.
 - ACT001 safely inserts `shell: bash` for composite `run:` steps with a missing
   shell when the insertion position is known (#411).
+- SEC010 offers an unsafe fix that expands `secrets: inherit` into the secrets
+  declared by a local reusable workflow (#414). Remote, unreadable, or empty
+  callees, and quoted or flow-style `inherit`, keep the diagnostic without a rewrite.
 
 - SYN023 reports an unknown `cache-mode` at workflow or job level. The
   documented values are `none` / `read` / `write` / `write-only` (#428).
