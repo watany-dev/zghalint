@@ -49,7 +49,8 @@ YAML に書かれた文字列から `docker://` を落とし、次に分ける�
 1 リクエストの打ち切りは `fetchBounded` の per-request budget に任せる。
 
 Accept は OCI index / Docker manifest list / 単体マニフェストをこの順で出す。
-digest は応答ボディの SHA-256（小文字 hex）。
+digest は **デコード後の** 応答ボディの SHA-256（小文字 hex）。gzip された
+転送バイトをハッシュするとタグが指す digest と一致しない。
 
 Docker Hub:
 
