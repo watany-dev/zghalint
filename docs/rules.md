@@ -46,7 +46,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC007 | missing-permissions | info | Workflow should define top-level permissions |
 | SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数として読む） |
 | SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks |
-| SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit` |
+| SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit`（ローカル呼び先が `workflow_call.secrets` を宣言しているときは `--fix-unsafe` で明示マップへ展開） |
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |
 | SEC012 | unredacted-secrets | error | Secrets processed via `toJSON()`/`fromJSON()` bypass masking and may be exposed in logs |
 | SEC013 | hardcoded-container-credentials | error | Plaintext `username` / `password` in `container.credentials` / `services.*.credentials`. `${{ }}` expressions (including `github.actor` + `secrets.GITHUB_TOKEN`, the documented GHCR login) are not hardcoded |
@@ -70,6 +70,16 @@ SEC014 の `--fix-unsafe` は、`if:` 全体が `github.actor` または
 どちらでもよく、plain / quoted scalar と `${{ }}` を保持する。特定 bot 名から
 汎用の bot 判定へ意味が変わるため unsafe。AND / OR を含む条件、`contains()`、
 block scalar、ソース位置を取得できない条件には fix を付けない。
+
+### SEC010 の自動修正
+
+SEC010 の `--fix-unsafe` は、同じリポジトリ内の reusable workflow
+（`./.github/workflows/…`）を呼び、呼び先が `on.workflow_call.secrets` を
+宣言しているときに `secrets: inherit` を明示マップへ展開する。値は
+`${{ secrets.<name> }}` に固定する。リモート呼び先、読めない呼び先、宣言
+secrets が空、quoted / flow の `inherit` では fix を付けない。inherit で
+渡していた未宣言 secret は落ちるので unsafe。
+
 ### SEC002 と真偽値の展開
 
 SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式全体が

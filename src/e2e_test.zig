@@ -23,6 +23,7 @@ const tokenizer = @import("yaml/tokenizer.zig");
 const workflow_parser = @import("workflow/parser.zig");
 const registry = @import("rules/registry.zig");
 const local_action = @import("rules/local_action.zig");
+const workspace = @import("workspace.zig");
 const action_metadata = @import("rules/action_metadata.zig");
 const rule_engine = @import("rules/engine.zig");
 const diagnostics = @import("diagnostics.zig");
@@ -288,6 +289,8 @@ test "E2E: fixtures produce the declared diagnostics" {
     // a `forbid DEP004` directive could never fail (#305).
     local_action.init(std.testing.allocator, ".");
     defer local_action.deinit();
+    workspace.setRepoRoot(".");
+    defer workspace.clear();
 
     var covered: std.StringHashMapUnmanaged(void) = .{};
     try runFixtures(alloc, fixture_dir, lintSource, &covered);

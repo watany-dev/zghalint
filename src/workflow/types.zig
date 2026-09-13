@@ -816,6 +816,9 @@ pub const Job = struct {
     /// Entries of the job-level `secrets:` mapping in source order (for RW004).
     /// Empty for `secrets: inherit`, which names nothing.
     secrets_args: []const CallArg = &.{},
+    /// Token span of a block-style plain `secrets: inherit` value (SEC010 autofix).
+    /// Null when the value is quoted, in a flow mapping, or not inherit.
+    secrets_inherit_span: ?yaml_types.Span = null,
     /// Column (1-based) at which this job's child keys are indented.
     job_indent: u32 = 0,
     /// The job body starts on a line of its own rather than on the job id's

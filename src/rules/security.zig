@@ -14,6 +14,7 @@ const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
 const sha_pin = @import("sha_pin.zig");
+const called_workflow = @import("called_workflow.zig");
 const env_binding = @import("env_binding.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
@@ -1509,11 +1510,84 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
                     .message = "reusable workflow call uses 'secrets: inherit', which passes all secrets implicitly",
                     .span = job.span,
                     .fix_hint = "explicitly specify only the secrets the called workflow needs instead of using 'inherit'",
+                    .fix = buildSecretsInheritFix(list, job),
                 }) catch return;
             },
             .map => {},
         }
     }
+}
+
+/// GitHub secret names are `[A-Za-z_][A-Za-z0-9_]*`. Anything else cannot be
+/// written as an unquoted mapping key next to `${{ secrets.<name> }}`.
+fn isSecretYamlKey(name: []const u8) bool {
+    if (name.len == 0) return false;
+    switch (name[0]) {
+        'A'...'Z', 'a'...'z', '_' => {},
+        else => return false,
+    }
+    for (name[1..]) |c| {
+        switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '_' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+fn buildSecretsInheritFix(list: *DiagnosticList, job: *const Job) ?Fix {
+    const uses = job.uses orelse return null;
+    const span = job.secrets_inherit_span orelse return null;
+    if (job.job_indent == 0) return null;
+
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
+    defer arena.deinit();
+    const called = called_workflow.load(arena.allocator(), uses) orelse return null;
+    if (called.secrets.len == 0) return null;
+
+    const child_indent: usize = job.job_indent - 1 + 2;
+    const prefix = ": ${{ secrets.";
+    const suffix = " }}";
+
+    var total: usize = 0;
+    for (called.secrets) |secret| {
+        if (!isSecretYamlKey(secret.name)) return null;
+        total += 1 + child_indent + secret.name.len + prefix.len + secret.name.len + suffix.len;
+    }
+
+    const alloc = list.fixAllocator();
+    const buf = alloc.alloc(u8, total) catch return null;
+    var i: usize = 0;
+    for (called.secrets) |secret| {
+        buf[i] = '\n';
+        i += 1;
+        @memset(buf[i..][0..child_indent], ' ');
+        i += child_indent;
+        @memcpy(buf[i..][0..secret.name.len], secret.name);
+        i += secret.name.len;
+        @memcpy(buf[i..][0..prefix.len], prefix);
+        i += prefix.len;
+        @memcpy(buf[i..][0..secret.name.len], secret.name);
+        i += secret.name.len;
+        @memcpy(buf[i..][0..suffix.len], suffix);
+        i += suffix.len;
+    }
+
+    // `secrets: inherit` is `": "` plus the value. Eating the space leaves
+    // `secrets:` as a block mapping parent instead of `secrets: `.
+    if (span.start_byte == 0) return null;
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{
+        .start_byte = span.start_byte - 1,
+        .end_byte = span.end_byte,
+        .replacement = buf,
+        .expects = " inherit",
+    };
+    return .{
+        .description = "expand secrets: inherit into the called workflow's declared secrets",
+        .safety = .unsafe,
+        .edits = edits,
+    };
 }
 
 fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
@@ -5158,6 +5232,164 @@ test "SEC010: no secrets in reusable workflow call (no false positive)" {
     var list = runJob(.{ .id = "call-workflow", .uses = "octo-org/example/.github/workflows/deploy.yml@main", .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
+}
+
+const sec010_caller =
+    \\name: t
+    \\on: push
+    \\jobs:
+    \\  call:
+    \\    uses: ./.github/workflows/reusable.yml
+    \\    secrets: inherit
+    \\
+;
+
+const sec010_callee =
+    \\on:
+    \\  workflow_call:
+    \\    secrets:
+    \\      npm_token:
+    \\        required: true
+    \\      api_key:
+    \\        required: false
+    \\jobs:
+    \\  deploy:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo ok
+    \\
+;
+
+fn sec010CalleeLookup(path: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, path, ".github/workflows/reusable.yml")) return null;
+    return sec010_callee;
+}
+
+fn sec010EmptyCalleeLookup(path: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, path, ".github/workflows/reusable.yml")) return null;
+    return
+    \\on:
+    \\  workflow_call:
+    \\jobs:
+    \\  deploy:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo ok
+    \\
+    ;
+}
+
+test "SEC010: --fix-unsafe expands inherit into the local callee's declared secrets" {
+    called_workflow.source_override = &sec010CalleeLookup;
+    defer called_workflow.source_override = null;
+
+    const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expect(std.mem.find(u8, result.content, "secrets: inherit") == null);
+    try testing.expect(std.mem.find(u8, result.content, "npm_token: ${{ secrets.npm_token }}") != null);
+    try testing.expect(std.mem.find(u8, result.content, "api_key: ${{ secrets.api_key }}") != null);
+}
+
+test "SEC010: --fix without unsafe leaves inherit alone" {
+    called_workflow.source_override = &sec010CalleeLookup;
+    defer called_workflow.source_override = null;
+
+    const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sec010_caller, result.content);
+}
+
+test "SEC010: a remote callee gets the diagnostic without a fix" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: octo-org/example/.github/workflows/deploy.yml@main
+        \\    secrets: inherit
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC010: an unreadable local callee gets no fix" {
+    called_workflow.source_override = &sec010CalleeLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/missing.yml
+        \\    secrets: inherit
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "SEC010: a callee with no declared secrets gets no fix" {
+    called_workflow.source_override = &sec010EmptyCalleeLookup;
+    defer called_workflow.source_override = null;
+
+    const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "SEC010: quoted inherit is not rewritten" {
+    called_workflow.source_override = &sec010CalleeLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets: "inherit"
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "SEC010: flow-style inherit is not rewritten" {
+    called_workflow.source_override = &sec010CalleeLookup;
+    defer called_workflow.source_override = null;
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call: { uses: ./.github/workflows/reusable.yml, secrets: inherit }
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
 }
 
 test "SEC012: toJSON(secrets) in run block" {
