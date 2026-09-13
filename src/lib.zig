@@ -104,6 +104,7 @@ test {
     _ = @import("rules/impostor_compare.zig");
     _ = @import("rules/runner.zig");
     _ = @import("rules/syntax.zig");
+    _ = @import("rules/yaml_merge.zig");
     _ = @import("rules/uses.zig");
     _ = @import("rules/composite_steps.zig");
     _ = @import("rules/local_action.zig");

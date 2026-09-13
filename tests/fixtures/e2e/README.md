@@ -113,6 +113,8 @@ Two checks run on all fixtures, with no directive needed:
 | `rename-fix-schema.yml` | #323: every did-you-mean rename on schema keys and values, with its `--fix` result pinned |
 | `rename-fix-contexts.yml` | #323: the same for the `needs` / `inputs` / `secrets` expression contexts |
 | `merge-key-job-span.yml` | #367 repro: a job built from `<<:` must report a forward span |
+| `ga12-merge-key.yml` | #439: YAML merge key `<<` is SYN026 |
+| `ga12-alias-only.yml` | #439 FP guard: an alias without `<<` stays quiet |
 | `on-block-nested-sequence-insert.yml` | #368 repro: the SEC007 insertion lands after the `on:` block, not inside a nested sequence item |
 | `expr010-rename-invalid-id.yml` | #369 repro: a step id that is not a path identifier gets no rename fix |
 | `sec018-with-not-a-block-mapping.yml` | #370 repro: `with:` that is not a block mapping gets no persist-credentials fix |

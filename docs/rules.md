@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **107 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **108 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -722,6 +722,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
 | SYN023 | invalid-cache-mode | error | `cache-mode` が `none` / `read` / `write` / `write-only` のいずれでもない |
 | SYN024 | undefined-step-control-ref | error | `wait` / `cancel` がこのジョブに無い step id を指している（`--fix` で綴りを修正） |
+| SYN026 | unsupported-yaml-merge | error | GitHub Actions が受理しない YAML merge key `<<` が使われている |
 
 ### SYN001 unknown-key
 
@@ -1227,6 +1228,20 @@ steps:
 ```
 
 SYN006 が既に拒否する不正な id と、`${{ }}` 式で作った値はここでは見ない。
+
+### SYN026 unsupported-yaml-merge
+
+GitHub Actions のワークフロー YAML は merge key `<<` を受理しない。zghalint の
+パーサは `<<:` を展開したまま他のルールを走らせるが、`<<` 自体は error とする。
+展開結果をファイルへ書き戻す autofix は付けない。anchor / alias だけで merge
+していないファイルは報告しない。
+
+```yaml
+jobs:
+  a:
+    <<: *defaults   # error: GitHub Actions does not support YAML merge key "<<"
+    runs-on: ubuntu-latest
+```
 
 ## Action Metadata Rules (ACT)
 
