@@ -765,10 +765,7 @@ const privileged_pr_head_events = [_]EventType{
 };
 
 fn hasPrivilegedPRHeadTrigger(wf: *const Workflow) bool {
-    inline for (privileged_pr_head_events) |event| {
-        if (wf.hasEvent(event)) return true;
-    }
-    return false;
+    return privilegedPRHeadMessageKind(wf, .exploit) != null;
 }
 
 /// The SEC005 message for the first such trigger the workflow declares.

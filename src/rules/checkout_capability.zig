@@ -13,7 +13,6 @@ const workflow_types = @import("../workflow/types.zig");
 const ActionRef = workflow_types.ActionRef;
 const Step = workflow_types.Step;
 
-/// How the resolved checkout treats `allow-unsafe-pr-checkout`.
 pub const UnsafePrCheckout = enum {
     /// No metadata, or an expression so the runtime flag is unknown.
     unknown,
@@ -25,18 +24,14 @@ pub fn credentialsInRunnerTemp(step: *const Step) bool {
     const meta = resolveMeta(step) orelse return false;
     // persist-credentials moved out of `.git/config` in the v6 snapshot;
     // no dedicated input marks that store, so the resolved table major is
-    // the signal. An unresolved SHA does not reach here.
+    // the signal.
     return meta.major >= 6;
 }
 
 pub fn unsafePrCheckout(step: *const Step) UnsafePrCheckout {
     const meta = resolveMeta(step) orelse return .unknown;
     if (!popular_actions.hasInput(meta, "allow-unsafe-pr-checkout")) return .unknown;
-    return switch (allowUnsafeFlag(step)) {
-        .on => .bypassed,
-        .absent => .blocked,
-        .unknown => .unknown,
-    };
+    return allowUnsafeFlag(step);
 }
 
 pub fn uploadPathReachesRunnerTemp(step: *const Step) bool {
@@ -54,12 +49,10 @@ fn pathReachesRunnerTemp(value: []const u8) bool {
         std.mem.find(u8, value, "runner.temp") != null;
 }
 
-const AllowUnsafe = enum { on, absent, unknown };
-
-fn allowUnsafeFlag(step: *const Step) AllowUnsafe {
-    const value = withTrimmed(step, "allow-unsafe-pr-checkout") orelse return .absent;
-    if (value.len == 0 or std.ascii.eqlIgnoreCase(value, "false")) return .absent;
-    if (std.ascii.eqlIgnoreCase(value, "true")) return .on;
+fn allowUnsafeFlag(step: *const Step) UnsafePrCheckout {
+    const value = withTrimmed(step, "allow-unsafe-pr-checkout") orelse return .blocked;
+    if (value.len == 0 or std.ascii.eqlIgnoreCase(value, "false")) return .blocked;
+    if (std.ascii.eqlIgnoreCase(value, "true")) return .bypassed;
     return .unknown;
 }
 
@@ -134,6 +127,14 @@ test "unsafePrCheckout: allow-unsafe-pr-checkout true is bypassed" {
     try with.put(testing.allocator, "allow-unsafe-pr-checkout", "true");
     const step = checkoutStep("actions/checkout@v7", with);
     try testing.expectEqual(UnsafePrCheckout.bypassed, unsafePrCheckout(&step));
+}
+
+test "unsafePrCheckout: allow-unsafe-pr-checkout false is blocked" {
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    try with.put(testing.allocator, "allow-unsafe-pr-checkout", "false");
+    const step = checkoutStep("actions/checkout@v7", with);
+    try testing.expectEqual(UnsafePrCheckout.blocked, unsafePrCheckout(&step));
 }
 
 test "unsafePrCheckout: expression flag is unknown" {
