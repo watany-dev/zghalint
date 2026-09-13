@@ -142,10 +142,10 @@ fn buildDeprecatedActionFix(
 ///
 /// A local action's runtime is read from its `action.yml` on disk; a popular
 /// remote action's comes from the embedded metadata table (`popular_actions`).
-/// Either way the runtime verdict wins over the version table when both apply,
-/// because a retired runtime fails the run outright while an old-but-alive
-/// version is only worth a warning. The autofix survives that: it is attached
-/// to the runtime finding whenever the version table names a replacement.
+/// A retired runtime fails the run outright, so that verdict wins and the
+/// version-table `@vN` rewrite is attached to it when one exists. An ending
+/// runtime (`node20`) is a warning and still falls through to the behind-major
+/// half, which can name a newer major that has already left `node20`.
 fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
     if (action_ref.is_docker) return;
@@ -159,12 +159,11 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
 
     if (popular_actions.lookup(action_ref)) |meta| {
         if (local_action.isRetiredRuntime(meta.using)) {
-            reportRetiredRemoteRuntime(step, action_ref, meta.using, diag_list);
+            reportRemoteRuntime(step, action_ref, meta.using, diag_list, .retired);
             return;
         }
         if (local_action.isEndingRuntime(meta.using)) {
-            reportEndingRemoteRuntime(step, action_ref, meta.using, diag_list);
-            return;
+            reportRemoteRuntime(step, action_ref, meta.using, diag_list, .ending);
         }
     }
 
@@ -246,62 +245,46 @@ fn isCuratedAction(action_ref: ActionRef) bool {
 /// The action itself has to move off the runtime, but the caller can often get
 /// there by upgrading: when the version table names a replacement major, the
 /// same `@vN` rewrite BP003's other half would have produced is attached here.
-fn reportRetiredRemoteRuntime(
+/// node20 still runs until 2026-09-23, so the ending path is a warning with no
+/// `runs.using` rewrite (#437).
+fn reportRemoteRuntime(
     step: *const Step,
     action_ref: ActionRef,
     using: []const u8,
     diag_list: *DiagnosticList,
+    class: enum { retired, ending },
 ) void {
     const alloc = diag_list.fixAllocator();
+    const word: []const u8 = switch (class) {
+        .retired => "retired",
+        .ending => "deprecated",
+    };
     const message = std.fmt.allocPrint(
         alloc,
-        "action \"{s}\" runs on the retired runtime \"{s}\"",
-        .{ action_ref.raw, using },
+        "action \"{s}\" runs on the {s} runtime \"{s}\"",
+        .{ action_ref.raw, word, using },
     ) catch return;
 
     var diag = Diagnostic{
         .rule_id = "BP003",
-        .severity = .@"error",
+        .severity = if (class == .retired) .@"error" else .warning,
         .message = message,
         .span = spans.usesSpan(step),
         .fix_hint = "upgrade to a version of the action that runs on a supported runtime",
     };
 
-    if (replacementVersion(action_ref)) |replacement| {
-        diag.fix_hint = std.fmt.allocPrint(
-            alloc,
-            "upgrade to \"{s}\"",
-            .{replacement},
-        ) catch diag.fix_hint;
-        diag.fix = buildDeprecatedActionFix(diag_list, step, action_ref.ref.?, replacement, .safe);
+    if (class == .retired) {
+        if (replacementVersion(action_ref)) |replacement| {
+            diag.fix_hint = std.fmt.allocPrint(
+                alloc,
+                "upgrade to \"{s}\"",
+                .{replacement},
+            ) catch diag.fix_hint;
+            diag.fix = buildDeprecatedActionFix(diag_list, step, action_ref.ref.?, replacement, .safe);
+        }
     }
 
     diag_list.append(diag) catch return;
-}
-
-/// node20 still runs until 2026-09-23, so this is a warning with no rewrite.
-/// Changing `runs.using` is the action author's job; bumping the caller's
-/// major is a different finding and is not attached here (#437).
-fn reportEndingRemoteRuntime(
-    step: *const Step,
-    action_ref: ActionRef,
-    using: []const u8,
-    diag_list: *DiagnosticList,
-) void {
-    const alloc = diag_list.fixAllocator();
-    const message = std.fmt.allocPrint(
-        alloc,
-        "action \"{s}\" runs on the deprecated runtime \"{s}\"",
-        .{ action_ref.raw, using },
-    ) catch return;
-
-    diag_list.append(.{
-        .rule_id = "BP003",
-        .severity = .warning,
-        .message = message,
-        .span = spans.usesSpan(step),
-        .fix_hint = "upgrade to a version of the action that runs on a supported runtime",
-    }) catch return;
 }
 
 /// The version table's replacement for `action_ref`, when it has one and the
@@ -333,18 +316,12 @@ fn checkDeprecatedRuntime(step: *const Step, raw: []const u8, diag_list: *Diagno
     if (!retired and !ending) return;
 
     const alloc = diag_list.fixAllocator();
-    const message = if (retired)
-        std.fmt.allocPrint(
-            alloc,
-            "local action \"{s}\" declares the retired runtime \"{s}\"",
-            .{ raw, using },
-        )
-    else
-        std.fmt.allocPrint(
-            alloc,
-            "local action \"{s}\" declares the deprecated runtime \"{s}\"",
-            .{ raw, using },
-        );
+    const word: []const u8 = if (retired) "retired" else "deprecated";
+    const message = std.fmt.allocPrint(
+        alloc,
+        "local action \"{s}\" declares the {s} runtime \"{s}\"",
+        .{ raw, word, using },
+    );
     const text = message catch return;
     const hint = std.fmt.allocPrint(
         alloc,
@@ -1022,6 +999,25 @@ test "BP003: node20 is a warning, not an error" {
     try std.testing.expect(diags.get(0).severity == .warning);
     try std.testing.expect(std.mem.find(u8, diags.get(0).message, "node20") != null);
     try std.testing.expect(diags.get(0).fix == null);
+}
+
+test "BP003: ending runtime still reports a newer major (#437)" {
+    const step = Step{
+        .uses = ActionRef.parse("actions/github-script@v7"),
+        .uses_value_end_byte = 25,
+        .uses_value_style = .plain,
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkDeprecatedAction(&step, &diags);
+    try std.testing.expectEqual(@as(usize, 2), diags.len());
+    try std.testing.expect(diags.get(0).severity == .warning);
+    try std.testing.expect(std.mem.find(u8, diags.get(0).message, "node20") != null);
+    try std.testing.expect(diags.get(0).fix == null);
+    try std.testing.expect(diags.get(1).severity == .info);
+    try std.testing.expect(std.mem.find(u8, diags.get(1).message, "v8") != null);
+    const fix = diags.get(1).fix orelse return error.TestUnexpectedResult;
+    try std.testing.expect(fix.safety == .unsafe);
 }
 
 test "BP003: setup-node node-version is not runs.using" {

@@ -70,12 +70,11 @@ const output_keys = [_][]const u8{
     "value",
 };
 
-/// The `using` values GitHub still accepts. Deprecated Node runtimes are kept
-/// out of this list so they are never suggested, but they are recognised (see
-/// `node_using`) and reported as deprecated rather than invalid.
+/// The `using` values GitHub still accepts. `node20` stays here until
+/// 2026-09-23 so ACT003 does not call a still-runnable runtime unknown.
 const supported_using = [_][]const u8{ "composite", "docker", "node20", "node24" };
 const node_using = [_][]const u8{ "node12", "node16", "node20", "node24" };
-/// Shared with BP003, which reports the same retired runtimes from the
+/// Shared with BP003, which reports retired and ending runtimes from the
 /// caller's side (`uses: ./path`). The table lives in `local_action.zig`
 /// because this module sits above the step rules in the import graph.
 const deprecated_node_using = &local_action.deprecated_runtimes;
