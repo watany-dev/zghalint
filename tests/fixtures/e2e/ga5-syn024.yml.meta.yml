@@ -6,4 +6,4 @@ category: syntax
 actionlint: unsupported
 zizmor: unknown
 ghalint: unknown
-autofix: safe
+autofix: none

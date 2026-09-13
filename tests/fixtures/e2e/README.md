@@ -51,7 +51,8 @@ a sibling sidecar with introduction date, spec URL, valid/invalid, category,
 competitor support, and autofix expectation. `# zghalint:expect` still decides
 whether the linter is right; the sidecar only records *why the case exists*.
 Older fixtures are not migrated. `src/catalog_test.zig` requires a sidecar for
-every `ga*.yml` and checks the keys.
+every `ga*.yml`, checks the keys, and requires `autofix: safe|unsafe` to match
+a `.fixed` / `.fixed-unsafe` sibling (`none` must not have one).
 
 ## Fixtures
 
