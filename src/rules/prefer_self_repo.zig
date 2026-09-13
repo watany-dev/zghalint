@@ -18,12 +18,9 @@ const Rule = engine.Rule;
 const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 
-fn definitionRoot() []const u8 {
-    return workspace.repoRoot() orelse ".";
-}
-
 fn fileExists(alloc: std.mem.Allocator, rel: []const u8) bool {
-    const full = std.Io.Dir.path.join(alloc, &.{ definitionRoot(), rel }) catch return false;
+    const root = workspace.repoRoot() orelse return false;
+    const full = std.Io.Dir.path.join(alloc, &.{ root, rel }) catch return false;
     const stat = std.Io.Dir.cwd().statFile(runtime.io(), full, .{}) catch return false;
     return stat.kind == .file;
 }
@@ -43,7 +40,7 @@ fn checkJob(job: *const Job, list: *DiagnosticList) void {
             .{ suggested, uses },
         ) catch "prefer $/ over ./ for this repository's workflow",
         .span = job.uses_value_span orelse job.span,
-        .fix_hint = "write the call as $/{path}; ./ and $/ both name this repository, and $/ is the self-repository form",
+        .fix_hint = suggested,
     }) catch return;
 }
 
@@ -69,23 +66,24 @@ fn runBp009(source: []const u8) !DiagnosticList {
     return list;
 }
 
-test "BP009: an on-disk local reusable workflow is reported" {
-    const source =
-        \\on: push
-        \\jobs:
-        \\  call:
-        \\    uses: ./.github/workflows/ci.yml
-    ;
-
-    var diags = try runBp009(source);
-    defer diags.deinit();
-
-    try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "BP009"));
-    try testing.expect(std.mem.find(u8, diags.get(0).message, "$/.github/workflows/ci.yml") != null);
-    try testing.expect(diags.get(0).fix == null);
+fn pinRepoRoot(tmp: *std.testing.TmpDir) ![:0]u8 {
+    try tmp.dir.createDirPath(runtime.io(), ".github/workflows");
+    try tmp.dir.writeFile(runtime.io(), .{
+        .sub_path = ".github/workflows/reusable.yml",
+        .data = "on: workflow_call\n",
+    });
+    const root = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    workspace.setRepoRoot(root);
+    return root;
 }
 
-test "BP009: a missing local workflow is silent" {
+test "BP009: an on-disk local reusable workflow is reported" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try pinRepoRoot(&tmp);
+    defer testing.allocator.free(root);
+    defer workspace.clear();
+
     const source =
         \\on: push
         \\jobs:
@@ -96,15 +94,81 @@ test "BP009: a missing local workflow is silent" {
     var diags = try runBp009(source);
     defer diags.deinit();
 
-    try testing.expectEqual(@as(usize, 0), diags.len());
+    try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "BP009"));
+    try testing.expectEqualStrings("$/.github/workflows/reusable.yml", diags.get(0).fix_hint.?);
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "$/.github/workflows/reusable.yml") != null);
+    try testing.expect(diags.get(0).fix == null);
 }
 
-test "BP009: $/ and step-level ./ are silent" {
+test "BP009: a missing local workflow is silent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try pinRepoRoot(&tmp);
+    defer testing.allocator.free(root);
+    defer workspace.clear();
+
     const source =
         \\on: push
         \\jobs:
         \\  call:
-        \\    uses: $/.github/workflows/ci.yml
+        \\    uses: ./.github/workflows/missing.yml
+    ;
+
+    var diags = try runBp009(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP009: without repoRoot is silent" {
+    workspace.clear();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/ci.yml
+    ;
+
+    var diags = try runBp009(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP009: a file in cwd but not under repoRoot is silent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(root);
+    workspace.setRepoRoot(root);
+    defer workspace.clear();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/ci.yml
+    ;
+
+    var diags = try runBp009(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "BP009: $/ and step-level ./ are silent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try pinRepoRoot(&tmp);
+    defer testing.allocator.free(root);
+    defer workspace.clear();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: $/.github/workflows/reusable.yml
         \\  build:
         \\    runs-on: ubuntu-latest
         \\    timeout-minutes: 5

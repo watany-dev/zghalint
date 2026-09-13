@@ -727,10 +727,10 @@ YAML の plain scalar は次のより深い行へ続き、改行は空白に畳�
   (`i-robustness/comments-only.yml`) と `timeout-minutes: "10m"`
   (`f-syntax-schema/shell-and-timeout-types.yml`) でクラッシュする (exit 3)。
 - zizmor pedantic / auditor の `anonymous-definition` (workflow / action に
-  `name:` が無い) と `self-repository` (`uses: ./` を `$/.` に書き換えろ) は
-  採用しない。前者は GitHub UI の表示の話で、後者は公式ドキュメントが
-  `./` を正規のローカル参照として載せており、zghalint が DEP004 で見ている
-  のもその形である。
+  `name:` が無い) は採用しない。GitHub UI の表示の話である。
+  `self-repository` は job の on-disk `uses: ./` を BP009 で info にする。
+  step の `./` と autofix は採用しない — step の `./` は GITHUB_WORKSPACE で、
+  `$/` に置き換えると意味が変わる。
 - zizmor の `superfluous-actions` (`softprops/action-gh-release` を `gh release`
   の `run:` に書き換えろ) は informational で、第三者アクションの好みの話
   なので採用しない。
