@@ -24,6 +24,7 @@ const workflow_parser = @import("workflow/parser.zig");
 const registry = @import("rules/registry.zig");
 const local_action = @import("rules/local_action.zig");
 const workspace = @import("workspace.zig");
+const advisory = @import("rules/advisory.zig");
 const action_metadata = @import("rules/action_metadata.zig");
 const rule_engine = @import("rules/engine.zig");
 const diagnostics = @import("diagnostics.zig");
@@ -290,14 +291,22 @@ test "E2E: fixtures produce the declared diagnostics" {
     // a `forbid DEP004` directive could never fail (#305).
     local_action.init(std.testing.allocator, ".");
     defer local_action.deinit();
+
+    // Same root the CLI sets before rules run. BP009, RW checks, and
+    // SEC010's local callee resolution stay quiet/unavailable without it.
     workspace.setRepoRoot(".");
     defer workspace.clear();
 
-    // Same root the CLI sets before rules run. BP009 and the RW checks stay
-    // quiet when it is missing (fail-closed), so fixtures that name an
-    // on-disk `./.github/workflows/…` would otherwise never fire.
-    workspace.setRepoRoot(".");
-    defer workspace.clear();
+    const e2e_advisories = [_]advisory.Advisory{.{
+        .ghsa_id = "GHSA-test-e2e-sc003",
+        .action_slug = "zghalint-test/vulnerable-action",
+        .vulnerable_range = "< 1.0.0",
+        .patched_version = "1.0.0",
+        .diagnostic_message = "action 'zghalint-test/vulnerable-action' has a known vulnerability",
+        .diagnostic_hint = "update to version 1.0.0 or later",
+    }};
+    advisory.overrideCacheForTest(&e2e_advisories);
+    defer advisory.deinitAdvisories();
 
     var covered: std.StringHashMapUnmanaged(void) = .{};
     try runFixtures(alloc, fixture_dir, lintSource, &covered);

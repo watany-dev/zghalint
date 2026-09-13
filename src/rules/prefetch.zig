@@ -77,6 +77,7 @@ pub fn prefetchAllWithOptions(
     const scratch = scratch_arena.allocator();
 
     var ref_sets = try collectRefs(scratch, workflows);
+    if (active.tag_pin) try addPatchedTagRefs(scratch, &ref_sets);
 
     if (!opts.no_cache) {
         _ = applyDiskCache(scratch, &ref_sets, active);
@@ -184,6 +185,27 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
     }
 
     return .{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
+}
+
+/// `--fix` already asks GraphQL for the tags a workflow names. SC003's SHA
+/// re-pin needs the *patched* tag, which is usually not one of those, so it
+/// is added here when that action is actually used.
+fn addPatchedTagRefs(allocator: Allocator, sets: *RefSets) !void {
+    for (advisory.loadedAdvisories()) |adv| {
+        const patched = adv.patched_version orelse continue;
+        if (!engine.isValidGitRef(patched)) continue;
+        const slash = std.mem.findScalar(u8, adv.action_slug, '/') orelse continue;
+        const owner = adv.action_slug[0..slash];
+        const repo = adv.action_slug[slash + 1 ..];
+        if (std.mem.findScalar(u8, repo, '/') != null) continue;
+        const repo_key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
+        if (!sets.repos.contains(repo_key)) continue;
+        try putRefKey(allocator, &sets.named_refs, owner, repo, patched, NamedKey{
+            .owner = owner,
+            .repo = repo,
+            .ref = patched,
+        });
+    }
 }
 
 fn collectStepRefs(

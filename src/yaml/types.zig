@@ -99,6 +99,9 @@ pub const Scalar = struct {
     /// the `#` and surrounding blanks. Null when the line carries no comment.
     /// SC003 reads the `# v1.2.3` convention next to a SHA-pinned `uses:`.
     line_comment: ?[]const u8 = null,
+    /// Byte offset of `line_comment` in the source. SC003's bump rewrite
+    /// replaces the first word of an existing pin comment in place.
+    line_comment_start_byte: ?usize = null,
     /// A quoted scalar that never met its closing quote, so it ran to the end
     /// of the file. Its span has no boundary after it: text an autofix writes
     /// there becomes more quoted content instead of the key it was meant to be.
