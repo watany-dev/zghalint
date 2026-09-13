@@ -67,6 +67,9 @@ each ID means.
 - SYN026 reports YAML merge key `<<`, which GitHub Actions rejects. The
   parser still expands the merge so other rules see the folded keys.
   Anchors and aliases without `<<` stay quiet. No autofix (#439).
+- `ga*.yml` e2e fixtures carry a `*.yml.meta.yml` sidecar (introduction date,
+  spec URL, valid/invalid, category, competitor support, autofix). Existing
+  non-`ga*` fixtures are unchanged (#441).
 
 ### Changed
 

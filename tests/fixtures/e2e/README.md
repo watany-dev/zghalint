@@ -44,6 +44,16 @@ Two checks run on all fixtures, with no directive needed:
   re-running them on their own output leaves the file alone. A fix whose
   rewrite is not read back the way it was meant re-fires forever (#369, #370).
 
+## Spec catalog (`ga*.yml.meta.yml`)
+
+Fixtures added for GitHub Actions spec follow-up (`ga*.yml`, issue #441) carry
+a sibling sidecar with introduction date, spec URL, valid/invalid, category,
+competitor support, and autofix expectation. `# zghalint:expect` still decides
+whether the linter is right; the sidecar only records *why the case exists*.
+Older fixtures are not migrated. `src/catalog_test.zig` requires a sidecar for
+every `ga*.yml`, checks the keys, and requires `autofix: safe|unsafe` to match
+a `.fixed` / `.fixed-unsafe` sibling (`none` must not have one).
+
 ## Fixtures
 
 | File | Purpose |
