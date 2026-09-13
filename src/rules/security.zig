@@ -2890,27 +2890,16 @@ fn skipBlanksAndJoins(s: []const u8, start: usize) usize {
 fn containsEvalVarExpansion(s: []const u8) bool {
     var i: usize = 0;
     while (findWordPos(s, i, "eval")) |hit| {
-        var j = hit + "eval".len;
-        if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) {
-            i = hit + "eval".len;
-            continue;
-        }
+        i = hit + "eval".len;
+        var j = i;
+        if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
         j = skipBlanksAndJoins(s, j);
-        if (j >= s.len) {
-            i = hit + "eval".len;
-            continue;
-        }
+        if (j >= s.len) continue;
         // A quoted argument still expands, so look past the opening quote.
         if (s[j] == '"' or s[j] == '\'') j += 1;
-        if (j >= s.len or s[j] != '$') {
-            i = hit + "eval".len;
-            continue;
-        }
+        if (j >= s.len or s[j] != '$') continue;
         // `${{ }}` is a GitHub expression, not a shell expansion.
-        if (std.mem.startsWith(u8, s[j..], "${{")) {
-            i = hit + "eval".len;
-            continue;
-        }
+        if (std.mem.startsWith(u8, s[j..], "${{")) continue;
         return true;
     }
     return false;

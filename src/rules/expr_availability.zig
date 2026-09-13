@@ -285,11 +285,7 @@ pub const rules = [_]Rule{
 
 const testing = std.testing;
 
-fn checkAvailability(wf: *const Workflow, list: *DiagnosticList) void {
-    checkContexts(wf, list);
-}
-
-const availability_check: test_support.Check = .{ .workflow = &checkAvailability };
+const availability_check: test_support.Check = .{ .workflow = &checkContexts };
 
 fn expectMessage(source: []const u8, rule_id: []const u8, needle: []const u8) !void {
     try test_support.expectMessage(source, availability_check, rule_id, needle);

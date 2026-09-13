@@ -81,6 +81,9 @@ each ID means.
 
 ### Changed
 
+- Lint of many files spends less time on idle step walks, repeated `${{`
+  scans, and per-byte JSON / YAML / BP007 / context-path matching. Multi-file
+  reports follow CLI order rather than sorting paths lexicographically (#527).
 - The v0.2.0 GitHub Actions spec-follow track (GA1–GA14) is complete (#427).
 - `cache-mode` is a known workflow and job key, so it no longer fires SYN001
   (#428).
