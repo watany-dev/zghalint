@@ -1458,7 +1458,10 @@ fn conditionExpressionSource(cond: []const u8) []const u8 {
 fn anchorHolds(node: expressions.ExprNode, negated: bool, anchors: TrustAnchors) bool {
     switch (node.kind) {
         // `!fork` asserts what `fork == false` does.
-        .context_access => return negated and pathIsAnchor(parseContextPath(node.value, 0), anchors.fork_flag),
+        .context_access => {
+            const path = parseContextPath(node.value, 0);
+            return negated and pathIsAnchor(&path, anchors.fork_flag);
+        },
         .unary_op => {
             if (node.children.len != 1) return false;
             return anchorHolds(node.children[0], !negated, anchors);
@@ -1491,16 +1494,18 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
     if (ref.kind != .context_access) return false;
     const path = parseContextPath(ref.value, 0);
     // Comparing the gated subtree against itself asserts nothing about it.
-    if (other.kind == .context_access and
-        pathMatchesPattern(parseContextPath(other.value, 0), anchors.self_root)) return false;
+    if (other.kind == .context_access) {
+        const other_path = parseContextPath(other.value, 0);
+        if (pathMatchesPattern(&other_path, anchors.self_root)) return false;
+    }
 
     for (anchors.identity) |anchor| {
         // `head_repository.full_name != github.repository` selects the fork
         // runs instead of excluding them, so only the equality anchors.
-        if (pathIsAnchor(path, anchor)) return asserts_equal;
+        if (pathIsAnchor(&path, anchor)) return asserts_equal;
     }
 
-    if (pathIsAnchor(path, anchors.fork_flag)) {
+    if (pathIsAnchor(&path, anchors.fork_flag)) {
         if (other.kind != .boolean_literal) return false;
         // `fork == false` and `fork != true` both say the run is the base
         // repository's; the two inversions of those gate *for* forks.
@@ -1508,7 +1513,7 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
     }
 
     const event_context = anchors.event_context orelse return false;
-    if (!pathIsAnchor(path, event_context)) return false;
+    if (!pathIsAnchor(&path, event_context)) return false;
     // A fork cannot cause a `push` run in the base repository, so the branch
     // name in one is the base repository's. The compared literal is what makes
     // it an anchor, and a fork-reachable event makes it none.
@@ -1520,15 +1525,18 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
 /// where a prefix and a wildcard are the safe direction. Here they are not:
 /// `head_repository.owner.type` is `User` for every fork, and a bracket access
 /// parses to a wildcard whose name the linter does not know.
-fn pathIsAnchor(path: ContextPath, pattern: []const u8) bool {
+fn pathIsAnchor(path: *const ContextPath, pattern: []const u8) bool {
+    var start: usize = 0;
     var idx: usize = 0;
-    var it = std.mem.splitScalar(u8, pattern, '.');
-    while (it.next()) |pat_seg| : (idx += 1) {
+    while (true) {
         if (idx >= path.len) return false;
         if (std.mem.eql(u8, path.segments[idx], wildcard_segment)) return false;
-        if (!std.ascii.eqlIgnoreCase(path.segments[idx], pat_seg)) return false;
+        const dot = std.mem.findScalarPos(u8, pattern, start, '.') orelse pattern.len;
+        if (!std.ascii.eqlIgnoreCase(path.segments[idx], pattern[start..dot])) return false;
+        if (dot == pattern.len) return idx + 1 == path.len;
+        start = dot + 1;
+        idx += 1;
     }
-    return idx == path.len;
 }
 
 fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
@@ -2464,7 +2472,7 @@ const ContextTable = struct {
     /// Ids of jobs whose `outputs:` export an untrusted value (#314).
     tainted_jobs: []const []const u8 = &.{},
 
-    fn matches(self: ContextTable, path: ContextPath) bool {
+    fn matches(self: ContextTable, path: *const ContextPath) bool {
         for (self.prefix) |ctx| {
             if (pathMatchesPattern(path, ctx)) return true;
         }
@@ -2478,7 +2486,7 @@ const ContextTable = struct {
 
     /// `env.<KEY>`. Reading the same value as `$KEY` is safe — the shell never
     /// parses it as code — so only the expression spelling is untrusted.
-    fn matchesTaintedEnv(self: ContextTable, path: ContextPath) bool {
+    fn matchesTaintedEnv(self: ContextTable, path: *const ContextPath) bool {
         if (self.tainted_env.len == 0) return false;
         if (path.len < 2) return false;
         if (!segmentMatches(path.segments[0], "env")) return false;
@@ -2491,7 +2499,7 @@ const ContextTable = struct {
     /// `needs.<job>.outputs.<name>`, with `<job>` a job that exported an
     /// untrusted value. As with a step output, the name below `outputs` is not
     /// looked at.
-    fn matchesTaintedJobOutput(self: ContextTable, path: ContextPath) bool {
+    fn matchesTaintedJobOutput(self: ContextTable, path: *const ContextPath) bool {
         if (self.tainted_jobs.len == 0) return false;
         if (path.len < 4) return false;
         if (!segmentMatches(path.segments[0], "needs")) return false;
@@ -2505,7 +2513,7 @@ const ContextTable = struct {
     /// `steps.<id>.outputs.<name>`, with `<id>` a step that wrote an untrusted
     /// value out. The name below `outputs` is not looked at: the step writes
     /// whatever it captured under a name of its own choosing.
-    fn matchesTaintedStepOutput(self: ContextTable, path: ContextPath) bool {
+    fn matchesTaintedStepOutput(self: ContextTable, path: *const ContextPath) bool {
         if (self.tainted_steps.len == 0) return false;
         if (path.len < 4) return false;
         if (!segmentMatches(path.segments[0], "steps")) return false;
@@ -2549,7 +2557,7 @@ fn containsAnyContext(expr: []const u8, contexts: ContextTable) bool {
         // A whole reference is consumed at once, so segments in the middle of
         // `steps.meta.outputs.github.head_ref` are never mistaken for a root.
         const path = parseContextPath(expr, i);
-        if (contexts.matches(path)) return true;
+        if (contexts.matches(&path)) return true;
         i = if (path.end > i) path.end else i + 1;
     }
     return false;
@@ -2604,20 +2612,25 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
 }
 
 /// The pattern only needs to be a prefix of the reference, because everything
-/// below an untrusted node is untrusted too.
-fn pathMatchesPattern(path: ContextPath, pattern: []const u8) bool {
+/// below an untrusted node is untrusted too. Segments are walked in place
+/// rather than `splitScalar`'d on every call; `ContextPath` is pointer-passed
+/// so the 16-segment buffer is not copied (#527).
+fn pathMatchesPattern(path: *const ContextPath, pattern: []const u8) bool {
     // Most references in a real workflow are `steps.*`, `matrix.*` or a
     // function name, and most patterns are `github.*`: comparing the first
-    // byte of the root rejects those pairs without splitting the pattern.
+    // byte of the root rejects those pairs without walking the pattern.
     if (path.len > 0 and path.segments[0].len > 0 and pattern.len > 0 and pattern[0] != '*' and
         std.ascii.toLower(path.segments[0][0]) != std.ascii.toLower(pattern[0])) return false;
-    var it = std.mem.splitScalar(u8, pattern, '.');
+    var start: usize = 0;
     var idx: usize = 0;
-    while (it.next()) |pat_seg| : (idx += 1) {
+    while (true) {
         if (idx >= path.len) return false;
-        if (!segmentMatches(path.segments[idx], pat_seg)) return false;
+        const dot = std.mem.findScalarPos(u8, pattern, start, '.') orelse pattern.len;
+        if (!segmentMatches(path.segments[idx], pattern[start..dot])) return false;
+        if (dot == pattern.len) return true;
+        start = dot + 1;
+        idx += 1;
     }
-    return true;
 }
 
 fn segmentMatches(ref_seg: []const u8, pat_seg: []const u8) bool {
@@ -2826,6 +2839,15 @@ fn skipBlanks(s: []const u8, i: usize) usize {
     return std.mem.findNonePos(u8, s, i, " \t\n") orelse s.len;
 }
 
+fn findWordPos(s: []const u8, start: usize, word: []const u8) ?usize {
+    var i = start;
+    while (std.mem.findPos(u8, s, i, word)) |j| {
+        if (isWordAt(s, j, word)) return j;
+        i = j + 1;
+    }
+    return null;
+}
+
 fn identRunLen(s: []const u8) usize {
     for (s, 0..) |c, i| {
         if (!isIdentChar(c)) return i;
@@ -2835,17 +2857,14 @@ fn identRunLen(s: []const u8) usize {
 
 fn containsBase64PipeExec(s: []const u8) bool {
     var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (!isWordAt(s, i, "base64")) continue;
-
-        var j = i + "base64".len;
+    while (findWordPos(s, i, "base64")) |hit| {
+        var j = hit + "base64".len;
         var has_decode = false;
         while (j < s.len and s[j] != '|') : (j += 1) {
             if (isTokenAt(s, j, "-d") or isTokenAt(s, j, "--decode")) has_decode = true;
         }
-        if (!has_decode or j >= s.len) continue;
-
-        if (startsAnyWordAt(s, skipBlanks(s, j + 1), &exec_targets)) return true;
+        if (has_decode and j < s.len and startsAnyWordAt(s, skipBlanks(s, j + 1), &exec_targets)) return true;
+        i = hit + "base64".len;
     }
     return false;
 }
@@ -2870,18 +2889,28 @@ fn skipBlanksAndJoins(s: []const u8, start: usize) usize {
 
 fn containsEvalVarExpansion(s: []const u8) bool {
     var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (!isWordAt(s, i, "eval")) continue;
-
-        var j = i + "eval".len;
-        if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
+    while (findWordPos(s, i, "eval")) |hit| {
+        var j = hit + "eval".len;
+        if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) {
+            i = hit + "eval".len;
+            continue;
+        }
         j = skipBlanksAndJoins(s, j);
-        if (j >= s.len) continue;
+        if (j >= s.len) {
+            i = hit + "eval".len;
+            continue;
+        }
         // A quoted argument still expands, so look past the opening quote.
         if (s[j] == '"' or s[j] == '\'') j += 1;
-        if (j >= s.len or s[j] != '$') continue;
+        if (j >= s.len or s[j] != '$') {
+            i = hit + "eval".len;
+            continue;
+        }
         // `${{ }}` is a GitHub expression, not a shell expansion.
-        if (std.mem.startsWith(u8, s[j..], "${{")) continue;
+        if (std.mem.startsWith(u8, s[j..], "${{")) {
+            i = hit + "eval".len;
+            continue;
+        }
         return true;
     }
     return false;
@@ -2954,10 +2983,8 @@ fn matchingParen(s: []const u8, open: usize) ?usize {
 }
 
 fn containsDownloader(s: []const u8) bool {
-    for (0..s.len) |i| {
-        for (downloaders) |downloader| {
-            if (isWordAt(s, i, downloader)) return true;
-        }
+    for (downloaders) |downloader| {
+        if (findWordPos(s, 0, downloader) != null) return true;
     }
     return false;
 }
@@ -2969,19 +2996,25 @@ const downloaders = [_][]const u8{ "curl", "wget" };
 fn containsCurlWgetPipeShell(s: []const u8) bool {
     var seen_downloader = false;
     var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '|') {
-            if (seen_downloader and startsAnyWordAt(s, skipBlanks(s, i + 1), &shell_targets)) return true;
+    while (i < s.len) {
+        if (!seen_downloader) {
+            var hit: ?usize = null;
+            var word_len: usize = 0;
+            for (downloaders) |downloader| {
+                const pos = findWordPos(s, i, downloader) orelse continue;
+                if (hit == null or pos < hit.?) {
+                    hit = pos;
+                    word_len = downloader.len;
+                }
+            }
+            const at = hit orelse return false;
+            seen_downloader = true;
+            i = at + word_len;
             continue;
         }
-        if (seen_downloader) continue;
-        for (downloaders) |downloader| {
-            if (isWordAt(s, i, downloader)) {
-                seen_downloader = true;
-                i += downloader.len - 1;
-                break;
-            }
-        }
+        const pipe = std.mem.findScalarPos(u8, s, i, '|') orelse return false;
+        if (startsAnyWordAt(s, skipBlanks(s, pipe + 1), &shell_targets)) return true;
+        i = pipe + 1;
     }
     return false;
 }
@@ -8000,11 +8033,16 @@ test "ExprIter: a lone $ or } is stepped over, not treated as a delimiter" {
 }
 
 test "pathMatchesPattern: the root fast reject keeps case-insensitive and wildcard matches" {
-    try testing.expect(pathMatchesPattern(parseContextPath("GitHub.Event.Issue.Title", 0), "github.event.issue.title"));
-    try testing.expect(pathMatchesPattern(parseContextPath("github.event.commits[0].message", 0), "github.event.commits"));
-    try testing.expect(!pathMatchesPattern(parseContextPath("steps.meta.outputs.github", 0), "github.event"));
-    try testing.expect(!pathMatchesPattern(parseContextPath("hithub.event", 0), "github.event"));
-    try testing.expect(pathMatchesPattern(parseContextPath("matrix.os", 0), "*.os"));
+    const title = parseContextPath("GitHub.Event.Issue.Title", 0);
+    try testing.expect(pathMatchesPattern(&title, "github.event.issue.title"));
+    const indexed = parseContextPath("github.event.commits[0].message", 0);
+    try testing.expect(pathMatchesPattern(&indexed, "github.event.commits"));
+    const nested = parseContextPath("steps.meta.outputs.github", 0);
+    try testing.expect(!pathMatchesPattern(&nested, "github.event"));
+    const misspelled = parseContextPath("hithub.event", 0);
+    try testing.expect(!pathMatchesPattern(&misspelled, "github.event"));
+    const wildcard = parseContextPath("matrix.os", 0);
+    try testing.expect(pathMatchesPattern(&wildcard, "*.os"));
 }
 
 test "containsCurlWgetPipeShell: long input with many pipes stays linear" {

@@ -319,12 +319,14 @@ fn appendFiltered(
     diag_list: *zghalint.DiagnosticList,
     config: *const Config,
     file_path: []const u8,
+    file_index: u32,
 ) void {
     for (diag_list.items.items) |diag| {
         if (!config.isRuleEnabled(diag.rule_id)) continue;
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
+        d.file_index = file_index;
         all_diags.appendOwning(d) catch {};
     }
 }
@@ -339,6 +341,7 @@ fn lintDocumentFile(
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
     lint_fn: *const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void,
+    file_index: u32,
 ) !void {
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
@@ -359,7 +362,7 @@ fn lintDocumentFile(
 
     lint_fn(yaml_node, &diag_list);
 
-    appendFiltered(all_diags, &diag_list, config, file_path);
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index);
 }
 
 /// Runs on a throwaway arena so the cost of parsing twice (once here, once
@@ -506,6 +509,7 @@ fn lintFile(
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
+    file_index: u32,
 ) !void {
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
@@ -526,7 +530,7 @@ fn lintFile(
     var empty_diags = zghalint.DiagnosticList.init(allocator);
     defer empty_diags.deinit();
     if (zghalint.rules.syntax.lintEmptyWorkflow(yaml_node, &empty_diags)) {
-        appendFiltered(all_diags, &empty_diags, config, file_path);
+        appendFiltered(all_diags, &empty_diags, config, file_path, file_index);
         return;
     }
 
@@ -551,7 +555,7 @@ fn lintFile(
         .drop_sec018 = config.isRuleEnabled("SEC015"),
     });
 
-    appendFiltered(all_diags, &diag_list, config, file_path);
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index);
 }
 
 const FixOutcome = struct {
@@ -810,12 +814,13 @@ pub fn main(init: std.process.Init) !u8 {
     var had_fatal = false;
     var unlinted_count: usize = 0;
 
-    for (files) |file_path| {
+    for (files, 0..) |file_path, i| {
         if (config.isIgnored(file_path)) continue;
+        const file_index: u32 = @intCast(i + 1);
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
-            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn)
+            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index)
         else
-            lintFile(allocator, file_path, &config, &all_diags, stderr);
+            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index);
         // lintFile / lintDocumentFile already reported the reason on stderr.
         lint_result catch {
             had_fatal = true;

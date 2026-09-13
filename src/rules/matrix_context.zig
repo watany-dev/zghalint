@@ -137,13 +137,13 @@ const Resolver = struct {
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
-    pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
+    pub fn checkPath(self: Resolver, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "matrix")) return;
 
         const declared = self.keys orelse {
-            self.reportUnavailable(span);
+            self.reportUnavailable(loc.resolve());
             return;
         };
 
@@ -151,7 +151,7 @@ const Resolver = struct {
         // (`matrix[github.ref]`) carry no name to resolve.
         const key = iter.nextName() orelse return;
         const entry = declared.find(key) orelse {
-            self.reportUnknownKey(path, key, declared.names, span);
+            self.reportUnknownKey(path, key, declared.names, loc.resolve());
             return;
         };
 
@@ -162,7 +162,7 @@ const Resolver = struct {
         for (entry.props.items) |name| {
             if (std.ascii.eqlIgnoreCase(name, prop)) return;
         }
-        self.reportUnknownProperty(path, entry, prop, span);
+        self.reportUnknownProperty(path, entry, prop, loc.resolve());
     }
 
     fn reportUnavailable(self: Resolver, span: Span) void {

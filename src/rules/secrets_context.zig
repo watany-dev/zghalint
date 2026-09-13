@@ -56,7 +56,7 @@ const Resolver = struct {
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
-    pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
+    pub fn checkPath(self: Resolver, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "secrets")) return;
@@ -67,7 +67,7 @@ const Resolver = struct {
         for (self.declared) |declared| {
             if (std.ascii.eqlIgnoreCase(declared, name)) return;
         }
-        self.report(path, name, span);
+        self.report(path, name, loc.resolve());
     }
 
     fn report(self: Resolver, path: []const u8, name: []const u8, span: Span) void {

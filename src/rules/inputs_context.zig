@@ -66,13 +66,13 @@ const Resolver = struct {
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
-    pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
+    pub fn checkPath(self: Resolver, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "inputs")) return;
 
         if (!self.declared.available) {
-            self.reportUnavailable(span);
+            self.reportUnavailable(loc.resolve());
             return;
         }
 
@@ -82,7 +82,7 @@ const Resolver = struct {
         for (self.declared.names) |declared| {
             if (std.ascii.eqlIgnoreCase(declared, name)) return;
         }
-        self.reportUnknownInput(path, name, span);
+        self.reportUnknownInput(path, name, loc.resolve());
     }
 
     fn reportUnavailable(self: Resolver, span: Span) void {

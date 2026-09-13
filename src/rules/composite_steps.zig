@@ -210,12 +210,12 @@ const ContextResolver = struct {
     list: *DiagnosticList,
     declared_inputs: ?[]const []const u8,
 
-    pub fn checkPath(self: ContextResolver, path: []const u8, span: Span) void {
+    pub fn checkPath(self: ContextResolver, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = iter.nextName() orelse return;
 
         for (unavailable_contexts) |name| {
-            if (std.ascii.eqlIgnoreCase(root, name)) return self.reportContext(name, span);
+            if (std.ascii.eqlIgnoreCase(root, name)) return self.reportContext(name, loc.resolve());
         }
 
         if (!std.ascii.eqlIgnoreCase(root, "inputs")) return;
@@ -224,7 +224,7 @@ const ContextResolver = struct {
         for (declared) |name| {
             if (std.ascii.eqlIgnoreCase(name, input)) return;
         }
-        self.reportInput(path, input, declared, span);
+        self.reportInput(path, input, declared, loc.resolve());
     }
 
     fn reportContext(self: ContextResolver, name: []const u8, span: Span) void {

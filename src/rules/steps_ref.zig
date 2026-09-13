@@ -87,8 +87,8 @@ const Resolver = struct {
     }
 
     /// The hook `expr_scan` calls for every context access it finds.
-    pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
-        checkStepPath(self, path, span);
+    pub fn checkPath(self: Resolver, path: []const u8, loc: expr_scan.Loc) void {
+        checkStepPath(self, path, loc);
     }
 };
 
@@ -170,7 +170,7 @@ fn appendUnknownProperty(res: Resolver, path: []const u8, id: []const u8, prop: 
 
 /// `steps.*` and `steps[expr]` carry no resolvable id, so they are skipped
 /// rather than guessed at.
-fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
+fn checkStepPath(res: Resolver, path: []const u8, loc: expr_scan.Loc) void {
     var iter = expr_check.SegmentIter{ .path = path };
     const root_name = iter.nextName() orelse return;
     if (!std.ascii.eqlIgnoreCase(root_name, "steps")) return;
@@ -178,21 +178,21 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     const id = iter.nextName() orelse return;
 
     const target = res.find(id) orelse {
-        appendUnknownStep(res, path, id, span);
+        appendUnknownStep(res, path, id, loc.resolve());
         return;
     };
     if (target.index == res.current) {
         if (res.current_id) |own| {
             if (std.ascii.eqlIgnoreCase(own, id)) {
-                appendSelfReference(res, id, span);
+                appendSelfReference(res, id, loc.resolve());
                 return;
             }
         }
-        appendForwardReference(res, id, span);
+        appendForwardReference(res, id, loc.resolve());
         return;
     }
     if (target.index > res.current) {
-        appendForwardReference(res, id, span);
+        appendForwardReference(res, id, loc.resolve());
         return;
     }
 
@@ -200,7 +200,7 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     for (step_properties) |valid| {
         if (std.ascii.eqlIgnoreCase(prop, valid)) return;
     }
-    appendUnknownProperty(res, path, id, prop, span);
+    appendUnknownProperty(res, path, id, prop, loc.resolve());
 }
 
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {

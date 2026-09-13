@@ -355,7 +355,7 @@ const OutputValueResolver = struct {
     wf: *const Workflow,
     list: *DiagnosticList,
 
-    pub fn checkPath(self: OutputValueResolver, path: []const u8, span: Span) void {
+    pub fn checkPath(self: OutputValueResolver, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = iter.nextName() orelse return;
         // `jobs` is the only context a `value:` can read; EXPR015 reports the
@@ -364,7 +364,7 @@ const OutputValueResolver = struct {
 
         const job_id = iter.nextName() orelse return;
         const job = findJob(self.wf, job_id) orelse {
-            self.reportUnknownJob(job_id, span);
+            self.reportUnknownJob(job_id, loc.resolve());
             return;
         };
         if (!std.ascii.eqlIgnoreCase(iter.nextName() orelse return, "outputs")) return;
@@ -374,7 +374,7 @@ const OutputValueResolver = struct {
         // file, which this workflow's parse tree does not carry.
         if (job.uses != null) return;
         if (hasName(job.outputs, output)) return;
-        self.reportUnknownOutput(job, output, span);
+        self.reportUnknownOutput(job, output, loc.resolve());
     }
 
     fn reportUnknownJob(self: OutputValueResolver, job_id: []const u8, span: Span) void {
@@ -423,7 +423,7 @@ const NeedsOutputResolver = struct {
     job: *const Job,
     list: *DiagnosticList,
 
-    pub fn checkPath(self: NeedsOutputResolver, path: []const u8, span: Span) void {
+    pub fn checkPath(self: NeedsOutputResolver, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = iter.nextName() orelse return;
         if (!std.ascii.eqlIgnoreCase(root, "needs")) return;
@@ -443,7 +443,7 @@ const NeedsOutputResolver = struct {
         const called = called_workflow.load(arena.allocator(), uses) orelse return;
         if (hasName(called.outputs, output)) return;
 
-        self.reportUnknownOutput(dep, called.outputs, output, span);
+        self.reportUnknownOutput(dep, called.outputs, output, loc.resolve());
     }
 
     fn isNeeded(self: NeedsOutputResolver, job_id: []const u8) bool {

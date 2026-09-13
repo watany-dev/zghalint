@@ -38,13 +38,20 @@ pub const Engine = struct {
                 check_fn(workflow, &list);
             }
 
+            // Most rules hook only workflow or job. Walking every step (and
+            // nested `parallel:` children) for a null `check_step` was the
+            // largest v0.0.1→HEAD instruction regression (#527).
+            if (rule.check_job == null and rule.check_step == null) continue;
+
             for (workflow.jobs) |*job| {
                 if (rule.check_job) |check_fn| {
                     check_fn(job, &list);
                 }
 
-                for (job.steps) |*step| {
-                    runCheckStep(rule, step, &list);
+                if (rule.check_step) |check_fn| {
+                    for (job.steps) |*step| {
+                        runCheckStep(check_fn, step, &list);
+                    }
                 }
             }
         }
@@ -53,9 +60,13 @@ pub const Engine = struct {
     }
 };
 
-fn runCheckStep(rule: Rule, step: *const Step, list: *DiagnosticList) void {
-    if (rule.check_step) |check_fn| check_fn(step, list);
-    for (step.nestedSteps()) |*child| runCheckStep(rule, child, list);
+fn runCheckStep(
+    check_fn: *const fn (*const Step, *DiagnosticList) void,
+    step: *const Step,
+    list: *DiagnosticList,
+) void {
+    check_fn(step, list);
+    for (step.nestedSteps()) |*child| runCheckStep(check_fn, child, list);
 }
 
 const stale_refs = @import("stale_refs.zig");
@@ -410,6 +421,32 @@ test "engine with empty workflow" {
 
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
+}
+
+test "engine a workflow-only rule does not emit step diagnostics" {
+    const engine = Engine.init(test_rules[0..1]);
+    const inner = [_]Step{.{ .run = "echo hi" }};
+    const steps = [_]Step{.{ .control = .{ .parallel = &inner } }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
+    var list = engine.run(std.testing.allocator, &wf);
+    defer list.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
+}
+
+test "engine a job-only rule still runs when steps are nested" {
+    const engine = Engine.init(test_rules[1..2]);
+    const inner = [_]Step{.{ .run = "echo hi" }};
+    const steps = [_]Step{.{ .control = .{ .parallel = &inner } }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
+    var list = engine.run(std.testing.allocator, &wf);
+    defer list.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-JOB"));
 }
 
 test "isValidGitHubComponent: valid names" {

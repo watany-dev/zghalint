@@ -27,7 +27,6 @@ const Workflow = engine.Workflow;
 const Step = engine.Step;
 const DiagnosticList = engine.DiagnosticList;
 const Anchor = spans.Anchor;
-const Span = spans.Span;
 
 /// Everything a step sees: by the time a step runs, the job, the runner and
 /// the earlier steps all exist.
@@ -123,14 +122,14 @@ fn quotedList(alloc: std.mem.Allocator, names: []const []const u8) []const u8 {
     return buf.items;
 }
 
-const ContextVisitor = struct {
+const AvailabilityVisitor = struct {
     key: Key,
     /// Backs the expression parse trees; diagnostic messages are allocated
     /// from the list's own arena instead.
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
-    pub fn checkPath(self: ContextVisitor, path: []const u8, span: Span) void {
+    pub fn checkPath(self: AvailabilityVisitor, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
         const root = switch (iter.next() orelse return) {
             .ident => |name| name,
@@ -156,18 +155,12 @@ const ContextVisitor = struct {
             .rule_id = "EXPR015",
             .severity = .@"error",
             .message = message,
-            .span = span,
+            .span = loc.resolve(),
             .fix_hint = "move the expression to a key that provides this context",
         }) catch return;
     }
-};
 
-const FunctionVisitor = struct {
-    key: Key,
-    alloc: std.mem.Allocator,
-    list: *DiagnosticList,
-
-    pub fn checkCall(self: FunctionVisitor, name: []const u8, span: Span) void {
+    pub fn checkCall(self: AvailabilityVisitor, name: []const u8, loc: expr_scan.Loc) void {
         const hint = if (isStatusFunction(name)) blk: {
             if (self.key.allowsStatusFunctions()) return;
             break :blk "status functions are only available in `if:`";
@@ -186,19 +179,20 @@ const FunctionVisitor = struct {
             .rule_id = "EXPR016",
             .severity = .@"error",
             .message = message,
-            .span = span,
+            .span = loc.resolve(),
             .fix_hint = hint,
         }) catch return;
     }
 };
 
-fn visitor(comptime Visitor: type, key: Key, alloc: std.mem.Allocator, list: *DiagnosticList) Visitor {
+fn visitor(key: Key, alloc: std.mem.Allocator, list: *DiagnosticList) AvailabilityVisitor {
     return .{ .key = key, .alloc = alloc, .list = list };
 }
 
-/// One traversal per rule: EXPR015 and EXPR016 are registered separately, and
-/// a visitor without the matching hook walks the same tree for free.
-fn scanWorkflow(comptime Visitor: type, wf: *const Workflow, list: *DiagnosticList) void {
+/// One traversal emits both EXPR015 and EXPR016: the two rules share the
+/// `${{` scan and the expression parse tree. EXPR016's `check_workflow` is
+/// left unset so Engine.run does not walk the same scalars twice (#527).
+fn scanWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     // Scratch for the expression parser: no diagnostic points at it, and
     // the list's allocator keeps it under the run's leak detection (#159).
     var arena = std.heap.ArenaAllocator.init(list.allocator);
@@ -206,71 +200,67 @@ fn scanWorkflow(comptime Visitor: type, wf: *const Workflow, list: *DiagnosticLi
     const alloc = arena.allocator();
 
     const head = spans.workflow_head;
-    expr_scan.scanScalarMap(visitor(Visitor, .workflow_env, alloc, list), wf.env, wf.env_meta, head);
+    expr_scan.scanScalarMap(visitor(.workflow_env, alloc, list), wf.env, wf.env_meta, head);
     if (wf.concurrency) |c| {
-        const v = visitor(Visitor, .workflow_concurrency, alloc, list);
+        const v = visitor(.workflow_concurrency, alloc, list);
         expr_scan.scanText(v, c.group, Anchor.fromMeta(c.group_meta, head));
     }
 
     for (wf.jobs) |*job| {
         expr_scan.scanCondition(
-            visitor(Visitor, .job_if, alloc, list),
+            visitor(.job_if, alloc, list),
             job.if_condition,
             job.if_condition_meta,
             job.span,
         );
-        expr_scan.scanScalarMap(visitor(Visitor, .job_env, alloc, list), job.env, job.env_meta, job.span);
+        expr_scan.scanScalarMap(visitor(.job_env, alloc, list), job.env, job.env_meta, job.span);
         // A job-level `with:` feeds a reusable workflow call; the parser keeps
         // no per-entry spans for it, so the job span anchors those findings.
-        expr_scan.scanScalarMap(visitor(Visitor, .job_with, alloc, list), job.with, null, job.span);
+        expr_scan.scanScalarMap(visitor(.job_with, alloc, list), job.with, null, job.span);
         if (job.runs_on) |runs_on| {
-            const v = visitor(Visitor, .job_runs_on, alloc, list);
+            const v = visitor(.job_runs_on, alloc, list);
             expr_scan.scanText(v, runs_on, expr_scan.runsOnAnchor(job));
         } else {
             // A sequence `runs-on:` or a runner-group mapping leaves the
             // scalar unset, and each label carries its own span.
-            const v = visitor(Visitor, .job_runs_on, alloc, list);
+            const v = visitor(.job_runs_on, alloc, list);
             for (job.runs_on_labels, job.runs_on_label_spans) |label, span| {
                 expr_scan.scanText(v, label, Anchor{ .fallback = span });
             }
         }
         if (job.concurrency) |c| {
-            const v = visitor(Visitor, .job_concurrency, alloc, list);
+            const v = visitor(.job_concurrency, alloc, list);
             expr_scan.scanText(v, c.group, Anchor.fromMeta(c.group_meta, job.span));
         }
 
         for (job.steps) |*step| {
-            scanStepAvailability(Visitor, alloc, list, step);
+            scanStepAvailability(alloc, list, step);
         }
     }
 }
 
-fn scanStepAvailability(comptime Visitor: type, alloc: std.mem.Allocator, list: *DiagnosticList, step: *const Step) void {
+fn scanStepAvailability(alloc: std.mem.Allocator, list: *DiagnosticList, step: *const Step) void {
     expr_scan.scanCondition(
-        visitor(Visitor, .step_if, alloc, list),
+        visitor(.step_if, alloc, list),
         step.if_condition,
         step.if_condition_meta,
         step.span,
     );
     if (step.run) |run_val| {
-        const v = visitor(Visitor, .step_run, alloc, list);
+        const v = visitor(.step_run, alloc, list);
         expr_scan.scanText(v, run_val, spans.runAnchor(step));
     }
     if (step.name) |name| {
-        const v = visitor(Visitor, .step_name, alloc, list);
+        const v = visitor(.step_name, alloc, list);
         expr_scan.scanText(v, name, Anchor.fromMeta(step.name_meta, step.span));
     }
-    expr_scan.scanScalarMap(visitor(Visitor, .step_with, alloc, list), step.with, step.with_meta, step.span);
-    expr_scan.scanScalarMap(visitor(Visitor, .step_env, alloc, list), step.env, step.env_meta, step.span);
-    for (step.nestedSteps()) |*child| scanStepAvailability(Visitor, alloc, list, child);
+    expr_scan.scanScalarMap(visitor(.step_with, alloc, list), step.with, step.with_meta, step.span);
+    expr_scan.scanScalarMap(visitor(.step_env, alloc, list), step.env, step.env_meta, step.span);
+    for (step.nestedSteps()) |*child| scanStepAvailability(alloc, list, child);
 }
 
 fn checkContexts(wf: *const Workflow, list: *DiagnosticList) void {
-    scanWorkflow(ContextVisitor, wf, list);
-}
-
-fn checkFunctions(wf: *const Workflow, list: *DiagnosticList) void {
-    scanWorkflow(FunctionVisitor, wf, list);
+    scanWorkflow(wf, list);
 }
 
 pub const rules = [_]Rule{
@@ -288,7 +278,8 @@ pub const rules = [_]Rule{
         .description = "Status functions are only available in `if:`, and `hashFiles()` only in step and job keys",
         .severity = .@"error",
         .category = .expression,
-        .check_workflow = &checkFunctions,
+        // EXPR015's check walks each expression once and emits both rule IDs.
+        .check_workflow = null,
     },
 };
 
@@ -296,7 +287,6 @@ const testing = std.testing;
 
 fn checkAvailability(wf: *const Workflow, list: *DiagnosticList) void {
     checkContexts(wf, list);
-    checkFunctions(wf, list);
 }
 
 const availability_check: test_support.Check = .{ .workflow = &checkAvailability };
