@@ -245,9 +245,9 @@ Required keys in `action.yml` / `action.yaml`, supported and deprecated
 `runs.using` runtimes, unknown metadata keys, and the shape of `inputs` /
 `outputs` definitions.
 
-### Syntax (21 rules)
+### Syntax (22 rules)
 
-Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `cache-mode` values, `concurrency.queue` values and conflict with `cancel-in-progress: true`, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency, workflow files with no content at all.
+Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `cache-mode` values, `concurrency.queue` values and conflict with `cancel-in-progress: true`, YAML merge key `<<`, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency, workflow files with no content at all.
 
 ## Configuration
 

@@ -9,6 +9,7 @@ const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
 const workspace = @import("../workspace.zig");
 const security = @import("security.zig");
+const setup_node_cache = @import("setup_node_cache.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -277,6 +278,10 @@ fn checkCacheableSetup(
             switch (self.ca.kind) {
                 .with_cache_input => {
                     if (self.setup_span == null) self.setup_span = spans.usesSpan(step);
+                    if (std.mem.eql(u8, self.ca.setup_action, "actions/setup-node")) {
+                        if (setup_node_cache.enabled(step)) self.has_cache = true;
+                        return;
+                    }
                     const with = step.with orelse return;
                     const val = with.get(self.ca.cache_key) orelse return;
                     if (val.len > 0) self.has_cache = true;
@@ -475,6 +480,52 @@ test "PERF001: detect missing cache for setup-node" {
     checkCacheNotUsed(&job, &diags);
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
+}
+
+test "PERF001: auto-cache from package.json silences setup-node" {
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("actions/setup-node@v5") },
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: v5 without package.json still asks for a cache" {
+    defer workspace.clear();
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("actions/setup-node@v5") },
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
+}
+
+test "PERF001: package-manager-cache false still asks for a cache" {
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "package-manager-cache", "false");
+    const steps = [_]Step{
+        Step{ .uses = ActionRef.parse("actions/setup-node@v5"), .with = with },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "PERF001: no warning when cache input is set" {
