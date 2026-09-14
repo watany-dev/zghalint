@@ -138,11 +138,11 @@ class Impl:
     )
     #: Probes (`_probe_string_table`): rules the specification asks for that
     #: have no table yet. Names are placeholders to rename when the rule lands.
-    #: Contexts a `git` / `gh` fetch inside `run:` may not take (spec sink `run_fetch`).
+    #: Contexts a `git` / `gh` fetch inside `run:` may not take (spec sink `run_fetch`, #532).
     shell_fetch_contexts: list[str] = field(default_factory=list)
-    #: Contexts an artifact download's `run-id` may not take (spec sink `artifact_run_id`).
+    #: Contexts an artifact download's `run-id` may not take (spec sink `artifact_run_id`, #533).
     artifact_run_id_contexts: list[str] = field(default_factory=list)
-    #: Actions whose outputs SEC002 treats as attacker text (spec.ACTION_OUTPUTS).
+    #: Actions whose outputs SEC002 treats as attacker text (spec.ACTION_OUTPUTS, #535).
     untrusted_output_actions: list[str] = field(default_factory=list)
 
 
