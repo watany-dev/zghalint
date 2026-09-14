@@ -40,3 +40,18 @@ def test_extractor_loads_current_tables():
     assert "pull_request_review_comment" in tables.privileged_pr_head
     assert "env_context" in tables.followed_flows
     assert "job_output" in tables.followed_flows
+    assert tables.code_executing_inputs == {"actions/github-script": ["script"]}
+
+
+def test_probe_tables_are_lists():
+    # Probes for rules that do not exist yet: absent is an empty list, never
+    # an error. Once a rule lands with the probe's name the list fills.
+    tables = impl.load()
+    assert isinstance(tables.shell_fetch_contexts, list)
+    assert isinstance(tables.artifact_run_id_contexts, list)
+    assert isinstance(tables.untrusted_output_actions, list)
+
+
+def test_probe_of_missing_table_is_empty():
+    assert impl._probe_string_table("const other = [_][]const u8{};", "missing") == []
+    assert impl._probe_string_table('const t = [_][]const u8{ "a", "b" };', "t") == ["a", "b"]
