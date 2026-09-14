@@ -13,6 +13,14 @@ each ID means.
 
 ## [Unreleased]
 
+### Changed
+
+- SEC005 / SEC009 / SEC021 report `git fetch` / `git checkout` / `git clone` /
+  `git pull` / `gh pr checkout` / `gh run download` in `run:` when the command
+  takes an untrusted ref (including a one-hop `$VAR` from `env:`). A SHA,
+  issue number, repository name, `clone_url`, or `workflow_run.id` is not
+  script injection, so SEC002 stayed silent on these fetches (#532).
+
 ### Fixed
 
 - SEC002 no longer treats a whole boolean-returning builtin call such as
