@@ -24,6 +24,8 @@ const permissions = @import("permissions.zig");
 const runner = @import("runner.zig");
 const setup_node_cache = @import("setup_node_cache.zig");
 const checkout_capability = @import("checkout_capability.zig");
+const local_action = @import("local_action.zig");
+const runtime = @import("../runtime.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -535,6 +537,7 @@ fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *Diagn
         checkContextsInString(run_body, spans.runAnchor(step), table, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list, fix);
     }
     checkScriptInputInjection(step, table, list);
+    checkLocalActionInputInjection(step, table, list);
 }
 
 /// Every untrusted `${{ ... }}` in the step's `run:`, which is exactly the set
@@ -733,6 +736,71 @@ fn checkScriptInputInjection(step: *const Step, table: ContextTable, list: *Diag
         );
         return;
     }
+}
+
+/// A local composite that interpolates `${{ inputs.<name> }}` in `run:` or a
+/// github-script `script:` is the same injection as writing that `with:` value
+/// into the caller's `run:`. Reported on the caller; remote actions are not
+/// opened (#536).
+fn checkLocalActionInputInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
+    const action = step.uses orelse return;
+    if (!action.is_local) return;
+    if (!local_action.isActive()) return;
+    const with_map = step.with orelse return;
+    const meta = switch (local_action.resolve(action.raw)) {
+        .found => |m| m,
+        else => return,
+    };
+    if (meta.script_bodies.len == 0) return;
+
+    var it = with_map.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (!interpolatesInput(meta.script_bodies, key)) continue;
+        checkContextsInString(
+            value,
+            withAnchor(step, key),
+            table,
+            "SEC002",
+            .@"error",
+            "script injection: untrusted context used in a local composite action input",
+            script_injection_fix_hint,
+            list,
+            null,
+        );
+    }
+}
+
+fn interpolatesInput(bodies: []const []const u8, name: []const u8) bool {
+    for (bodies) |body| {
+        var it: ExprIter = .{ .s = body };
+        while (it.next()) |e| {
+            if (exprReferencesInput(std.mem.trim(u8, e.inner, " \t\n\r"), name)) return true;
+        }
+    }
+    return false;
+}
+
+fn exprReferencesInput(expr: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (i < expr.len) {
+        if (expr[i] == '\'') {
+            i = skipStringLiteral(expr, i);
+            continue;
+        }
+        const starts_path = isIdentStart(expr[i]) and (i == 0 or !isIdentChar(expr[i - 1]));
+        if (!starts_path) {
+            i += 1;
+            continue;
+        }
+        const path = parseContextPath(expr, i);
+        if (path.len >= 2 and
+            segmentMatches(path.segments[0], "inputs") and
+            segmentMatches(path.segments[1], name)) return true;
+        i = if (path.end > i) path.end else i + 1;
+    }
+    return false;
 }
 
 const script_env_binding_description = "bind the expression to the step's env: and read it as process.env";
@@ -3840,6 +3908,128 @@ test "SEC002: github-script script input via env (no false positive)" {
     defer env.deinit(testing.allocator);
     env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}") catch unreachable;
     try testing.expect(!sec002UsesFires("actions/github-script@v7", "script", "const title = process.env.TITLE;", env));
+}
+
+const echo_action_yml =
+    \\name: echo
+    \\inputs:
+    \\  title:
+    \\    required: true
+    \\runs:
+    \\  using: composite
+    \\  steps:
+    \\    - run: echo "${{ inputs.title }}"
+    \\      shell: bash
+    \\
+;
+
+const echo_github_script_yml =
+    \\name: echo
+    \\inputs:
+    \\  title:
+    \\    required: true
+    \\runs:
+    \\  using: composite
+    \\  steps:
+    \\    - uses: actions/github-script@v7
+    \\      with:
+    \\        script: console.log("${{ inputs.title }}")
+    \\
+;
+
+fn withLocalAction(dir: []const u8, manifest: []const u8) !testing.TmpDir {
+    var tmp = testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+    try tmp.dir.createDirPath(runtime.io(), dir);
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/action.yml", .{dir});
+    defer testing.allocator.free(path);
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = path, .data = manifest });
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+    local_action.init(testing.allocator, abs);
+    return tmp;
+}
+
+fn sec002LocalWithFires(title: []const u8) bool {
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "title", title) catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("./echo-action"), .with = with },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC002");
+}
+
+test "SEC002: untrusted with: interpolated by a local composite (#536)" {
+    var tmp = try withLocalAction("echo-action", echo_action_yml);
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: untrusted with: interpolated by a local github-script composite (#536)" {
+    var tmp = try withLocalAction("echo-action", echo_github_script_yml);
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: a trusted with: on a local composite is not injection (#536)" {
+    var tmp = try withLocalAction("echo-action", echo_action_yml);
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(!sec002LocalWithFires("hello"));
+    try testing.expect(!sec002LocalWithFires("${{ github.sha }}"));
+}
+
+test "SEC002: a local composite that does not interpolate the input is silent (#536)" {
+    var tmp = try withLocalAction("echo-action",
+        \\name: echo
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\  extra:
+        \\    required: false
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - run: echo "${{ inputs.extra }}"
+        \\      shell: bash
+        \\
+    );
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(!sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: a local node action does not follow with: into JS (#536)" {
+    var tmp = try withLocalAction("echo-action",
+        \\name: echo
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: node24
+        \\  main: index.js
+        \\
+    );
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(!sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: a remote action's with: is not opened (#536)" {
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "title", "\"${{ github.event.comment.body }}\"") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("some-org/echo-action@v1"), .with = with },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
 test "SEC002: trusted contexts in run block (no false positive)" {

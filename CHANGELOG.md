@@ -35,6 +35,9 @@ each ID means.
   `tj-actions/branch-names`, and `peter-evans/find-comment` as attacker
   text, so interpolating `steps.<id>.outputs.*` of those steps into `run:`
   is script injection (#535).
+- SEC002 reports an untrusted `with:` value on `uses: ./local` when that
+  composite action interpolates `${{ inputs.<name> }}` in a `run:` step or an
+  `actions/github-script` `script:` (#536).
 
 ### Fixed
 
@@ -51,12 +54,11 @@ each ID means.
 - SEC002's `actions/github-script` `script:` path offers the same unsafe env
   binding as `run:`, rewriting a JS string or template whose contents are a
   single `${{ }}` into `process.env.VAR` (#416).
-- The formal model under `scripts/formal/` now specifies five known
-  vulnerability classes as sinks and flows (shell-level untrusted fetch,
-  `workflow_run` artifact poisoning, code-executing action inputs beyond
-  github-script, attacker-derived action outputs, local composite action
-  inputs) and confirms each gap against the binary. No rule changes; the
-  gaps are tracked as issues (see `docs/design/formal-rule-model.md` §7).
+- The formal model under `scripts/formal/` specifies five known vulnerability
+  classes as sinks and flows (shell-level untrusted fetch, `workflow_run`
+  artifact poisoning, code-executing action inputs beyond github-script,
+  attacker-derived action outputs, local composite action inputs) and confirms
+  them against the binary (see `docs/design/formal-rule-model.md` §7).
 - SC001 offers a safe fix that pins Docker Hub and GHCR image tags to the
   manifest digest fetched on `--fix`. Other registries, `--offline`, and
   fetch misses stay as diagnostics (#417).
