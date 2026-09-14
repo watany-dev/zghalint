@@ -25,6 +25,12 @@ each ID means.
 
 ### Added
 
+- SEC002's `actions/github-script` `script:` path offers the same unsafe env
+  binding as `run:`, rewriting a JS string or template whose contents are a
+  single `${{ }}` into `process.env.VAR` (#416).
+- SC001 offers a safe fix that pins Docker Hub and GHCR image tags to the
+  manifest digest fetched on `--fix`. Other registries, `--offline`, and
+  fetch misses stay as diagnostics (#417).
 - EXPR002 / EXPR003 / EXPR004 offer safe rename fixes for a unique nearby
   context, strict-object property, or function name from the expression
   catalog, when the source token can be located (#410).

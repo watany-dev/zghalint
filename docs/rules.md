@@ -38,7 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA |
-| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script`'s `with.script`) risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数として読む） |
+| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script`'s `with.script`) risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
 | SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout of PR head is dangerous |
@@ -87,6 +87,9 @@ SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式
 呼び出しであれば、引数の汚染値を理由に報告しない。返る値は `true` / `false`
 だけであり、引数そのものはコードへ届かない。`&&` / `||` で汚染文字列を返す
 条件式や、別の `${{ }}` にある直接参照は引き続き診断・autofix の対象になる。
+`actions/github-script` の `script:` は `--fix-unsafe` で、JS の文字列 /
+テンプレートの中身が式 1 つのときだけ `process.env.VAR` へ置換する。裸の
+埋め込み・混在文字列・コメント内は step 全体を見送る。
 
 ### SEC016 の対象
 
@@ -362,7 +365,7 @@ Detect supply chain risks in action and container image references.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| SC001 | unpinned-images | warning | Container images (`container.image`, `services.*.image`, `uses: docker://...`) should be pinned to a SHA256 digest for supply chain security |
+| SC001 | unpinned-images | warning | Container images (`container.image`, `services.*.image`, `uses: docker://...`) should be pinned to a SHA256 digest for supply chain security（`--fix` で Docker Hub / GHCR のタグを取得時点の index digest へピン止めする） |
 | SC002 | compromised-action-sha | error | Action references a SHA or tag of a known-compromised release |
 | SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database（`--fix-unsafe` で `patched_version` へ bump。SHA ピンは oid が取れるときだけ再ピン） |
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
@@ -370,6 +373,13 @@ Detect supply chain risks in action and container image references.
 | SC006 | ref-confusion | warning | Action ref matches both a tag and branch, creating exploitable ambiguity |
 | SC007 | typosquat-action | warning | Action name is similar to a well-known `actions/*` action (possible typosquat) |
 | SC008 | impostor-commit | warning | SHA-pinned action ref is not reachable from any branch or tag of the upstream repo |
+
+### SC001 の自動修正
+
+`--fix` のときだけ Docker Hub / GHCR からマニフェストを取り、タグが指していた
+index digest へ書き換える。匿名が先で、GHCR の 401 だけ `GITHUB_TOKEN` を使う。
+取れないイメージ・未対応レジストリ・`--offline` は診断だけ残す。通常 lint の
+ネットワークには乗せない。
 
 ### SC007 typosquat-action
 

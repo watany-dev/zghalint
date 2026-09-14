@@ -14,6 +14,7 @@ const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
 const sha_pin = @import("sha_pin.zig");
+const image_digest = @import("image_digest.zig");
 const called_workflow = @import("called_workflow.zig");
 const env_binding = @import("env_binding.zig");
 const config_mod = @import("../config.zig");
@@ -665,7 +666,32 @@ fn checkScriptInputInjection(step: *const Step, table: ContextTable, list: *Diag
     if (!isAction(ref, "actions/github-script")) return;
     const with_map = step.with orelse return;
     const input = getWithInput(with_map, "script") orelse return;
-    checkContextsInString(input.value, withAnchor(step, input.key), table, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list, null);
+    const fix = env_binding.buildScriptFix(
+        list,
+        step,
+        input.key,
+        input.value,
+        &taintedScriptOccurrences(table, input.value, list.fixAllocator()),
+        script_env_binding_description,
+    );
+    checkContextsInString(input.value, withAnchor(step, input.key), table, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list, fix);
+}
+
+const script_env_binding_description = "bind the expression to the step's env: and read it as process.env";
+
+fn taintedScriptOccurrences(
+    table: ContextTable,
+    script: []const u8,
+    allocator: std.mem.Allocator,
+) env_binding.Occurrences {
+    var occs: env_binding.Occurrences = .{ .buf = undefined };
+    var it: ExprIter = .{ .s = script };
+    while (it.next()) |e| {
+        if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), table)) continue;
+        if (returnsBooleanBuiltin(allocator, e.inner)) continue;
+        occs.append(.{ .offset = e.match.offset, .len = e.match.len });
+    }
+    return occs;
 }
 
 /// Match `owner/repo` against a marketplace action reference. A nested path is a
@@ -1710,12 +1736,17 @@ fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) vo
             const ref = step.uses orelse return;
             if (!ref.is_docker) return;
             if (isImagePinned(ref.raw)) return;
+            const meta: ?ScalarValueMeta = if (step.uses_value_span) |vs|
+                if (step.uses_value_style) |style| .{ .value_span = vs, .style = style } else null
+            else
+                null;
             self.list.append(.{
                 .rule_id = "SC001",
                 .severity = .warning,
                 .message = "container action image is not pinned to a SHA256 digest",
                 .span = step.uses_value_span orelse step.span,
                 .fix_hint = "pin the image using a digest reference, e.g. docker://image@sha256:abc123...",
+                .fix = image_digest.buildPinFix(self.list, ref.raw, meta, step.uses_value_ends_line),
             }) catch return;
         }
     };
@@ -2663,10 +2694,9 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SC001",
                     .severity = .warning,
                     .message = "container image is not pinned to a SHA256 digest",
-                    // `container.image` is parsed without a span; the job is the
-                    // narrowest location available.
-                    .span = job.span,
+                    .span = if (container.image_meta) |m| m.value_span else job.span,
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
+                    .fix = image_digest.buildPinFix(list, image, container.image_meta, container.image_ends_line),
                 }) catch return;
             }
         }
@@ -2678,10 +2708,9 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SC001",
                     .severity = .warning,
                     .message = "service image is not pinned to a SHA256 digest",
-                    // `services.<id>.image` is parsed without a span; the job is
-                    // the narrowest location available.
-                    .span = job.span,
+                    .span = if (service.image_meta) |m| m.value_span else job.span,
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
+                    .fix = image_digest.buildPinFix(list, image, service.image_meta, service.image_ends_line),
                 }) catch return;
             }
         }
@@ -6459,6 +6488,116 @@ test "SC001: registry with digest is pinned (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
 
+const sc001_digest = "sha256:1c4eef651f65e2f7daee7ea7320b2504cd83545e8f5da6c45b8c4911eb1aea61";
+
+const sc001_container_source =
+    \\name: t
+    \\on: push
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    container:
+    \\      image: alpine:3.19
+    \\    steps:
+    \\      - run: echo
+    \\
+;
+
+test "SC001: --fix pins container.image to the stored digest" {
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", sc001_digest);
+
+    const result = try test_support.lintAndFix(testing.allocator, sc001_container_source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.safe, result.first_safety.?);
+    try testing.expect(std.mem.find(u8, result.content, "image: alpine@" ++ sc001_digest ++ " # 3.19") != null);
+}
+
+test "SC001: --fix pins a scalar container: and a docker:// uses" {
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", sc001_digest);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container: alpine:3.19
+        \\    steps:
+        \\      - uses: docker://alpine:3.19
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+    try testing.expect(std.mem.find(u8, result.content, "container: alpine@" ++ sc001_digest ++ " # 3.19") != null);
+
+    const docker_result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkHardcodedContainerCredentials }, false);
+    defer docker_result.deinit(testing.allocator);
+    try testing.expect(std.mem.find(u8, docker_result.content, "uses: docker://alpine@" ++ sc001_digest ++ " # 3.19") != null);
+}
+
+test "SC001: --fix pins a service image" {
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "redis", "7", sc001_digest);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    services:
+        \\      db:
+        \\        image: redis:7
+        \\    steps:
+        \\      - run: echo
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+    try testing.expect(std.mem.find(u8, result.content, "image: redis@" ++ sc001_digest ++ " # 7") != null);
+}
+
+test "SC001: without a known digest the diagnostic stands alone" {
+    image_digest.initDigests(testing.allocator, true, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", sc001_digest);
+
+    const result = try test_support.lintAndFix(testing.allocator, sc001_container_source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sc001_container_source, result.content);
+}
+
+test "SC001: an unsupported registry is diagnosed without a fix" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: quay.io/foo/bar:1
+        \\    steps:
+        \\      - run: echo
+        \\
+    ;
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
 test "isImagePinned: sha256 digest returns true" {
     try testing.expect(isImagePinned("node@sha256:a1b2c3d4e5f6"));
 }
@@ -8766,6 +8905,85 @@ test "SEC002: an env: key with no value gets no fix" {
         \\      - name: echo
         \\        env:
         \\        run: echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC002: github-script script: binds a lone JS string to process.env" {
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = "${{ github.event.issue.title }}";
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expectEqualStrings(
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - env:
+        \\          ISSUE_TITLE: ${{ github.event.issue.title }}
+        \\        uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = process.env.ISSUE_TITLE;
+        \\
+    , result.content);
+}
+
+test "SEC002: github-script script: a mixed JS string gets no fix" {
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = "prefix ${{ github.event.issue.title }}";
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC002: github-script script: a bare embedding gets no fix" {
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = ${{ github.event.issue.title }};
         \\
     ;
     const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });

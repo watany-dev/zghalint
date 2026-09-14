@@ -25,6 +25,7 @@ const registry = @import("rules/registry.zig");
 const local_action = @import("rules/local_action.zig");
 const workspace = @import("workspace.zig");
 const advisory = @import("rules/advisory.zig");
+const image_digest = @import("rules/image_digest.zig");
 const action_metadata = @import("rules/action_metadata.zig");
 const rule_engine = @import("rules/engine.zig");
 const diagnostics = @import("diagnostics.zig");
@@ -307,6 +308,12 @@ test "E2E: fixtures produce the declared diagnostics" {
     }};
     advisory.overrideCacheForTest(&e2e_advisories);
     defer advisory.deinitAdvisories();
+
+    const e2e_digest = "sha256:1c4eef651f65e2f7daee7ea7320b2504cd83545e8f5da6c45b8c4911eb1aea61";
+    image_digest.initDigests(std.testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", e2e_digest);
+    image_digest.setCachedDigest("docker.io", "redis", "7", e2e_digest);
 
     var covered: std.StringHashMapUnmanaged(void) = .{};
     try runFixtures(alloc, fixture_dir, lintSource, &covered);
