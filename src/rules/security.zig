@@ -696,13 +696,17 @@ fn taintedScriptOccurrences(
 
 /// Match `owner/repo` against a marketplace action reference. A nested path is a
 /// different action, and GitHub resolves owner/repo case-insensitively.
-fn isAction(ref: ActionRef, comptime owner_repo: []const u8) bool {
-    const slash = comptime std.mem.findScalar(u8, owner_repo, '/').?;
+fn isNamedAction(ref: ActionRef, owner_repo: []const u8) bool {
+    const slash = std.mem.findScalar(u8, owner_repo, '/') orelse return false;
     const owner = ref.owner orelse return false;
     const repo = ref.repo orelse return false;
     return ref.path == null and
         std.ascii.eqlIgnoreCase(owner, owner_repo[0..slash]) and
         std.ascii.eqlIgnoreCase(repo, owner_repo[slash + 1 ..]);
+}
+
+fn isAction(ref: ActionRef, comptime owner_repo: []const u8) bool {
+    return isNamedAction(ref, owner_repo);
 }
 
 /// A `with:` entry as written: `key` is the scalar the source spells, so a
@@ -1505,10 +1509,44 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
                     return;
                 }
                 reportShellFetchIf(self.wf, self.job, step, .sec009, self.list);
+                reportArtifactRunIdIf(self.job, step, self.list);
             }
         };
         workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list });
     }
+}
+
+/// Contexts an artifact download's `run-id` / `run_id` may not take (#533).
+const artifact_run_id_contexts = [_][]const u8{
+    "github.event.workflow_run.id",
+};
+
+const artifact_run_id_inputs = [_]struct { action: []const u8, input: []const u8 }{
+    .{ .action = "actions/download-artifact", .input = "run-id" },
+    .{ .action = "dawidd6/action-download-artifact", .input = "run_id" },
+};
+
+fn artifactRunIdInput(step: *const Step) ?WithInput {
+    const ref = step.uses orelse return null;
+    const with_map = step.with orelse return null;
+    for (artifact_run_id_inputs) |entry| {
+        if (!isNamedAction(ref, entry.action)) continue;
+        return getWithInput(with_map, entry.input);
+    }
+    return null;
+}
+
+fn reportArtifactRunIdIf(job: *const Job, step: *const Step, list: *DiagnosticList) void {
+    const input = artifactRunIdInput(step) orelse return;
+    if (!hasUntrustedExpr(input.value, .{ .prefix = &artifact_run_id_contexts })) return;
+    if (forkGuarded(list.allocator, job, step, workflow_run_anchors)) return;
+    list.append(.{
+        .rule_id = "SEC009",
+        .severity = .@"error",
+        .message = "dangerous: workflow_run job downloads an artifact from the triggering run, which may unpack attacker-produced files when that run was influenced by untrusted code such as forks",
+        .span = withAnchor(step, input.key).whole(),
+        .fix_hint = "treat the artifact as untrusted data and do not execute it, or gate the job on github.event.workflow_run.head_repository.full_name == github.repository so fork runs cannot reach this download",
+    }) catch return;
 }
 
 /// Attributes of the triggering run that a fork decides. A `workflow_run` job
@@ -3337,7 +3375,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC009",
         .name = "workflow-run-untrusted-checkout",
-        .description = "workflow_run job checks out or git/gh-fetches a ref from the triggering workflow, which may allow arbitrary code execution from forks",
+        .description = "workflow_run job checks out or git/gh-fetches a ref, or downloads an artifact from the triggering workflow, which may allow arbitrary code execution from forks",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkWorkflowRunUntrustedCheckout,
@@ -4673,6 +4711,33 @@ test "SEC009: git fetch of workflow_run head_sha (#532)" {
     try testing.expect(hasDiagnostic(&list, "SEC009"));
 }
 
+test "SEC009: download-artifact run-id from workflow_run.id (#533)" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "name", "build") catch unreachable;
+    with.put(testing.allocator, "run-id", "${{ github.event.workflow_run.id }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/download-artifact@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+    const d = findDiagnostic(&list, "SEC009").?;
+    try testing.expect(std.mem.find(u8, d.message, "artifact") != null);
+}
+
+test "SEC009: dawidd6 download-artifact run_id from workflow_run.id (#533)" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "run_id", "${{ github.event.workflow_run.id }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("dawidd6/action-download-artifact@v3"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
 test "SEC009: gh run download of workflow_run id (#532)" {
     const steps = [_]Step{
         .{ .run = "gh run download ${{ github.event.workflow_run.id }} -n build" },
@@ -4680,6 +4745,18 @@ test "SEC009: gh run download of workflow_run id (#532)" {
     var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: download-artifact without run-id is not poisoning (#533)" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "name", "build") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/download-artifact@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)" {

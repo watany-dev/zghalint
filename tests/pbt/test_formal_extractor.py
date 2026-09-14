@@ -43,6 +43,7 @@ def test_extractor_loads_current_tables():
     assert tables.code_executing_inputs == {"actions/github-script": ["script"]}
     assert "github.event.pull_request.head" in tables.shell_fetch_contexts
     assert "github.event.workflow_run.id" in tables.shell_fetch_contexts
+    assert "github.event.workflow_run.id" in tables.artifact_run_id_contexts
 
 
 def test_probe_tables_are_lists():
