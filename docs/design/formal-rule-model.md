@@ -3,7 +3,7 @@
 最終更新: 2026-09-14
 
 追跡 issue: #307（sub-issue #308〜#314、close 済み）、
-#G0（既知の脆弱性クラス G1〜G5 = #G1〜#G5、§7）
+#531（既知の脆弱性クラス G1〜G5 = #532〜#536、§7）
 
 ## 1. 目的
 
@@ -239,7 +239,7 @@ F1〜F7 に対応していた 69 件はいずれも実バイナリで false nega
 2026-09-14 時点: 仕様を既知の脆弱性クラスへ広げた（§1）結果、証人は
 **53 件**（P4: 1、P8: 2、P9: 38、P10: 1、P11: 6、P12: 5）で、意図的除外の
 P4 1 件を除く 52 件が実バイナリで false negative と確認された。
-5 クラスにまとめて #G1〜#G5 で追跡する（§7）。
+5 クラスにまとめて #532〜#536 で追跡する（§7）。
 
 ---
 
@@ -255,15 +255,15 @@ P4 1 件を除く 52 件が実バイナリで false negative と確認された�
 | #313 F6 | P1, P2, P3, P6 | `head_repository.description`, `head.repo.description`, `head.repo.homepage`, `*.committer.*` | 自由文の文脈が表にない。SEC022 は committer を持つのに SEC002 にはない |
 | #314 F7 | P8 | `issue_comment` × `comment.body` via `env_context`, `job_output` | SEC002 が `env:` → `${{ env.X }}` と job `outputs:` → `${{ needs.*.outputs.X }}` を追わない |
 
-### 既知の脆弱性クラス（2026-09-14、追跡 #G0）
+### 既知の脆弱性クラス（2026-09-14、追跡 #531）
 
 | issue | 性質 | 証人（トリガ × 文脈） | 原因 |
 |---|---|---|---|
-| #G1 G1 | P9 | 特権 PR トリガ × PR の ref 文脈、`issue_comment` × `issue.number`、`repository_dispatch` / `workflow_dispatch` / `workflow_call` × 入力、`workflow_run` × `head_*` / `id`（38 件） | SEC005 / SEC009 / SEC021 は `actions/checkout` の `with:` しか見ない。`run:` の `git fetch` / `git clone` / `gh pr checkout` / `gh run download` に渡した ref は未観測。`env:` 経由でも同じ |
-| #G2 G2 | P10 | `workflow_run` × `workflow_run.id` | `actions/download-artifact` / `dawidd6/action-download-artifact` の `run-id:` に渡す `workflow_run.id` を見るルールがない。fork PR の CI が置いた artifact を特権ジョブが実行する artifact poisoning |
-| #G3 G3 | P11 | `issues` × `issue.title` × 6 action の入力 | `checkScriptInputInjection` が `actions/github-script#script` を硬く持つ。`azure/cli` / `azure/powershell#inlineScript`、`nick-fields/retry#command`、`addnab/docker-run-action#run`、`appleboy/ssh-action#script`、`jannekem/run-python-script-action#script` は同型なのに未対象 |
-| #G4 G4 | P12 | `pull_request_target` × `head.sha` via `tj-actions/changed-files` 等の `outputs`、`issue_comment` × `comment.body` via `peter-evans/find-comment#comment-body` | SEC002 の taint は `${{ github.* }}` の文脈パスで判定するため、action が攻撃者の文字列（ファイル名・ブランチ名・コメント本文）から作った `steps.*.outputs.*` を無害と見なす |
-| #G5 G5 | P8 | `issue_comment` × `comment.body` via `action_input` | ローカル composite action の `with:` に untrusted 文脈を渡し、action 側の `run:` が `${{ inputs.x }}` を展開しても SEC002 は出ない。呼び出し側は `with:` を見ず、action 側は `inputs.*` を untrusted と知らない |
+| #532 G1 | P9 | 特権 PR トリガ × PR の ref 文脈、`issue_comment` × `issue.number`、`repository_dispatch` / `workflow_dispatch` / `workflow_call` × 入力、`workflow_run` × `head_*` / `id`（38 件） | SEC005 / SEC009 / SEC021 は `actions/checkout` の `with:` しか見ない。`run:` の `git fetch` / `git clone` / `gh pr checkout` / `gh run download` に渡した ref は未観測。`env:` 経由でも同じ |
+| #533 G2 | P10 | `workflow_run` × `workflow_run.id` | `actions/download-artifact` / `dawidd6/action-download-artifact` の `run-id:` に渡す `workflow_run.id` を見るルールがない。fork PR の CI が置いた artifact を特権ジョブが実行する artifact poisoning |
+| #534 G3 | P11 | `issues` × `issue.title` × 6 action の入力 | `checkScriptInputInjection` が `actions/github-script#script` を硬く持つ。`azure/cli` / `azure/powershell#inlineScript`、`nick-fields/retry#command`、`addnab/docker-run-action#run`、`appleboy/ssh-action#script`、`jannekem/run-python-script-action#script` は同型なのに未対象 |
+| #535 G4 | P12 | `pull_request_target` × `head.sha` via `tj-actions/changed-files` 等の `outputs`、`issue_comment` × `comment.body` via `peter-evans/find-comment#comment-body` | SEC002 の taint は `${{ github.* }}` の文脈パスで判定するため、action が攻撃者の文字列（ファイル名・ブランチ名・コメント本文）から作った `steps.*.outputs.*` を無害と見なす |
+| #536 G5 | P8 | `issue_comment` × `comment.body` via `action_input` | ローカル composite action の `with:` に untrusted 文脈を渡し、action 側の `run:` が `${{ inputs.x }}` を展開しても SEC002 は出ない。呼び出し側は `with:` を見ず、action 側は `inputs.*` を untrusted と知らない |
 
 ### 意図的な除外（issue にしない）
 
