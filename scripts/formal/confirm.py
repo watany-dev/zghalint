@@ -75,23 +75,18 @@ def workflow_for(w: model.Witness) -> str:
     expr = "${{ " + concrete(w.context) + " }}"
     head = on_block(w.trigger) + "jobs:\n"
     runs_on = "self-hosted" if w.property.startswith("P7") else "ubuntu-latest"
+    job = head + f"  j:\n    runs-on: {runs_on}\n    steps:\n"
 
     if w.sink == "run_fetch":
         # The checkout itself is clean; only the shell command afterwards
         # picks the attacker's ref, so SEC005 / SEC009 / SEC021 must read `run:`.
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
+        return job + (
             "      - uses: actions/checkout@v4\n"
             f"      - run: {spec.fetch_command(w.context)}\n"
             "      - run: npm install\n"
         )
     if w.sink == "artifact_run_id":
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
+        return job + (
             "      - uses: actions/download-artifact@v4\n"
             "        with:\n"
             "          name: build\n"
@@ -101,67 +96,39 @@ def workflow_for(w: model.Witness) -> str:
         )
     if w.sink == "action_script":
         action, _, input_name = w.action.partition("#")
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
-            f"      - uses: {action}@v1\n"
-            "        with:\n"
-            f'          {input_name}: echo "{expr}"\n'
+        return job + (
+            f'      - uses: {action}@v1\n        with:\n          {input_name}: echo "{expr}"\n'
         )
     if w.flow == "action_output":
         ao = _action_output(w)
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
+        return job + (
             "      - uses: actions/checkout@v4\n"
             "      - id: s\n"
             f"        uses: {ao.action}@v1\n"
             f'      - run: echo "${{{{ steps.s.outputs.{ao.output} }}}}"\n'
         )
     if w.flow == "action_input":
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
+        return job + (
             "      - uses: actions/checkout@v4\n"
             f"      - uses: ./{LOCAL_ACTION}\n"
             "        with:\n"
             f'          title: "{expr}"\n'
         )
     if w.sink == "checkout_ref":
-        return head + (
-            "  j:\n"
-            f"    runs-on: {runs_on}\n"
-            "    steps:\n"
+        return job + (
             "      - uses: actions/checkout@v4\n"
             "        with:\n"
             f"          {spec.checkout_with(w.context)}\n"
         )
     if w.sink == "condition":
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
-            f"      - if: contains({concrete(w.context)}, 'deploy')\n"
-            "        run: ./deploy.sh\n"
+        return job + (
+            f"      - if: contains({concrete(w.context)}, 'deploy')\n        run: ./deploy.sh\n"
         )
     if w.sink == "github_env":
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
-            f'      - run: echo "TITLE={expr}" >> "$GITHUB_ENV"\n'
-        )
+        return job + f'      - run: echo "TITLE={expr}" >> "$GITHUB_ENV"\n'
     if w.flow == "env_context":
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
-            "      - env:\n"
-            f'          TITLE: "{expr}"\n'
-            '        run: echo "${{ env.TITLE }}"\n'
+        return job + (
+            f'      - env:\n          TITLE: "{expr}"\n        run: echo "${{{{ env.TITLE }}}}"\n'
         )
     # The capturing step binds the value through `env:` and expands `$TITLE`,
     # which is the safe spelling: only the later `${{ }}` re-injects it, so
@@ -185,12 +152,8 @@ def workflow_for(w: model.Witness) -> str:
             '      - run: echo "${{ needs.a.outputs.title }}"\n'
         )
     if w.flow == "step_output":
-        return head + (
-            "  j:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n" + capture + '      - run: echo "${{ steps.s.outputs.title }}"\n'
-        )
-    return head + (f'  j:\n    runs-on: {runs_on}\n    steps:\n      - run: echo "{expr}"\n')
+        return job + capture + '      - run: echo "${{ steps.s.outputs.title }}"\n'
+    return job + f'      - run: echo "{expr}"\n'
 
 
 @dataclass(frozen=True)

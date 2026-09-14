@@ -189,8 +189,10 @@ class Model:
             if a == spec.NO_ACTION:
                 return False
             action, _, input_name = a.partition("#")
+            # `getWithInput` compares the key with `eqlIgnoreCase`.
             return any(
-                impl.matches_action(action, [known]) and input_name in inputs
+                impl.matches_action(action, [known])
+                and input_name.lower() in {i.lower() for i in inputs}
                 for known, inputs in im.code_executing_inputs.items()
             )
 
@@ -355,10 +357,12 @@ class Model:
                 "P11 code-executing input",
                 "SEC002",
                 # Pinned to one known-tainted (trigger, context) pair; what
-                # varies is the action whose input runs as code.
+                # varies is the action whose input runs as code. `sec002`
+                # keeps a witness from meaning "the context left the table".
                 z3.And(
                     t == self.t_of["issues"],
                     c == self.c_of["github.event.issue.title"],
+                    self.sec002(t, c),
                     self.sink == S["action_script"],
                     direct,
                     self.code_input(a),

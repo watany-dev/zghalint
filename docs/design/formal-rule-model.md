@@ -225,7 +225,7 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
   生成ディレクトリに `echo-action/action.yml`（composite、
   `run: echo "${{ inputs.title }}"`）と空の `.git/` を置く。バイナリは
   `.git` 祖先をリポジトリ根としてローカル action を解決するため
-  （`DEP004` が出ることで解決を確認できる）。
+  （解決できていれば `DEP004` は沈黙する。`action.yml` を消すと出る）。
 - バイナリは生成ファイルのディレクトリを cwd にして起動する。呼び出し元の
   cwd にある `.zghalint.yml` がルールを無効化して結果を歪めないため。
 
@@ -238,7 +238,8 @@ F1〜F7 に対応していた 69 件はいずれも実バイナリで false nega
 
 2026-09-14 時点: 仕様を既知の脆弱性クラスへ広げた（§1）結果、証人は
 **53 件**（P4: 1、P8: 2、P9: 38、P10: 1、P11: 6、P12: 5）で、意図的除外の
-P4 1 件を除く 52 件が実バイナリで false negative と確認された。
+2 件（P4 と P9 の `workflow_call` × `inputs.*`、#219）を除く 51 件が
+実バイナリで false negative と確認された。
 5 クラスにまとめて #532〜#536 で追跡する（§7）。
 
 ---
@@ -259,7 +260,7 @@ P4 1 件を除く 52 件が実バイナリで false negative と確認された�
 
 | issue | 性質 | 証人（トリガ × 文脈） | 原因 |
 |---|---|---|---|
-| #532 G1 | P9 | 特権 PR トリガ × PR の ref 文脈、`issue_comment` × `issue.number`、`repository_dispatch` / `workflow_dispatch` / `workflow_call` × 入力、`workflow_run` × `head_*` / `id`（38 件） | SEC005 / SEC009 / SEC021 は `actions/checkout` の `with:` しか見ない。`run:` の `git fetch` / `git clone` / `gh pr checkout` / `gh run download` に渡した ref は未観測。`env:` 経由でも同じ |
+| #532 G1 | P9 | 特権 PR トリガ × PR の ref 文脈、`issue_comment` × `issue.number`、`repository_dispatch` / `workflow_dispatch` × 入力、`workflow_run` × `head_*` / `id`（37 件。`workflow_call` × `inputs.*` は意図的除外） | SEC005 / SEC009 / SEC021 は `actions/checkout` の `with:` しか見ない。`run:` の `git fetch` / `git clone` / `gh pr checkout` / `gh run download` に渡した ref は未観測。`env:` 経由でも同じ |
 | #533 G2 | P10 | `workflow_run` × `workflow_run.id` | `actions/download-artifact` / `dawidd6/action-download-artifact` の `run-id:` に渡す `workflow_run.id` を見るルールがない。fork PR の CI が置いた artifact を特権ジョブが実行する artifact poisoning |
 | #534 G3 | P11 | `issues` × `issue.title` × 6 action の入力 | `checkScriptInputInjection` が `actions/github-script#script` を硬く持つ。`azure/cli` / `azure/powershell#inlineScript`、`nick-fields/retry#command`、`addnab/docker-run-action#run`、`appleboy/ssh-action#script`、`jannekem/run-python-script-action#script` は同型なのに未対象 |
 | #535 G4 | P12 | `pull_request_target` × `head.sha` via `tj-actions/changed-files` 等の `outputs`、`issue_comment` × `comment.body` via `peter-evans/find-comment#comment-body` | SEC002 の taint は `${{ github.* }}` の文脈パスで判定するため、action が攻撃者の文字列（ファイル名・ブランチ名・コメント本文）から作った `steps.*.outputs.*` を無害と見なす |
@@ -268,8 +269,9 @@ P4 1 件を除く 52 件が実バイナリで false negative と確認された�
 ### 意図的な除外（issue にしない）
 
 - **`workflow_call` 専用ワークフローの `inputs.*` を checkout ref に渡す**
-  （P4 の証人）。caller の解析は範囲外で、#219 の判断どおり bare `inputs` は
-  `workflow_dispatch` 併記時のみ untrusted とする。証人としては残す。
+  （P4 の証人）、**同じ値を `run:` の `git fetch` に渡す**（P9 の証人）。
+  caller の解析は範囲外で、#219 の判断どおり bare `inputs` は
+  `workflow_dispatch` 併記時のみ untrusted とする。どちらも証人としては残す。
 - **ref 形の文脈を `if:` で使う**（#138）。モデル側で P3 から除外済み。
 
 ---
@@ -278,6 +280,8 @@ P4 1 件を除く 52 件が実バイナリで false negative と確認された�
 
 - **ルール修正後**: `confirm.py` を再実行し、対応する証人が `covered` に
   変わることを確認してから issue を閉じる。
+- **SEC002 が新しい伝播経路を追うようになったとき**: `impl.py` の
+  `followed_flows` は固定値なので、その経路を手で足す（P8 の証人が消える）。
 - **表を増やしたとき**: `impl.py` は抽出するだけなので変更不要。
   抽出パターンが変わったら（表名・関数シグネチャ）`impl.py` を追随させる。
   抽出失敗は `LookupError` で止まる。CI の lint ジョブと
