@@ -1,8 +1,9 @@
 # 形式手法によるルール自体の抜け漏れ検出: Z3 有界モデル検査
 
-最終更新: 2026-09-08
+最終更新: 2026-09-14
 
-追跡 issue: #307（sub-issue #308〜#314）
+追跡 issue: #307（sub-issue #308〜#314、close 済み）、
+#G0（既知の脆弱性クラス G1〜G5 = #G1〜#G5、§7）
 
 ## 1. 目的
 
@@ -21,6 +22,15 @@
 対象は現状 SEC002 / SEC005 / SEC006 / SEC008 / SEC009 / SEC020 / SEC021 /
 SEC022（インジェクションと untrusted checkout の系統）。
 
+2026-09-14 からは、`${{ }}` 文脈の表だけでなく **既知の脆弱性クラス**
+（GitHub Actions で実際に悪用された型）をシンク・経路として仕様に持つ:
+シェルコマンドによる untrusted fetch（`git fetch` / `gh pr checkout`）、
+`workflow_run` からの artifact poisoning、github-script 以外のコード実行
+action 入力、action が攻撃者の文字列から作る `outputs`、ローカル composite
+action の `inputs` 越しの流れ。これらは表に文脈を足すだけでは埋まらず、
+ルール側に新しい観測点（`run:` の中身、`download-artifact` の `with:`、
+action 名の表）が要る。
+
 ---
 
 ## 2. 構成
@@ -29,7 +39,7 @@ SEC022（インジェクションと untrusted checkout の系統）。
 scripts/formal/
 ├── spec.py          仕様側: トリガ / 文脈 / シンク / 伝播経路の有限関係
 ├── impl.py          実装側: security.zig から表を抽出
-├── model.py         Z3 で Unsafe ∧ ¬Covered の証人を全列挙（性質 P1〜P8）
+├── model.py         Z3 で Unsafe ∧ ¬Covered の証人を全列挙（性質 P1〜P12）
 ├── confirm.py       各証人を最小ワークフローに落とし実バイナリで確認
 └── requirements.txt z3-solver（固定版）
 ```
@@ -63,8 +73,9 @@ actionlint / zizmor が公開する untrusted 一覧から転記する。
 |---|---|---|
 | Trigger | `on:` のイベント名 20 種 | `pull_request_target`, `issue_comment`, `workflow_run`, `gollum` |
 | Ctx | `${{ }}` パス。`.*` はシーケンス要素 | `github.event.pull_request.title`, `inputs.*` |
-| Sink | 値が到達すると危険な場所 | `run`, `github_env`, `checkout_ref`, `condition` |
-| Flow | 値がシンクへ届く経路 | `direct`, `env_context`, `step_output`, `job_output` |
+| Sink | 値が到達すると危険な場所 | `run`, `github_env`, `checkout_ref`, `condition`, `run_fetch`（`run:` 内の `git` / `gh` が取る ref）, `artifact_run_id`（`download-artifact` の `run-id:`）, `action_script`（action がコードとして実行する入力） |
+| Flow | 値がシンクへ届く経路 | `direct`, `env_context`, `step_output`, `job_output`, `action_input`（`uses: ./local` の `with:` → composite 内 `inputs.*`）, `action_output`（action が攻撃者文字列から作る `outputs`） |
+| Action | 性質が名指しする action と入力／出力（`owner/repo#name`）。無関係な性質は `-` に固定 | `azure/cli#inlineScript`, `tj-actions/changed-files#all_changed_files` |
 
 ### 3-2. 関係
 
@@ -78,6 +89,10 @@ actionlint / zizmor が公開する untrusted 一覧から転記する。
 | `privileged(t)` | base リポジトリの secrets と書き込み可能 `GITHUB_TOKEN` を持つ（`pull_request` 以外） |
 | `externally_triggerable(t)` | 書き込み権限のないアカウントが発火させられる |
 | `carries_fork_code(t)` | payload が fork 上のコードを指す（`issue_comment` は `refs/pull/<n>/merge` 経由で該当） |
+| `fetch_only(c)` | `ref_shaped` だが `actions/checkout` の `with:` には渡せず、シェルコマンドだけが受け取る（`head.repo.clone_url`, `workflow_run.id`） |
+| `code_input(a)` | action `a` の入力をそのランタイムがコードとして実行する（`CODE_EXECUTING_INPUTS`。github-script の `script` と同型） |
+| `untrusted_output(a)` | action `a` の出力が攻撃者の文字列の関数である（`ACTION_OUTPUTS`） |
+| `ao_trigger(a)`, `ao_source(a)` | その出力の元になる文脈と、それが攻撃者のものになる特権トリガ |
 
 著者は `Author` 列挙（`EXTERNAL` / `DISPATCHER` / `COLLABORATOR`）。
 labels や release は `COLLABORATOR` として載せ、実装がそれらを表に持つことと
@@ -102,11 +117,21 @@ labels や release は `COLLABORATOR` として載せ、実装がそれらを表
 | `workflow_run_markers` | `isWorkflowRunValue` | SEC009（`workflow_run` 宣言時のみ） |
 | `trigger_contexts` | `dispatch_payload_table` ∪ `attacker_text_table`（実装の `trigger_context_table` と同じ合成） | SEC021（`workflow_dispatch` 宣言時は `bare_inputs` を追加、#219） |
 | `fork_accessible_triggers` | `hasForkAccessibleTrigger` の `=> return true` 腕 | SEC020 |
-| `followed_flows` | 固定値 `direct`, `step_output`, `env_context`, `job_output` | SEC002 が追う伝播（`checkScriptInjection` の構造から、#314） |
+| `followed_flows` | 固定値 `direct`, `step_output`, `env_context`, `job_output` | SEC002 が追う伝播（`checkScriptInjection` の構造から、#314）。composite action の `inputs` には入らず、action の `outputs` の出所も知らない |
+| `code_executing_inputs` | `checkScriptInputInjection` が硬く持つ `isAction` / `getWithInput` の 1 組 | SEC002（action 入力）。2 組以上になったら抽出器を表追随に書き換える（fail-close） |
+| `shell_fetch_contexts` | **probe**: `const shell_fetch_contexts` | 未実装（P9）。無ければ空 |
+| `artifact_run_id_contexts` | **probe**: `const artifact_run_id_contexts` | 未実装（P10）。無ければ空 |
+| `untrusted_output_actions` | **probe**: `const untrusted_output_actions` | 未実装（P12）。無ければ空 |
+
+probe は「仕様が求めるがまだ無いルール」の表で、抽出できなくてもエラーに
+しない。空のまま残る証人がそのまま未解決の issue になる。ルールが別名で
+着地すると `confirm.py` は `covered` と言うのに `model.py` は証人を出し続ける
+ので、それを probe 名を直す合図にする。
 
 照合意味論も写している。文脈表は `pathMatchesPattern`（セグメント前方一致、
 `*` ワイルドカード、大文字小文字無視）→ `matches_prefix`、
-`refs/pull/` 型マーカーは `containsAnyMarker`（部分文字列）→ `matches_marker`。
+`refs/pull/` 型マーカーは `containsAnyMarker`（部分文字列）→ `matches_marker`、
+action 名は `isAction`（`owner/repo` の大文字小文字無視）→ `matches_action`。
 マーカーは文脈パスではなく `with:` の値（`spec.checkout_with` が決める
 `ref: refs/pull/${{ … }}/merge` などの綴り）に当てる。実装が見るのはその
 文字列であり、`confirm.py` も同じ綴りでワークフローを生成する。
@@ -115,7 +140,7 @@ labels や release は `COLLABORATOR` として載せ、実装がそれらを表
 
 ## 5. 性質 (`model.py`)
 
-各性質は自由変数 `t, c, sink, f` 上の `Unsafe` と `Covered` の対で、
+各性質は自由変数 `t, c, sink, f, a` 上の `Unsafe` と `Covered` の対で、
 Z3 に `Unsafe ∧ ¬Covered` を問い、得た証人をブロック節で除外しながら
 sat でなくなるまで列挙する。全述語は有限ソート上で外延的に定義するので
 決定可能で、列挙は完全である。
@@ -125,13 +150,33 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
 | P1 script injection | `available ∧ (external ∨ dispatcher) ∧ free_text`、sink = `run`、direct | `sec002(t, c)` | SEC002 |
 | P2 GITHUB_ENV injection | 同上、sink = `github_env` | `sec008(t, c)` | SEC008 |
 | P3 condition gate | `available ∧ external ∧ free_text ∧ ¬ref_shaped`、sink = `condition` | `sec006 ∨ sec022` | SEC006 |
-| P4 untrusted checkout | `available ∧ privileged ∧ (external ∨ dispatcher) ∧ ref_shaped`、sink = `checkout_ref` | `sec005 ∨ sec009 ∨ sec021` | SEC005/SEC009/SEC021 |
+| P4 untrusted checkout | `available ∧ privileged ∧ (external ∨ dispatcher) ∧ ref_shaped ∧ ¬fetch_only`、sink = `checkout_ref` | `sec005 ∨ sec009 ∨ sec021` | SEC005/SEC009/SEC021 |
 | P5 SEC021 ⊆ SEC002 | `sec021(t, c)` ∧ `free_text`、sink = `run` | `sec002(t, c)` | SEC002 |
 | P6 SEC022 ⊆ SEC002 | `sec022(t, c)`、sink = `run` | `sec002(t, c)` | SEC002 |
 | P7 self-hosted fork reach | `carries_fork_code ∧ externally_triggerable`（c は `head.sha` に固定） | `sec020(t)` | SEC020 |
 | P8 taint flow | `issue_comment × comment.body × run`（sec002 が持つ既知の組） | `followed(f)` | SEC002 |
+| P9 shell fetch | P4 と同じ選び方（`fetch_only` を含む）、sink = `run_fetch`、direct | `shell_fetch(t, c)` | SEC005/SEC009/SEC021 |
+| P10 artifact poisoning | `workflow_run × workflow_run.id`、sink = `artifact_run_id` | `artifact_run_id(t, c)` | SEC009 |
+| P11 code-executing input | `issues × issue.title`、sink = `action_script`、`code_input(a)` | `code_input_known(a)` | SEC002 |
+| P12 untrusted action output | `untrusted_output(a) ∧ t = ao_trigger(a) ∧ c = ao_source(a)`、sink = `run`、flow = `action_output` | `output_known(a)` | SEC002 |
 
 設計上の判断:
+
+- **P9 は「checkout の `with:` を見れば足りる」という実装の前提を検査する。**
+  `git fetch origin ${{ … }} && git checkout FETCH_HEAD` や
+  `gh pr checkout ${{ … }}` は `actions/checkout` を経ない untrusted checkout で、
+  取得後の `npm install` で fork のコードが特権ジョブで走る。自由文の文脈
+  （`head.ref`, `inputs.*` …）は SEC002 が別の理由で報告するが、番号・SHA・
+  リポジトリ名・`clone_url` には何も出ない。`confirm.py` の `fired` 列が
+  その区別を見せる。
+- **P10 / P11 / P12 は action を名指しする。** 表に文脈を足しても埋まらず、
+  action 名と入力／出力名の表がルール側に要る抜けなので、`Action` ソートを
+  持たせて action ごとに証人を出す。action に無関係な P1〜P9 は `a = -` に
+  固定して重複を避ける。
+- **P8 に `action_input` / `action_output` を足した。** どちらも「SEC002 が
+  持つ既知の組」がステップ境界の向こうで `run:` に届く経路。前者はローカル
+  composite action の `inputs.*`（`uses: ./x` の `with:` から）、後者は
+  `tj-actions/changed-files` のような action の `outputs`。
 
 - **P1 / P2 は `free_text` を要求する。** 番号や SHA はサーバが整形する値で
   シェルのメタ文字を含めない。ref 形の文脈は P4 で見る。
@@ -164,6 +209,23 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
 - P7 は `runs-on: self-hosted`。
 - 伝播経路は、取り込み側のステップで `env:` と `$TITLE` を使う安全な
   書き方にする。診断が出るなら経路を追った結果だと言えるようにするため。
+- `run_fetch` は clean な `actions/checkout@v4` の後に `spec.fetch_command`
+  が文脈ごとに決める 1 行（番号は `gh pr checkout`、リポジトリ名と
+  `clone_url` は `git clone`、`workflow_run.id` は `gh run download`、
+  それ以外は `git fetch origin … && git checkout FETCH_HEAD`）と
+  `npm install` を置く。
+- `artifact_run_id` は `actions/download-artifact@v4` の `run-id:` に渡し、
+  続けて `bash ./build/deploy.sh` を置く。
+- `action_script` は `uses: <action>@v1` の `with:` の当該入力に
+  `echo "${{ … }}"` を書く。
+- `action_output` は `- id: s` / `uses: <action>@v1` の後に
+  `run: echo "${{ steps.s.outputs.<output> }}"`。P8 の証人は action を
+  固定しないので、`source` が文脈に一致する最初の `ACTION_OUTPUTS` を使う。
+- `action_input` は `uses: ./echo-action` に `with: title:` で渡す。
+  生成ディレクトリに `echo-action/action.yml`（composite、
+  `run: echo "${{ inputs.title }}"`）と空の `.git/` を置く。バイナリは
+  `.git` 祖先をリポジトリ根としてローカル action を解決するため
+  （`DEP004` が出ることで解決を確認できる）。
 - バイナリは生成ファイルのディレクトリを cwd にして起動する。呼び出し元の
   cwd にある `.zghalint.yml` がルールを無効化して結果を歪めないため。
 
@@ -173,6 +235,11 @@ SEC002/SEC008 の共有 taint 表）を直した状態で、残る証人は意�
 **1 件**（`workflow_call` × `inputs.*` の checkout、#219）だけ。
 F1〜F7 に対応していた 69 件はいずれも実バイナリで false negative と確認済みで、
 対応 issue は閉じている。
+
+2026-09-14 時点: 仕様を既知の脆弱性クラスへ広げた（§1）結果、証人は
+**53 件**（P4: 1、P8: 2、P9: 38、P10: 1、P11: 6、P12: 5）で、意図的除外の
+P4 1 件を除く 52 件が実バイナリで false negative と確認された。
+5 クラスにまとめて #G1〜#G5 で追跡する（§7）。
 
 ---
 
@@ -187,6 +254,16 @@ F1〜F7 に対応していた 69 件はいずれも実バイナリで false nega
 | #312 F5 | P1, P2, P5 | `repository_dispatch` × `client_payload.*`；`workflow_dispatch` / `workflow_call` × `inputs.*` (SEC008) | SEC021 は持つが SEC002 / SEC008 は持たない。SEC008 は dispatch 拡張表を見ない |
 | #313 F6 | P1, P2, P3, P6 | `head_repository.description`, `head.repo.description`, `head.repo.homepage`, `*.committer.*` | 自由文の文脈が表にない。SEC022 は committer を持つのに SEC002 にはない |
 | #314 F7 | P8 | `issue_comment` × `comment.body` via `env_context`, `job_output` | SEC002 が `env:` → `${{ env.X }}` と job `outputs:` → `${{ needs.*.outputs.X }}` を追わない |
+
+### 既知の脆弱性クラス（2026-09-14、追跡 #G0）
+
+| issue | 性質 | 証人（トリガ × 文脈） | 原因 |
+|---|---|---|---|
+| #G1 G1 | P9 | 特権 PR トリガ × PR の ref 文脈、`issue_comment` × `issue.number`、`repository_dispatch` / `workflow_dispatch` / `workflow_call` × 入力、`workflow_run` × `head_*` / `id`（38 件） | SEC005 / SEC009 / SEC021 は `actions/checkout` の `with:` しか見ない。`run:` の `git fetch` / `git clone` / `gh pr checkout` / `gh run download` に渡した ref は未観測。`env:` 経由でも同じ |
+| #G2 G2 | P10 | `workflow_run` × `workflow_run.id` | `actions/download-artifact` / `dawidd6/action-download-artifact` の `run-id:` に渡す `workflow_run.id` を見るルールがない。fork PR の CI が置いた artifact を特権ジョブが実行する artifact poisoning |
+| #G3 G3 | P11 | `issues` × `issue.title` × 6 action の入力 | `checkScriptInputInjection` が `actions/github-script#script` を硬く持つ。`azure/cli` / `azure/powershell#inlineScript`、`nick-fields/retry#command`、`addnab/docker-run-action#run`、`appleboy/ssh-action#script`、`jannekem/run-python-script-action#script` は同型なのに未対象 |
+| #G4 G4 | P12 | `pull_request_target` × `head.sha` via `tj-actions/changed-files` 等の `outputs`、`issue_comment` × `comment.body` via `peter-evans/find-comment#comment-body` | SEC002 の taint は `${{ github.* }}` の文脈パスで判定するため、action が攻撃者の文字列（ファイル名・ブランチ名・コメント本文）から作った `steps.*.outputs.*` を無害と見なす |
+| #G5 G5 | P8 | `issue_comment` × `comment.body` via `action_input` | ローカル composite action の `with:` に untrusted 文脈を渡し、action 側の `run:` が `${{ inputs.x }}` を展開しても SEC002 は出ない。呼び出し側は `with:` を見ず、action 側は `inputs.*` を untrusted と知らない |
 
 ### 意図的な除外（issue にしない）
 
@@ -211,13 +288,26 @@ F1〜F7 に対応していた 69 件はいずれも実バイナリで false nega
 - **新ルールを対象に加えるとき**: `impl.py` に抽出、`model.py` の
   `_define_impl` に述語、`properties()` に性質、`confirm.py` の
   `workflow_for` に生成規則を足す。
+- **probe を埋めるとき**（§4）: ルールは probe と同名の表
+  （`shell_fetch_contexts` / `artifact_run_id_contexts` /
+  `untrusted_output_actions`）を `security.zig` に持たせるのが最短。別名に
+  したら `impl.py` の probe 名を直す。`checkScriptInputInjection` を表にした
+  ときは `_code_executing_inputs` を表抽出に書き換える（1 組でなくなると
+  `LookupError` で止まる）。
 
 ## 9. 限界
 
 - 有界モデル。`AVAILABLE` に載せた文脈しか見ない。載せ忘れは検出できない
   （actionlint / zizmor の一覧との突き合わせで補う。#262）。
-- 伝播経路は 1 ホップまで。多段の `outputs` 連鎖や composite action 越しの
-  流れは扱わない。
+- 伝播経路は 1 ホップまで。多段の `outputs` 連鎖は扱わない。composite
+  action 越しは `action_input`（呼び出し側 `with:` → action の `inputs.*`）
+  の 1 ホップだけで、action の中でさらに `outputs` に出る流れは見ない。
+- action の表（`CODE_EXECUTING_INPUTS` / `ACTION_OUTPUTS`）は zizmor の
+  template-injection 監査と各 action の README から転記した代表で、網羅では
+  ない。表にない action の同型の抜けは検出できない。
+- P9 の `run:` 内コマンドは `spec.fetch_command` が決める綴りだけを試す。
+  `git switch --detach` や `git checkout` の直指定など別の綴りは、ルール側が
+  コマンドをどう認識するかで決まるため `confirm.py` では検証しない。
 - 「危険」の定義は信頼モデルのみで、`author_association` や環境保護などの
   実装側 anchor（`forkGuarded` など）は `confirm.py` の最小ワークフローに
   含めない。anchor があるときに黙る挙動の検証は既存の単体テストの領分。
