@@ -269,12 +269,55 @@ pub fn buildFix(
     occs: *const Occurrences,
     description: []const u8,
 ) ?Fix {
-    if (occs.overflowed or occs.len == 0) return null;
+    return buildBodyFix(
+        list,
+        step,
+        step.run orelse return null,
+        step.run_meta orelse return null,
+        spans.runAnchor(step),
+        shell,
+        occs,
+        description,
+    );
+}
 
-    const run = step.run orelse return null;
-    const meta = step.run_meta orelse return null;
-    // Only these two styles keep `run` byte-identical to the source, which is
-    // what makes the offset mapping exact (design doc §4).
+/// Same binding as `buildFix`, but the body is a `with:` input the action
+/// executes as a shell script (azure/cli `inlineScript`, and the like).
+pub fn buildWithValueFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    input_key: []const u8,
+    value: []const u8,
+    shell: Shell,
+    occs: *const Occurrences,
+    description: []const u8,
+) ?Fix {
+    const meta = (if (step.with_meta) |m| m.get(input_key) else null) orelse return null;
+    return buildBodyFix(
+        list,
+        step,
+        value,
+        meta,
+        spans.Anchor.fromMeta(meta, step.span),
+        shell,
+        occs,
+        description,
+    );
+}
+
+fn buildBodyFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    body: []const u8,
+    meta: workflow_types.ScalarValueMeta,
+    anchor: spans.Anchor,
+    shell: Shell,
+    occs: *const Occurrences,
+    description: []const u8,
+) ?Fix {
+    if (occs.overflowed or occs.len == 0) return null;
+    // Only these two styles keep the body byte-identical to the source, which
+    // is what makes the offset mapping exact (design doc §4).
     switch (meta.style) {
         .plain, .literal => {},
         else => return null,
@@ -291,15 +334,14 @@ pub fn buildFix(
     defer edits.deinit(alloc);
 
     for (occs.slice()) |occ| {
-        if (occ.offset + occ.len > run.len) return null;
-        const expr = run[occ.offset .. occ.offset + occ.len];
+        if (occ.offset + occ.len > body.len) return null;
+        const expr = body[occ.offset .. occ.offset + occ.len];
         if (!std.mem.startsWith(u8, expr, "${{") or !std.mem.endsWith(u8, expr, "}}")) return null;
         const inner = expr[3 .. expr.len - 2];
 
-        const state = quoteStateAt(run, occ.offset);
+        const state = quoteStateAt(body, occ.offset);
         if (state == .squote) return null;
 
-        // The same expression twice in one step shares one binding.
         var name: ?[]const u8 = null;
         for (bindings[0..binding_count]) |b| {
             if (std.mem.eql(u8, b.expr, expr)) name = b.name;
@@ -313,7 +355,7 @@ pub fn buildFix(
         }
 
         const ref = reference(alloc, shell, name.?, state) orelse return null;
-        const span = spans.runAnchor(step).at(run, occ.offset, occ.len);
+        const span = anchor.at(body, occ.offset, occ.len);
         edits.append(alloc, .{
             .start_byte = span.start_byte,
             .end_byte = span.end_byte,

@@ -58,18 +58,13 @@ def _probe_string_table(source: str, name: str) -> list[str]:
 
 
 def _code_executing_inputs(source: str) -> dict[str, list[str]]:
-    """`checkScriptInputInjection`: the one `isAction(ref, "...")` /
-    `getWithInput(with_map, "...")` pair it hard-codes today. When it grows
-    into a table the extractor must follow it, so anything but one pair fails."""
-    body = _block(source, "fn checkScriptInputInjection(", "\n}\n")
-    actions = re.findall(r'isAction\(\w+, "([^"]+)"\)', body)
-    inputs = re.findall(r'getWithInput\(\w+, "([^"]+)"\)', body)
-    if len(actions) != 1 or len(inputs) != 1:
-        raise LookupError(
-            "checkScriptInputInjection: expected one isAction / getWithInput pair; "
-            "the extractor is out of date"
-        )
-    return {actions[0]: [inputs[0]]}
+    """`code_executing_inputs`: action → the `with:` keys it executes as code."""
+    body = _block(source, "const code_executing_inputs = [_]CodeExecutingInput{")
+    entries = re.findall(r'\.action\s*=\s*"([^"]+)"\s*,\s*\.input\s*=\s*"([^"]+)"', body)
+    found: dict[str, list[str]] = {}
+    for action, input_name in entries:
+        found.setdefault(action, []).append(input_name)
+    return _nonempty(found, "code_executing_inputs")
 
 
 def _marker_fn(source: str, name: str) -> list[str]:

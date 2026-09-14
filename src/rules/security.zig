@@ -659,22 +659,56 @@ fn hasUntrustedExpr(s: []const u8, table: ContextTable) bool {
     return false;
 }
 
-/// SEC002 for action inputs executed as code: `actions/github-script` runs `with.script`
-/// as JavaScript, so it carries the same injection risk as `run:`.
+/// SEC002 for action inputs executed as code. Each row is an action that
+/// interpolates a `with:` value into a shell, JS, or interpreter; the same
+/// injection as `run:`. github-script's fix is JS (`process.env`); the
+/// others bind `$VAR` like `run:` except python, which has no shell spelling.
+const CodeExecutingInput = struct {
+    action: []const u8,
+    input: []const u8,
+    js: bool = false,
+    shell: ?env_binding.Shell = .posix,
+};
+
+const code_executing_inputs = [_]CodeExecutingInput{
+    .{ .action = "actions/github-script", .input = "script", .js = true, .shell = null },
+    .{ .action = "azure/cli", .input = "inlineScript" },
+    .{ .action = "azure/powershell", .input = "inlineScript", .shell = .pwsh },
+    .{ .action = "nick-fields/retry", .input = "command" },
+    .{ .action = "addnab/docker-run-action", .input = "run" },
+    .{ .action = "appleboy/ssh-action", .input = "script" },
+    .{ .action = "jannekem/run-python-script-action", .input = "script", .shell = null },
+};
+
 fn checkScriptInputInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
-    if (!isAction(ref, "actions/github-script")) return;
     const with_map = step.with orelse return;
-    const input = getWithInput(with_map, "script") orelse return;
-    const fix = env_binding.buildScriptFix(
-        list,
-        step,
-        input.key,
-        input.value,
-        &taintedScriptOccurrences(table, input.value, list.fixAllocator()),
-        script_env_binding_description,
-    );
-    checkContextsInString(input.value, withAnchor(step, input.key), table, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list, fix);
+    for (code_executing_inputs) |entry| {
+        if (!isNamedAction(ref, entry.action)) continue;
+        const input = getWithInput(with_map, entry.input) orelse return;
+        const occs = taintedScriptOccurrences(table, input.value, list.fixAllocator());
+        const fix = if (entry.js)
+            env_binding.buildScriptFix(list, step, input.key, input.value, &occs, script_env_binding_description)
+        else if (entry.shell) |sh|
+            env_binding.buildWithValueFix(list, step, input.key, input.value, sh, &occs, env_binding_description)
+        else
+            null;
+        checkContextsInString(
+            input.value,
+            withAnchor(step, input.key),
+            table,
+            "SEC002",
+            .@"error",
+            if (entry.js)
+                "script injection: untrusted context used in actions/github-script script: input"
+            else
+                "script injection: untrusted context used in a code-executing action input",
+            script_injection_fix_hint,
+            list,
+            fix,
+        );
+        return;
+    }
 }
 
 const script_env_binding_description = "bind the expression to the step's env: and read it as process.env";
@@ -3765,6 +3799,16 @@ test "SEC002: script input is not checked outside github-script" {
     try testing.expect(!sec002UsesFires("some-org/other-action@v1", "script", dangerous, null));
     // Only inputs executed as code are checked.
     try testing.expect(!sec002UsesFires("actions/github-script@v7", "result-encoding", "${{ github.event.issue.title }}", null));
+}
+
+test "SEC002: code-executing action inputs beyond github-script (#534)" {
+    const expr = "echo \"${{ github.event.issue.title }}\"";
+    try testing.expect(sec002UsesFires("azure/cli@v1", "inlineScript", expr, null));
+    try testing.expect(sec002UsesFires("azure/powershell@v1", "inlineScript", expr, null));
+    try testing.expect(sec002UsesFires("nick-fields/retry@v2", "command", expr, null));
+    try testing.expect(sec002UsesFires("addnab/docker-run-action@v3", "run", expr, null));
+    try testing.expect(sec002UsesFires("appleboy/ssh-action@v1", "script", expr, null));
+    try testing.expect(sec002UsesFires("jannekem/run-python-script-action@v1", "script", expr, null));
 }
 
 test "SEC002: github-script script input via env (no false positive)" {

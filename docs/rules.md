@@ -38,7 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA |
-| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script`'s `with.script`) risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
+| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script` `script:`, `azure/cli` `inlineScript:`, and similar) risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
 | SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout or a git/gh fetch of PR head is dangerous |
@@ -82,7 +82,8 @@ secrets が空、quoted / flow の `inherit` では fix を付けない。inheri
 
 ### SEC002 と真偽値の展開
 
-SEC002 は `run:` / `actions/github-script` の `with.script` に展開する式全体が
+SEC002 は `run:` / コードとして実行される action 入力（`actions/github-script`
+の `with.script`、`azure/cli` の `inlineScript` など）に展開する式全体が
 `startsWith(...)` / `endsWith(...)` / `contains(...)` など真偽値を返す組み込みの
 呼び出しであれば、引数の汚染値を理由に報告しない。返る値は `true` / `false`
 だけであり、引数そのものはコードへ届かない。`&&` / `||` で汚染文字列を返す
