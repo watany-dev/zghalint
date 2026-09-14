@@ -164,9 +164,13 @@ block is injection when it is written to `$GITHUB_ENV` too.
   only under the trigger that fills it (#224), and the pairing is the same table
   SEC021 reads, so the two rules cannot disagree about what a caller controls.
 - `steps.<id>.outputs.*` — untrusted when step `<id>` wrote an untrusted value
-  to `$GITHUB_OUTPUT`. Binding the value to `env:` is what makes the *capturing*
-  step safe; it does nothing for whoever expands the output, so only the later
-  step that expands it is reported.
+  to `$GITHUB_OUTPUT`, or when it `uses:` an action whose outputs are derived
+  from attacker content (`tj-actions/changed-files`,
+  `step-security/changed-files`, `jitterbit/get-changed-files`,
+  `tj-actions/branch-names`, `peter-evans/find-comment`) (#535). Binding the
+  value to `env:` is what makes the *capturing* step safe; it does nothing for
+  whoever expands the output, so only the later step that expands it is
+  reported.
 
 Taint then travels one hop further, through the two indirections that otherwise
 look like the recommended fix:

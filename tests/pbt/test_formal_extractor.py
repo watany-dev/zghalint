@@ -46,6 +46,8 @@ def test_extractor_loads_current_tables():
     assert "github.event.pull_request.head" in tables.shell_fetch_contexts
     assert "github.event.workflow_run.id" in tables.shell_fetch_contexts
     assert "github.event.workflow_run.id" in tables.artifact_run_id_contexts
+    assert "tj-actions/changed-files" in tables.untrusted_output_actions
+    assert "peter-evans/find-comment" in tables.untrusted_output_actions
 
 
 def test_probe_tables_are_lists():
