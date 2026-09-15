@@ -126,8 +126,8 @@ class Impl:
     code_executing_inputs: dict[str, list[str]]
     #: Flows SEC002 follows (see spec.FLOWS). `checkScriptInjection` walks
     #: `env:` keys, step outputs, and job outputs as well as the direct use
-    #: (#314), and outputs of actions that echo attacker content
-    #: (`action_output`, #535). It does not enter a local composite action
+    #: (#314), outputs of actions that echo attacker content (`action_output`,
+    #: #535), and a local composite action's interpolated `inputs.*`
     #: (`action_input`, #536).
     followed_flows: list[str] = field(
         default_factory=lambda: [
@@ -136,6 +136,7 @@ class Impl:
             "env_context",
             "job_output",
             "action_output",
+            "action_input",
         ]
     )
     #: Probes (`_probe_string_table`): rules the specification asks for that

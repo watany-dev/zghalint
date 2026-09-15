@@ -41,6 +41,7 @@ def test_extractor_loads_current_tables():
     assert "env_context" in tables.followed_flows
     assert "job_output" in tables.followed_flows
     assert "action_output" in tables.followed_flows
+    assert "action_input" in tables.followed_flows
     assert tables.code_executing_inputs["actions/github-script"] == ["script"]
     assert tables.code_executing_inputs["azure/cli"] == ["inlineScript"]
     assert "nick-fields/retry" in tables.code_executing_inputs

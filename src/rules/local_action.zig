@@ -2,11 +2,12 @@
 //! reference and expose what it declares.
 //!
 //! The store is the only place that turns a local `uses:` into the referenced
-//! action's own metadata, so it hosts DEP004 (input validation) and the
-//! runtime table that BP003 consults for a deprecated `runs.using`. Both live
-//! here rather than in `action_metadata.zig` because that module sits above
-//! the step rules in the import graph (it drives composite step linting), and
-//! a shared table there would close the cycle.
+//! action's own metadata, so it hosts DEP004 (input validation), the runtime
+//! table that BP003 consults for a deprecated `runs.using`, and the composite
+//! `run:` / github-script bodies SEC002 reads for `inputs.*` interpolation
+//! (#536). They live here rather than in `action_metadata.zig` because that
+//! module sits above the step rules in the import graph (it drives composite
+//! step linting), and a shared table there would close the cycle.
 //!
 //! Everything is read from disk, so the store stays useful under
 //! `--quick` / `--offline`: those flags only disable network access.
@@ -69,6 +70,10 @@ pub const Input = struct {
 pub const Meta = struct {
     using: ?[]const u8 = null,
     inputs: []const Input = &.{},
+    /// Bodies of composite `run:` steps and `actions/github-script` `script:`
+    /// inputs. SEC002 scans these for `${{ inputs.<name> }}` (#536). Empty
+    /// when the action is not composite or has no such steps.
+    script_bodies: []const []const u8 = &.{},
 };
 
 pub const Resolution = union(enum) {
@@ -184,6 +189,13 @@ fn parseMeta(alloc: Allocator, source: []const u8) ?Meta {
             if (runs.mapping.get("using")) |using| {
                 if (using == .scalar) meta.using = using.scalar.value;
             }
+            if (isCompositeUsing(meta.using)) {
+                if (runs.mapping.get("steps")) |steps| {
+                    if (steps == .sequence) {
+                        meta.script_bodies = parseCompositeScriptBodies(alloc, steps.sequence);
+                    }
+                }
+            }
         }
     }
 
@@ -214,6 +226,55 @@ fn parseInputs(alloc: Allocator, m: yaml_types.Mapping) []const Input {
 
 fn isYamlTrue(value: []const u8) bool {
     return std.ascii.eqlIgnoreCase(value, "true");
+}
+
+fn isCompositeUsing(using: ?[]const u8) bool {
+    const value = using orelse return false;
+    return std.ascii.eqlIgnoreCase(value, "composite");
+}
+
+/// `run:` bodies and github-script `script:` inputs, in source order. Nested
+/// `uses: ./other` composites are not followed: SEC002's hop is one (#536).
+fn parseCompositeScriptBodies(alloc: Allocator, seq: yaml_types.Sequence) []const []const u8 {
+    var count: usize = 0;
+    for (seq.items) |item| {
+        if (compositeStepScriptBody(item) != null) count += 1;
+    }
+    if (count == 0) return &.{};
+    const out = alloc.alloc([]const u8, count) catch return &.{};
+    var i: usize = 0;
+    for (seq.items) |item| {
+        if (compositeStepScriptBody(item)) |body| {
+            out[i] = body;
+            i += 1;
+        }
+    }
+    return out;
+}
+
+fn compositeStepScriptBody(item: yaml_types.Node) ?[]const u8 {
+    const map = switch (item) {
+        .mapping => |m| m,
+        else => return null,
+    };
+    if (map.getScalar("run")) |run_body| return run_body;
+    const uses_raw = map.getScalar("uses") orelse return null;
+    if (!isGithubScriptRef(uses_raw)) return null;
+    const with_node = map.get("with") orelse return null;
+    const with_map = switch (with_node) {
+        .mapping => |m| m,
+        else => return null,
+    };
+    return with_map.getScalar("script");
+}
+
+fn isGithubScriptRef(raw: []const u8) bool {
+    const ref = workflow_types.ActionRef.parse(raw);
+    if (ref.path != null) return false;
+    const owner = ref.owner orelse return false;
+    const repo = ref.repo orelse return false;
+    return std.ascii.eqlIgnoreCase(owner, "actions") and
+        std.ascii.eqlIgnoreCase(repo, "github-script");
 }
 
 fn report(
@@ -529,6 +590,77 @@ test "DEP004: declared inputs are accepted" {
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "local action meta records composite run bodies (#536)" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write("echo-action/action.yml",
+        \\name: echo
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - run: echo "${{ inputs.title }}"
+        \\      shell: bash
+        \\
+    );
+
+    switch (resolve("./echo-action")) {
+        .found => |meta| {
+            try testing.expectEqual(@as(usize, 1), meta.script_bodies.len);
+            try testing.expect(std.mem.find(u8, meta.script_bodies[0], "inputs.title") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "local action meta records github-script bodies (#536)" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write("script-action/action.yml",
+        \\name: script
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/github-script@v7
+        \\      with:
+        \\        script: console.log("${{ inputs.title }}")
+        \\
+    );
+
+    switch (resolve("./script-action")) {
+        .found => |meta| {
+            try testing.expectEqual(@as(usize, 1), meta.script_bodies.len);
+            try testing.expect(std.mem.find(u8, meta.script_bodies[0], "inputs.title") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "a node action has no script bodies (#536)" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write("js-action/action.yml",
+        \\name: js
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: node24
+        \\  main: index.js
+        \\
+    );
+
+    switch (resolve("./js-action")) {
+        .found => |meta| try testing.expectEqual(@as(usize, 0), meta.script_bodies.len),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "DEP004: required input without a default must be passed" {

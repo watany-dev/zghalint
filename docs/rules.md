@@ -38,7 +38,7 @@ Detect security vulnerabilities in workflow definitions.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA |
-| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script` `script:`, `azure/cli` `inlineScript:`, and similar) risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
+| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block, a code-executing action input (`actions/github-script` `script:`, `azure/cli` `inlineScript:`, and similar), or a local composite action's interpolated `with:` input risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
 | SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout or a git/gh fetch of PR head is dangerous |
@@ -172,7 +172,7 @@ block is injection when it is written to `$GITHUB_ENV` too.
   whoever expands the output, so only the later step that expands it is
   reported.
 
-Taint then travels one hop further, through the two indirections that otherwise
+Taint then travels one hop further, through the indirections that otherwise
 look like the recommended fix:
 
 - `env.<KEY>` — an `env:` entry bound to an untrusted value taints the
@@ -185,6 +185,10 @@ look like the recommended fix:
   tainted `steps.<id>.outputs.*` (or to an untrusted context directly). The set
   of exporting jobs is closed by iteration, so a chain of jobs is followed
   whatever order they are declared in.
+- a local composite `uses: ./...` — an untrusted `with:` value is reported on
+  the caller when that action's `runs.steps` interpolates `${{ inputs.<name> }}`
+  in a `run:` body or an `actions/github-script` `script:` (#536). Remote
+  `owner/repo@ref` actions are not opened.
 
 The fixed table covers every payload field an attacker authors, not only the
 obvious ones: alongside issue / PR / comment free text and commit messages it
