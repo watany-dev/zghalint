@@ -604,17 +604,41 @@ const TaintedNames = struct {
     }
 };
 
+/// `owner/repo` of actions whose outputs are derived from attacker-authored
+/// content (PR file names, head branch, a looked-up comment). SEC002 treats
+/// `steps.<id>.outputs.*` of a step that `uses:` one of these as untrusted
+/// (#535). The formal extractor reads this table as `untrusted_output_actions`.
+const untrusted_output_actions = [_][]const u8{
+    "tj-actions/changed-files",
+    "step-security/changed-files",
+    "jitterbit/get-changed-files",
+    "tj-actions/branch-names",
+    "peter-evans/find-comment",
+};
+
+fn stepProducesUntrustedActionOutput(step: *const Step) bool {
+    const ref = step.uses orelse return false;
+    for (untrusted_output_actions) |name| {
+        if (isNamedAction(ref, name)) return true;
+    }
+    return false;
+}
+
 /// A step taints its outputs when the command that writes `$GITHUB_OUTPUT`
 /// carries an untrusted value: interpolated on the same line, or read back from
 /// an `env:` entry that holds one. Binding to `env:` is what makes the capturing
 /// step itself safe, so the taint has to travel to whoever expands the output
 /// instead (#273).
 ///
+/// An action listed in `untrusted_output_actions` taints every output of that
+/// step: the value never appears as a `${{ github.* }}` context (#535).
+///
 /// Only the writing line is read, so a value the step captured for some other
 /// purpose does not taint an unrelated output. A write spread over several lines
 /// (a heredoc) is not followed.
 fn stepTaintsItsOutputs(step: *const Step, table: ContextTable) bool {
     if (step.id == null) return false;
+    if (stepProducesUntrustedActionOutput(step)) return true;
     const run_body = step.run orelse return false;
 
     var lines = std.mem.splitScalar(u8, run_body, '\n');
@@ -4011,6 +4035,36 @@ test "SEC002: untrusted step that writes no output does not taint (no false posi
         .env = env,
         .run = "echo \"$TITLE\" > /tmp/title",
     });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: tj-actions/changed-files outputs are untrusted (#535)" {
+    const steps = [_]Step{
+        .{ .id = "s", .uses = ActionRef.parse("tj-actions/changed-files@v1") },
+        .{ .run = "echo \"${{ steps.s.outputs.all_changed_files }}\"" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: peter-evans/find-comment outputs are untrusted (#535)" {
+    const steps = [_]Step{
+        .{ .id = "s", .uses = ActionRef.parse("peter-evans/find-comment@v1") },
+        .{ .run = "echo \"${{ steps.s.outputs.comment-body }}\"" },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: an unrelated action's outputs stay trusted (#535)" {
+    const steps = [_]Step{
+        .{ .id = "s", .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "echo \"${{ steps.s.outputs.ref }}\"" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }

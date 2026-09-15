@@ -30,6 +30,11 @@ each ID means.
   `appleboy/ssh-action` `script`, and `jannekem/run-python-script-action`
   `script`. Shell inputs get the same `$VAR` env-binding fix as `run:`;
   python has no shell spelling so it stays a diagnostic (#534).
+- SEC002 treats outputs of `tj-actions/changed-files`,
+  `step-security/changed-files`, `jitterbit/get-changed-files`,
+  `tj-actions/branch-names`, and `peter-evans/find-comment` as attacker
+  text, so interpolating `steps.<id>.outputs.*` of those steps into `run:`
+  is script injection (#535).
 
 ### Fixed
 
