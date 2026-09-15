@@ -30,11 +30,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          # このワークフローが公開する成果物は、プルリクエストが汚染しうる
-          # キャッシュから出てきてはならない (zizmor: cache-poisoning)。
-          use-cache: false
+        uses: ./.github/actions/setup-zig
 
       - name: Build
         run: zig build
@@ -112,11 +108,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          # このワークフローが公開する成果物は、プルリクエストが汚染しうる
-          # キャッシュから出てきてはならない (zizmor: cache-poisoning)。
-          use-cache: false
+        uses: ./.github/actions/setup-zig
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}

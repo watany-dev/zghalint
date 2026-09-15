@@ -1,0 +1,27 @@
+name: Set up Zig
+description: >
+  Install Zig from ziglang.org. Empty `version` reads
+  `minimum_zig_version` from build.zig.zon. Replaces mlugg/setup-zig,
+  which still targets the Node 20 action runtime GitHub removes on
+  2026-09-23.
+inputs:
+  version:
+    description: >
+      Zig version to install. Leave empty to use minimum_zig_version
+      from build.zig.zon.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Install Zig
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        PY="$(command -v python3 || command -v python || true)"
+        if [ -z "$PY" ]; then
+          echo "::error::python3 is required to install Zig"
+          exit 1
+        fi
+        "$PY" "$GITHUB_WORKSPACE/scripts/install-zig.py"

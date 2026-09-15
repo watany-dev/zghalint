@@ -10,7 +10,7 @@
 
 | 参照元 | 読み方 |
 |---|---|
-| CI / Release ワークフロー | `mlugg/setup-zig` に `version:` を渡さない。省略時に `build.zig.zon` の `minimum_zig_version` が使われる |
+| CI / Release ワークフロー | `.github/actions/setup-zig` に `version:` を渡さない。省略時に `build.zig.zon` の `minimum_zig_version` が使われる |
 | `scripts/setup-zig.sh` | `build.zig.zon` から `minimum_zig_version` を `sed` で読み出す |
 
 手順:
@@ -21,10 +21,15 @@
    - `README.md` の "Requires **Zig X.Y.Z** or later"
    - `AGENTS.md` の Prerequisites
 
-`mlugg/setup-zig` を更新する際は、`version` 省略時のフォールバック挙動
-（`build.zig.zon` の `minimum_zig_version` を読む）が維持されているか確認する。
-挙動が変わった場合はワークフローに `version:` を戻すのではなく、
-`build.zig.zon` を読むステップを 1 つ足して各ジョブへ渡す。
+`mlugg/setup-zig` は `runs.using: node20` のままで、GitHub は 2026-09-23 に
+そのランタイムをランナーから外す。CI / Release は Node を使わない
+`.github/actions/setup-zig`（`scripts/install-zig.py`）に置き換えた。
+`version` 省略時のフォールバックは以前と同じく `build.zig.zon` の
+`minimum_zig_version` である。インストーラを変えるときはその読み取りが
+維持されているか確認する。挙動が変わった場合はワークフローに `version:`
+を戻すのではなく、`build.zig.zon` を読むステップを 1 つ足して各ジョブへ渡す。
+ワークフローからの参照は checkout 後の `uses: ./.github/actions/setup-zig`
+にする。`$/` は actionlint 1.7.12 が ref 欠落として落とす。
 
 ### 0.16 移行時の選択 (#398)
 
