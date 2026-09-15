@@ -30,7 +30,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: $/.github/actions/setup-zig
+        uses: ./.github/actions/setup-zig
 
       - name: Build
         run: zig build
@@ -108,7 +108,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: $/.github/actions/setup-zig
+        uses: ./.github/actions/setup-zig
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}

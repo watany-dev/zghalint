@@ -6,3 +6,7 @@ rules:
       # action を実行することが目的なので `uses: ./` が正しい。zizmor が
       # 勧める自己参照構文はタグ/ブランチ解決を伴い、この検証の意味を変える。
       - ci.yml
+      # setup-zig も checkout 後の `./` を使う。`$/` は GitHub / zizmor が
+      # 勧めるが、ピンしている actionlint 1.7.12 は ref 欠落として落とす。
+      - bench.yml
+      - release.yml
