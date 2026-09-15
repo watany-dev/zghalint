@@ -1,6 +1,6 @@
-# zghalint:expect SEC002 SEC001
-# zghalint:forbid SEC005
-# checkout v7's gate does not cover a shell `git checkout` of PR head.
+# zghalint:expect SEC002 SEC001 SEC005
+# A shell `git checkout` of PR head is the same untrusted fetch as
+# `actions/checkout` `with.ref`; checkout v7's gate does not cover it (#532).
 name: ga9 shell git checkout
 on:
   pull_request_target:

@@ -832,23 +832,26 @@ fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
             list: *DiagnosticList,
             gate_covers: bool,
             pub fn visit(self: @This(), step: *const Step) void {
-                const input = checkoutCodeInput(step, isPRHeadValue) orelse return;
-                if (forkGuarded(self.list.allocator, self.job, step, pull_request_head_anchors)) return;
-                const kind: PrHeadKind = if (self.gate_covers) switch (checkout_capability.unsafePrCheckout(step)) {
-                    .blocked => .refused,
-                    .bypassed => .bypassed,
-                    .unknown => .exploit,
-                } else .exploit;
-                self.list.append(.{
-                    .rule_id = "SEC005",
-                    .severity = .@"error",
-                    .message = privilegedPRHeadMessageKind(self.wf, kind).?,
-                    .span = withAnchor(step, input.key).whole(),
-                    .fix_hint = switch (kind) {
-                        .refused => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
-                        .exploit, .bypassed => "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
-                    },
-                }) catch return;
+                if (checkoutCodeInput(step, isPRHeadValue)) |input| {
+                    if (forkGuarded(self.list.allocator, self.job, step, pull_request_head_anchors)) return;
+                    const kind: PrHeadKind = if (self.gate_covers) switch (checkout_capability.unsafePrCheckout(step)) {
+                        .blocked => .refused,
+                        .bypassed => .bypassed,
+                        .unknown => .exploit,
+                    } else .exploit;
+                    self.list.append(.{
+                        .rule_id = "SEC005",
+                        .severity = .@"error",
+                        .message = privilegedPRHeadMessageKind(self.wf, kind).?,
+                        .span = withAnchor(step, input.key).whole(),
+                        .fix_hint = switch (kind) {
+                            .refused => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
+                            .exploit, .bypassed => "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
+                        },
+                    }) catch return;
+                    return;
+                }
+                reportShellFetchIf(self.wf, self.job, step, .sec005, self.list);
             }
         };
         workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list, .gate_covers = gate_covers });
@@ -904,6 +907,7 @@ fn isWorkflowRunValue(value: []const u8) bool {
         "github.event.workflow_run.head_",
         "github.event.workflow_run.display_title",
         "github.event.workflow_run.pull_requests",
+        "github.event.workflow_run.id",
     });
 }
 
@@ -915,6 +919,170 @@ fn containsAnyMarker(value: []const u8, markers: []const []const u8) bool {
         if (std.mem.find(u8, value, marker) != null) return true;
     }
     return false;
+}
+
+/// Contexts a `git` / `gh` fetch inside `run:` may not take (#532). Prefix
+/// table so the formal extractor (`shell_fetch_contexts`) sees the same set
+/// the rules scan; trigger ownership still splits SEC005 / SEC009 / SEC021.
+const shell_fetch_contexts = [_][]const u8{
+    "github.event.pull_request.head",
+    "github.event.pull_request.merge_commit_sha",
+    "github.event.pull_request.number",
+    "github.event.number",
+    "github.head_ref",
+    "github.event.issue.number",
+    "github.event.workflow_run.id",
+    "github.event.workflow_run.head_branch",
+    "github.event.workflow_run.head_sha",
+    "github.event.workflow_run.head_repository",
+    "github.event.workflow_run.pull_requests",
+    "inputs",
+    "github.event.inputs",
+    "github.event.client_payload",
+};
+
+const shell_fetch_commands = [_][]const []const u8{
+    &.{ "git", "fetch" },
+    &.{ "git", "checkout" },
+    &.{ "git", "clone" },
+    &.{ "git", "pull" },
+    &.{ "gh", "pr", "checkout" },
+    &.{ "gh", "run", "download" },
+};
+
+const ShellFetchOwner = enum { sec005, sec009, sec021 };
+
+fn isShellBreak(c: u8) bool {
+    return switch (c) {
+        ' ', '\t', '\n', '\r', '"', '\'', '`', '|', '&', ';', '<', '>', '(', ')', '{', '}', '=', ',' => true,
+        else => false,
+    };
+}
+
+fn isShellWordAt(s: []const u8, i: usize, word: []const u8) bool {
+    if (i > 0 and !isShellBreak(s[i - 1])) return false;
+    if (!std.mem.startsWith(u8, s[i..], word)) return false;
+    const after = i + word.len;
+    return after >= s.len or isShellBreak(s[after]);
+}
+
+fn containsSequentialShellWords(s: []const u8, tokens: []const []const u8) bool {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (!isShellWordAt(s, i, tokens[0])) continue;
+        var j = i + tokens[0].len;
+        const rest = tokens[1..];
+        for (rest) |tok| {
+            const next = std.mem.findNonePos(u8, s, j, " \t") orelse break;
+            if (next == j) break;
+            if (!isShellWordAt(s, next, tok)) break;
+            j = next + tok.len;
+        } else return true;
+    }
+    return false;
+}
+
+fn isShellFetchCommand(run: []const u8) bool {
+    for (shell_fetch_commands) |tokens| {
+        if (containsSequentialShellWords(run, tokens)) return true;
+    }
+    return false;
+}
+
+fn envLookup(step: *const Step, job: *const Job, wf: *const Workflow, key: []const u8) ?[]const u8 {
+    const maps = [_]?workflow_types.StringMap{ step.env, job.env, wf.env };
+    for (maps) |maybe| {
+        const map = maybe orelse continue;
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, key)) return entry.value_ptr.*;
+        }
+    }
+    return null;
+}
+
+fn shellFetchUntrustedValue(run: []const u8, step: *const Step, job: *const Job, wf: *const Workflow) ?[]const u8 {
+    const prefixes: ContextTable = .{ .prefix = &shell_fetch_contexts };
+    if (hasUntrustedExpr(run, prefixes)) return run;
+
+    var names: TaintedNames = .{ .buf = undefined };
+    addTaintedEnvKeys(&names, wf.env, prefixes);
+    addTaintedEnvKeys(&names, job.env, prefixes);
+    addTaintedEnvKeys(&names, step.env, prefixes);
+    if (names.len == 0) return null;
+
+    if (hasUntrustedExpr(run, .{ .prefix = &.{}, .tainted_env = names.slice() })) {
+        for (names.slice()) |key| {
+            const one = [_][]const u8{key};
+            if (hasUntrustedExpr(run, .{ .prefix = &.{}, .tainted_env = &one })) return envLookup(step, job, wf, key);
+        }
+    }
+    for (names.slice()) |key| {
+        if (referencesShellVar(run, key)) return envLookup(step, job, wf, key);
+    }
+    return null;
+}
+
+fn shellFetchOwnedBySec021(wf: *const Workflow, value: []const u8) bool {
+    if (ownedByNeighbourRule(wf, value)) return false;
+    const contexts = untrustedRefContexts(wf);
+    if (containsUntrustedCheckoutContext(value, contexts.slice())) return true;
+    // `git fetch` of caller-supplied `inputs.*` picks the code even when
+    // #219 leaves the same value out of `actions/checkout` `with:` (#532).
+    if ((wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) and
+        hasUntrustedExpr(value, .{ .prefix = &bare_inputs_contexts })) return true;
+    return false;
+}
+
+fn reportShellFetchIf(
+    wf: *const Workflow,
+    job: *const Job,
+    step: *const Step,
+    owner: ShellFetchOwner,
+    list: *DiagnosticList,
+) void {
+    const run_body = step.run orelse return;
+    if (!isShellFetchCommand(run_body)) return;
+    const value = shellFetchUntrustedValue(run_body, step, job, wf) orelse return;
+    switch (owner) {
+        .sec005 => {
+            if (!isPRHeadValue(value)) return;
+            if (forkGuarded(list.allocator, job, step, pull_request_head_anchors)) return;
+            list.append(.{
+                .rule_id = "SEC005",
+                .severity = .@"error",
+                .message = privilegedPRHeadMessageKind(wf, .exploit).?,
+                .span = spans.runAnchor(step).whole(),
+                .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
+            }) catch return;
+        },
+        .sec009 => {
+            if (!isWorkflowRunValue(value)) return;
+            if (forkGuarded(list.allocator, job, step, workflow_run_anchors)) return;
+            if (hasPrivilegedPRHeadTrigger(wf) and isPRHeadValue(value)) return;
+            list.append(.{
+                .rule_id = "SEC009",
+                .severity = .@"error",
+                .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                .span = spans.runAnchor(step).whole(),
+                .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+            }) catch return;
+        },
+        .sec021 => {
+            if (!shellFetchOwnedBySec021(wf, value)) return;
+            const chatops = std.mem.find(u8, value, "github.event.issue.number") != null;
+            list.append(.{
+                .rule_id = "SEC021",
+                .severity = .@"error",
+                .message = if (chatops)
+                    "a git/gh fetch in run: resolves its ref from the issue number, so the commenting user picks which pull request's code runs"
+                else
+                    "a git/gh fetch in run: resolves its ref from untrusted context, letting the triggering user pick the code that runs",
+                .span = spans.runAnchor(step).whole(),
+                .fix_hint = "check out a ref the repository controls, or validate the value against an allowlist before fetching it",
+            }) catch return;
+        },
+    }
 }
 
 /// SEC006 reports a weak gate, not code execution: the expression engine only
@@ -1253,18 +1421,19 @@ fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
 
 fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
     const contexts = untrustedRefContexts(wf);
-    if (contexts.len == 0) return;
 
     for (wf.jobs) |*job| {
         const Ctx = struct {
             wf: *const Workflow,
+            job: *const Job,
             contexts: []const []const u8,
             list: *DiagnosticList,
             pub fn visit(self: @This(), step: *const Step) void {
-                checkStepCheckoutRefs(self.wf, step, self.contexts, self.list);
+                if (self.contexts.len > 0) checkStepCheckoutRefs(self.wf, step, self.contexts, self.list);
+                reportShellFetchIf(self.wf, self.job, step, .sec021, self.list);
             }
         };
-        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .contexts = contexts.slice(), .list = list });
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .contexts = contexts.slice(), .list = list });
     }
 }
 
@@ -1314,25 +1483,28 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
             job: *const Job,
             list: *DiagnosticList,
             pub fn visit(self: @This(), step: *const Step) void {
-                const input = checkoutCodeInput(step, isWorkflowRunValue) orelse return;
-                if (forkGuarded(self.list.allocator, self.job, step, workflow_run_anchors)) return;
-                if (hasPrivilegedPRHeadTrigger(self.wf) and checkoutCodeInput(step, isPRHeadValue) != null) return;
-                const kind = checkout_capability.unsafePrCheckout(step);
-                const message: []const u8 = switch (kind) {
-                    .blocked => "workflow_run job requests a checkout of a triggering-workflow ref that this actions/checkout version refuses for fork pull requests at runtime",
-                    .bypassed => "dangerous: workflow_run job sets allow-unsafe-pr-checkout and checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                    .unknown => "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                };
-                self.list.append(.{
-                    .rule_id = "SEC009",
-                    .severity = .@"error",
-                    .message = message,
-                    .span = withAnchor(step, input.key).whole(),
-                    .fix_hint = switch (kind) {
-                        .blocked => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
-                        .bypassed, .unknown => "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
-                    },
-                }) catch return;
+                if (checkoutCodeInput(step, isWorkflowRunValue)) |input| {
+                    if (forkGuarded(self.list.allocator, self.job, step, workflow_run_anchors)) return;
+                    if (hasPrivilegedPRHeadTrigger(self.wf) and checkoutCodeInput(step, isPRHeadValue) != null) return;
+                    const kind = checkout_capability.unsafePrCheckout(step);
+                    const message: []const u8 = switch (kind) {
+                        .blocked => "workflow_run job requests a checkout of a triggering-workflow ref that this actions/checkout version refuses for fork pull requests at runtime",
+                        .bypassed => "dangerous: workflow_run job sets allow-unsafe-pr-checkout and checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                        .unknown => "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                    };
+                    self.list.append(.{
+                        .rule_id = "SEC009",
+                        .severity = .@"error",
+                        .message = message,
+                        .span = withAnchor(step, input.key).whole(),
+                        .fix_hint = switch (kind) {
+                            .blocked => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
+                            .bypassed, .unknown => "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+                        },
+                    }) catch return;
+                    return;
+                }
+                reportShellFetchIf(self.wf, self.job, step, .sec009, self.list);
             }
         };
         workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list });
@@ -3132,7 +3304,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC005",
         .name = "dangerous-pr-target",
-        .description = "pull_request_target with checkout of PR head is dangerous",
+        .description = "pull_request_target with checkout or a git/gh fetch of PR head is dangerous",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkDangerousPRTarget,
@@ -3165,7 +3337,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC009",
         .name = "workflow-run-untrusted-checkout",
-        .description = "workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks",
+        .description = "workflow_run job checks out or git/gh-fetches a ref from the triggering workflow, which may allow arbitrary code execution from forks",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkWorkflowRunUntrustedCheckout,
@@ -3173,7 +3345,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC021",
         .name = "untrusted-checkout-ref",
-        .description = "actions/checkout ref/repository resolved from untrusted context on dispatch, issue, comment or discussion triggers",
+        .description = "actions/checkout or a git/gh fetch in run: resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkUntrustedCheckoutRef,
@@ -3504,7 +3676,7 @@ test "SEC002: shell git checkout is not silenced by checkout@v7" {
     var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC002"));
-    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
 }
 
 test "SEC002: free text a fork owner or a commit author writes (#313)" {
@@ -4342,6 +4514,64 @@ test "SEC005: non-PR-target with checkout (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
 
+test "SEC005: git fetch of PR head SHA (#532)" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "git fetch origin ${{ github.event.pull_request.head.sha }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git clone of PR head clone_url (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git clone ${{ github.event.pull_request.head.repo.clone_url }} src" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git fetch of PR head SHA via env var (#532)" {
+    var env: workflow_types.StringMap = .empty;
+    env.put(testing.allocator, "SHA", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer env.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .run = "git fetch origin $SHA && git checkout FETCH_HEAD", .env = env },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: echo of PR head SHA is not a fetch (#532)" {
+    const steps = [_]Step{
+        .{ .run = "echo ${{ github.event.pull_request.head.sha }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git checkout-index is not a fetch (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git checkout-index ${{ github.event.pull_request.head.sha }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git and fetch in different commands is not a fetch (#532)" {
+    const steps = [_]Step{
+        .{ .run = "echo git && fetch origin ${{ github.event.pull_request.head.sha }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
 test "SEC009: workflow_run with checkout of workflow_run head_sha" {
     var with: workflow_types.StringMap = .empty;
     with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
@@ -4431,6 +4661,25 @@ test "SEC009: workflow_run checkout without ref (no false positive)" {
     var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: git fetch of workflow_run head_sha (#532)" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "git fetch origin ${{ github.event.workflow_run.head_sha }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: gh run download of workflow_run id (#532)" {
+    const steps = [_]Step{
+        .{ .run = "gh run download ${{ github.event.workflow_run.id }} -n build" },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
 }
 
 test "SEC009: non-workflow_run trigger with workflow_run ref (no false positive)" {
@@ -4805,6 +5054,44 @@ test "SEC021: workflow_run defers to SEC009" {
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC009"));
     try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: gh pr checkout of issue.number (#532)" {
+    const steps = [_]Step{
+        .{ .run = "gh pr checkout ${{ github.event.issue.number }}" },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "chatops", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+    const d = findDiagnostic(&list, "SEC021").?;
+    try testing.expect(std.mem.find(u8, d.message, "issue number") != null);
+}
+
+test "SEC021: git fetch of workflow_dispatch inputs (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git fetch origin ${{ inputs.foo }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(workflow_dispatch_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: git fetch of workflow_call inputs (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git fetch origin ${{ inputs.foo }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(workflow_call_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: git clone of repository_dispatch client_payload (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git clone https://github.com/${{ github.event.client_payload.foo }} src" },
+    };
+    var list = runJobOn(repository_dispatch_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
 }
 
 fn sec022JobCondition(cond: []const u8) ?Severity {

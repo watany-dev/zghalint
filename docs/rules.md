@@ -41,11 +41,11 @@ Detect security vulnerabilities in workflow definitions.
 | SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script`'s `with.script`) risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
-| SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout of PR head is dangerous |
+| SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout or a git/gh fetch of PR head is dangerous |
 | SEC006 | untrusted-input-condition | warning | Attacker-authored text used as a gate in an `if:` condition expression |
 | SEC007 | missing-permissions | info | Workflow should define top-level permissions |
 | SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数として読む） |
-| SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks |
+| SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out or git/gh-fetches a ref from the triggering workflow, which may allow arbitrary code execution from forks |
 | SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit`（ローカル呼び先が `workflow_call.secrets` を宣言しているときは `--fix-unsafe` で明示マップへ展開） |
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |
 | SEC012 | unredacted-secrets | error | Secrets processed via `toJSON()`/`fromJSON()` bypass masking and may be exposed in logs |
@@ -57,7 +57,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists credentials by default so later steps can still use the token |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:`（`--fix-unsafe` で `run:` 中の参照を step の `env:` に束縛する） |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
-| SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
+| SEC021 | untrusted-checkout-ref | error | `actions/checkout` or a git/gh fetch in `run:` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 | SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
@@ -223,11 +223,17 @@ the explicit bypass and keeps the strong security warning. An unresolved SHA,
 or a checkout whose metadata does not declare the input, keeps the original
 exploit message. The gate does not run on `pull_request_review` /
 `pull_request_review_comment`, so those triggers stay on the exploit wording
-even with checkout v7. A `run:` `git checkout` of the same ref is SEC002's
-sink and is never silenced by the action's gate.
+even with checkout v7. A `run:` `git checkout` / `git fetch` / `git clone` /
+`git pull` / `gh pr checkout` / `gh run download` of the same untrusted ref is
+the same finding: SEC005 / SEC009 / SEC021 report it at the same severity as
+`actions/checkout` `with:`. The action's `allow-unsafe-pr-checkout` gate does
+not apply to a shell fetch, so those stay on the exploit wording. A SHA,
+number, repository name, `clone_url`, or `workflow_run.id` carries no shell
+metacharacters, so SEC002 does not cover this path (#532).
 
-SEC009 reports `github.event.workflow_run.head_*`, `.display_title` and
-`.pull_requests[*].*`. The last one keeps SEC009 in step with SEC002, which
+SEC009 reports `github.event.workflow_run.head_*`, `.display_title`,
+`.pull_requests[*].*`, and `.id`. `.id` is the handle `gh run download`
+takes. `pull_requests` keeps SEC009 in step with SEC002, which
 already treats `pull_requests.*.head.ref` as untrusted; GitHub empties the
 array for fork-triggered runs, so the reachable case is a branch name a
 same-repository PR author picks.
@@ -248,8 +254,8 @@ has no such gate: the triggers it owns (`workflow_dispatch`, `issue_comment`,
 
 ### SEC021 vs. SEC005 / SEC009
 
-All three report the same shape — `actions/checkout` fed a ref the attacker
-picks — split by trigger. SEC005 owns the privileged PR-head triggers above,
+All three report the same shape — `actions/checkout` `with:` or a git/gh fetch
+in `run:` fed a ref the attacker picks — split by trigger. SEC005 owns the privileged PR-head triggers above,
 SEC009 owns
 `workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
