@@ -1,7 +1,7 @@
 # zghalint:expect ACT002@6
 # zghalint:forbid ACT003
 name: Deprecated runtime
-description: Node 20 is still accepted but GitHub will remove it
+description: Node 20 was removed from the runners on 2026-09-23
 runs:
   using: node20
   main: dist/index.js

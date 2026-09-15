@@ -80,15 +80,19 @@ const DeprecatedAction = struct {
     replacement: []const u8,
 };
 
+/// The oldest major still considered acceptable, and what to move to. Both
+/// sides are the first major that runs a supported runtime: recommending a
+/// `node20` major would contradict the runtime half below, which now reports
+/// `node20` as retired (#548).
 const deprecated_actions = [_]DeprecatedAction{
-    .{ .action = "actions/checkout", .deprecated_below = 4, .replacement = "v4" },
-    .{ .action = "actions/setup-node", .deprecated_below = 4, .replacement = "v4" },
-    .{ .action = "actions/setup-python", .deprecated_below = 5, .replacement = "v5" },
-    .{ .action = "actions/setup-go", .deprecated_below = 4, .replacement = "v5" },
-    .{ .action = "actions/setup-java", .deprecated_below = 4, .replacement = "v4" },
-    .{ .action = "actions/upload-artifact", .deprecated_below = 4, .replacement = "v4" },
-    .{ .action = "actions/download-artifact", .deprecated_below = 4, .replacement = "v4" },
-    .{ .action = "actions/cache", .deprecated_below = 3, .replacement = "v4" },
+    .{ .action = "actions/checkout", .deprecated_below = 5, .replacement = "v5" },
+    .{ .action = "actions/setup-node", .deprecated_below = 5, .replacement = "v5" },
+    .{ .action = "actions/setup-python", .deprecated_below = 6, .replacement = "v6" },
+    .{ .action = "actions/setup-go", .deprecated_below = 6, .replacement = "v6" },
+    .{ .action = "actions/setup-java", .deprecated_below = 5, .replacement = "v5" },
+    .{ .action = "actions/upload-artifact", .deprecated_below = 6, .replacement = "v6" },
+    .{ .action = "actions/download-artifact", .deprecated_below = 7, .replacement = "v7" },
+    .{ .action = "actions/cache", .deprecated_below = 5, .replacement = "v5" },
 };
 
 fn buildDeprecatedActionFix(
@@ -143,9 +147,9 @@ fn buildDeprecatedActionFix(
 /// A local action's runtime is read from its `action.yml` on disk; a popular
 /// remote action's comes from the embedded metadata table (`popular_actions`).
 /// A retired runtime fails the run outright, so that verdict wins and the
-/// version-table `@vN` rewrite is attached to it when one exists. An ending
-/// runtime (`node20`) is a warning and still falls through to the behind-major
-/// half, which can name a newer major that has already left `node20`.
+/// version-table `@vN` rewrite is attached to it when one exists. A runtime
+/// whose removal is only announced is a warning and still falls through to the
+/// behind-major half, which can name a newer major that has already left it.
 fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
     const action_ref = step.uses orelse return;
     if (action_ref.is_docker) return;
@@ -192,8 +196,8 @@ fn checkDeprecatedAction(step: *const Step, diag_list: *DiagnosticList) void {
 /// the newest known major needs no extra data and covers exactly that hole.
 ///
 /// An action the curated table names is left to it: `deprecated_actions` states
-/// the oldest major still considered acceptable (`actions/checkout@v4` is fine
-/// even though the table knows v5), and contradicting that here would turn a
+/// the oldest major still considered acceptable (`actions/checkout@v5` is fine
+/// even though the table knows v7), and contradicting that here would turn a
 /// curated verdict into a nag. Severity and fix safety are argued in
 /// `docs/adr/0015-bp003-behind-current-major.md`.
 fn reportBehindCurrentMajor(
@@ -245,8 +249,8 @@ fn isCuratedAction(action_ref: ActionRef) bool {
 /// The action itself has to move off the runtime, but the caller can often get
 /// there by upgrading: when the version table names a replacement major, the
 /// same `@vN` rewrite BP003's other half would have produced is attached here.
-/// node20 still runs until 2026-09-23, so the ending path is a warning with no
-/// `runs.using` rewrite (#437).
+/// A runtime whose removal is only announced (none at present) is a warning
+/// with no `runs.using` rewrite (#437).
 fn reportRemoteRuntime(
     step: *const Step,
     action_ref: ActionRef,
@@ -304,8 +308,8 @@ fn replacementVersion(action_ref: ActionRef) ?[]const u8 {
 
 /// A retired runtime cannot be fixed from the caller's side — the action's own
 /// `action.yml` has to change — so this half reports without a fix. Severity is
-/// `error` for runtimes GitHub has already stopped (`node12` / `node16`) and
-/// `warning` for `node20`, which still runs until 2026-09-23.
+/// `error` for runtimes GitHub has already stopped (`node12` / `node16` /
+/// `node20`) and `warning` for one whose removal is only announced.
 fn checkDeprecatedRuntime(step: *const Step, raw: []const u8, diag_list: *DiagnosticList) void {
     const resolution = local_action.resolve(raw);
     if (resolution != .found) return;
@@ -989,19 +993,19 @@ test "BP003: no warning for current version" {
     try std.testing.expectEqual(@as(usize, 0), diags.len());
 }
 
-test "BP003: node20 is a warning, not an error" {
+test "BP003: node20 is an error now that GitHub retired it (#548)" {
     const step = Step{ .uses = ActionRef.parse("actions/checkout@v4") };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqualStrings("BP003", diags.get(0).rule_id);
-    try std.testing.expect(diags.get(0).severity == .warning);
+    try std.testing.expect(diags.get(0).severity == .@"error");
     try std.testing.expect(std.mem.find(u8, diags.get(0).message, "node20") != null);
-    try std.testing.expect(diags.get(0).fix == null);
+    try std.testing.expect(std.mem.find(u8, diags.get(0).message, "retired") != null);
 }
 
-test "BP003: ending runtime still reports a newer major (#437)" {
+test "BP003: a retired runtime is the whole verdict, with no behind-major follow-up" {
     const step = Step{
         .uses = ActionRef.parse("actions/github-script@v7"),
         .uses_value_end_byte = 25,
@@ -1010,14 +1014,9 @@ test "BP003: ending runtime still reports a newer major (#437)" {
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
     checkDeprecatedAction(&step, &diags);
-    try std.testing.expectEqual(@as(usize, 2), diags.len());
-    try std.testing.expect(diags.get(0).severity == .warning);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expect(diags.get(0).severity == .@"error");
     try std.testing.expect(std.mem.find(u8, diags.get(0).message, "node20") != null);
-    try std.testing.expect(diags.get(0).fix == null);
-    try std.testing.expect(diags.get(1).severity == .info);
-    try std.testing.expect(std.mem.find(u8, diags.get(1).message, "v8") != null);
-    const fix = diags.get(1).fix orelse return error.TestUnexpectedResult;
-    try std.testing.expect(fix.safety == .unsafe);
 }
 
 test "BP003: setup-node node-version is not runs.using" {
@@ -1064,7 +1063,7 @@ test "BP003: the retired-runtime finding keeps the version table's autofix" {
     const d = diags.get(0);
     try std.testing.expect(d.severity == .@"error");
     const fix = d.fix orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("v4", fix.edits[0].replacement);
+    try std.testing.expectEqualStrings("v5", fix.edits[0].replacement);
 }
 
 test "BP003: a patch-level ref is read like the major it names" {
@@ -1082,7 +1081,7 @@ test "BP003: a patch-level ref is read like the major it names" {
     const d = diags.get(0);
     try std.testing.expect(d.severity == .@"error");
     const fix = d.fix orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("v4", fix.edits[0].replacement);
+    try std.testing.expectEqualStrings("v5", fix.edits[0].replacement);
 }
 
 test "BP003: a version the table does not cover falls back to the version table" {
@@ -1106,8 +1105,8 @@ test "BP003: an action outside the table is only judged by the version table" {
 }
 
 test "BP003: a third-party action older than its current major is reported (#358)" {
-    // The table knows only `softprops/action-gh-release@v2`, so v1 matches no
-    // entry: the runtime half is silent and the curated table has no row.
+    // v1 matches no entry in the table, so the runtime half is silent and the
+    // curated version table has no row for it either.
     const step = Step{ .uses = ActionRef.parse("softprops/action-gh-release@v1") };
     var diags = DiagnosticList.init(std.testing.allocator);
     defer diags.deinit();
@@ -1117,7 +1116,7 @@ test "BP003: a third-party action older than its current major is reported (#358
     const d = diags.get(0);
     try std.testing.expectEqualStrings("BP003", d.rule_id);
     try std.testing.expect(d.severity == .info);
-    try std.testing.expect(std.mem.find(u8, d.message, "v2") != null);
+    try std.testing.expect(std.mem.find(u8, d.message, "v3") != null);
 }
 
 test "BP003: the behind-major fix rewrites the major and is unsafe" {
@@ -1134,7 +1133,7 @@ test "BP003: the behind-major fix rewrites the major and is unsafe" {
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
     try std.testing.expect(fix.safety == .unsafe);
-    try std.testing.expectEqualStrings("v2", fix.edits[0].replacement);
+    try std.testing.expectEqualStrings("v3", fix.edits[0].replacement);
 }
 
 test "BP003: what the behind-major half stays silent about" {
@@ -1209,9 +1208,9 @@ test "BP003: a local action on a retired runtime is an error" {
     try std.testing.expect(diags.get(0).fix == null);
 }
 
-test "BP003: a local action on node20 is a warning" {
+test "BP003: a local action on node20 is an error" {
     var tmp = try runtimeFixture(
-        \\name: Ending
+        \\name: Retired
         \\description: d
         \\runs:
         \\  using: node20
@@ -1228,7 +1227,7 @@ test "BP003: a local action on node20 is a warning" {
 
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqualStrings("BP003", diags.get(0).rule_id);
-    try std.testing.expect(diags.get(0).severity == .warning);
+    try std.testing.expect(diags.get(0).severity == .@"error");
     try std.testing.expect(std.mem.find(u8, diags.get(0).message, "node20") != null);
     try std.testing.expect(diags.get(0).fix == null);
 }
@@ -1308,7 +1307,7 @@ test "BP003: autofix generated for plain scalar uses" {
     const edit = fix.edits[0];
     try std.testing.expectEqual(@as(usize, 23), edit.start_byte);
     try std.testing.expectEqual(@as(usize, 25), edit.end_byte);
-    try std.testing.expectEqualStrings("v4", edit.replacement);
+    try std.testing.expectEqualStrings("v5", edit.replacement);
 }
 
 test "BP003: autofix with single-quoted scalar keeps quotes" {
@@ -1329,7 +1328,7 @@ test "BP003: autofix with single-quoted scalar keeps quotes" {
     const edit = fix.edits[0];
     try std.testing.expectEqual(@as(usize, 18), edit.start_byte);
     try std.testing.expectEqual(@as(usize, 20), edit.end_byte);
-    try std.testing.expectEqualStrings("v4", edit.replacement);
+    try std.testing.expectEqualStrings("v5", edit.replacement);
 }
 
 test "BP003: autofix applied to YAML source" {
@@ -1350,7 +1349,7 @@ test "BP003: autofix applied to YAML source" {
     try std.testing.expectEqual(@as(usize, 1), result.diagnostic_count);
 
     try std.testing.expectEqual(@as(usize, 1), result.edits_applied);
-    try std.testing.expect(std.mem.find(u8, result.content, "actions/checkout@v4") != null);
+    try std.testing.expect(std.mem.find(u8, result.content, "actions/checkout@v5") != null);
     try std.testing.expect(std.mem.find(u8, result.content, "actions/checkout@v1") == null);
 }
 

@@ -28,11 +28,14 @@ const Rule = engine.Rule;
 const Step = engine.Step;
 const Node = yaml_types.Node;
 
-/// `runs.using` values GitHub has already stopped running.
-pub const retired_runtimes = [_][]const u8{ "node12", "node16" };
+/// `runs.using` values GitHub has already stopped running (`node20`:
+/// 2026-09-23).
+pub const retired_runtimes = [_][]const u8{ "node12", "node16", "node20" };
 
-/// Still accepted, but GitHub has announced removal (`node20`: 2026-09-23).
-pub const ending_runtimes = [_][]const u8{"node20"};
+/// Still accepted, but GitHub has announced removal. Empty until the next
+/// removal is dated; the tables are switched at release time, never by the
+/// clock (`docs/adr/0018-runtime-retirement.md`).
+pub const ending_runtimes = [_][]const u8{};
 
 /// ACT002 warns on both: retired runtimes and ones whose removal is dated.
 pub const deprecated_runtimes = retired_runtimes ++ ending_runtimes;
@@ -459,8 +462,9 @@ const hasDiagnostic = test_support.hasDiagnostic;
 test "isDeprecatedRuntime recognises retired and ending Node runtimes" {
     try testing.expect(isRetiredRuntime("node12"));
     try testing.expect(isRetiredRuntime("node16"));
-    try testing.expect(!isRetiredRuntime("node20"));
-    try testing.expect(isEndingRuntime("node20"));
+    try testing.expect(isRetiredRuntime("node20"));
+    try testing.expect(!isRetiredRuntime("node24"));
+    try testing.expect(!isEndingRuntime("node20"));
     try testing.expect(!isEndingRuntime("node24"));
     try testing.expect(isDeprecatedRuntime("node12"));
     try testing.expect(isDeprecatedRuntime("node16"));

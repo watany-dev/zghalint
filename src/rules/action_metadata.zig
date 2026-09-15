@@ -70,16 +70,17 @@ const output_keys = [_][]const u8{
     "value",
 };
 
-/// The `using` values GitHub still accepts. `node20` stays here until
-/// 2026-09-23 so ACT003 does not call a still-runnable runtime unknown.
-const supported_using = [_][]const u8{ "composite", "docker", "node20", "node24" };
+/// The `using` values GitHub still accepts. Retired Node runtimes are absent
+/// but stay in `node_using` below, so they are reported as retired rather than
+/// as an unknown value.
+const supported_using = [_][]const u8{ "composite", "docker", "node24" };
 const node_using = [_][]const u8{ "node12", "node16", "node20", "node24" };
 /// Shared with BP003, which reports retired and ending runtimes from the
 /// caller's side (`uses: ./path`). The table lives in `local_action.zig`
 /// because this module sits above the step rules in the import graph.
 const deprecated_node_using = &local_action.deprecated_runtimes;
 
-const using_expected = "\"node20\", \"node24\", \"docker\", \"composite\"";
+const using_expected = "\"node24\", \"docker\", \"composite\"";
 
 const yaml_booleans = [_][]const u8{ "FALSE", "False", "TRUE", "True", "false", "true" };
 
@@ -262,10 +263,14 @@ fn reportUnknownUsing(list: *DiagnosticList, using: []const u8, span: Span) void
 
 fn reportDeprecatedUsing(list: *DiagnosticList, using: []const u8, span: Span) void {
     const alloc = list.fixAllocator();
+    const tail: []const u8 = if (local_action.isRetiredRuntime(using))
+        "and no longer runs"
+    else
+        "and will stop running";
     const message = std.fmt.allocPrint(
         alloc,
-        "\"{s}\" runtime is deprecated by GitHub Actions and will stop running",
-        .{using},
+        "\"{s}\" runtime is deprecated by GitHub Actions {s}",
+        .{ using, tail },
     ) catch return;
 
     list.append(.{

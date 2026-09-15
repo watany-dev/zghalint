@@ -22,7 +22,7 @@
    - `AGENTS.md` の Prerequisites
 
 `mlugg/setup-zig` は `runs.using: node20` のままで、GitHub は 2026-09-23 に
-そのランタイムをランナーから外す。CI / Release は Node を使わない
+そのランタイムをランナーから外した。CI / Release は Node を使わない
 `.github/actions/setup-zig`（`scripts/install-zig.py`）に置き換えた。
 `version` 省略時のフォールバックは以前と同じく `build.zig.zon` の
 `minimum_zig_version` である。インストーラを変えるときはその読み取りが
@@ -173,6 +173,12 @@
 4. `python3 scripts/bench.py` を回し、新たな FP / FN は別 issue にする。本更新で parity 差分を黙って吸収しない
 5. `docs/design/external-linter-parity.md` §2 の版表を同じ数字に直す
 
+## ランタイム廃止への追従
+
+`runs.using` の世代交代（node12 / node16 / node20 …）で触る箇所と、日付では
+切り替えずリリースで切り替える理由は
+[ADR 0018](adr/0018-runtime-retirement.md) にまとめてある。
+
 ## popular actions メタデータの更新
 
 **真は各アクションの `action.yml`。** それを読んで生成したスナップショットが
@@ -190,6 +196,13 @@
 3. 生成物の差分を確認する。入力が消えているだけの差分は、上流が本当に消したのか
    一覧の `ref` を巻き戻していないかを疑う
 4. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
+5. 下の再生成履歴に日付と範囲を 1 行足す
+
+### 再生成履歴
+
+| 日付 | 範囲 |
+|---|---|
+| 2026-09-15 | node20 廃止 (#549) に合わせて 27 アクションの新しい major を追加し全件再生成（105 エントリ） |
 
 データが古いと「上流が足したばかりの入力を未知として報告する」誤検出になる。
 一覧に載せるのは、古くなればすぐ気付かれる程度に広く使われているアクションだけに

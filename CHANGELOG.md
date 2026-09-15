@@ -13,6 +13,23 @@ each ID means.
 
 ## [Unreleased]
 
+### Changed
+
+- **BP003 / ACT002: `node20` を廃止済みランタイムとして扱う。** GitHub が
+  2026-09-23 にランナーから外すため、`node12` / `node16` と同じ扱いに移した。
+  BP003 は `uses:` 先が `node20` で動くとき `error`、ACT002 は自リポジトリの
+  `action.yml` の `runs.using: node20` を warning で報告し、受理する `using` は
+  `node24` / `docker` / `composite` になる。切替を日付ではなくリリースで行う
+  理由は `docs/adr/0018-runtime-retirement.md` (#548, #550)。
+- **BP003 の推奨先を node24 で動く最初の major に上げた。** キュレーション表が
+  `actions/checkout@v4` のように同じルールが廃止済みと報告する major を
+  `--fix` で書き込んでいたため、8 件全て（checkout v5 / setup-node v5 /
+  setup-python v6 / setup-go v6 / setup-java v5 / upload-artifact v6 /
+  download-artifact v7 / cache v5）を移した (#548)。
+- 埋め込みメタデータ表 `src/rules/data/popular_actions.zig` を再生成し、27
+  アクションの新しい major を足した（105 エントリ）。BP003 の「現行 major より
+  古い」判定と DEP005 / DEP006 の入力名検証がその分広がる (#549)。
+
 ### Fixed
 
 - `docs/rules.md` と `README.md` のルール数見出しが 108 のままだったのを 110
