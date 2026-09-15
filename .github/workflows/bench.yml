@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       - name: Build
         run: zig build
 
@@ -147,7 +147,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       # Debug ビルドの数字は比較に使えない (parity doc §4.7)。
       - name: Build (ReleaseFast)
         run: zig build -Doptimize=ReleaseFast

@@ -33,7 +33,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       - name: Check formatting
         run: zig fmt --check src/ build.zig
 
@@ -77,11 +77,12 @@ jobs:
       # `action.yml` carries a `# shellcheck disable=SC2086` directive, and the
       # composite action is what every consumer of this repository runs. Its
       # embedded scripts are checked directly; actionlint covers the ones in
-      # .github/workflows/.
+      # .github/workflows/. The CI Zig installer is a composite too.
       - name: shellcheck (scripts/, install.sh and action.yml)
         run: |
           shellcheck scripts/*.sh install.sh
           ./scripts/shellcheck-action.sh action.yml
+          ./scripts/shellcheck-action.sh .github/actions/setup-zig/action.yml
 
       # action.yml's download fallback and the README examples cannot read
       # build.zig.zon at build time, so drift there is only caught by comparing.
@@ -95,7 +96,7 @@ jobs:
       # zizmor overlaps zghalint's own SEC/SC rules; running it here is both a
       # third-party check of these workflows and a source of parity data.
       - name: zizmor
-        run: zizmor --offline --format plain .github/workflows action.yml
+        run: zizmor --offline --format plain .github/workflows action.yml .github/actions/setup-zig/action.yml
 
       - name: ruff
         run: |
@@ -134,7 +135,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       - name: Build ${{ matrix.zig_target }}
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
@@ -173,13 +174,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-        with:
-          # windows-latest で restore した `.zig-cache` が build runner の
-          # `build.exe` を欠き、テスト開始前に FileNotFound で落ちる
-          # （2026-09-13 以降、main でも再現）。コンパイラの tarball cache
-          # は `use-cache` とは別なので残る。
-          use-cache: ${{ runner.os != 'Windows' }}
+        uses: $/.github/actions/setup-zig
       - name: Run unit tests
         run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
@@ -207,7 +202,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       - name: Build
         run: zig build
       # action は `binary` 入力で自前ビルドを指す。リリース資産のダウンロード
@@ -320,7 +315,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       - name: Build
         run: zig build
       # `--offline` で回す。ネットワークルール（SC003-SC006）は GitHub API に
@@ -369,7 +364,7 @@ jobs:
           persist-credentials: false
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       # 決定的な回帰実行。シードコーパスを 1 件ずつ流すだけなので数秒で終わり、
       # 過去に見つかった入力が再発していれば必ず落ちる。
       # 探索実行は常駐するため、CI は再現可能なシード実行を使う。
@@ -391,7 +386,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       # ubuntu-24.04 (noble) には kcov パッケージが存在しないため
       # (`E: Unable to locate package kcov`)、v43 をソースからビルドする。
       # ビルド結果はキャッシュし、毎 run のビルドを避ける。
@@ -461,7 +456,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: $/.github/actions/setup-zig
       - name: Build
         run: zig build
       - name: Set up Python

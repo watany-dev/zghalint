@@ -8,7 +8,7 @@ set -e
 # 一本化してあるので、wrapper は `-fllvm` の注入だけを行う。
 
 # Zig バージョンの定義は build.zig.zon の minimum_zig_version 一箇所に集約する。
-# CI (mlugg/setup-zig は version 省略時に同じ値を読む) とローカルをずらさない。
+# CI (`.github/actions/setup-zig` は version 省略時に同じ値を読む) とローカルをずらさない。
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ZON_PATH="$REPO_ROOT/build.zig.zon"
 ZIG_VERSION="$(sed -n 's/^[[:space:]]*\.minimum_zig_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ZON_PATH" | head -1)"
