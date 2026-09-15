@@ -762,6 +762,9 @@ test "ACT002: deprecated node runtimes are a warning, not an error" {
         const d = findDiagnostic(&diags, "ACT002") orelse return error.TestUnexpectedResult;
         try std.testing.expect(d.severity == .warning);
         try std.testing.expect(std.mem.find(u8, d.message, "deprecated") != null);
+        // The three are all retired, so the message says so rather than
+        // promising a future removal.
+        try std.testing.expect(std.mem.find(u8, d.message, "no longer runs") != null);
     }
 }
 
