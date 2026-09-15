@@ -24,6 +24,12 @@ each ID means.
   `dawidd6/action-download-artifact` `run_id:` when they take
   `github.event.workflow_run.id` (artifact poisoning from a fork's CI run)
   (#533).
+- SEC002 scans code-executing action inputs beyond `actions/github-script`
+  `script:`: `azure/cli` / `azure/powershell` `inlineScript`,
+  `nick-fields/retry` `command`, `addnab/docker-run-action` `run`,
+  `appleboy/ssh-action` `script`, and `jannekem/run-python-script-action`
+  `script`. Shell inputs get the same `$VAR` env-binding fix as `run:`;
+  python has no shell spelling so it stays a diagnostic (#534).
 
 ### Fixed
 
