@@ -13,6 +13,38 @@ each ID means.
 
 ## [Unreleased]
 
+### Changed
+
+- **BP003 / ACT002: `node20` を廃止済みランタイムとして扱う。** GitHub が
+  2026-09-23 にランナーから外すため、`node12` / `node16` と同じ扱いに移した。
+  BP003 は `uses:` 先が `node20` で動くとき `error`、ACT002 は自リポジトリの
+  `action.yml` の `runs.using: node20` を warning で報告し、受理する `using` は
+  `node24` / `docker` / `composite` になる。切替を日付ではなくリリースで行う
+  理由は `docs/adr/0018-runtime-retirement.md` (#548, #550)。
+- **BP003 の推奨先を node24 で動く最初の major に上げた。** キュレーション表が
+  `actions/checkout@v4` のように同じルールが廃止済みと報告する major を
+  `--fix` で書き込んでいたため、8 件全て（checkout v5 / setup-node v5 /
+  setup-python v6 / setup-go v6 / setup-java v5 / upload-artifact v6 /
+  download-artifact v7 / cache v5）を移した (#548)。
+- **ACT002 の未知の `using` に対する rename autofix が広がった。** 受理する
+  Node の値が `node24` だけになったことで、`node22` / `node18` のような
+  打ち間違いの did-you-mean 候補が一意に定まり、`--fix`（safe）で `node24` へ
+  書き換わるようになった。以前は `node20` と `node24` が同点で候補が決まらず、
+  診断だけを出していた (#548)。
+- **BP003 の behind-current-major 判定は、最新 major が廃止済みランタイムで
+  動くアクションを黙るようになった。** `--fix-unsafe` が書き込んだ `@vN` を
+  同じルールが即 `error` と報告する自己矛盾を避けるため（例:
+  `actions/dependency-review-action`）(#548)。
+- 埋め込みメタデータ表 `src/rules/data/popular_actions.zig` を再生成し、27
+  アクションの新しい major を足した（105 エントリ）。BP003 の「現行 major より
+  古い」判定と DEP005 / DEP006 の入力名検証がその分広がる (#549)。
+
+### Fixed
+
+- `docs/rules.md` と `README.md` のルール数見出しが 108 のままだったのを 110
+  に直し、README のカテゴリ別内訳も registry と揃えた。`src/docs_sync_test.zig`
+  が見出しの数字と `documented_rule_ids.len` を突き合わせるようになった (#562)。
+
 ## [0.0.2] - 2026-09-15
 
 ### Changed

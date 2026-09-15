@@ -119,8 +119,8 @@ a `.fixed` / `.fixed-unsafe` sibling (`none` must not have one).
 | `bp008-workflow-commands.yml` | #326: every deprecated workflow command rewritten by `--fix`, with a piped line left alone |
 | `ga13-prefer-self.yml` | #440: job-level `uses: ./` of an on-disk workflow is BP009 |
 | `ga13-workspace-uses.yml` | #440 FP guard: missing `./` workflow, `$/`, and step-level `./` stay quiet |
-| `bp003-behind-current-major.yml` | #358: a third-party action older than its current major, with `actions/checkout@v4` as the FP guard |
-| `ga10-node20-runtime.yml` | #437: `actions/checkout@v4` (`runs.using: node20`) is BP003 warning |
+| `bp003-behind-current-major.yml` | #358: a third-party action older than its current major, with `actions/checkout@v5` as the FP guard |
+| `ga10-node20-runtime.yml` | #548: `actions/checkout@v4` (retired `runs.using: node20`) is a BP003 error |
 | `ga10-node-version-not-using.yml` | #437: setup-node `node-version: 20` is not `runs.using` |
 | `rw001-input-type-fix.yml` | #326: `--fix-unsafe` infers a `workflow_call` input `type:` from its `default:` |
 | `clean.yml` | A well-formed workflow: nothing may fire |

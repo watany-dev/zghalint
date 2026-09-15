@@ -70,16 +70,17 @@ const output_keys = [_][]const u8{
     "value",
 };
 
-/// The `using` values GitHub still accepts. `node20` stays here until
-/// 2026-09-23 so ACT003 does not call a still-runnable runtime unknown.
-const supported_using = [_][]const u8{ "composite", "docker", "node20", "node24" };
+/// The `using` values GitHub still accepts. Retired Node runtimes are absent
+/// but stay in `node_using` below, so they are reported as retired rather than
+/// as an unknown value.
+const supported_using = [_][]const u8{ "composite", "docker", "node24" };
 const node_using = [_][]const u8{ "node12", "node16", "node20", "node24" };
 /// Shared with BP003, which reports retired and ending runtimes from the
 /// caller's side (`uses: ./path`). The table lives in `local_action.zig`
 /// because this module sits above the step rules in the import graph.
 const deprecated_node_using = &local_action.deprecated_runtimes;
 
-const using_expected = "\"node20\", \"node24\", \"docker\", \"composite\"";
+const using_expected = "\"node24\", \"docker\", \"composite\"";
 
 const yaml_booleans = [_][]const u8{ "FALSE", "False", "TRUE", "True", "false", "true" };
 
@@ -262,10 +263,14 @@ fn reportUnknownUsing(list: *DiagnosticList, using: []const u8, span: Span) void
 
 fn reportDeprecatedUsing(list: *DiagnosticList, using: []const u8, span: Span) void {
     const alloc = list.fixAllocator();
+    const tail: []const u8 = if (local_action.isRetiredRuntime(using))
+        "and no longer runs"
+    else
+        "and will stop running";
     const message = std.fmt.allocPrint(
         alloc,
-        "\"{s}\" runtime is deprecated by GitHub Actions and will stop running",
-        .{using},
+        "\"{s}\" runtime is deprecated by GitHub Actions {s}",
+        .{ using, tail },
     ) catch return;
 
     list.append(.{
@@ -757,7 +762,28 @@ test "ACT002: deprecated node runtimes are a warning, not an error" {
         const d = findDiagnostic(&diags, "ACT002") orelse return error.TestUnexpectedResult;
         try std.testing.expect(d.severity == .warning);
         try std.testing.expect(std.mem.find(u8, d.message, "deprecated") != null);
+        // The three are all retired, so the message says so rather than
+        // promising a future removal.
+        try std.testing.expect(std.mem.find(u8, d.message, "no longer runs") != null);
     }
+}
+
+test "ACT002: an unknown Node runtime is renamed to the one supported runtime" {
+    // `node24` became the only Node value in `supported_using` when node20
+    // retired, so the did-you-mean candidate is unique where it used to tie.
+    var lint = try Lint.run(
+        \\name: My Action
+        \\runs:
+        \\  using: node22
+        \\  main: dist/index.js
+    );
+    defer lint.deinit();
+
+    const d = findDiagnostic(&lint.diags, "ACT002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.severity == .@"error");
+    try std.testing.expect(std.mem.find(u8, d.message, "did you mean \"node24\"") != null);
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("node24", fix.edits[0].replacement);
 }
 
 test "ACT002: supported runtimes are not reported" {

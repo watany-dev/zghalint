@@ -6,4 +6,4 @@ category: performance
 actionlint: unknown
 zizmor: unknown
 ghalint: unknown
-autofix: none
+autofix: safe
