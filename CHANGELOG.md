@@ -20,6 +20,10 @@ each ID means.
   takes an untrusted ref (including a one-hop `$VAR` from `env:`). A SHA,
   issue number, repository name, `clone_url`, or `workflow_run.id` is not
   script injection, so SEC002 stayed silent on these fetches (#532).
+- SEC009 reports `actions/download-artifact` `run-id:` and
+  `dawidd6/action-download-artifact` `run_id:` when they take
+  `github.event.workflow_run.id` (artifact poisoning from a fork's CI run)
+  (#533).
 
 ### Fixed
 
