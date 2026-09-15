@@ -1,0 +1,8 @@
+- id: zghalint
+  name: zghalint
+  description: Lint GitHub Actions workflows and action metadata
+  entry: zghalint --offline --
+  language: system
+  types: [yaml]
+  files: '(^|/)(\.github/workflows/[^/]+\.ya?ml|\.github/dependabot\.ya?ml|\.github/actions/.+/action\.ya?ml|action\.ya?ml)$'
+  minimum_pre_commit_version: '3.0.0'

@@ -6,6 +6,13 @@
 A comprehensive, fast GitHub Actions workflow linter written in Zig.
 Zero external dependencies — even the YAML parser is built from scratch.
 
+actionlint checks workflow syntax and expressions. zizmor checks security.
+zghalint covers both, plus supply chain, permissions, performance, and
+autofix, in one binary. On this repository's bench corpus a ReleaseFast
+build is an order of magnitude faster and leaner than running the two
+together; the numbers live in
+[docs/design/external-linter-parity.md](docs/design/external-linter-parity.md) §4.
+
 ## Features
 
 - **Security** — Script injection, unpinned actions, hardcoded secrets, environment injection, dangerous triggers
@@ -51,6 +58,48 @@ brew install watany-dev/tap/zghalint
 
 The tap is updated by the release workflow. Prereleases (`-rc.`) are not
 published to it, so `brew` installs the newest stable release.
+
+### aqua
+
+Until the package is in the [standard aqua registry](https://github.com/aquaproj/aqua-registry),
+point aqua at the in-repo registry. The registry file lives on `main`;
+checksums for the binary still come from the tagged release's `SHA256SUMS`.
+
+```yaml
+registries:
+  - name: zghalint
+    type: github_content
+    repo_owner: watany-dev
+    repo_name: zghalint
+    ref: main
+    path: packaging/aqua-registry.yaml
+packages:
+  - name: watany-dev/zghalint@v0.0.2
+```
+
+### mise
+
+```bash
+mise use ubi:watany-dev/zghalint
+```
+
+ubi picks the GitHub Release archive for the current OS and architecture.
+The asset names are `zghalint-<os>-<arch>.tar.gz` (`.zip` on Windows).
+
+### pre-commit
+
+Requires zghalint on `PATH` (Homebrew, `install.sh`, aqua, or mise). The
+hook runs `--offline` so a commit does not wait on the GitHub API.
+`.pre-commit-hooks.yaml` is not in `v0.0.2`; until the next release, set
+`rev` to a commit on `main` that contains that file.
+
+```yaml
+repos:
+  - repo: https://github.com/watany-dev/zghalint
+    rev: v0.0.2
+    hooks:
+      - id: zghalint
+```
 
 ### Build from source
 
@@ -134,6 +183,55 @@ Pass `version` to download a specific release regardless of the ref:
     version: v0.0.2
     paths: ".github/workflows/*.yml"
 ```
+
+Write SARIF to a file with `output` and upload it for
+[GitHub Code Scanning](https://docs.github.com/en/code-security/code-scanning).
+`output` is not in the `v0.0.2` action; pin a commit that includes it, or
+the next release tag.
+
+```yaml
+name: zghalint
+on:
+  pull_request:
+  push:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # checkout 7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint workflows
+        uses: watany-dev/zghalint@v0.0.2
+        with:
+          format: sarif
+          output: zghalint.sarif
+          offline: "true"
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # codeql-action 4.37.9
+        with:
+          sarif_file: zghalint.sarif
+          category: zghalint
+```
+
+`offline: "true"` keeps the job deterministic. Omit it (and keep
+`GITHUB_TOKEN` available to the job) to enable the supply-chain rules that
+call the GitHub API.
+
+Publishing the action to GitHub Marketplace is a checkbox on the GitHub
+Release; the steps are in [docs/maintenance.md](docs/maintenance.md).
 
 ## Usage
 

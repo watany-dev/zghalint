@@ -257,6 +257,26 @@ jobs:
           paths: 'smoke/workflows/*.yml'
           format: sarif
           offline: 'true'
+      - name: Run action (sarif to a file)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/*.yml'
+          format: sarif
+          output: smoke/zghalint.sarif
+          offline: 'true'
+      - name: Assert the SARIF file was written
+        shell: bash
+        run: |
+          if [ ! -s smoke/zghalint.sarif ]; then
+            echo "::error::action output= did not write a SARIF file"
+            exit 1
+          fi
+          if ! grep -q '"version"' smoke/zghalint.sarif; then
+            echo "::error::SARIF file is missing a version field"
+            cat smoke/zghalint.sarif
+            exit 1
+          fi
       - name: Run action (fix with a config that disables BP001)
         uses: ./
         with:

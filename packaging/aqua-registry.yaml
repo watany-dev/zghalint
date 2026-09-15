@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/aquaproj/aqua/main/json-schema/registry.json
+# Local aqua registry for zghalint. Checksums come from the release's
+# SHA256SUMS, so this file does not pin a tag. Submit a copy to
+# aquaproj/aqua-registry to get `aqua g -i watany-dev/zghalint`.
+packages:
+  - type: github_release
+    repo_owner: watany-dev
+    repo_name: zghalint
+    description: Fast GitHub Actions workflow linter
+    version_constraint: "false"
+    version_overrides:
+      - version_constraint: "true"
+        asset: zghalint-{{.OS}}-{{.Arch}}.{{.Format}}
+        format: tar.gz
+        replacements:
+          darwin: macos
+          amd64: x86_64
+          arm64: aarch64
+        overrides:
+          - goos: windows
+            format: zip
+        files:
+          - name: zghalint
+            src: zghalint-{{.OS}}-{{.Arch}}/zghalint
+        checksum:
+          type: github_release
+          asset: SHA256SUMS
+          algorithm: sha256
+        supported_envs:
+          - darwin
+          - linux
+          - windows/amd64
