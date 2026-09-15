@@ -201,9 +201,9 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **108 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **110 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
-### Security (23 rules)
+### Security (24 rules)
 
 Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, fork-controlled `workflow_run` gates, publishing with a long-lived API token instead of OIDC, and more.
 
@@ -224,11 +224,11 @@ Missing timeouts, step naming, deprecated actions, cross-platform shell, concurr
 Overly broad scopes, missing job-level permissions, unknown scope names and
 invalid permission levels.
 
-### Expression Validation (13 rules)
+### Expression Validation (19 rules)
 
 `${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions, `steps.<id>` resolution, unsynchronized background outputs.
 
-### Dependencies (3 rules)
+### Dependencies (6 rules)
 
 Dependabot cooldown configuration, insecure external code execution settings,
 `uses:` reference format for actions and reusable workflow calls.
@@ -239,15 +239,21 @@ Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
 detection (typos such as `ubunut-latest`), and conflicting label sets that no
 single runner can satisfy (`runs-on: [ubuntu-latest, windows-latest]`).
 
-### Action Metadata (4 rules)
+### Action Metadata (5 rules)
 
 Required keys in `action.yml` / `action.yaml`, supported and deprecated
 `runs.using` runtimes, unknown metadata keys, and the shape of `inputs` /
 `outputs` definitions.
 
-### Syntax (22 rules)
+### Syntax (26 rules)
 
 Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `cache-mode` values, `concurrency.queue` values and conflict with `cancel-in-progress: true`, YAML merge key `<<`, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency, workflow files with no content at all.
+
+### Reusable Workflow (5 rules)
+
+`workflow_call` input definitions, required inputs and secrets a caller omits,
+input values that do not match the declared type, and outputs that read a job
+or job output that does not exist.
 
 ## Configuration
 

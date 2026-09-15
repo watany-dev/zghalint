@@ -13,6 +13,12 @@ each ID means.
 
 ## [Unreleased]
 
+### Fixed
+
+- `docs/rules.md` と `README.md` のルール数見出しが 108 のままだったのを 110
+  に直し、README のカテゴリ別内訳も registry と揃えた。`src/docs_sync_test.zig`
+  が見出しの数字と `documented_rule_ids.len` を突き合わせるようになった (#562)。
+
 ## [0.0.2] - 2026-09-15
 
 ### Changed
