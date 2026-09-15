@@ -299,6 +299,37 @@ jobs:
           paths: 'smoke/workflows/*.yaml smoke/workflows/clean.yml'
           offline: 'true'
 
+  released-action:
+    name: Released Action (v0.0.2)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # action-smoke は `binary` 入力で自前ビルドを指すため、リリース資産の
+      # ダウンロードと SHA256 検証を通らない。ここは公開済みリリースを実際に
+      # 落として動かす唯一の経路で、利用者が README のとおりに書いたときに
+      # 動くことを担保する。
+      #
+      # ref は SEC001 が求めるとおり full SHA でピンし、`version` で落とす
+      # リリースを明示する。この v0.0.2 は「公開済みの最新リリース」であって
+      # build.zig.zon の `.version` の写しではないため、
+      # scripts/check-version-sync.sh の対象には入れない（次のリリースの
+      # バージョン上げコミット時点ではまだタグが無く、落とせないため）。
+      # 新しいリリースを切った後に追随させる。
+      - name: Run the published action against our own workflows
+        uses: watany-dev/zghalint@49748850f6fa16bcb5302539425b0879275c259e # v0.0.2
+        with:
+          version: v0.0.2
+          paths: '.github/workflows/*.yml'
+          # ネットワークルール (SC003-SC006) は GitHub API に依存し、fork から
+          # の PR やレート制限で結果が揺れる。self-lint と同じく切っておく。
+          offline: 'true'
+
   self-lint:
     name: Self Lint
     runs-on: ubuntu-latest
