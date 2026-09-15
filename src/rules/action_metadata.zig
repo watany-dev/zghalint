@@ -768,6 +768,24 @@ test "ACT002: deprecated node runtimes are a warning, not an error" {
     }
 }
 
+test "ACT002: an unknown Node runtime is renamed to the one supported runtime" {
+    // `node24` became the only Node value in `supported_using` when node20
+    // retired, so the did-you-mean candidate is unique where it used to tie.
+    var lint = try Lint.run(
+        \\name: My Action
+        \\runs:
+        \\  using: node22
+        \\  main: dist/index.js
+    );
+    defer lint.deinit();
+
+    const d = findDiagnostic(&lint.diags, "ACT002") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(d.severity == .@"error");
+    try std.testing.expect(std.mem.find(u8, d.message, "did you mean \"node24\"") != null);
+    const fix = d.fix orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("node24", fix.edits[0].replacement);
+}
+
 test "ACT002: supported runtimes are not reported" {
     var lint = try Lint.run(
         \\name: My Action

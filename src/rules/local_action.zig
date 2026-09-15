@@ -28,8 +28,9 @@ const Rule = engine.Rule;
 const Step = engine.Step;
 const Node = yaml_types.Node;
 
-/// `runs.using` values GitHub has already stopped running (`node20`:
-/// 2026-09-23).
+/// `runs.using` values this release reports as no longer running. `node20`
+/// joined ahead of its 2026-09-23 removal date: the tables switch at release
+/// time, not by the clock (`docs/adr/0018-runtime-retirement.md`).
 pub const retired_runtimes = [_][]const u8{ "node12", "node16", "node20" };
 
 /// Still accepted, but GitHub has announced removal. Empty until the next

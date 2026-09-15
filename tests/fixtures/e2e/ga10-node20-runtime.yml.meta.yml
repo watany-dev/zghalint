@@ -6,4 +6,4 @@ category: best_practice
 actionlint: unknown
 zizmor: unknown
 ghalint: unknown
-autofix: none
+autofix: safe

@@ -211,6 +211,7 @@ fn reportBehindCurrentMajor(
     const major = popular_actions.majorFromRef(version) orelse return;
     const newest = popular_actions.latestMajor(action_ref) orelse return;
     if (major >= newest) return;
+    if (newestRunsRetiredRuntime(action_ref, newest)) return;
 
     const alloc = diag_list.fixAllocator();
     const replacement = std.fmt.allocPrint(alloc, "v{d}", .{newest}) catch return;
@@ -233,6 +234,20 @@ fn reportBehindCurrentMajor(
         .fix_hint = hint,
         .fix = buildDeprecatedActionFix(diag_list, step, version, replacement, .unsafe),
     }) catch return;
+}
+
+/// An action whose newest known major still runs a retired runtime has nowhere
+/// better to go: `--fix-unsafe` would rewrite the `@vN`, and the runtime half
+/// would then report the result as an error. Staying silent leaves the caller
+/// with the one verdict that is actionable.
+fn newestRunsRetiredRuntime(action_ref: ActionRef, newest: u16) bool {
+    const meta = popular_actions.lookupByMajor(
+        action_ref.owner orelse return false,
+        action_ref.repo orelse return false,
+        action_ref.path orelse "",
+        newest,
+    ) orelse return false;
+    return local_action.isRetiredRuntime(meta.using);
 }
 
 fn isCuratedAction(action_ref: ActionRef) bool {
@@ -1147,6 +1162,9 @@ test "BP003: what the behind-major half stays silent about" {
         "softprops/action-gh-release@main",
         "softprops/action-gh-release@v1-beta",
         "softprops/action-gh-release@11bd71901bbe5b1630ceea73d27597364c9af683",
+        // The newest major the table knows still runs a retired runtime, so
+        // the upgrade this half would name is not one.
+        "actions/dependency-review-action@v3",
     }) |raw| {
         const step = Step{ .uses = ActionRef.parse(raw) };
         var diags = DiagnosticList.init(std.testing.allocator);

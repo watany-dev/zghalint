@@ -15,10 +15,10 @@ v0.0.2（main `4974885`、PR #542）を起点に、次のリリース v0.0.3 で
 | bench | `bench/cases/` 147 ファイル。actionlint 1.7.12 / zizmor 1.30.1 との三者比較で parity gap は G1〜G39 まで起票済み。**未対応は G29 の 1 件だけ**（B1 #552。`actions/create-github-app-token` の `permission-*` 未指定。zizmor の `github-app` 相当。bench ケース `d-permissions-secrets/github-app-token-unscoped.yml` は用意済み）。G38 / G39（#424 / #425）は修正済みだが `docs/design/external-linter-parity.md` への追記が PR #426（draft、conflict）で止まっている（B2 #553）。週次 `.github/workflows/bench.yml` が `scripts/bench_gate.py` で baseline との回帰を見る |
 | 形式手法 | `scripts/formal/`（Z3 有界モデル検査）で F1〜F7 と G1〜G5（P8〜P12）を確認済み。表の抜けは意図的除外を除き 0。残る限界は伝播 1 hop と、`CODE_EXECUTING_INPUTS` / `ACTION_OUTPUTS` の action 表が手書きで非網羅なこと（`docs/design/formal-rule-model.md` §9） |
 | PBT / ファズ | `tests/pbt/` に 42 個の `@given`、xfail 0。`docs/design/pbt-strategy.md` §5 の未了項目は #3（PERM / BP / PERF の検出 PBT）、#4（YAML round-trip）、#5（生成器の拡張）、#7（新しい不変量）、#8（advisory / archived）、#10（terminal formatter）。`src/fuzz_test.zig` は YAML と式のターゲットを CI で回す |
-| ADR | `docs/adr/0001`〜`0017`（0015 は BP003 の behind-current-major、0016 はネットワークの fail-fast と request budget、0017 は SC001 の image digest pin） |
+| ADR | `docs/adr/0001`〜`0018`（0015 は BP003 の behind-current-major、0016 はネットワークの fail-fast と request budget、0017 は SC001 の image digest pin、0018 はランタイム廃止の切替時期） |
 | オープン PR | #426（G38 / G39 の bench 追記、draft）、#395（旧ロードマップの同期。本書で置き換える）、#306（bench 再実行記録）、#217（Alloy / TLA+ 仕様。Z3 モデル #307 で代替済み）。いずれも main から遅れており、rebase して取り込むか close する |
 | オープン issue | v0.0.3 軸の umbrella 4 本（N0 #544 / B0 #545 / C0 #546 / D0 #547）とその子。0.0.2 から残るのは **#409（AF6）** だけで、子の AF7〜AF14（#410〜#417）は全部 close 済みなので B3（#554）で umbrella も close する。GA0 #427 / PT0 #449 / G0 #531 / AF0 #322 / F0 #307 / bench #262 / 性能 #527 の各 umbrella は close 済み |
-| 外部期限 | GitHub が **2026-09-23 に node20 ランタイムを廃止**する。現状は `action_metadata.zig` の `supported_using` が node20 を「09-23 まで」として受理し、`local_action.zig` の `ending_runtimes` 経由で ACT002 / BP003 が warning を出す。廃止後は error に上げる必要がある |
+| 外部期限 | GitHub は **2026-09-23 に node20 ランタイムを廃止**する。N1〜N4（#548〜#551）で追従済み——`local_action.zig` の `retired_runtimes` が node20 を持ち、`action_metadata.zig` の `supported_using` からは外れ、BP003 は error、ACT002 は「もう動かない」を出す。次の世代交代（node24）の手順は [ADR 0018](adr/0018-runtime-retirement.md) |
 
 0.0.2 は仕様追従（GA1〜GA14）・脆弱性クラス（G1〜G5）・autofix 拡張（AF7〜AF14）・
 ponytail 監査（PT0）を一括で入れた大きめのリリースだった。

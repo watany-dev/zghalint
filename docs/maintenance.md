@@ -22,7 +22,7 @@
    - `AGENTS.md` の Prerequisites
 
 `mlugg/setup-zig` は `runs.using: node20` のままで、GitHub は 2026-09-23 に
-そのランタイムをランナーから外した。CI / Release は Node を使わない
+そのランタイムをランナーから外す。CI / Release は Node を使わない
 `.github/actions/setup-zig`（`scripts/install-zig.py`）に置き換えた。
 `version` 省略時のフォールバックは以前と同じく `build.zig.zon` の
 `minimum_zig_version` である。インストーラを変えるときはその読み取りが
