@@ -201,11 +201,11 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **110 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **111 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
-### Security (24 rules)
+### Security (25 rules)
 
-Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, fork-controlled `workflow_run` gates, publishing with a long-lived API token instead of OIDC, and more.
+Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, fork-controlled `workflow_run` gates, publishing with a long-lived API token instead of OIDC, unscoped GitHub App installation tokens, and more.
 
 ### Supply Chain (8 rules)
 

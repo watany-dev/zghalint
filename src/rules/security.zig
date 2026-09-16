@@ -2676,6 +2676,27 @@ fn classifyPersistCredentials(step: *const Step) PersistCredentialsState {
     return .not_set;
 }
 
+/// `owner` / `repositories` only pick which installation mints the token.
+/// The token still inherits that installation's full permission set unless a
+/// `permission-*` input is present (zizmor `github-app`, G29 / #552).
+fn checkGithubAppTokenUnscoped(step: *const Step, list: *DiagnosticList) void {
+    const ref = step.uses orelse return;
+    if (!isAction(ref, "actions/create-github-app-token")) return;
+    if (step.with) |with_map| {
+        for (with_map.keys()) |key| {
+            if (std.ascii.startsWithIgnoreCase(key, "permission-")) return;
+        }
+    }
+
+    list.append(.{
+        .rule_id = "SEC025",
+        .severity = .warning,
+        .message = "actions/create-github-app-token inherits the GitHub App installation's full permissions unless permission-* inputs scope the token",
+        .span = spans.usesSpan(step),
+        .fix_hint = "add permission-* inputs for the scopes this step needs (for example permission-issues: write); owner/repositories alone does not limit installation permissions",
+    }) catch return;
+}
+
 fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
     if (!isAction(ref, "actions/checkout")) return;
@@ -3618,6 +3639,14 @@ pub const security_rules = [_]Rule{
         .severity = .info,
         .category = .security,
         .check_step = &checkTrustedPublishing,
+    },
+    .{
+        .id = "SEC025",
+        .name = "use-scoped-github-app-token",
+        .description = "actions/create-github-app-token without permission-* inputs inherits the installation's full permissions",
+        .severity = .warning,
+        .category = .security,
+        .check_step = &checkGithubAppTokenUnscoped,
     },
     .{
         .id = "SC002",
@@ -9747,5 +9776,109 @@ test "SEC019: secrets.GITHUB_TOKEN stays exempt" {
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), result.diagnostic_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC025: unscoped app-id and private-key inherit installation permissions" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "app-id", "${{ secrets.APP_ID }}") catch unreachable;
+    with_map.put(testing.allocator, "private-key", "${{ secrets.PRIVATE_KEY }}") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC025"));
+    const diag = findDiagnostic(&list, "SEC025").?;
+    try testing.expect(diag.fix == null);
+    try testing.expect(diag.severity == .warning);
+}
+
+test "SEC025: missing with: still reports" {
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b"),
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: permission-* input silences the rule" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "app-id", "${{ secrets.APP_ID }}") catch unreachable;
+    with_map.put(testing.allocator, "private-key", "${{ secrets.PRIVATE_KEY }}") catch unreachable;
+    with_map.put(testing.allocator, "permission-issues", "write") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: permission-* is matched case-insensitively" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "Permission-Contents", "read") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("ACTIONS/create-github-app-token@v3"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: owner and repositories alone do not silence" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "owner", "${{ github.repository_owner }}") catch unreachable;
+    with_map.put(testing.allocator, "repositories", "repo1,repo2") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: a different action is not reported" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "app-id", "1") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("tibdex/github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: nested path is a different action" {
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token/setup@v2"),
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: no autofix" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/create-github-app-token@v2
+        \\        with:
+        \\          app-id: ${{ secrets.APP_ID }}
+        \\          private-key: ${{ secrets.PRIVATE_KEY }}
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkGithubAppTokenUnscoped }, true);
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
     try testing.expectEqualStrings(source, result.content);
 }

@@ -1,17 +1,16 @@
-# bench:expect github-app@18 zizmor=github-app zghalint=SEC025 actionlint=-
+# zghalint:forbid SEC025
 name: labeler
 on:
   issues:
     types: [opened]
+concurrency:
+  group: labeler-${{ github.ref }}
 permissions:
   contents: read
 jobs:
   label:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: write
     steps:
       - name: Mint a token
         id: mint
@@ -19,8 +18,4 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.PRIVATE_KEY }}
-      - name: Label
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
-        with:
-          github-token: ${{ steps.mint.outputs.token }}
-          script: return 1
+          permission-issues: write

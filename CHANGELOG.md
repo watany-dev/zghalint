@@ -15,6 +15,11 @@ each ID means.
 
 ### Added
 
+- SEC025 (`use-scoped-github-app-token`, warning): report
+  `actions/create-github-app-token` when no `permission-*` input scopes the
+  minted token. The action otherwise inherits the GitHub App installation's
+  full permissions. `owner` / `repositories` alone do not silence the rule.
+  No autofix: which permission the step needs is not static (#552).
 - `.zghalint.yml` `rules.<ID>.exclude` globs silence one rule on matching
   paths. File-level `ignore` is unchanged (#556).
 
