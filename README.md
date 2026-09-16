@@ -316,6 +316,7 @@ repo_visibility: unknown
 | `--no-cache` | Bypass the on-disk prefetch cache and refetch from the network | Off |
 | `--fix` | Apply safe auto-fixes and rewrite files in place | |
 | `--fix-unsafe` | Apply all auto-fixes, including unsafe ones | |
+| `--fail-on <severity>` | Exit 1 from this severity up: `error`, `warning`, `info` | `error` |
 | `-h`, `--help` | Show help message | |
 | `-v`, `--version` | Show version | |
 

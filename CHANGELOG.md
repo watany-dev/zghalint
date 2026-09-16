@@ -22,6 +22,8 @@ each ID means.
   No autofix: which permission the step needs is not static (#552).
 - `.zghalint.yml` `rules.<ID>.exclude` globs silence one rule on matching
   paths. File-level `ignore` is unchanged (#556).
+- `--fail-on <severity>` selects whether exit code 1 starts at `error`
+  (default, unchanged), `warning`, or `info`. Output is unchanged (#557).
 
 ### Changed
 
