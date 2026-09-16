@@ -696,6 +696,47 @@ YAML の plain scalar は次のより深い行へ続き、改行は空白に畳�
 またぎ、EXPR001 は出ず SEC002 は式全体を見る。同じ桁か浅い行の `}}` は次の
 キーであり、閉じには使わない。flow コレクションは従来どおり同一行に限る。
 
+#### G38 (#424). コンテキストパスの数値ブラケットアクセスを式エラーにする (FP) — 対応済み
+
+`bench/cases/e-expression/numeric-bracket-index.yml`。
+
+```yaml
+run: echo "${{ github.event.workflow_run.pull_requests[0].number }}"
+```
+
+GitHub Actions の式は配列への数値インデックス (`[0]`) を正規の構文として
+受け付ける。当時の `parseContextAccess` はブラケット内を string literal だけ
+許可し、`expected string in bracket access` (EXPR001) を出していた。関数結果
+への `[0]` は G9 で postfix の `index_access` として読めるようになっており、
+コンテキストパス側だけが残っていた。actionlint は沈黙する。`.number` は
+サーバ生成の整数なので SEC002 が発火しないのは正しい。
+
+実運用のワークフロー群を三者比較したところ、`workflow_run.pull_requests[0]`
+を `run:` に展開する形で zghalint だけが EXPR001 を出した。#424 で
+ブラケット内を string または number として読むようにした。
+
+#### G39 (#425). ローカル `uses:` のパスセグメント先頭の `@` を ref と誤認する (FP) — 対応済み
+
+`bench/cases/c-supply-chain/local-scoped-path.yml`。
+
+```yaml
+- uses: ./tools/@scope/tool
+```
+
+当時の DEP003 はローカル参照 (`./` / `$/`) に `@` が 1 文字でもあれば
+`@ref` 付きとみなしていた。GitHub はローカル action に ref を付けられない
+一方、パスセグメントの名前として `@scope` は存在する。actionlint / zizmor
+は形式不正としない。`./my-action@v1` のようにセグメント途中の `@` は
+今までどおり形式不正でよい。
+
+実運用のワークフロー群を三者比較したところ、ローカル composite を
+`./tools/@scope/...` から呼ぶ形で zghalint だけが DEP003 を出した。#425 で
+セグメント先頭の `@` だけをディレクトリ名として扱うようにした。
+
+PR #426 は G38 / G39 の bench ケースと本節の下書きだったが、コード修正
+(#424 / #425) の後に main から遅れて conflict したため close し、文書と
+回帰ケースをこちらで入れた。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -1123,3 +1164,5 @@ PR #217 の Alloy / TLA+ 仕様は Z3 モデル（`docs/design/formal-rule-model
 - [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える
 - [x] G36 (#419): 真偽値を返す組み込み呼び出しを SEC002 から除外する
 - [x] G37 (#421): 行をまたぐ plain scalar の `${{ }}` を一つの式として読む
+- [x] G38 (#424): コンテキストパスの数値ブラケット (`[0]`) を式として受理する
+- [x] G39 (#425): ローカル `uses:` の `@` がパスセグメント先頭のときだけディレクトリ名として扱う
