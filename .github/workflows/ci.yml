@@ -89,6 +89,9 @@ jobs:
       - name: Version references in sync
         run: ./scripts/check-version-sync.sh
 
+      - name: Config JSON Schema in sync
+        run: ./scripts/check-config-schema.sh
+
       # actionlint shells out to shellcheck for every `run:` block.
       - name: actionlint
         run: actionlint -color

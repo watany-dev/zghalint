@@ -310,6 +310,9 @@ A finding can also be silenced in the workflow with
 Multiple IDs are comma-separated. `--format json` includes the suppressed
 count in `summary.suppressed`.
 
+The same keys are described by [`docs/schema/zghalint.schema.json`](docs/schema/zghalint.schema.json).
+Unknown keys are reported as stderr warnings and do not change the exit code.
+
 ## CLI Options
 
 | Option | Description | Default |

@@ -524,10 +524,12 @@ fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8, stderr: *s
     };
     defer allocator.free(source);
 
-    return zghalint.config.parseConfig(allocator, source) catch |err| {
+    var config = zghalint.config.parseConfig(allocator, source) catch |err| {
         stderr.print("error: invalid config '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     };
+    config.writeUnknownKeyWarnings(stderr);
+    return config;
 }
 
 /// `--fix` re-reads each file and applies offsets computed during the lint

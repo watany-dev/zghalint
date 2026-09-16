@@ -53,6 +53,9 @@ pub const Config = struct {
     /// Owns string data (rule IDs, ignore patterns) referenced by the fields
     /// above. Decouples Config lifetime from the YAML source buffer.
     strings_arena: std.heap.ArenaAllocator,
+    /// Dotted paths of keys `parseConfig` does not read. Printed on stderr
+    /// as warnings; they do not change the exit code (#560).
+    unknown_keys: []const []const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{
@@ -99,7 +102,20 @@ pub const Config = struct {
         }
         return false;
     }
+
+    pub fn writeUnknownKeyWarnings(self: *const Config, writer: *std.Io.Writer) void {
+        for (self.unknown_keys) |key| {
+            writer.print("warning: unknown config key '{s}'\n", .{key}) catch {};
+        }
+    }
 };
+
+/// Keys `parseConfig` accepts. `scripts/gen-config-schema.py` copies them
+/// into `docs/schema/zghalint.schema.json`.
+pub const schema_root_keys = [_][]const u8{ "rules", "ignore", "runner", "output", "repo_visibility" };
+pub const schema_rule_keys = [_][]const u8{ "severity", "enabled", "exclude", "node_cache_manager", "python_cache_manager" };
+pub const schema_output_keys = [_][]const u8{ "format", "color" };
+pub const schema_runner_keys = [_][]const u8{"labels"};
 
 pub const ConfigError = error{
     InvalidYaml,
@@ -222,7 +238,68 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         }
     }
 
+    var unknown: std.ArrayList([]const u8) = .empty;
+    try collectUnknownKeys(strings, root, &unknown);
+    config.unknown_keys = try unknown.toOwnedSlice(strings);
+
     return config;
+}
+
+fn keyIsKnown(known: []const []const u8, name: []const u8) bool {
+    for (known) |k| {
+        if (std.mem.eql(u8, k, name)) return true;
+    }
+    return false;
+}
+
+fn collectMappingKeys(
+    strings: std.mem.Allocator,
+    mapping: yaml_types.Mapping,
+    known: []const []const u8,
+    prefix: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    for (mapping.entries) |entry| {
+        if (keyIsKnown(known, entry.key.value)) continue;
+        const path = if (prefix.len == 0)
+            try strings.dupe(u8, entry.key.value)
+        else
+            try std.fmt.allocPrint(strings, "{s}.{s}", .{ prefix, entry.key.value });
+        try out.append(strings, path);
+    }
+}
+
+fn collectUnknownKeys(
+    strings: std.mem.Allocator,
+    root: yaml_types.Mapping,
+    out: *std.ArrayList([]const u8),
+) !void {
+    try collectMappingKeys(strings, root, &schema_root_keys, "", out);
+
+    if (root.get("rules")) |rules_node| switch (rules_node) {
+        .mapping => |m| {
+            for (m.entries) |entry| {
+                switch (entry.value) {
+                    .mapping => |rule_map| {
+                        const prefix = try std.fmt.allocPrint(strings, "rules.{s}", .{entry.key.value});
+                        try collectMappingKeys(strings, rule_map, &schema_rule_keys, prefix, out);
+                    },
+                    else => {},
+                }
+            }
+        },
+        else => {},
+    };
+
+    if (root.get("output")) |output_node| switch (output_node) {
+        .mapping => |m| try collectMappingKeys(strings, m, &schema_output_keys, "output", out),
+        else => {},
+    };
+
+    if (root.get("runner")) |runner_node| switch (runner_node) {
+        .mapping => |m| try collectMappingKeys(strings, m, &schema_runner_keys, "runner", out),
+        else => {},
+    };
 }
 
 fn parseBool(s: []const u8) bool {
@@ -657,6 +734,62 @@ test "config outlives source buffer (runner label)" {
 
     try std.testing.expectEqual(@as(usize, 1), config.runner_labels.items.len);
     try std.testing.expectEqualStrings("ubuntu-nvidia", config.runner_labels.items[0]);
+}
+
+test "unknown config keys are recorded and printed" {
+    var config = try parseConfig(std.testing.allocator,
+        \\foo: 1
+        \\output:
+        \\  format: json
+        \\  pretty: true
+        \\rules:
+        \\  SEC001:
+        \\    severity: error
+        \\    extra: 1
+        \\runner:
+        \\  labels: [self-hosted]
+        \\  pool: gpu
+        \\
+    );
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), config.unknown_keys.len);
+    try std.testing.expectEqualStrings("foo", config.unknown_keys[0]);
+    try std.testing.expectEqualStrings("rules.SEC001.extra", config.unknown_keys[1]);
+    try std.testing.expectEqualStrings("output.pretty", config.unknown_keys[2]);
+    try std.testing.expectEqualStrings("runner.pool", config.unknown_keys[3]);
+    try std.testing.expectEqual(OutputFormat.json, config.output_format);
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    config.writeUnknownKeyWarnings(&out.writer);
+    try std.testing.expectEqualStrings(
+        \\warning: unknown config key 'foo'
+        \\warning: unknown config key 'rules.SEC001.extra'
+        \\warning: unknown config key 'output.pretty'
+        \\warning: unknown config key 'runner.pool'
+        \\
+    , out.written());
+}
+
+test "known config keys are not recorded as unknown" {
+    var config = try parseConfig(std.testing.allocator,
+        \\rules:
+        \\  SEC001:
+        \\    severity: warning
+        \\    enabled: true
+        \\    exclude:
+        \\      - "**/release.yml"
+        \\ignore:
+        \\  - "*.yml"
+        \\output:
+        \\  format: terminal
+        \\  color: never
+        \\repo_visibility: private
+        \\
+    );
+    defer config.deinit();
+    try std.testing.expectEqual(@as(usize, 0), config.unknown_keys.len);
 }
 
 /// Mirrors `main.loadConfig`: the YAML source buffer is freed before the Config
