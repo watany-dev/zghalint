@@ -3,6 +3,7 @@ pub const runtime = @import("runtime.zig");
 pub const yaml = struct {
     pub const Parser = @import("yaml/parser.zig").Parser;
     pub const types = @import("yaml/types.zig");
+    pub const emit = @import("yaml/emit.zig");
 };
 
 pub const workflow = struct {
@@ -68,6 +69,7 @@ test {
     _ = @import("yaml/tokenizer.zig");
     _ = @import("yaml/types.zig");
     _ = @import("yaml/parser.zig");
+    _ = @import("yaml/emit.zig");
     _ = @import("workflow/types.zig");
     _ = @import("workflow/parser.zig");
     _ = @import("workflow/events.zig");

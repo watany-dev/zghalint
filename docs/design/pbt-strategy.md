@@ -1,6 +1,6 @@
 # PBT 戦略: Property-Based Testing 強化計画
 
-最終更新: 2026-09-07
+最終更新: 2026-09-16
 
 ## 1. 概要
 
@@ -28,9 +28,12 @@ PBT は Python/Hypothesis で実装され、`tests/pbt/` に配置されてい�
 | `tests/pbt/conftest.py` | 126 | – | ReleaseSafe ビルド・subprocess 実行・config 書き出し | OK |
 | `tests/pbt/test_crash.py` | 103 | 5 | 任意入力で signal 終了しない | OK |
 | `tests/pbt/test_determinism.py` | 73 | 4 | 同一入力 → 同一出力 | OK |
-| `tests/pbt/test_monotonicity.py` | 119 | 3 | 問題追加で診断数が減らない / disable で増えない | OK |
+| `tests/pbt/test_monotonicity.py` | 171 | 4 | 問題追加で診断数が減らない / disable で増えない / **severity override で finding 集合が変わらない** (#565) | OK |
 | `tests/pbt/test_autofix_idempotency.py` | 365 | 10 | `--fix` / `--fix-unsafe` 冪等・出力再 lint 可 | OK |
 | `tests/pbt/test_security_detection.py` | 87 | 5 | SEC001/002/003 を必ず検出 | OK |
+| `tests/pbt/test_rule_detection.py` | 64 | 5 | PERM001 / PERM002 / BP004 / BP005 / PERF001 を必ず検出 (#565) | OK |
+| `tests/pbt/test_yaml_roundtrip.py` | 45 | 2 | `parse(s) == parse(emit(parse(s)))`。`--check-yaml-roundtrip` と `src/yaml/emit.zig` (#565) | OK |
+| `tests/pbt/test_file_order.py` | 43 | 1 | ファイル引数の順序で診断集合が変わらない (#565) | OK |
 | `tests/pbt/test_plain_scalar.py` | 56 | 2 | プレーンスカラーの `run:` / `if:` を取りこぼさない (#131) | OK |
 | `tests/pbt/test_output_consistency.py` | 212 | 11 | JSON/SARIF スキーマ・summary 算術 | OK |
 | `tests/pbt/test_formal_extractor.py` | 43 | 1 | `scripts/formal/impl.py` が `security.zig` の現行の表名をまだ見つけられる（#307。z3 不要） | OK |
@@ -52,9 +55,9 @@ detection を直接保証しているのは **5 種 (45%)**。
 |---|:---:|---|
 | `security.zig` (SEC001/002/003) | ✅ | `test_security_detection.py` |
 | `expressions.zig` | (部分) | detection は単体テスト 190+。`deeply_nested_expression` でネスト深度のクラッシュ耐性のみ PBT 対象 (#170) |
-| `permissions.zig` (PERM001 / PERM002) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
-| `best_practices.zig` (BP004 / BP005) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
-| `performance.zig` (PERF001 setup-go) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
+| `permissions.zig` (PERM001 / PERM002) | ✅ | `test_rule_detection.py` で検出、`test_autofix_idempotency.py` で `--fix-unsafe` 経路 |
+| `best_practices.zig` (BP004 / BP005) | ✅ | `test_rule_detection.py` で検出、`test_autofix_idempotency.py` で `--fix-unsafe` 経路 |
+| `performance.zig` (PERF001 setup-go) | ✅ | `test_rule_detection.py` で検出、`test_autofix_idempotency.py` で `--fix-unsafe` 経路 |
 | `advisory.zig` | ❌ | 外部依存あり、生成困難可能性 |
 | `archived.zig` | ❌ | 同上 |
 | `dependabot.zig` (DEP001) | ✅ | `test_autofix_idempotency.py` で `--fix-unsafe` 経路をカバー |
@@ -89,11 +92,11 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 |---|---|:---:|---|:---:|---|
 | 1 | ~~**fix/engine segfault の根本修正**~~ | **完了** | `applyFixes` に Edit 値域検証を追加し ReleaseSafe panic を解消 (2026-09-04) | 中 | バグ撲滅・xfail 解消 |
 | 2 | ~~**config rule override の修正**~~ | **完了** | `Config.strings_arena` 導入で YAML scalar を dupe し use-after-free を解消 (2026-09-04) | 中 | 設定機能復活 |
-| 3 | **PERM / BP / PERF ルールの detection PBT 追加** | **P1** | 11 ルール中 8 種が未カバー。`test_security_detection.py` パターンで横展開可 | 小 | カバー率 27% → 90%+ |
-| 4 | **YAML パーサ ラウンドトリップ不変条件** (`parse(s) == parse(serialize(parse(s)))`) | **P1** | 1,134 行の自前 YAML パーサ。テスト 36 個のみで網羅性低い | 中 | パーサバグ早期発見 |
+| 3 | ~~**PERM / BP / PERF ルールの detection PBT 追加**~~ | **完了** | `test_rule_detection.py` が PERM001 / PERM002 / BP004 / BP005 / PERF001 を必ず検出 (#565、2026-09-16) | 小 | カバー率 27% → 90%+ |
+| 4 | ~~**YAML パーサ ラウンドトリップ不変条件** (`parse(s) == parse(serialize(parse(s)))`)~~ | **完了** | `src/yaml/emit.zig` + `--check-yaml-roundtrip` + `test_yaml_roundtrip.py` + fuzz ターゲット (#565、2026-09-16)。quoted の unescape を持たないパーサなので、`'` と `"` を両方含むスカラーは対象外 | 中 | パーサバグ早期発見 |
 | 5 | **生成戦略の拡充**（matrix / reusable workflow / `if` 条件式 / multiline run / 巨大 jobs） | **P1** | 現ジェネレータは固定パターン中心。実運用ワークフローを反映できていない | 中 | 既存テスト全体の実効カバー底上げ |
-| 6 | ~~**Zig in-process PBT**~~ | **完了** | `std.testing.fuzz` を採用し、YAML tokenizer / YAML parser / 式パーサに加え `.zghalint.yml` と式の型検査の 5 ターゲットを実装 (2026-09-07、#566 で config / typecheck を追加、§6-4) | 大 | カバレッジ誘導で深掘り・CI で時間制限付き探索 |
-| 7 | **新しい不変条件の追加** (a) ファイル順序非依存 (b) `--quick` と通常モードの整合性 (c) severity override の単調性 (d) ~~JSON ↔ SARIF の diagnostic 数一致~~ (完了、§6-5) | **P2** | PBT は不変条件の数が価値を決める。低コストで追加可 | 小 | 検出領域の多角化 |
+| 6 | ~~**Zig in-process PBT**~~ | **完了** | `std.testing.fuzz` を採用し、YAML tokenizer / YAML parser / 式パーサに加え `.zghalint.yml` と式の型検査の 5 ターゲットを実装 (2026-09-07、#566 で config / typecheck を追加、§6-4)。#565 で YAML parse-emit-parse を追加し 6 ターゲット | 大 | カバレッジ誘導で深掘り・CI で時間制限付き探索 |
+| 7 | ~~**新しい不変条件の追加** (a) ファイル順序非依存 (b) `--quick` と通常モードの整合性 (c) severity override の単調性 (d) JSON ↔ SARIF の diagnostic 数一致~~ | **完了** | (a) `test_file_order.py`、(c) `test_monotonicity.py` の severity override、(d) 既存。(b) `--quick` 整合は v0.0.4 へ (#565、2026-09-16) | 小 | 検出領域の多角化 |
 | 8 | **advisory / archived / dependabot / refconfusion / stale_refs の検出 PBT** | **P2** | 外部依存があり生成困難な可能性。要調査 (dependabot はファズドライバが到達済み、§6-5) | 中 | 残ルールの網羅 |
 | 9 | ~~**Hypothesis DB 永続化と CI 統合**~~ | **完了** | `actions/cache` で `.hypothesis/` を run 間に引き継ぎ、依存を `==` で固定、`-x` を `--maxfail=3` に変更 (2026-09-07, #235) | 小 | 回帰防止・shrink 結果の蓄積 |
 | 10 | **terminal 出力フォーマッタの property test** | **P3** | 視覚出力で重要度低。ANSI escape を含み検証が煩雑 | 中 | 限定的 |
@@ -101,10 +104,10 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 ### 推奨実装順序
 
 1. ~~**#1, #2** (P0): xfail 解消で CI から黄信号を消す~~ — 完了 (2026-09-04)
-2. **#3** (P1, 投資小): 既存パターンの横展開で一気にカバー率を上げる
+2. ~~**#3** (P1, 投資小): 既存パターンの横展開で一気にカバー率を上げる~~ — 完了 (2026-09-16, #565)
 3. **#5** (P1, 投資中): ジェネレータ拡充で既存テスト全体の質を底上げ
-4. **#4** (P1, 投資中): YAML ラウンドトリップで自前パーサの信頼性確保
-5. **#7** (P2, 投資小): 不変条件追加
+4. ~~**#4** (P1, 投資中): YAML ラウンドトリップで自前パーサの信頼性確保~~ — 完了 (2026-09-16, #565)
+5. ~~**#7** (P2, 投資小): 不変条件追加~~ — (a)(c)(d) 完了。(b) は v0.0.4 (2026-09-16, #565)
 6. ~~**#6** (P2, 投資大): in-process PBT 基盤の整備~~ — 完了 (2026-09-07)
 7. **#8, #9, #10**: 余裕に応じて
 
@@ -170,6 +173,7 @@ in-process 側は `std.Random` を自前で回すのではなく、Zig 標準の
 |---|---|---|
 | `fuzz: yaml tokenizer never leaves the source buffer` | `src/yaml/tokenizer.zig` | 全トークンの `start`/`end` が入力範囲内、行・列が 1 以上、必ず `eof` に到達する (停止性) |
 | `fuzz: yaml parser survives arbitrary input` | `src/yaml/parser.zig` | 失敗は宣言済み `ParseError` のみ。panic / `unreachable` / 領域外アクセスがない |
+| `fuzz: yaml parse-emit-parse preserves the AST` | `src/yaml/emit.zig` | パースできた入力は `parse(emit(parse(s)))` が同じ AST。quoted unescape 不能なスカラーはスキップ (#565) |
 | `fuzz: expression parser survives arbitrary input` | `src/rules/expressions.zig` | `validateExpression` が出す診断がすべて well-formed (JSON/SARIF に流れるため) |
 | `fuzz: config parser survives arbitrary input` | `src/config.zig` | 失敗は宣言済み `ConfigError` のみ |
 | `fuzz: expression typecheck survives arbitrary input` | `src/rules/expressions.zig` `validateExpressionEnv` | 型検査経路が出す診断がすべて well-formed |

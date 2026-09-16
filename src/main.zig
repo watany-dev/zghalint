@@ -30,6 +30,7 @@ const CliArgs = struct {
     fail_on: zghalint.diagnostics.Severity = .@"error",
     read_stdin: bool = false,
     stdin_filename: ?[]const u8 = null,
+    check_yaml_roundtrip: bool = false,
 
     fn deinit(self: *CliArgs) void {
         self.files.deinit(self.allocator);
@@ -91,6 +92,8 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr
             args.read_stdin = true;
         } else if (std.mem.eql(u8, arg, "--stdin-filename")) {
             args.stdin_filename = try optionValue(argv, &i, stderr);
+        } else if (std.mem.eql(u8, arg, "--check-yaml-roundtrip")) {
+            args.check_yaml_roundtrip = true;
         } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
             stderr.print("error: unknown option '{s}' (see --help)\n", .{arg}) catch {};
             return error.UnknownOption;
@@ -143,6 +146,7 @@ fn printHelp(writer: anytype) !void {
         \\  --stdin           Read one workflow from stdin (`-` is the same)
         \\  --stdin-filename  Path used for ignore / routing when reading stdin
         \\                    (default: <stdin>)
+        \\  --check-yaml-roundtrip  Exit 0 iff parse(emit(parse(s))) equals parse(s)
         \\  -h, --help        Show this help
         \\  -v, --version     Show version
         \\
@@ -758,6 +762,47 @@ fn initWorkspaceContext(
     zghalint.workspace.set(ctx);
 }
 
+fn checkYamlRoundtrip(
+    allocator: std.mem.Allocator,
+    files: []const []const u8,
+    stderr: *std.Io.Writer,
+) u8 {
+    var failed: u8 = 0;
+    for (files) |path| {
+        const source = readSourceFile(allocator, path, stderr) orelse return 2;
+        defer allocator.free(source);
+
+        var first_arena = std.heap.ArenaAllocator.init(allocator);
+        defer first_arena.deinit();
+        var first_parser = zghalint.yaml.Parser.init(first_arena.allocator(), source);
+        const first = first_parser.parse() catch continue;
+
+        const serialized = zghalint.yaml.emit.emit(allocator, first) catch |err| switch (err) {
+            error.UnrepresentableScalar => continue,
+            else => {
+                stderr.print("error: {s}: emit failed: {s}\n", .{ path, @errorName(err) }) catch {};
+                failed = 1;
+                continue;
+            },
+        };
+        defer allocator.free(serialized);
+
+        var second_arena = std.heap.ArenaAllocator.init(allocator);
+        defer second_arena.deinit();
+        var second_parser = zghalint.yaml.Parser.init(second_arena.allocator(), serialized);
+        const second = second_parser.parse() catch {
+            stderr.print("error: {s}: emitted YAML did not parse\n", .{path}) catch {};
+            failed = 1;
+            continue;
+        };
+        if (!first.eql(second)) {
+            stderr.print("error: {s}: parse(emit(parse(s))) differs from parse(s)\n", .{path}) catch {};
+            failed = 1;
+        }
+    }
+    return failed;
+}
+
 pub fn main(init: std.process.Init) !u8 {
     runtime.init(init);
     const allocator = init.gpa;
@@ -831,6 +876,10 @@ pub fn main(init: std.process.Init) !u8 {
     if (files.len == 0) {
         stderr.writeAll("No workflow files found.\n") catch {};
         return 0;
+    }
+
+    if (cli_args.check_yaml_roundtrip) {
+        return checkYamlRoundtrip(allocator, files, stderr);
     }
 
     // Resolve the repository root (the RW rules read a called workflow
@@ -1239,6 +1288,15 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin-filename") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "github") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--check-yaml-roundtrip") != null);
+}
+
+test "parseArgsSlice parses check-yaml-roundtrip flag" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--check-yaml-roundtrip", "a.yml" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expect(args.check_yaml_roundtrip);
+    try std.testing.expectEqualStrings("a.yml", args.files.items[0]);
 }
 
 test "parseArgsSlice parses offline flag" {

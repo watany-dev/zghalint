@@ -1,6 +1,6 @@
 //! Fuzz targets for the parsers zghalint feeds untrusted bytes into: the YAML
-//! tokenizer, the YAML parser, the `${{ }}` expression parser / typecheck,
-//! and `.zghalint.yml`.
+//! tokenizer, the YAML parser, the YAML round-trip emitter, the `${{ }}`
+//! expression parser / typecheck, and `.zghalint.yml`.
 //!
 //! Each target is written so that `zig build test` (no `--fuzz`) still runs it
 //! once per corpus entry — that keeps the seeds working as ordinary regression
@@ -18,6 +18,7 @@ const std = @import("std");
 
 const tokenizer = @import("yaml/tokenizer.zig");
 const yaml_parser = @import("yaml/parser.zig");
+const yaml_emit = @import("yaml/emit.zig");
 const expressions = @import("rules/expressions.zig");
 const expr_check = @import("rules/expr_check.zig");
 const config_mod = @import("config.zig");
@@ -85,6 +86,32 @@ test "fuzz: yaml parser survives arbitrary input" {
             // for is the undeclared kind: a panic, an `unreachable`, an
             // out-of-bounds slice, or a hang.
             _ = parser.parse() catch return;
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = yaml_corpus });
+}
+
+test "fuzz: yaml parse-emit-parse preserves the AST" {
+    const Context = struct {
+        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
+            var buffer: [64 * 1024]u8 = undefined;
+            const input = buffer[0..smith.slice(&buffer)];
+            var first_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer first_arena.deinit();
+            var first_parser = yaml_parser.Parser.init(first_arena.allocator(), input);
+            const first = first_parser.parse() catch return;
+
+            const serialized = yaml_emit.emit(std.testing.allocator, first) catch |err| switch (err) {
+                error.UnrepresentableScalar => return,
+                else => |e| return e,
+            };
+            defer std.testing.allocator.free(serialized);
+
+            var second_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer second_arena.deinit();
+            var second_parser = yaml_parser.Parser.init(second_arena.allocator(), serialized);
+            const second = try second_parser.parse();
+            try std.testing.expect(first.eql(second));
         }
     };
     try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = yaml_corpus });
