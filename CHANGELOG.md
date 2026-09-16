@@ -27,6 +27,10 @@ each ID means.
 - Inline `# zghalint-disable-line` / `# zghalint-disable-next-line` comments
   suppress named rule IDs on that line (or the next line). JSON summary
   includes `suppressed` (#558).
+- `--stdin` (`-` is the same) reads one workflow from standard input.
+  `--stdin-filename` is the path used for `ignore` and for routing
+  `action.yml` / `dependabot.yml`; it defaults to `<stdin>`. `--fix` is
+  rejected because there is no file to write back (#559).
 
 ### Changed
 

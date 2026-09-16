@@ -322,6 +322,8 @@ count in `summary.suppressed`.
 | `--fix` | Apply safe auto-fixes and rewrite files in place | |
 | `--fix-unsafe` | Apply all auto-fixes, including unsafe ones | |
 | `--fail-on <severity>` | Exit 1 from this severity up: `error`, `warning`, `info` | `error` |
+| `--stdin` / `-` | Read one workflow from stdin | Off |
+| `--stdin-filename <path>` | Path used for ignore / Dependabot / action routing when reading stdin | `<stdin>` |
 | `-h`, `--help` | Show help message | |
 | `-v`, `--version` | Show version | |
 

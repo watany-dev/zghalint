@@ -28,6 +28,8 @@ const CliArgs = struct {
     show_version: bool = false,
     fix_mode: FixMode = .off,
     fail_on: zghalint.diagnostics.Severity = .@"error",
+    read_stdin: bool = false,
+    stdin_filename: ?[]const u8 = null,
 
     fn deinit(self: *CliArgs) void {
         self.files.deinit(self.allocator);
@@ -85,6 +87,10 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr
                 return invalidValue(arg, value, stderr);
             if (sev == .hint) return invalidValue(arg, value, stderr);
             args.fail_on = sev;
+        } else if (std.mem.eql(u8, arg, "--stdin") or std.mem.eql(u8, arg, "-")) {
+            args.read_stdin = true;
+        } else if (std.mem.eql(u8, arg, "--stdin-filename")) {
+            args.stdin_filename = try optionValue(argv, &i, stderr);
         } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
             stderr.print("error: unknown option '{s}' (see --help)\n", .{arg}) catch {};
             return error.UnknownOption;
@@ -134,6 +140,9 @@ fn printHelp(writer: anytype) !void {
         \\  --fix             Apply safe auto-fixes and rewrite files
         \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
         \\  --fail-on <sev>   Exit 1 from this severity up: error, warning, info (default: error)
+        \\  --stdin           Read one workflow from stdin (`-` is the same)
+        \\  --stdin-filename  Path used for ignore / routing when reading stdin
+        \\                    (default: <stdin>)
         \\  -h, --help        Show this help
         \\  -v, --version     Show version
         \\
@@ -258,6 +267,38 @@ fn readSourceFile(
     };
 }
 
+const stdin_placeholder = "<stdin>";
+
+fn stdinPath(args: CliArgs) []const u8 {
+    return args.stdin_filename orelse stdin_placeholder;
+}
+
+fn readStdinSource(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer) ?[]u8 {
+    var reader = std.Io.File.stdin().readerStreaming(io, &.{});
+    return reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024)) catch |err| {
+        stderr.print("error: cannot read stdin: {s}\n", .{@errorName(err)}) catch {};
+        return null;
+    };
+}
+
+/// `--stdin` is a single input: no sibling files, and nothing to write `--fix` back to.
+fn stdinUsageError(args: CliArgs, stderr: *std.Io.Writer) bool {
+    if (args.stdin_filename != null and !args.read_stdin) {
+        stderr.writeAll("error: --stdin-filename requires --stdin or -\n") catch {};
+        return true;
+    }
+    if (!args.read_stdin) return false;
+    if (args.files.items.len > 0) {
+        stderr.writeAll("error: --stdin cannot be combined with file arguments\n") catch {};
+        return true;
+    }
+    if (args.fix_mode != .off) {
+        stderr.writeAll("error: --fix cannot be used with --stdin\n") catch {};
+        return true;
+    }
+    return false;
+}
+
 fn documentLintFn(path: []const u8) ?*const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void {
     if (isDependabotFile(path)) return &zghalint.rules.dependabot.lintDependabot;
     if (isActionMetadataFile(path)) return &zghalint.rules.action_metadata.lintActionMetadata;
@@ -358,9 +399,11 @@ fn lintDocumentFile(
     lint_fn: *const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void,
     file_index: u32,
     suppressed: *usize,
+    source_override: ?[]const u8,
 ) !void {
-    const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
-    defer allocator.free(source);
+    const owned = if (source_override == null) readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile else null;
+    defer if (owned) |s| allocator.free(s);
+    const source = source_override orelse owned.?;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -530,9 +573,11 @@ fn lintFile(
     stderr: *std.Io.Writer,
     file_index: u32,
     suppressed: *usize,
+    source_override: ?[]const u8,
 ) !void {
-    const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
-    defer allocator.free(source);
+    const owned = if (source_override == null) readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile else null;
+    defer if (owned) |s| allocator.free(s);
+    const source = source_override orelse owned.?;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -749,13 +794,23 @@ pub fn main(init: std.process.Init) !u8 {
     if (cli_args.format) |fmt| config.output_format = fmt;
     if (cli_args.color) |color| config.color_mode = color;
 
+    if (stdinUsageError(cli_args, stderr)) return 2;
+
+    var stdin_owned: ?[]u8 = null;
+    defer if (stdin_owned) |s| allocator.free(s);
+    const stdin_display = stdinPath(cli_args);
+    const stdin_as_files = [_][]const u8{stdin_display};
+
     var owned_files: ?std.ArrayList([]const u8) = null;
     defer if (owned_files) |*of| {
         for (of.items) |p| allocator.free(p);
         of.deinit(allocator);
     };
 
-    const requested_files = if (cli_args.files.items.len > 0)
+    const requested_files = if (cli_args.read_stdin) blk: {
+        stdin_owned = readStdinSource(allocator, init.io, stderr) orelse return 2;
+        break :blk stdin_as_files[0..];
+    } else if (cli_args.files.items.len > 0)
         cli_args.files.items
     else blk: {
         owned_files = collectDefaultFiles(allocator) catch {
@@ -831,7 +886,7 @@ pub fn main(init: std.process.Init) !u8 {
 
     // Batch all network-rule fetches before the lint pass so TLS/TCP
     // connections, advisories, and repo metadata are primed in the caches.
-    if (!cli_args.offline) {
+    if (!cli_args.offline and !cli_args.read_stdin) {
         prefetchNetworkData(allocator, files, &config, cli_args.no_cache) catch {};
     }
 
@@ -847,10 +902,11 @@ pub fn main(init: std.process.Init) !u8 {
     for (files, 0..) |file_path, i| {
         if (config.isIgnored(file_path)) continue;
         const file_index: u32 = @intCast(i + 1);
+        const source_override: ?[]const u8 = if (cli_args.read_stdin) stdin_owned else null;
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
-            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index, &suppressed)
+            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index, &suppressed, source_override)
         else
-            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index, &suppressed);
+            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index, &suppressed, source_override);
         // lintFile / lintDocumentFile already reported the reason on stderr.
         lint_result catch {
             had_fatal = true;
@@ -1177,6 +1233,8 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.find(u8, buf.written(), "--no-cache") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--fix") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--fail-on") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin-filename") != null);
 }
 
 test "parseArgsSlice parses offline flag" {
@@ -1260,6 +1318,75 @@ test "parseArgsSlice rejects unknown fail-on value" {
         error.InvalidOptionValue,
         parseArgsSlice(std.testing.allocator, &.{ "--fail-on", "fatal" }, &discard.writer),
     );
+}
+
+test "parseArgsSlice treats lone - and --stdin as stdin" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{"-"}, &discard.writer);
+        defer args.deinit();
+        try std.testing.expect(args.read_stdin);
+        try std.testing.expectEqual(@as(usize, 0), args.files.items.len);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin", "--stdin-filename", ".github/workflows/ci.yml" }, &discard.writer);
+        defer args.deinit();
+        try std.testing.expect(args.read_stdin);
+        try std.testing.expectEqualStrings(".github/workflows/ci.yml", args.stdin_filename.?);
+    }
+}
+
+test "parseArgsSlice treats -- - as a file named dash" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--", "-" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expect(!args.read_stdin);
+    try std.testing.expectEqual(@as(usize, 1), args.files.items.len);
+    try std.testing.expectEqualStrings("-", args.files.items[0]);
+}
+
+test "stdinUsageError rejects files, --fix, and a filename without stdin" {
+    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer out.deinit();
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin", "a.yml" }, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(stdinUsageError(args, &out.writer));
+        try std.testing.expect(std.mem.find(u8, out.written(), "cannot be combined") != null);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin", "--fix" }, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(stdinUsageError(args, &out.writer));
+        try std.testing.expect(std.mem.find(u8, out.written(), "--fix cannot be used") != null);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin-filename", "ci.yml" }, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(stdinUsageError(args, &out.writer));
+        try std.testing.expect(std.mem.find(u8, out.written(), "requires --stdin") != null);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{"--stdin"}, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(!stdinUsageError(args, &out.writer));
+    }
+}
+
+test "stdin-filename is used for ignore and document routing" {
+    try std.testing.expect(documentLintFn("action.yml") != null);
+    try std.testing.expect(documentLintFn("<stdin>") == null);
+    try std.testing.expectEqualStrings("<stdin>", stdinPath(.{ .files = .empty, .allocator = std.testing.allocator }));
+    try std.testing.expectEqualStrings(
+        ".github/workflows/ci.yml",
+        stdinPath(.{ .files = .empty, .allocator = std.testing.allocator, .stdin_filename = ".github/workflows/ci.yml" }),
+    );
+
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+    try config.ignore_patterns.append(std.testing.allocator, try config.strings_arena.allocator().dupe(u8, ".github/workflows/ci.yml"));
+    try std.testing.expect(config.isIgnored(".github/workflows/ci.yml"));
+    try std.testing.expect(!config.isIgnored("<stdin>"));
 }
 
 test "parseArgsSlice treats everything after -- as files" {
