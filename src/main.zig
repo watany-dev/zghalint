@@ -27,6 +27,7 @@ const CliArgs = struct {
     show_help: bool = false,
     show_version: bool = false,
     fix_mode: FixMode = .off,
+    fail_on: zghalint.diagnostics.Severity = .@"error",
 
     fn deinit(self: *CliArgs) void {
         self.files.deinit(self.allocator);
@@ -78,6 +79,12 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr
             args.fix_mode = .safe;
         } else if (std.mem.eql(u8, arg, "--fix-unsafe")) {
             args.fix_mode = .all;
+        } else if (std.mem.eql(u8, arg, "--fail-on")) {
+            const value = try optionValue(argv, &i, stderr);
+            const sev = std.meta.stringToEnum(zghalint.diagnostics.Severity, value) orelse
+                return invalidValue(arg, value, stderr);
+            if (sev == .hint) return invalidValue(arg, value, stderr);
+            args.fail_on = sev;
         } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
             stderr.print("error: unknown option '{s}' (see --help)\n", .{arg}) catch {};
             return error.UnknownOption;
@@ -126,12 +133,13 @@ fn printHelp(writer: anytype) !void {
         \\  --no-cache        Ignore the on-disk prefetch cache and refetch from the network
         \\  --fix             Apply safe auto-fixes and rewrite files
         \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
+        \\  --fail-on <sev>   Exit 1 from this severity up: error, warning, info (default: error)
         \\  -h, --help        Show this help
         \\  -v, --version     Show version
         \\
         \\Exit codes:
-        \\  0  no error-severity diagnostics
-        \\  1  at least one error-severity diagnostic
+        \\  0  no diagnostics at or above --fail-on (default: error)
+        \\  1  at least one diagnostic at or above --fail-on
         \\  2  a file or the config could not be read or parsed, invalid arguments,
         \\     or a --fix write failed
         \\
@@ -631,8 +639,12 @@ fn applyFixesForFile(
 }
 
 fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
+    return failsOn(diag_list, .@"error");
+}
+
+fn failsOn(diag_list: *zghalint.DiagnosticList, threshold: zghalint.diagnostics.Severity) bool {
     for (diag_list.items.items) |diag| {
-        if (diag.severity == .@"error") return true;
+        if (@intFromEnum(diag.severity) <= @intFromEnum(threshold)) return true;
     }
     return false;
 }
@@ -896,7 +908,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
     reportUnreachableRules(stderr, &config, &all_diags);
     if (had_fatal) return 2;
-    if (hasErrors(&all_diags)) return 1;
+    if (failsOn(&all_diags, cli_args.fail_on)) return 1;
     return 0;
 }
 
@@ -1066,6 +1078,45 @@ test "hasErrors detects error severity" {
     try std.testing.expect(hasErrors(&list));
 }
 
+test "failsOn respects --fail-on threshold" {
+    var list = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{
+        .rule_id = "I1",
+        .severity = .info,
+        .message = "info",
+        .span = zghalint.yaml.types.Span.point(1, 1, 0),
+    });
+    try std.testing.expect(!failsOn(&list, .@"error"));
+    try std.testing.expect(!failsOn(&list, .warning));
+    try std.testing.expect(failsOn(&list, .info));
+
+    try list.append(.{
+        .rule_id = "W1",
+        .severity = .warning,
+        .message = "warn",
+        .span = zghalint.yaml.types.Span.point(2, 1, 0),
+    });
+    try std.testing.expect(!failsOn(&list, .@"error"));
+    try std.testing.expect(failsOn(&list, .warning));
+    try std.testing.expect(failsOn(&list, .info));
+}
+
+test "failsOn ignores hint below every threshold" {
+    var list = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "H1",
+        .severity = .hint,
+        .message = "hint",
+        .span = zghalint.yaml.types.Span.point(1, 1, 0),
+    });
+    try std.testing.expect(!failsOn(&list, .@"error"));
+    try std.testing.expect(!failsOn(&list, .warning));
+    try std.testing.expect(!failsOn(&list, .info));
+}
+
 test "printHelp outputs usage text" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
@@ -1078,6 +1129,7 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.find(u8, buf.written(), "--offline") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--no-cache") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--fix") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--fail-on") != null);
 }
 
 test "parseArgsSlice parses offline flag" {
@@ -1131,6 +1183,36 @@ test "parseArgsSlice parses config and format options" {
     try std.testing.expectEqual(OutputFormat.json, args.format.?);
     try std.testing.expectEqual(ColorMode.never, args.color.?);
     try std.testing.expectEqual(FixMode.all, args.fix_mode);
+}
+
+test "parseArgsSlice parses fail-on warning" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--fail-on", "warning" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expectEqual(zghalint.diagnostics.Severity.warning, args.fail_on);
+}
+
+test "parseArgsSlice fail-on defaults to error" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{"a.yml"}, &discard.writer);
+    defer args.deinit();
+    try std.testing.expectEqual(zghalint.diagnostics.Severity.@"error", args.fail_on);
+}
+
+test "parseArgsSlice rejects fail-on hint" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    try std.testing.expectError(
+        error.InvalidOptionValue,
+        parseArgsSlice(std.testing.allocator, &.{ "--fail-on", "hint" }, &discard.writer),
+    );
+}
+
+test "parseArgsSlice rejects unknown fail-on value" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    try std.testing.expectError(
+        error.InvalidOptionValue,
+        parseArgsSlice(std.testing.allocator, &.{ "--fail-on", "fatal" }, &discard.writer),
+    );
 }
 
 test "parseArgsSlice treats everything after -- as files" {
