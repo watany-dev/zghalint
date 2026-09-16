@@ -395,7 +395,8 @@ class Model:
                     c == self.c_of["github.event.commits.*.message"],
                 ),
                 self.sec025(a),
-                "create-github-app-token without permission-* inherits the installation's permissions",
+                "create-github-app-token without permission-* inherits the installation's"
+                " permissions",
             ),
         ]
 
