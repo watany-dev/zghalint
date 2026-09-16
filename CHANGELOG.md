@@ -48,6 +48,8 @@ each ID means.
   `src/fuzz_test.zig` (#566).
 - 形式モデルの job `outputs:` 伝播を 2 hop にし、`CODE_EXECUTING_INPUTS` を
   `popular_actions.zig` から生成、SEC025 を P13 として載せる (#564)。
+- PERM / BP / PERF の検出 PBT、YAML `parse(emit(parse(s)))` ラウンドトリップ、
+  ファイル順序非依存と severity override の単調性 (#565)。
 
 ### Changed
 
