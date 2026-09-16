@@ -80,3 +80,23 @@ def test_render_markdown_lists_rival_rows():
     text = perf.render_markdown(report)
     assert "| `cases` | ghalint | offline (repo) |" in text
     assert ".github/workflows/" in text
+
+
+def test_many_small_tiles_only_workflow_files(tmp_path: Path):
+    corpus = tmp_path / "corpus"
+    workflows = corpus / "acme__tool" / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (corpus / "acme__tool" / "action.yml").write_text("name: local\n", encoding="utf-8")
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    scenario = perf.many_small_scenario(corpus, tmp)
+    assert scenario.unavailable is None
+    assert all("ci.yml" in name for name in scenario.files)
+    assert not any("action.yml" in name for name in scenario.files)
+    assert scenario.files[0].startswith("0000-acme__tool-")
+
+
+def test_build_mode_reports_missing_binary(tmp_path: Path):
+    missing = tmp_path / "no-such-zghalint"
+    assert "不明" in perf._build_mode(missing)

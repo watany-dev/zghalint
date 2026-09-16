@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-12
+最終更新: 2026-09-16
 
 ## 1. 目的
 
@@ -1067,6 +1067,20 @@ CI / bench のピンを actionlint 1.7.12 と zizmor 1.30.1 に揃えた。歴�
 
 zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / FP は
 出なかった。空ワークフローで exit 3 になる既知の挙動は変わっていない。
+
+### 4.11 2026-09-16 の滞留 PR 清算 (#554)
+
+PR #395 は `docs/roadmap.md` の v0.0.3 版（#543）で置換済みで、既に close。
+PR #306 の数値（G16 / G17 後のパース失敗 0 件、Debug と shellcheck 無しが
+§4.6 の性能表を歪めたこと、G20 / G21 の発見）は §4.6〜§4.7 と G20 / G21
+の節に既に入っている。残っていたのはコーパスを平坦化していた
+`scripts/fetch-corpus.py` と、many-small が `action.yml` までタイルしていた
+こと、`--perf` 報告にビルド種別が無かったこと。それらをこちらで取り込み、
+#306 は close する。
+
+PR #217 の Alloy / TLA+ 仕様は Z3 モデル（`docs/design/formal-rule-model.md`、
+#307）で代替済みなので close。issue #409（AF6）は子の AF7〜AF14 が 0.0.2
+で全部 close 済みなので umbrella も close する。
 
 ## 5. 次アクション
 

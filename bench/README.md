@@ -231,13 +231,14 @@ many-small も同じ扱いになる。
 
 ### コーパス (`scripts/fetch-corpus.py`)
 
-`scripts/popular-actions.txt` のリポジトリを `.github/workflows/` だけ
-sparse clone し、ワークフローを `bench/corpus/<owner>__<repo>/` へ集める。
-上流のライセンスをそのまま持つファイルなので `bench/corpus/` は git 管理外
-にし、代わりに `bench/corpus/manifest.json` に取得元 (リポジトリ・コミット・
-ファイル名) と取得時刻を残す。`--limit N` で manifest の先頭 N 件に絞り、
-`--repo owner/repo` で manifest に無いリポジトリを対象に加える。取得は毎回
-`bench/corpus/` を作り直す。
+`scripts/popular-actions.txt` のリポジトリを sparse clone し、
+`.github/workflows/` と `action.yml` / `action.yaml` を**元のパスのまま**
+`bench/corpus/<owner>__<repo>/` へ複製する。`uses: ./` が解決できるように
+各コピーには空の `.git` も置く。上流のライセンスをそのまま持つファイルなので
+`bench/corpus/` は git 管理外にし、代わりに `bench/corpus/manifest.json` に
+取得元 (リポジトリ・コミット・ファイル名) と取得時刻を残す。`--limit N` で
+manifest の先頭 N 件に絞り、`--repo owner/repo` で manifest に無いリポジトリ
+を対象に加える。取得は毎回 `bench/corpus/` を作り直す。
 
 ## baseline との比較 (`scripts/bench_gate.py`)
 
