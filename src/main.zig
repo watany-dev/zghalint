@@ -328,10 +328,16 @@ fn appendFiltered(
     config: *const Config,
     file_path: []const u8,
     file_index: u32,
+    suppressions: []const zghalint.suppress.Suppression,
+    suppressed: *usize,
 ) void {
     for (diag_list.items.items) |diag| {
         if (!config.isRuleEnabled(diag.rule_id)) continue;
         if (config.isRuleExcluded(diag.rule_id, file_path)) continue;
+        if (zghalint.suppress.covers(suppressions, diag.span.start_line, diag.rule_id)) {
+            suppressed.* += 1;
+            continue;
+        }
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
@@ -351,6 +357,7 @@ fn lintDocumentFile(
     stderr: *std.Io.Writer,
     lint_fn: *const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void,
     file_index: u32,
+    suppressed: *usize,
 ) !void {
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
@@ -371,7 +378,8 @@ fn lintDocumentFile(
 
     lint_fn(yaml_node, &diag_list);
 
-    appendFiltered(all_diags, &diag_list, config, file_path, file_index);
+    const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index, suppressions, suppressed);
 }
 
 /// Runs on a throwaway arena so the cost of parsing twice (once here, once
@@ -521,6 +529,7 @@ fn lintFile(
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
     file_index: u32,
+    suppressed: *usize,
 ) !void {
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
@@ -541,7 +550,8 @@ fn lintFile(
     var empty_diags = zghalint.DiagnosticList.init(allocator);
     defer empty_diags.deinit();
     if (zghalint.rules.syntax.lintEmptyWorkflow(yaml_node, &empty_diags)) {
-        appendFiltered(all_diags, &empty_diags, config, file_path, file_index);
+        const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+        appendFiltered(all_diags, &empty_diags, config, file_path, file_index, suppressions, suppressed);
         return;
     }
 
@@ -566,7 +576,8 @@ fn lintFile(
         .drop_sec018 = config.isRuleEnabled("SEC015"),
     });
 
-    appendFiltered(all_diags, &diag_list, config, file_path, file_index);
+    const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index, suppressions, suppressed);
 }
 
 const FixOutcome = struct {
@@ -831,14 +842,15 @@ pub fn main(init: std.process.Init) !u8 {
     // clean report would be a false negative; such runs exit 2 instead.
     var had_fatal = false;
     var unlinted_count: usize = 0;
+    var suppressed: usize = 0;
 
     for (files, 0..) |file_path, i| {
         if (config.isIgnored(file_path)) continue;
         const file_index: u32 = @intCast(i + 1);
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
-            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index)
+            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index, &suppressed)
         else
-            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index);
+            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index, &suppressed);
         // lintFile / lintDocumentFile already reported the reason on stderr.
         lint_result catch {
             had_fatal = true;
@@ -894,7 +906,7 @@ pub fn main(init: std.process.Init) !u8 {
     // formats get an explicit trailing newline.
     const rendered = switch (config.output_format) {
         .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, use_color),
-        .json => zghalint.output.renderJson(stdout, all_diags, files.len),
+        .json => zghalint.output.renderJson(stdout, all_diags, files.len, suppressed),
         .sarif => zghalint.output.renderSarif(stdout, all_diags, &all_rules),
     };
     rendered catch return 2;
@@ -1043,15 +1055,18 @@ test "appendFiltered drops excluded rule diagnostics" {
         .span = zghalint.yaml.types.Span.point(2, 1, 0),
     });
 
+    const suppressions = [_]zghalint.suppress.Suppression{};
+    var suppressed: usize = 0;
     var all = zghalint.DiagnosticList.init(std.testing.allocator);
     defer all.deinit();
-    appendFiltered(&all, &src, &config, ".github/workflows/release.yml", 1);
+    appendFiltered(&all, &src, &config, ".github/workflows/release.yml", 1, &suppressions, &suppressed);
     try std.testing.expectEqual(@as(usize, 1), all.items.items.len);
     try std.testing.expectEqualStrings("SEC002", all.items.items[0].rule_id);
+    try std.testing.expectEqual(@as(usize, 0), suppressed);
 
     var kept = zghalint.DiagnosticList.init(std.testing.allocator);
     defer kept.deinit();
-    appendFiltered(&kept, &src, &config, ".github/workflows/ci.yml", 2);
+    appendFiltered(&kept, &src, &config, ".github/workflows/ci.yml", 2, &suppressions, &suppressed);
     try std.testing.expectEqual(@as(usize, 2), kept.items.items.len);
 }
 
@@ -1115,6 +1130,38 @@ test "failsOn ignores hint below every threshold" {
     try std.testing.expect(!failsOn(&list, .@"error"));
     try std.testing.expect(!failsOn(&list, .warning));
     try std.testing.expect(!failsOn(&list, .info));
+}
+
+test "appendFiltered drops inline-suppressed diagnostics and counts them" {
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+
+    var src = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer src.deinit();
+    try src.append(.{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = "unpinned",
+        .span = zghalint.yaml.types.Span.point(3, 1, 0),
+    });
+    try src.append(.{
+        .rule_id = "SEC002",
+        .severity = .@"error",
+        .message = "inject",
+        .span = zghalint.yaml.types.Span.point(3, 1, 0),
+    });
+
+    const suppressions = [_]zghalint.suppress.Suppression{.{
+        .line = 3,
+        .ids = &.{"SEC001"},
+    }};
+    var all = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer all.deinit();
+    var suppressed: usize = 0;
+    appendFiltered(&all, &src, &config, "w.yml", 1, &suppressions, &suppressed);
+    try std.testing.expectEqual(@as(usize, 1), suppressed);
+    try std.testing.expectEqual(@as(usize, 1), all.len());
+    try std.testing.expectEqualStrings("SEC002", all.get(0).rule_id);
 }
 
 test "printHelp outputs usage text" {

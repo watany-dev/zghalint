@@ -305,6 +305,11 @@ output:
 repo_visibility: unknown
 ```
 
+A finding can also be silenced in the workflow with
+`# zghalint-disable-line SEC001` or `# zghalint-disable-next-line SEC001`.
+Multiple IDs are comma-separated. `--format json` includes the suppressed
+count in `summary.suppressed`.
+
 ## CLI Options
 
 | Option | Description | Default |

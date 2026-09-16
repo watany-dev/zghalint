@@ -24,6 +24,9 @@ each ID means.
   paths. File-level `ignore` is unchanged (#556).
 - `--fail-on <severity>` selects whether exit code 1 starts at `error`
   (default, unchanged), `warning`, or `info`. Output is unchanged (#557).
+- Inline `# zghalint-disable-line` / `# zghalint-disable-next-line` comments
+  suppress named rule IDs on that line (or the next line). JSON summary
+  includes `suppressed` (#558).
 
 ### Changed
 

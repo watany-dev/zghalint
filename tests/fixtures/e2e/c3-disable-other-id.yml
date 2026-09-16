@@ -1,0 +1,14 @@
+# zghalint:expect SEC001@14
+# zghalint:forbid SEC002@14
+name: suppress
+on: push
+concurrency:
+  group: suppress-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4  # zghalint-disable-line SEC002

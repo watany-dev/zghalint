@@ -60,6 +60,7 @@ pub const ColorMode = config.ColorMode;
 
 pub const util = @import("util.zig");
 pub const workspace = @import("workspace.zig");
+pub const suppress = @import("suppress.zig");
 
 test {
     _ = @import("yaml/tokenizer.zig");
@@ -134,6 +135,7 @@ test {
     _ = @import("config.zig");
     _ = @import("util.zig");
     _ = @import("workspace.zig");
+    _ = @import("suppress.zig");
     _ = @import("e2e_test.zig");
     _ = @import("catalog_test.zig");
     _ = @import("docs_sync_test.zig");

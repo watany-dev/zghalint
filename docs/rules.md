@@ -1659,3 +1659,7 @@ rules:
 ```
 
 See the [README](../README.md#configuration) for full configuration options.
+
+A single finding can also be silenced with `# zghalint-disable-line RULE`
+or `# zghalint-disable-next-line RULE` on the YAML line. Multiple IDs are
+comma-separated. `--format json` reports how many diagnostics were suppressed.
