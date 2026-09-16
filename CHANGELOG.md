@@ -46,6 +46,8 @@ each ID means.
 - Fuzz targets for `.zghalint.yml` (`parseConfig`) and expression typecheck
   (`validateExpressionEnv`) join the YAML / expression parser seeds in
   `src/fuzz_test.zig` (#566).
+- 形式モデルの job `outputs:` 伝播を 2 hop にし、`CODE_EXECUTING_INPUTS` を
+  `popular_actions.zig` から生成、SEC025 を P13 として載せる (#564)。
 
 ### Changed
 

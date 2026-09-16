@@ -1,9 +1,10 @@
 # 形式手法によるルール自体の抜け漏れ検出: Z3 有界モデル検査
 
-最終更新: 2026-09-14
+最終更新: 2026-09-16
 
 追跡 issue: #307（sub-issue #308〜#314、close 済み）、
-#531（既知の脆弱性クラス G1〜G5 = #532〜#536、§7）
+#531（既知の脆弱性クラス G1〜G5 = #532〜#536、§7）、
+#564（2 hop 伝播と action 表の生成、P13 = SEC025 / #552）
 
 ## 1. 目的
 
@@ -20,7 +21,8 @@
 の候補であり、実バイナリで確認してから issue にする。
 
 対象は現状 SEC002 / SEC005 / SEC006 / SEC008 / SEC009 / SEC020 / SEC021 /
-SEC022（インジェクションと untrusted checkout の系統）。
+SEC022（インジェクションと untrusted checkout の系統）と、SEC025
+（unscoped GitHub App token、P13）。
 
 2026-09-14 からは、`${{ }}` 文脈の表だけでなく **既知の脆弱性クラス**
 （GitHub Actions で実際に悪用された型）をシンク・経路として仕様に持つ:
@@ -38,8 +40,9 @@ action 名の表）が要る。
 ```
 scripts/formal/
 ├── spec.py          仕様側: トリガ / 文脈 / シンク / 伝播経路の有限関係
+├── gen_actions.py   CODE_EXECUTING_INPUTS を popular_actions.zig から生成
 ├── impl.py          実装側: security.zig から表を抽出
-├── model.py         Z3 で Unsafe ∧ ¬Covered の証人を全列挙（性質 P1〜P12）
+├── model.py         Z3 で Unsafe ∧ ¬Covered の証人を全列挙（性質 P1〜P13）
 ├── confirm.py       各証人を最小ワークフローに落とし実バイナリで確認
 └── requirements.txt z3-solver（固定版）
 ```
@@ -63,9 +66,12 @@ CI ゲートではない。列挙された抜けは issue として追跡し、�
 
 ## 3. 仕様側 (`spec.py`)
 
-`src/` から一切導出しない。GitHub の webhook payload 仕様、
-"Security hardening for GitHub Actions"、`github.head_ref` の存在条件、
-actionlint / zizmor が公開する untrusted 一覧から転記する。
+信頼関係は `src/rules/security.zig` から導出しない。GitHub の webhook
+payload 仕様、"Security hardening for GitHub Actions"、`github.head_ref`
+の存在条件、actionlint / zizmor が公開する untrusted 一覧から転記する。
+例外は `CODE_EXECUTING_INPUTS` だけで、どの action が入力をコードとして
+実行するかはカタログの事実なので `popular_actions.zig` から生成する
+（`gen_actions.py`）。
 
 ### 3-1. ソート
 
@@ -73,8 +79,8 @@ actionlint / zizmor が公開する untrusted 一覧から転記する。
 |---|---|---|
 | Trigger | `on:` のイベント名 20 種 | `pull_request_target`, `issue_comment`, `workflow_run`, `gollum` |
 | Ctx | `${{ }}` パス。`.*` はシーケンス要素 | `github.event.pull_request.title`, `inputs.*` |
-| Sink | 値が到達すると危険な場所 | `run`, `github_env`, `checkout_ref`, `condition`, `run_fetch`（`run:` 内の `git` / `gh` が取る ref）, `artifact_run_id`（`download-artifact` の `run-id:`）, `action_script`（action がコードとして実行する入力） |
-| Flow | 値がシンクへ届く経路 | `direct`, `env_context`, `step_output`, `job_output`, `action_input`（`uses: ./local` の `with:` → composite 内 `inputs.*`）, `action_output`（action が攻撃者文字列から作る `outputs`） |
+| Sink | 値が到達すると危険な場所 | `run`, `github_env`, `checkout_ref`, `condition`, `run_fetch`（`run:` 内の `git` / `gh` が取る ref）, `artifact_run_id`（`download-artifact` の `run-id:`）, `action_script`（action がコードとして実行する入力）, `app_token`（`create-github-app-token` が `permission-*` なし） |
+| Flow | 値がシンクへ届く経路 | `direct`, `env_context`, `step_output`, `job_output`, `job_output_2hop`（A の output を B が再エクスポートし C が読む）, `action_input`（`uses: ./local` の `with:` → composite 内 `inputs.*`）, `action_output`（action が攻撃者文字列から作る `outputs`） |
 | Action | 性質が名指しする action と入力／出力（`owner/repo#name`）。無関係な性質は `-` に固定 | `azure/cli#inlineScript`, `tj-actions/changed-files#all_changed_files` |
 
 ### 3-2. 関係
@@ -117,11 +123,12 @@ labels や release は `COLLABORATOR` として載せ、実装がそれらを表
 | `workflow_run_markers` | `isWorkflowRunValue` | SEC009（`workflow_run` 宣言時のみ） |
 | `trigger_contexts` | `dispatch_payload_table` ∪ `attacker_text_table`（実装の `trigger_context_table` と同じ合成） | SEC021（`workflow_dispatch` 宣言時は `bare_inputs` を追加、#219） |
 | `fork_accessible_triggers` | `hasForkAccessibleTrigger` の `=> return true` 腕 | SEC020 |
-| `followed_flows` | 固定値 `direct`, `step_output`, `env_context`, `job_output` | SEC002 が追う伝播（`checkScriptInjection` の構造から、#314）。composite action の `inputs` には入らず、action の `outputs` の出所も知らない |
-| `code_executing_inputs` | `checkScriptInputInjection` が硬く持つ `isAction` / `getWithInput` の 1 組 | SEC002（action 入力）。2 組以上になったら抽出器を表追随に書き換える（fail-close） |
+| `followed_flows` | 固定値 `direct`, `step_output`, `env_context`, `job_output`, `job_output_2hop`, `action_output`, `action_input` | SEC002 が追う伝播。job `outputs:` は固定点なので 2 hop の再エクスポートも追う（#564） |
+| `code_executing_inputs` | `const code_executing_inputs` | SEC002（action 入力） |
 | `shell_fetch_contexts` | **probe**: `const shell_fetch_contexts` | 未実装（P9）。無ければ空 |
 | `artifact_run_id_contexts` | **probe**: `const artifact_run_id_contexts` | 未実装（P10）。無ければ空 |
-| `untrusted_output_actions` | **probe**: `const untrusted_output_actions` | 未実装（P12）。無ければ空 |
+| `untrusted_output_actions` | `const untrusted_output_actions` | SEC002（P12） |
+| `github_app_token_actions` | **probe**: SEC025 が名指す `create-github-app-token` | 空なら P13 は FN。B1 #552 が入ると `covered` |
 
 probe は「仕様が求めるがまだ無いルール」の表で、抽出できなくてもエラーに
 しない。空のまま残る証人がそのまま未解決の issue になる。ルールが別名で
@@ -159,6 +166,7 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
 | P10 artifact poisoning | `workflow_run × workflow_run.id`、sink = `artifact_run_id` | `artifact_run_id(t, c)` | SEC009 |
 | P11 code-executing input | `issues × issue.title`、sink = `action_script`、`code_input(a)` | `code_input_known(a)` | SEC002 |
 | P12 untrusted action output | `untrusted_output(a) ∧ t = ao_trigger(a) ∧ c = ao_source(a)`、sink = `run`、flow = `action_output` | `output_known(a)` | SEC002 |
+| P13 github-app token | `a = create-github-app-token#token`、sink = `app_token` | `sec025(a)` | SEC025 |
 
 設計上の判断:
 
@@ -177,6 +185,13 @@ sat でなくなるまで列挙する。全述語は有限ソート上で外延�
   持つ既知の組」がステップ境界の向こうで `run:` に届く経路。前者はローカル
   composite action の `inputs.*`（`uses: ./x` の `with:` から）、後者は
   `tj-actions/changed-files` のような action の `outputs`。
+- **P8 の `job_output_2hop`。** job `outputs:` の taint は固定点なので、
+  A が tainted output を出し B が `needs.a.outputs` を再エクスポートし
+  C の `run:` が `needs.b.outputs` を展開する 2 hop も SEC002 が追う。
+- **P13 は taint ではなく欠落した入力。** `permission-*` なしの
+  `create-github-app-token` は installation の全権限を継承する。トリガと
+  文脈は代表元（`push` × `commits.*.message`）に固定し、action だけを動かす。
+  SEC025 が未着地なら probe は空で証人は #552 に対応する。
 
 - **P1 / P2 は `free_text` を要求する。** 番号や SHA はサーバが整形する値で
   シェルのメタ文字を含めない。ref 形の文脈は P4 で見る。
@@ -264,6 +279,7 @@ P4 1 件を除く 52 件が実バイナリで false negative と確認された�
 | #534 G3 | P11 | `issues` × `issue.title` × 6 action の入力 | `checkScriptInputInjection` が `actions/github-script#script` を硬く持つ。`azure/cli` / `azure/powershell#inlineScript`、`nick-fields/retry#command`、`addnab/docker-run-action#run`、`appleboy/ssh-action#script`、`jannekem/run-python-script-action#script` は同型なのに未対象 |
 | #535 G4 | P12 | `pull_request_target` × `head.sha` via `tj-actions/changed-files` 等の `outputs`、`issue_comment` × `comment.body` via `peter-evans/find-comment#comment-body` | SEC002 の taint は `${{ github.* }}` の文脈パスで判定するため、action が攻撃者の文字列（ファイル名・ブランチ名・コメント本文）から作った `steps.*.outputs.*` を無害と見なす |
 | #536 G5 | P8 | `issue_comment` × `comment.body` via `action_input` | ローカル composite action の `with:` に untrusted 文脈を渡し、action 側の `run:` が `${{ inputs.x }}` を展開しても SEC002 は出ない。呼び出し側は `with:` を見ず、action 側は `inputs.*` を untrusted と知らない |
+| #552 B1 | P13 | `actions/create-github-app-token` × sink `app_token` | SEC025 が未着地のあいだ probe は空。B1 の PR が入ると `covered` になる。新規 G 番号は切らない |
 
 ### 意図的な除外（issue にしない）
 
@@ -299,12 +315,15 @@ P4 1 件を除く 52 件が実バイナリで false negative と確認された�
 
 - 有界モデル。`AVAILABLE` に載せた文脈しか見ない。載せ忘れは検出できない
   （actionlint / zizmor の一覧との突き合わせで補う。#262）。
-- 伝播経路は 1 ホップまで。多段の `outputs` 連鎖は扱わない。composite
-  action 越しは `action_input`（呼び出し側 `with:` → action の `inputs.*`）
-  の 1 ホップだけで、action の中でさらに `outputs` に出る流れは見ない。
-- action の表（`CODE_EXECUTING_INPUTS` / `ACTION_OUTPUTS`）は zizmor の
-  template-injection 監査と各 action の README から転記した代表で、網羅では
-  ない。表にない action の同型の抜けは検出できない。
+- 伝播経路は job `outputs:` の **2 ホップ**まで（A が tainted output を出し、
+  B が `needs.a.outputs` を再エクスポートし、C の `run:` が `needs.b.outputs`
+  を展開する）。3 ホップ以上と、composite action の中でさらに `outputs` に
+  出る流れは見ない。
+- action の表（`CODE_EXECUTING_INPUTS`）は `popular_actions.zig` から生成し、
+  スナップショットに無い zizmor 既知 action だけを extras として足す
+  （`scripts/formal/gen_actions.py`）。`ACTION_OUTPUTS` は outputs メタデータが
+  スナップショットに無いので spec 側に残す。表にない action の同型の抜けは
+  検出できない。
 - P9 の `run:` 内コマンドは `spec.fetch_command` が決める綴りだけを試す。
   `git switch --detach` や `git checkout` の直指定など別の綴りは、ルール側が
   コマンドをどう認識するかで決まるため `confirm.py` では検証しない。
