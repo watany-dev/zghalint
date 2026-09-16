@@ -92,7 +92,7 @@ PBT が実際に検出した既知バグを `xfail` で記録する運用とす�
 | 3 | **PERM / BP / PERF ルールの detection PBT 追加** | **P1** | 11 ルール中 8 種が未カバー。`test_security_detection.py` パターンで横展開可 | 小 | カバー率 27% → 90%+ |
 | 4 | **YAML パーサ ラウンドトリップ不変条件** (`parse(s) == parse(serialize(parse(s)))`) | **P1** | 1,134 行の自前 YAML パーサ。テスト 36 個のみで網羅性低い | 中 | パーサバグ早期発見 |
 | 5 | **生成戦略の拡充**（matrix / reusable workflow / `if` 条件式 / multiline run / 巨大 jobs） | **P1** | 現ジェネレータは固定パターン中心。実運用ワークフローを反映できていない | 中 | 既存テスト全体の実効カバー底上げ |
-| 6 | ~~**Zig in-process PBT**~~ | **完了** | `std.Random` 自前実装ではなく `std.testing.fuzz` を採用し、YAML tokenizer / YAML parser / 式パーサの 3 ターゲットを実装 (2026-09-07、§6-4) | 大 | カバレッジ誘導で深掘り・CI で時間制限付き探索 |
+| 6 | ~~**Zig in-process PBT**~~ | **完了** | `std.testing.fuzz` を採用し、YAML tokenizer / YAML parser / 式パーサに加え `.zghalint.yml` と式の型検査の 5 ターゲットを実装 (2026-09-07、#566 で config / typecheck を追加、§6-4) | 大 | カバレッジ誘導で深掘り・CI で時間制限付き探索 |
 | 7 | **新しい不変条件の追加** (a) ファイル順序非依存 (b) `--quick` と通常モードの整合性 (c) severity override の単調性 (d) ~~JSON ↔ SARIF の diagnostic 数一致~~ (完了、§6-5) | **P2** | PBT は不変条件の数が価値を決める。低コストで追加可 | 小 | 検出領域の多角化 |
 | 8 | **advisory / archived / dependabot / refconfusion / stale_refs の検出 PBT** | **P2** | 外部依存があり生成困難な可能性。要調査 (dependabot はファズドライバが到達済み、§6-5) | 中 | 残ルールの網羅 |
 | 9 | ~~**Hypothesis DB 永続化と CI 統合**~~ | **完了** | `actions/cache` で `.hypothesis/` を run 間に引き継ぎ、依存を `==` で固定、`-x` を `--maxfail=3` に変更 (2026-09-07, #235) | 小 | 回帰防止・shrink 結果の蓄積 |
@@ -171,6 +171,8 @@ in-process 側は `std.Random` を自前で回すのではなく、Zig 標準の
 | `fuzz: yaml tokenizer never leaves the source buffer` | `src/yaml/tokenizer.zig` | 全トークンの `start`/`end` が入力範囲内、行・列が 1 以上、必ず `eof` に到達する (停止性) |
 | `fuzz: yaml parser survives arbitrary input` | `src/yaml/parser.zig` | 失敗は宣言済み `ParseError` のみ。panic / `unreachable` / 領域外アクセスがない |
 | `fuzz: expression parser survives arbitrary input` | `src/rules/expressions.zig` | `validateExpression` が出す診断がすべて well-formed (JSON/SARIF に流れるため) |
+| `fuzz: config parser survives arbitrary input` | `src/config.zig` | 失敗は宣言済み `ConfigError` のみ |
+| `fuzz: expression typecheck survives arbitrary input` | `src/rules/expressions.zig` `validateExpressionEnv` | 型検査経路が出す診断がすべて well-formed |
 
 **コーパスと回帰の方針**
 

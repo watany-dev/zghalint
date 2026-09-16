@@ -43,6 +43,9 @@ each ID means.
   (`src/rules/data/advisories.zig`) from GitHub Security Advisories. Embedded
   data tables and their refresh commands are listed in `docs/maintenance.md`
   (#563).
+- Fuzz targets for `.zghalint.yml` (`parseConfig`) and expression typecheck
+  (`validateExpressionEnv`) join the YAML / expression parser seeds in
+  `src/fuzz_test.zig` (#566).
 
 ### Changed
 
