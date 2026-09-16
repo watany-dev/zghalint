@@ -294,6 +294,13 @@
       "line_matched": 0,
       "violations": 0
     },
+    "c-supply-chain/local-scoped-path.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
     "c-supply-chain/sha-comment-mismatch.yml": {
       "detected": 0,
       "expected": 0,
@@ -523,6 +530,13 @@
       "expected": 1,
       "line_expected": 1,
       "line_matched": 1,
+      "violations": 0
+    },
+    "e-expression/numeric-bracket-index.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
       "violations": 0
     },
     "e-expression/safe-complex-expression.yml": {
