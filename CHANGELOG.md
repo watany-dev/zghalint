@@ -33,6 +33,9 @@ each ID means.
   rejected because there is no file to write back (#559).
 - 週次 bench を 1 周し、実運用ワークフロー群で doghooding D8 を回した。
   新規の G40 は無く、既知の G29 だけが再確認された (#555)。
+- `--format github` emits GitHub Actions workflow commands
+  (`::error file=,line=,col=::`) so PRs can show annotations without Code
+  Scanning. `info` / `hint` map to `notice` (#561).
 
 ### Changed
 

@@ -132,7 +132,7 @@ fn printHelp(writer: anytype) !void {
         \\
         \\Options:
         \\  --config <path>   Path to config file (default: .zghalint.yml)
-        \\  --format <fmt>    Output format: terminal, json, sarif (default: terminal)
+        \\  --format <fmt>    Output format: terminal, json, sarif, github (default: terminal)
         \\  --color <mode>    Color mode: auto, always, never (default: auto)
         \\  --quick           Disable network requests and use only local data/cache
         \\  --offline         Alias for --quick
@@ -964,6 +964,7 @@ pub fn main(init: std.process.Init) !u8 {
         .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, use_color),
         .json => zghalint.output.renderJson(stdout, all_diags, files.len, suppressed),
         .sarif => zghalint.output.renderSarif(stdout, all_diags, &all_rules),
+        .github => zghalint.output.renderGithub(stdout, all_diags),
     };
     rendered catch return 2;
     if (config.output_format != .terminal) stdout.writeAll("\n") catch return 2;
@@ -1235,6 +1236,7 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.find(u8, buf.written(), "--fail-on") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin-filename") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "github") != null);
 }
 
 test "parseArgsSlice parses offline flag" {
@@ -1387,6 +1389,13 @@ test "stdin-filename is used for ignore and document routing" {
     try config.ignore_patterns.append(std.testing.allocator, try config.strings_arena.allocator().dupe(u8, ".github/workflows/ci.yml"));
     try std.testing.expect(config.isIgnored(".github/workflows/ci.yml"));
     try std.testing.expect(!config.isIgnored("<stdin>"));
+}
+
+test "parseArgsSlice parses github format" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--format", "github" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expectEqual(OutputFormat.github, args.format.?);
 }
 
 test "parseArgsSlice treats everything after -- as files" {

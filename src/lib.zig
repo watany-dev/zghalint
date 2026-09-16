@@ -23,6 +23,8 @@ pub const output = struct {
     pub const renderJson = json.renderJson;
     pub const sarif = @import("output/sarif.zig");
     pub const renderSarif = sarif.renderSarif;
+    pub const github = @import("output/github.zig");
+    pub const renderGithub = github.renderGithub;
 };
 
 pub const rules = struct {
@@ -130,6 +132,7 @@ test {
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
+    _ = @import("output/github.zig");
     _ = @import("fix/engine.zig");
     _ = @import("fix/builder.zig");
     _ = @import("config.zig");
