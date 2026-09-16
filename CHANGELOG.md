@@ -36,6 +36,9 @@ each ID means.
 - `--format github` emits GitHub Actions workflow commands
   (`::error file=,line=,col=::`) so PRs can show annotations without Code
   Scanning. `info` / `hint` map to `notice` (#561).
+- `.zghalint.yml` has a JSON Schema at `docs/schema/zghalint.schema.json`,
+  generated from `src/config.zig`. Unknown keys are reported as stderr
+  warnings and do not change the exit code (#560).
 
 ### Changed
 
