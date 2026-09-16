@@ -1055,15 +1055,18 @@ test "appendFiltered drops excluded rule diagnostics" {
         .span = zghalint.yaml.types.Span.point(2, 1, 0),
     });
 
+    const suppressions = [_]zghalint.suppress.Suppression{};
+    var suppressed: usize = 0;
     var all = zghalint.DiagnosticList.init(std.testing.allocator);
     defer all.deinit();
-    appendFiltered(&all, &src, &config, ".github/workflows/release.yml", 1);
+    appendFiltered(&all, &src, &config, ".github/workflows/release.yml", 1, &suppressions, &suppressed);
     try std.testing.expectEqual(@as(usize, 1), all.items.items.len);
     try std.testing.expectEqualStrings("SEC002", all.items.items[0].rule_id);
+    try std.testing.expectEqual(@as(usize, 0), suppressed);
 
     var kept = zghalint.DiagnosticList.init(std.testing.allocator);
     defer kept.deinit();
-    appendFiltered(&kept, &src, &config, ".github/workflows/ci.yml", 2);
+    appendFiltered(&kept, &src, &config, ".github/workflows/ci.yml", 2, &suppressions, &suppressed);
     try std.testing.expectEqual(@as(usize, 2), kept.items.items.len);
 }
 
