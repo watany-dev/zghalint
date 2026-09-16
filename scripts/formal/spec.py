@@ -1,11 +1,15 @@
 """The trust model of GitHub Actions, written down independently of zghalint.
 
-This is the *specification* side of the check in ``model.py``. Nothing here is
-derived from ``src/``; every relation is transcribed from GitHub's own
-documentation (webhook payloads, "Security hardening for GitHub Actions",
-`github.head_ref` availability) and from the untrusted-input lists that
-actionlint and zizmor publish. When the two sides disagree the model produces
-a counterexample and ``confirm.py`` checks it against the real binary.
+This is the *specification* side of the check in ``model.py``. Trust relations
+are transcribed from GitHub's own documentation (webhook payloads,
+"Security hardening for GitHub Actions", `github.head_ref` availability) and
+from the untrusted-input lists that actionlint and zizmor publish; they are
+not derived from ``security.zig``. ``CODE_EXECUTING_INPUTS`` is the one
+catalog exception: which actions execute an input as code is generated from
+``popular_actions.zig`` plus zizmor extras (``gen_actions.py``), because that
+is an action-catalog fact, not a trust-model fact. When the two sides disagree
+the model produces a counterexample and ``confirm.py`` checks it against the
+real binary.
 
 Vocabulary
 ----------
@@ -21,6 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+
+from gen_actions import load_code_executing_rows
 
 
 class Author(Enum):
@@ -298,10 +304,13 @@ SINKS = [
     # An action input the action executes as code (`actions/github-script`
     # `with.script` and the like, see CODE_EXECUTING_INPUTS) → same as `run:`.
     "action_script",
+    # `actions/create-github-app-token` without `permission-*` inputs.
+    "app_token",
 ]
 
 #: How a value reaches a sink. ``direct`` is `${{ ctx }}` at the sink itself;
-#: the rest are one hop of indirection the runner (or an action) performs.
+#: ``job_output_2hop`` is two hops of job ``outputs:``; the rest are one hop
+#: of indirection the runner (or an action) performs.
 FLOWS = [
     "direct",
     # `env: {X: ${{ ctx }}}` then `${{ env.X }}` at the sink (not `$X`, which is safe).
@@ -317,14 +326,18 @@ FLOWS = [
     # names of the PR head, the branch name, a comment it looked up) and the
     # workflow interpolates `${{ steps.id.outputs.k }}`; see ACTION_OUTPUTS.
     "action_output",
+    # Two hops: job A exports a tainted output, job B re-exports
+    # `needs.a.outputs.k` as its own output, job C interpolates
+    # `needs.b.outputs.k` in `run:`.
+    "job_output_2hop",
 ]
 
 
 @dataclass(frozen=True)
 class CodeInput:
     """An action input that the action executes, so `${{ }}` inside it is
-    script injection exactly as in `run:`. From zizmor's template-injection
-    audit and each action's own README."""
+    script injection exactly as in `run:`. Built from popular_actions.zig
+    plus zizmor-named extras not in that snapshot (scripts/formal/gen_actions.py)."""
 
     action: str
     input: str
@@ -337,13 +350,8 @@ class CodeInput:
 
 
 CODE_EXECUTING_INPUTS = [
-    CodeInput("actions/github-script", "script", "node (JavaScript)"),
-    CodeInput("azure/cli", "inlineScript", "bash / pwsh with the Azure CLI"),
-    CodeInput("azure/powershell", "inlineScript", "pwsh with the Az module"),
-    CodeInput("nick-fields/retry", "command", "the runner shell"),
-    CodeInput("addnab/docker-run-action", "run", "a shell inside the container"),
-    CodeInput("appleboy/ssh-action", "script", "a shell on the SSH host"),
-    CodeInput("jannekem/run-python-script-action", "script", "python"),
+    CodeInput(action, input_name, runtime)
+    for action, input_name, runtime in load_code_executing_rows()
 ]
 
 
@@ -392,7 +400,14 @@ for _ao in ACTION_OUTPUTS:
     assert _ao.trigger in PRIVILEGED, _ao
 
 #: Action sort of the model: the union of both tables plus ``NO_ACTION`` for
-#: the properties that are not about an action.
+#: the properties that are not about an action, and the GitHub App token
+#: action for P13 (SEC025).
 NO_ACTION = "-"
-ACTIONS = [NO_ACTION] + [ci.key for ci in CODE_EXECUTING_INPUTS] + [ao.key for ao in ACTION_OUTPUTS]
+GITHUB_APP_TOKEN = "actions/create-github-app-token#token"
+ACTIONS = (
+    [NO_ACTION]
+    + [ci.key for ci in CODE_EXECUTING_INPUTS]
+    + [ao.key for ao in ACTION_OUTPUTS]
+    + [GITHUB_APP_TOKEN]
+)
 assert len(set(ACTIONS)) == len(ACTIONS), "duplicate action key"

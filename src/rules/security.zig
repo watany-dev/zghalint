@@ -4161,6 +4161,41 @@ test "SEC002: taint crosses the job boundary through outputs (#314)" {
     try testing.expect(hasDiagnostic(&list, "SEC002"));
 }
 
+test "SEC002: taint crosses two job hops through re-exported outputs (#564)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\on: issue_comment
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    outputs:
+        \\      body: ${{ steps.s.outputs.body }}
+        \\    steps:
+        \\      - id: s
+        \\        env:
+        \\          BODY: ${{ github.event.comment.body }}
+        \\        run: echo "body=$BODY" >> "$GITHUB_OUTPUT"
+        \\  b:
+        \\    needs: a
+        \\    runs-on: ubuntu-latest
+        \\    outputs:
+        \\      body: ${{ needs.a.outputs.body }}
+        \\    steps:
+        \\      - run: echo skip
+        \\  c:
+        \\    needs: b
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ needs.b.outputs.body }}"
+        \\
+    ;
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
 test "SEC002: an untainted job output leaves the consumer quiet (#314)" {
     var env: workflow_types.StringMap = .empty;
     defer env.deinit(testing.allocator);

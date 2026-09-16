@@ -200,6 +200,11 @@ class Model:
             self.a_of,
             lambda a: impl.matches_action(a.partition("#")[0], im.untrusted_output_actions),
         )
+        self.sec025 = self._define_unary(
+            "sec025",
+            self.a_of,
+            lambda a: impl.matches_action(a.partition("#")[0], im.github_app_token_actions),
+        )
 
     def properties(self) -> list[tuple[str, str, z3.BoolRef, z3.BoolRef, str]]:
         """(name, expected rule, Unsafe, Covered, note) over free variables t, c, f."""
@@ -378,6 +383,19 @@ class Model:
                 ),
                 self.output_known(a),
                 "an action output derived from attacker content, interpolated into run:",
+            ),
+            (
+                "P13 github-app token",
+                "SEC025",
+                z3.And(
+                    a == self.a_of[spec.GITHUB_APP_TOKEN],
+                    direct,
+                    self.sink == S["app_token"],
+                    t == self.t_of["push"],
+                    c == self.c_of["github.event.commits.*.message"],
+                ),
+                self.sec025(a),
+                "create-github-app-token without permission-* inherits the installation's permissions",
             ),
         ]
 
