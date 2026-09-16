@@ -554,7 +554,7 @@ zizmor も指摘しないので parity gap ではないが、2 経路の隙間�
 `docs/adr/0015-bp003-behind-current-major.md`。回帰ケースは
 `tests/fixtures/e2e/bp003-behind-current-major.yml`。
 
-#### G29. `actions/create-github-app-token` が installation の全権限を継承する — 要ルール追加
+#### G29 (#552). `actions/create-github-app-token` が installation の全権限を継承する — 対応済み
 
 `bench/cases/d-permissions-secrets/github-app-token-unscoped.yml`。
 
@@ -567,9 +567,15 @@ zizmor も指摘しないので parity gap ではないが、2 経路の隙間�
 
 `permission-*` 入力を付けないと、発行されるトークンは GitHub App の
 installation が持つ全スコープを継承する。zizmor は `github-app` として
-指摘する。zghalint には該当ルールが無い。実運用のワークフロー群を三者比較
-したところで 3 件出た。`permission-issues: write` のようにスコープを書いた
-呼び出しは zizmor も黙るので、入力の有無で切れる。
+指摘する。実運用のワークフロー群を三者比較したところで 3 件出た。
+`permission-issues: write` のようにスコープを書いた呼び出しは zizmor も黙る
+ので、入力の有無で切れる。
+
+SEC025 (`use-scoped-github-app-token`, warning) が同じ切れ方で報告する。
+`owner` / `repositories` はどの installation から発行するかを絞るだけで、
+権限集合はそのまま残るので沈黙しない。どの permission が要るかは静的に
+決まらないので autofix は付けない。回帰は
+`tests/fixtures/e2e/sec025-github-app-token-unscoped.yml`。
 
 #### G30 (#382). オブジェクト軸の未定義プロパティを EXPR011 が見ない — 対応済み
 
@@ -1155,7 +1161,7 @@ PR #217 の Alloy / TLA+ 仕様は Z3 モデル（`docs/design/formal-rule-model
 - [x] G26 (#358): BP003 が表の最新 major より古い major を `info` で報告する
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
-- [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する
+- [x] G29 (#552): `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する (SEC025)
 - [x] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
 - [x] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
 - [x] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める

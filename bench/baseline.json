@@ -358,10 +358,10 @@
       "violations": 0
     },
     "d-permissions-secrets/github-app-token-unscoped.yml": {
-      "detected": 0,
-      "expected": 0,
-      "line_expected": 0,
-      "line_matched": 0,
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
       "violations": 0
     },
     "d-permissions-secrets/github-env-injection.yml": {

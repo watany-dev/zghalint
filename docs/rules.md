@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **110 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **111 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -61,6 +61,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 | SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
+| SEC025 | use-scoped-github-app-token | warning | `actions/create-github-app-token` without `permission-*` inputs inherits the GitHub App installation's full permissions |
 
 ### SEC014 の自動修正
 
@@ -379,6 +380,16 @@ GitHub 自身も同じ組み合わせに warning annotation を付ける。
 `none` も報告しない。`on: push` だけのように信頼できるトリガへ `write` を書く
 のも既定と同じなので報告しない。式や未知の値は不確定として報告しない。
 `--fix` は付けない — キーを消すと実行時のキャッシュ権限が変わる。
+
+### SEC025 use-scoped-github-app-token
+
+`actions/create-github-app-token` は `permission-*` 入力が無いとき、GitHub App
+installation が持つ全スコープをトークンに載せる。`permissions:` の最小化と同じ
+理由で warning。`owner` / `repositories` はどの installation から発行するかを
+絞るだけで、その installation の権限集合はそのまま残る。
+
+`permission-issues: write` のように `permission-` で始まる入力が 1 つでもあれ
+ば沈黙する。どの permission が要るかは静的に決まらないので `--fix` は付けない。
 
 ## Supply Chain Security Rules (SC)
 
