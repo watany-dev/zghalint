@@ -1099,6 +1099,10 @@ test "failsOn respects --fail-on threshold" {
         .span = zghalint.yaml.types.Span.point(2, 1, 0),
     });
     try std.testing.expect(!failsOn(&list, .@"error"));
+    try std.testing.expect(failsOn(&list, .warning));
+    try std.testing.expect(failsOn(&list, .info));
+}
+
 test "failsOn ignores hint below every threshold" {
     var list = zghalint.DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -1190,7 +1194,7 @@ test "parseArgsSlice parses fail-on warning" {
 
 test "parseArgsSlice fail-on defaults to error" {
     var discard = std.Io.Writer.Discarding.init(&.{});
-    var args = try parseArgsSlice(std.testing.allocator, &.{ "a.yml" }, &discard.writer);
+    var args = try parseArgsSlice(std.testing.allocator, &.{"a.yml"}, &discard.writer);
     defer args.deinit();
     try std.testing.expectEqual(zghalint.diagnostics.Severity.@"error", args.fail_on);
 }
