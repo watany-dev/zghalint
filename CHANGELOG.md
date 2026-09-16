@@ -39,6 +39,10 @@ each ID means.
 - `.zghalint.yml` has a JSON Schema at `docs/schema/zghalint.schema.json`,
   generated from `src/config.zig`. Unknown keys are reported as stderr
   warnings and do not change the exit code (#560).
+- `scripts/gen-advisories.py` generates the SC003 offline snapshot
+  (`src/rules/data/advisories.zig`) from GitHub Security Advisories. Embedded
+  data tables and their refresh commands are listed in `docs/maintenance.md`
+  (#563).
 
 ### Changed
 

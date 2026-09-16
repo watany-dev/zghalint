@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Last reviewed: 2026-09-16. See docs/maintenance.md.
 pub const CompromisedAction = struct {
     owner: []const u8,
     repo: []const u8,
