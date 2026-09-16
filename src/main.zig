@@ -328,10 +328,16 @@ fn appendFiltered(
     config: *const Config,
     file_path: []const u8,
     file_index: u32,
+    suppressions: []const zghalint.suppress.Suppression,
+    suppressed: *usize,
 ) void {
     for (diag_list.items.items) |diag| {
         if (!config.isRuleEnabled(diag.rule_id)) continue;
         if (config.isRuleExcluded(diag.rule_id, file_path)) continue;
+        if (zghalint.suppress.covers(suppressions, diag.span.start_line, diag.rule_id)) {
+            suppressed.* += 1;
+            continue;
+        }
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
@@ -351,6 +357,7 @@ fn lintDocumentFile(
     stderr: *std.Io.Writer,
     lint_fn: *const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void,
     file_index: u32,
+    suppressed: *usize,
 ) !void {
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
@@ -371,7 +378,8 @@ fn lintDocumentFile(
 
     lint_fn(yaml_node, &diag_list);
 
-    appendFiltered(all_diags, &diag_list, config, file_path, file_index);
+    const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index, suppressions, suppressed);
 }
 
 /// Runs on a throwaway arena so the cost of parsing twice (once here, once
@@ -521,6 +529,7 @@ fn lintFile(
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
     file_index: u32,
+    suppressed: *usize,
 ) !void {
     const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
     defer allocator.free(source);
@@ -541,7 +550,8 @@ fn lintFile(
     var empty_diags = zghalint.DiagnosticList.init(allocator);
     defer empty_diags.deinit();
     if (zghalint.rules.syntax.lintEmptyWorkflow(yaml_node, &empty_diags)) {
-        appendFiltered(all_diags, &empty_diags, config, file_path, file_index);
+        const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+        appendFiltered(all_diags, &empty_diags, config, file_path, file_index, suppressions, suppressed);
         return;
     }
 
@@ -566,7 +576,8 @@ fn lintFile(
         .drop_sec018 = config.isRuleEnabled("SEC015"),
     });
 
-    appendFiltered(all_diags, &diag_list, config, file_path, file_index);
+    const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index, suppressions, suppressed);
 }
 
 const FixOutcome = struct {
@@ -831,14 +842,15 @@ pub fn main(init: std.process.Init) !u8 {
     // clean report would be a false negative; such runs exit 2 instead.
     var had_fatal = false;
     var unlinted_count: usize = 0;
+    var suppressed: usize = 0;
 
     for (files, 0..) |file_path, i| {
         if (config.isIgnored(file_path)) continue;
         const file_index: u32 = @intCast(i + 1);
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
-            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index)
+            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index, &suppressed)
         else
-            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index);
+            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index, &suppressed);
         // lintFile / lintDocumentFile already reported the reason on stderr.
         lint_result catch {
             had_fatal = true;
@@ -894,7 +906,7 @@ pub fn main(init: std.process.Init) !u8 {
     // formats get an explicit trailing newline.
     const rendered = switch (config.output_format) {
         .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, use_color),
-        .json => zghalint.output.renderJson(stdout, all_diags, files.len),
+        .json => zghalint.output.renderJson(stdout, all_diags, files.len, suppressed),
         .sarif => zghalint.output.renderSarif(stdout, all_diags, &all_rules),
     };
     rendered catch return 2;

@@ -599,7 +599,7 @@ fn checkSerializers(
     var json_count: ?usize = null;
     {
         var w = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-        json_out.renderJson(&w.writer, list, 1) catch return;
+        json_out.renderJson(&w.writer, list, 1, 0) catch return;
         buf = w.toArrayList();
         var parsed = std.json.parseFromSlice(std.json.Value, alloc, buf.items, .{}) catch
             return Violation.JsonOutputNotValid;

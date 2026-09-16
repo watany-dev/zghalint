@@ -7,7 +7,7 @@ const DiagnosticList = diagnostics.DiagnosticList;
 /// through `std.json.Stringify`, which re-derived the same layout from the
 /// type for every diagnostic — 16% of the instructions on a 45k-diagnostic
 /// run (#191).
-pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: usize) !void {
+pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: usize, suppressed: usize) !void {
     const counts = list.countBySeverity();
 
     try writer.writeAll("{\"diagnostics\":[");
@@ -17,8 +17,8 @@ pub fn renderJson(writer: *std.Io.Writer, list: DiagnosticList, files_checked: u
     }
     try writer.print(
         "],\"summary\":{{\"errors\":{d},\"warnings\":{d},\"infos\":{d},\"hints\":{d}," ++
-            "\"total\":{d},\"files_checked\":{d}}}}}",
-        .{ counts.@"error", counts.warning, counts.info, counts.hint, list.len(), files_checked },
+            "\"total\":{d},\"files_checked\":{d},\"suppressed\":{d}}}}}",
+        .{ counts.@"error", counts.warning, counts.info, counts.hint, list.len(), files_checked, suppressed },
     );
 }
 
@@ -117,12 +117,13 @@ test "renderJson empty diagnostics" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    try renderJson(&out.writer, list, 3);
+    try renderJson(&out.writer, list, 3, 0);
     const output = out.written();
 
     try std.testing.expect(std.mem.find(u8, output, "\"diagnostics\":[]") != null);
     try std.testing.expect(std.mem.find(u8, output, "\"total\":0") != null);
     try std.testing.expect(std.mem.find(u8, output, "\"files_checked\":3") != null);
+    try std.testing.expect(std.mem.find(u8, output, "\"suppressed\":0") != null);
 }
 
 test "renderJson single diagnostic" {
@@ -148,7 +149,7 @@ test "renderJson single diagnostic" {
         .fix_hint = "Use an environment variable instead",
     });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
     const output = out.written();
 
     try std.testing.expect(std.mem.find(u8, output, "\"rule_id\":\"SEC002\"") != null);
@@ -170,7 +171,7 @@ test "renderJson multiple diagnostics" {
     try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "err", .file = "a.yml", .span = Span.point(1, 1, 0) });
     try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "warn", .file = "a.yml", .span = Span.point(2, 1, 0), .fix_hint = "fix it" });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
     const output = out.written();
 
     try std.testing.expect(std.mem.find(u8, output, "\"errors\":1") != null);
@@ -187,7 +188,7 @@ test "renderJson null fix_hint" {
 
     try list.append(.{ .rule_id = "T1", .severity = .info, .message = "test", .span = Span.point(1, 1, 0) });
 
-    try renderJson(&out.writer, list, 0);
+    try renderJson(&out.writer, list, 0, 0);
     const output = out.written();
 
     try std.testing.expect(std.mem.find(u8, output, "\"fix_hint\":null") != null);
@@ -203,7 +204,7 @@ test "renderJson is valid JSON structure" {
 
     try list.append(.{ .rule_id = "R1", .severity = .@"error", .message = "msg", .span = Span.point(1, 1, 0) });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
     const output = out.written();
 
     try std.testing.expect(output[0] == '{');
@@ -219,7 +220,7 @@ test "renderJson with hint severity" {
 
     try list.append(.{ .rule_id = "H1", .severity = .hint, .message = "hint msg", .span = Span.point(1, 1, 0) });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
     const output = out.written();
 
     try std.testing.expect(std.mem.find(u8, output, "\"hints\":1") != null);
@@ -241,7 +242,7 @@ test "renderJson escapes quotes, backslashes and control characters" {
         .span = Span.point(1, 1, 0),
     });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
     const output = out.written();
 
     try std.testing.expect(std.mem.find(u8, output, "\"file\":\"a\\tb.yml\"") != null);
@@ -262,7 +263,7 @@ test "renderJson passes multi-byte UTF-8 through unescaped" {
         .span = Span.point(1, 1, 0),
     });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
     try std.testing.expect(std.mem.find(u8, out.written(), "\"message\":\"ワークフロー 🚀\"") != null);
 }
 
@@ -283,7 +284,7 @@ test "renderJson replaces bytes that are not valid UTF-8" {
         .span = Span.point(1, 1, 0),
     });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
@@ -306,7 +307,7 @@ test "renderJson output parses as JSON" {
     try list.append(.{ .rule_id = "E1", .severity = .@"error", .message = "a \"quoted\" msg", .file = "a.yml", .span = Span.point(1, 2, 0) });
     try list.append(.{ .rule_id = "W1", .severity = .warning, .message = "b", .file = "b.yml", .span = Span.point(3, 4, 0), .fix_hint = "do\nit" });
 
-    try renderJson(&out.writer, list, 2);
+    try renderJson(&out.writer, list, 2, 0);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.written(), .{});
     defer parsed.deinit();
@@ -330,8 +331,17 @@ test "renderJson with info severity" {
 
     try list.append(.{ .rule_id = "I1", .severity = .info, .message = "info msg", .span = Span.point(1, 1, 0) });
 
-    try renderJson(&out.writer, list, 1);
+    try renderJson(&out.writer, list, 1, 0);
     const output = out.written();
 
     try std.testing.expect(std.mem.find(u8, output, "\"infos\":1") != null);
+}
+
+test "renderJson includes suppressed count" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var list = DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try renderJson(&out.writer, list, 1, 4);
+    try std.testing.expect(std.mem.find(u8, out.written(), "\"suppressed\":4") != null);
 }
