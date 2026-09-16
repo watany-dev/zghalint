@@ -117,3 +117,21 @@ test "empty id list suppresses every rule on that line" {
     try std.testing.expect(covers(items, 1, "BP001"));
     try std.testing.expect(!covers(items, 2, "SEC001"));
 }
+
+test "collect maps an indented next-line comment onto the following step" {
+    const source =
+        \\    steps:
+        \\      # zghalint-disable-next-line SEC002
+        \\      - run: echo "${{ github.event.issue.title }}"
+        \\
+    ;
+    const items = try collect(std.testing.allocator, source);
+    defer {
+        for (items) |item| std.testing.allocator.free(item.ids);
+        std.testing.allocator.free(items);
+    }
+    try std.testing.expectEqual(@as(usize, 1), items.len);
+    try std.testing.expectEqual(@as(u32, 3), items[0].line);
+    try std.testing.expect(covers(items, 3, "SEC002"));
+    try std.testing.expect(!covers(items, 2, "SEC002"));
+}

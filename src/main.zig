@@ -1129,6 +1129,38 @@ test "failsOn ignores hint below every threshold" {
     try std.testing.expect(!failsOn(&list, .info));
 }
 
+test "appendFiltered drops inline-suppressed diagnostics and counts them" {
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+
+    var src = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer src.deinit();
+    try src.append(.{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = "unpinned",
+        .span = zghalint.yaml.types.Span.point(3, 1, 0),
+    });
+    try src.append(.{
+        .rule_id = "SEC002",
+        .severity = .@"error",
+        .message = "inject",
+        .span = zghalint.yaml.types.Span.point(3, 1, 0),
+    });
+
+    const suppressions = [_]zghalint.suppress.Suppression{.{
+        .line = 3,
+        .ids = &.{"SEC001"},
+    }};
+    var all = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer all.deinit();
+    var suppressed: usize = 0;
+    appendFiltered(&all, &src, &config, "w.yml", 1, &suppressions, &suppressed);
+    try std.testing.expectEqual(@as(usize, 1), suppressed);
+    try std.testing.expectEqual(@as(usize, 1), all.len());
+    try std.testing.expectEqualStrings("SEC002", all.get(0).rule_id);
+}
+
 test "printHelp outputs usage text" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();

@@ -1,5 +1,5 @@
-# zghalint:forbid SEC001@14
-# zghalint:expect SEC001@15
+# zghalint:expect SEC001@14
+# zghalint:forbid SEC002@14
 name: suppress
 on: push
 concurrency:
@@ -11,5 +11,4 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4  # zghalint-disable-line SEC001
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v4  # zghalint-disable-line SEC002

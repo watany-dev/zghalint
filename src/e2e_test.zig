@@ -30,6 +30,7 @@ const action_metadata = @import("rules/action_metadata.zig");
 const rule_engine = @import("rules/engine.zig");
 const diagnostics = @import("diagnostics.zig");
 const fix_engine = @import("fix/engine.zig");
+const suppress = @import("suppress.zig");
 
 const fixture_dir = "tests/fixtures/e2e";
 const action_fixture_dir = "tests/fixtures/e2e-action";
@@ -101,6 +102,7 @@ fn lintSource(
     const engine = rule_engine.Engine.init(&registry.all_rules);
     var list = engine.run(alloc, &wf);
     rule_engine.postProcess(alloc, &wf, &list, .{});
+    applyInlineSuppressions(alloc, source, &list);
     return list;
 }
 
@@ -114,7 +116,26 @@ fn lintActionSource(
 
     var list = diagnostics.DiagnosticList.init(alloc);
     action_metadata.lintActionMetadata(try yp.parse(), &list);
+    applyInlineSuppressions(alloc, source, &list);
     return list;
+}
+
+/// Same drop the CLI applies in `appendFiltered`: comments never reach the
+/// YAML AST, so the tokenizer is scanned again and matching diagnostics are
+/// removed before expect/forbid see them.
+fn applyInlineSuppressions(
+    alloc: std.mem.Allocator,
+    source: []const u8,
+    list: *diagnostics.DiagnosticList,
+) void {
+    const items = suppress.collect(alloc, source) catch return;
+    var write: usize = 0;
+    for (list.items.items) |diag| {
+        if (suppress.covers(items, diag.span.start_line, diag.rule_id)) continue;
+        list.items.items[write] = diag;
+        write += 1;
+    }
+    list.items.shrinkRetainingCapacity(write);
 }
 
 /// Expected result of `--fix` for a fixture, held in a sibling `<name>.fixed`
