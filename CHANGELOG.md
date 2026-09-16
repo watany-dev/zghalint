@@ -31,6 +31,8 @@ each ID means.
   `--stdin-filename` is the path used for `ignore` and for routing
   `action.yml` / `dependabot.yml`; it defaults to `<stdin>`. `--fix` is
   rejected because there is no file to write back (#559).
+- 週次 bench を 1 周し、実運用ワークフロー群で doghooding D8 を回した。
+  新規の G40 は無く、既知の G29 だけが再確認された (#555)。
 
 ### Changed
 
