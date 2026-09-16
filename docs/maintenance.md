@@ -173,6 +173,28 @@
 4. `python3 scripts/bench.py` を回し、新たな FP / FN は別 issue にする。本更新で parity 差分を黙って吸収しない
 5. `docs/design/external-linter-parity.md` §2 の版表を同じ数字に直す
 
+## 埋め込みデータ表
+
+リリース前にこの節の表を上から流す。日付は各ファイル先頭（`Last generated` /
+`Last reviewed`）に残す。
+
+| 表 | ファイル | 更新方法 | 日付の置き場 |
+|---|---|---|---|
+| SC003 advisories | `src/rules/data/advisories.zig` | `python3 scripts/gen-advisories.py`（GitHub `advisories?ecosystem=actions`。任意で `GITHUB_TOKEN`） | `//! Last generated:` と `generated_at` |
+| popular actions | `src/rules/data/popular_actions.zig` | 下の「popular actions メタデータの更新」 | 本ファイルの再生成履歴 |
+| SC002 compromised | `src/rules/data/compromised_actions.zig` | 公表済み侵害の GHSA を手で 1 件足す。SHA は 40 桁小文字 hex、`disclosed` は YYYY-MM-DD | `//! Last reviewed:` |
+| SEC001 trusted | `src/rules/data/trusted_actions.zig` | GitHub 公式 `actions/*` を足すときだけ。同じ owner 内で編集距離 2 以下の repo 名はテストが落とす | `//! Last reviewed:` |
+| RUNNER002 labels | `src/rules/runner.zig` の `known_labels` | [GitHub-hosted runners](https://docs.github.com/en/actions/using-github-hosted-runners/using-github-hosted-runners/about-github-hosted-runners) の現行ラベルと照合し、廃止分は `retired` / `deprecated` + `replacement` | 配列直前の `Last reviewed` |
+
+SC003 は実行時に GitHub から取り直す。生成物は `--offline` とキャッシュ欠落時の
+スナップショットで、手で 21 件を並べる手順は持たない。
+
+手順（advisories）:
+
+1. `python3 scripts/gen-advisories.py`（保存済み JSON なら `--input-json path`）
+2. 件数と `generated_at` を確認する
+3. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
+
 ## ランタイム廃止への追従
 
 `runs.using` の世代交代（node12 / node16 / node20 …）で触る箇所と、日付では
