@@ -12,6 +12,7 @@ pub const OutputFormat = enum {
     terminal,
     json,
     sarif,
+    github,
 };
 
 pub const ColorMode = enum {

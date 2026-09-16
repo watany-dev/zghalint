@@ -295,7 +295,7 @@ ignore:
 
 # Output settings
 output:
-  format: terminal         # terminal, json, sarif
+  format: terminal         # terminal, json, sarif, github
   color: auto              # auto, always, never
 
 # Repository visibility (used by SEC020)
@@ -315,7 +315,7 @@ count in `summary.suppressed`.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--config <path>` | Load rule overrides from a `.zghalint.yml` file | None |
-| `--format <fmt>` | Output format: `terminal`, `json`, `sarif` | `terminal` |
+| `--format <fmt>` | Output format: `terminal`, `json`, `sarif`, `github` | `terminal` |
 | `--color <mode>` | Color control: `auto`, `always`, `never` | `auto` |
 | `--quick` | Disable network requests and use only local data/cache (`--offline` is also accepted) | Off |
 | `--no-cache` | Bypass the on-disk prefetch cache and refetch from the network | Off |

@@ -25,6 +25,7 @@ const fix_engine = @import("fix/engine.zig");
 const expressions = @import("rules/expressions.zig");
 const json_out = @import("output/json.zig");
 const sarif_out = @import("output/sarif.zig");
+const github_out = @import("output/github.zig");
 const terminal_out = @import("output/terminal.zig");
 const action_metadata = @import("rules/action_metadata.zig");
 const config_mod = @import("config.zig");
@@ -628,6 +629,23 @@ fn checkSerializers(
         const sarif_count = arrayLen(first_run, &.{"results"}) orelse return Violation.SarifOutputNotValid;
         if (json_count) |n| {
             if (n != sarif_count) return Violation.SerializerCountMismatch;
+        }
+    }
+
+    buf.clearRetainingCapacity();
+    {
+        var w = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+        github_out.renderGithub(&w.writer, list) catch return;
+        buf = w.toArrayList();
+        var n: usize = 0;
+        var it = std.mem.splitScalar(u8, buf.items, '\n');
+        while (it.next()) |line| {
+            if (line.len == 0) continue;
+            if (!std.mem.startsWith(u8, line, "::")) return Violation.SerializerCountMismatch;
+            n += 1;
+        }
+        if (json_count) |want| {
+            if (n != want) return Violation.SerializerCountMismatch;
         }
     }
 
