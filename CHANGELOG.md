@@ -13,6 +13,11 @@ each ID means.
 
 ## [Unreleased]
 
+### Added
+
+- `.zghalint.yml` `rules.<ID>.exclude` globs silence one rule on matching
+  paths. File-level `ignore` is unchanged (#556).
+
 ### Changed
 
 - **BP003 / ACT002: `node20` を廃止済みランタイムとして扱う。** GitHub が

@@ -29,6 +29,8 @@ pub const Visibility = enum {
 pub const RuleOverride = struct {
     severity: ?Severity = null,
     enabled: bool = true,
+    /// Glob patterns; a diagnostic from this rule is dropped when the file path matches.
+    exclude: []const []const u8 = &.{},
 };
 
 /// Forces a cache manager regardless of the lockfile probe result.
@@ -88,6 +90,14 @@ pub const Config = struct {
         }
         return false;
     }
+
+    pub fn isRuleExcluded(self: *const Config, rule_id: []const u8, path: []const u8) bool {
+        const override = self.rule_overrides.get(rule_id) orelse return false;
+        for (override.exclude) |pattern| {
+            if (matchGlob(pattern, path)) return true;
+        }
+        return false;
+    }
 };
 
 pub const ConfigError = error{
@@ -136,6 +146,9 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                             if (rule_map.getScalar("enabled")) |en_str| {
                                 override.enabled = parseBool(en_str);
                             }
+                            if (rule_map.get("exclude")) |ex_node| {
+                                override.exclude = try parseStringSequence(strings, ex_node);
+                            }
                             if (std.mem.eql(u8, rule_id, "PERF001")) {
                                 if (rule_map.getScalar("node_cache_manager")) |v| {
                                     config.perf001.node_cache_manager = std.meta.stringToEnum(workspace.NodeCache, v);
@@ -156,20 +169,8 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
     }
 
     if (root.get("ignore")) |ignore_node| {
-        switch (ignore_node) {
-            .sequence => |seq| {
-                for (seq.items) |item| {
-                    switch (item) {
-                        .scalar => |s| {
-                            const pattern = try strings.dupe(u8, s.value);
-                            try config.ignore_patterns.append(allocator, pattern);
-                        },
-                        else => {},
-                    }
-                }
-            },
-            else => {},
-        }
+        const patterns = try parseStringSequence(strings, ignore_node);
+        try config.ignore_patterns.appendSlice(allocator, patterns);
     }
 
     if (root.get("runner")) |runner_node| {
@@ -259,6 +260,22 @@ fn matchGlob(pattern: []const u8, str: []const u8) bool {
     return pi == pattern.len;
 }
 
+fn parseStringSequence(strings: std.mem.Allocator, node: Node) ConfigError![]const []const u8 {
+    const seq = switch (node) {
+        .sequence => |s| s,
+        else => return &.{},
+    };
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer list.deinit(strings);
+    for (seq.items) |item| {
+        switch (item) {
+            .scalar => |s| try list.append(strings, try strings.dupe(u8, s.value)),
+            else => {},
+        }
+    }
+    return list.toOwnedSlice(strings);
+}
+
 /// No upward search is performed.
 pub fn defaultConfigPath() ?[]const u8 {
     const path = ".zghalint.yml";
@@ -292,6 +309,49 @@ test "parse config with rules" {
     try std.testing.expect(!config.isRuleEnabled("BP002"));
     try std.testing.expect(config.isRuleEnabled("SEC001"));
     try std.testing.expectEqual(Severity.@"error", config.getEffectiveSeverity("SEC001", .warning));
+}
+
+test "parse config with per-rule exclude" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\rules:
+        \\  SEC001:
+        \\    exclude:
+        \\      - "**/release.yml"
+        \\      - ".github/workflows/legacy-*.yml"
+        \\  BP001:
+        \\    enabled: false
+        \\    exclude:
+        \\      - "never-reached.yml"
+    ;
+
+    var config = try parseConfig(arena.allocator(), source);
+    defer config.deinit();
+
+    try std.testing.expect(config.isRuleExcluded("SEC001", ".github/workflows/release.yml"));
+    try std.testing.expect(config.isRuleExcluded("SEC001", ".github/workflows/legacy-ci.yml"));
+    try std.testing.expect(!config.isRuleExcluded("SEC001", ".github/workflows/ci.yml"));
+    try std.testing.expect(!config.isRuleExcluded("SEC002", ".github/workflows/release.yml"));
+    try std.testing.expect(!config.isRuleEnabled("BP001"));
+    try std.testing.expect(config.isRuleExcluded("BP001", "never-reached.yml"));
+}
+
+test "per-rule exclude unknown glob does not fail parse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\rules:
+        \\  SEC001:
+        \\    exclude:
+        \\      - "[*"
+        \\      - { not: a glob }
+    ;
+
+    var config = try parseConfig(arena.allocator(), source);
+    defer config.deinit();
+
+    try std.testing.expect(!config.isRuleExcluded("SEC001", ".github/workflows/ci.yml"));
 }
 
 test "parse config with ignore patterns" {

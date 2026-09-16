@@ -323,6 +323,7 @@ fn appendFiltered(
 ) void {
     for (diag_list.items.items) |diag| {
         if (!config.isRuleEnabled(diag.rule_id)) continue;
+        if (config.isRuleExcluded(diag.rule_id, file_path)) continue;
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
@@ -1003,6 +1004,43 @@ test "documentLintFn routes non-workflow files" {
     try std.testing.expect(documentLintFn(".github/workflows/ci.yml") == null);
     try std.testing.expect(documentLintFn(".github/workflows/action.yml") == null);
     try std.testing.expect(documentLintFn(".github/workflows/automerge-dependabot.yml") == null);
+}
+
+test "appendFiltered drops excluded rule diagnostics" {
+    var config = try zghalint.config.parseConfig(std.testing.allocator,
+        \\rules:
+        \\  SEC001:
+        \\    exclude:
+        \\      - "**/release.yml"
+        \\
+    );
+    defer config.deinit();
+
+    var src = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer src.deinit();
+    try src.append(.{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = "unpinned",
+        .span = zghalint.yaml.types.Span.point(1, 1, 0),
+    });
+    try src.append(.{
+        .rule_id = "SEC002",
+        .severity = .@"error",
+        .message = "inject",
+        .span = zghalint.yaml.types.Span.point(2, 1, 0),
+    });
+
+    var all = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer all.deinit();
+    appendFiltered(&all, &src, &config, ".github/workflows/release.yml", 1);
+    try std.testing.expectEqual(@as(usize, 1), all.items.items.len);
+    try std.testing.expectEqualStrings("SEC002", all.items.items[0].rule_id);
+
+    var kept = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer kept.deinit();
+    appendFiltered(&kept, &src, &config, ".github/workflows/ci.yml", 2);
+    try std.testing.expectEqual(@as(usize, 2), kept.items.items.len);
 }
 
 test "hasErrors detects error severity" {
