@@ -264,10 +264,13 @@ Create a `.zghalint.yml` file in your project root to customize behavior:
 rules:
   SEC001:
     severity: error        # Upgrade from warning to error
+    exclude:
+      - "**/release.yml"   # Silence this rule on matching paths only
   BP002:
     enabled: false         # Disable missing-step-name rule
   SEC007:
     severity: warning      # Upgrade from info to warning
+
   # PERF001 picks a cache manager from lockfiles it detects in the
   # workspace (package-lock.json / yarn.lock / pnpm-lock.yaml /
   # Pipfile.lock / poetry.lock / requirements.txt / go.sum). Override

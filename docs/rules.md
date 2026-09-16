@@ -1639,6 +1639,8 @@ You can override rule severity or disable rules in `.zghalint.yml`:
 rules:
   SEC001:
     severity: error        # Upgrade from warning to error
+    exclude:
+      - "**/release.yml"   # Silence this rule on matching paths only
   BP002:
     enabled: false         # Disable a rule
   SEC007:
