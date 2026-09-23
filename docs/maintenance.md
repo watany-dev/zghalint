@@ -108,8 +108,43 @@
 
 ## 配布経路
 
-リリース資産のほかに、`curl | sh` と Homebrew の 2 経路がある。どちらも
-公開済みの `SHA256SUMS` を照合するので、資産が揃う前に走らせてはならない。
+リリース資産のほかに、ハッシュをその場で `SHA256SUMS` から読む経路と、
+GitHub 上の発見経路がある。新しいチャネルが「このタグの sha256 は …」を
+ファイルに書くなら Homebrew と同じく生成物にし、手書きの版は増やさない。
+判断は [ADR 0019](adr/0019-distribution-channels.md)。
+
+### 発見（コードでは完了しない）
+
+リポジトリの About と Marketplace は GitHub の UI / `gh` でしか書けない。
+
+1. About
+
+   ```bash
+   gh repo edit watany-dev/zghalint \
+     --description "Fast GitHub Actions workflow linter (security, supply chain, expressions, permissions)" \
+     --add-topic github-actions \
+     --add-topic linter \
+     --add-topic security \
+     --add-topic zig \
+     --add-topic static-analysis \
+     --add-topic cicd \
+     --add-topic sarif \
+     --add-topic supply-chain
+   ```
+
+2. GitHub Marketplace。root の `action.yml` は掲載条件を満たしている
+   （`name` / `description` / `branding`、公開リポジトリ）。
+   既存の Release（例: `v0.0.3`）を Edit し、
+   **Publish this Action to the GitHub Marketplace** にチェックする。
+   Primary category は Code quality、Secondary は Security。
+   利用規約の同意が初回だけ要る。掲載後、README 先頭に Marketplace バッジを足す:
+
+   `https://github.com/marketplace/actions/zghalint`
+
+3. `aquaproj/aqua-registry` へ `packaging/aqua-registry.yaml` を
+   `pkgs/watany-dev/zghalint/registry.yaml` として PR する。
+   標準レジストリに入るまで README の `github_content` 例を使う。
+   コントリビューションは upstream の `aqua gr` 手順に従う。
 
 ### install.sh
 
@@ -143,6 +178,21 @@
   出して何もせず成功する（リリース自体は止めない）
 - 生成物の妥当性は `tests/pbt/test_gen_homebrew_formula.py` が毎回確認する
   （ダミーの `SHA256SUMS` で生成して `ruby -c`、およびエントリ欠落時に落ちること）
+
+### pre-commit / aqua / mise
+
+どれもリリースのたびにファイルを書き換えない。
+
+| 経路 | 場所 | 版の持ち方 |
+|---|---|---|
+| pre-commit | `.pre-commit-hooks.yaml` | 利用者が `.pre-commit-config.yaml` の `rev` でタグを指定。hook は `language: system` なので PATH 上のバイナリを呼ぶ。`--offline` 固定 |
+| aqua | `packaging/aqua-registry.yaml` | asset 名と `checksum.asset: SHA256SUMS` だけ。Windows ARM64 はリリースが無いので `supported_envs` から外す |
+| mise | README の `mise use ubi:watany-dev/zghalint` | ubi が GitHub Release の asset 名から OS/Arch を当てる |
+
+形の検査は `tests/pbt/test_packaging.py`。
+
+Scoop / Nix / WinGet / GHCR は、ハッシュの写しが増えるので待っている利用者が
+現れてから `scripts/gen-homebrew-formula.sh` と同じ生成パターンで足す。
 
 ## 依存の更新
 

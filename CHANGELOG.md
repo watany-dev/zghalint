@@ -13,6 +13,14 @@ each ID means.
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Action `output` input writes diagnostics to a file so `format: sarif`
+  can be uploaded with `github/codeql-action/upload-sarif`.
+- pre-commit hook (`.pre-commit-hooks.yaml`, `language: system`, `--offline`).
+- In-repo aqua registry (`packaging/aqua-registry.yaml`) and mise / Code
+  Scanning install docs. Policy is `docs/adr/0019-distribution-channels.md`.
+
 ## [0.0.3] - 2026-09-23
 
 ### Added
