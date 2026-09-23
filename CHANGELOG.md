@@ -21,6 +21,78 @@ each ID means.
 - In-repo aqua registry (`packaging/aqua-registry.yaml`) and mise / Code
   Scanning install docs. Policy is `docs/adr/0019-distribution-channels.md`.
 
+## [0.0.3] - 2026-09-23
+
+### Added
+
+- SEC025 (`use-scoped-github-app-token`, warning): report
+  `actions/create-github-app-token` when no `permission-*` input scopes the
+  minted token. The action otherwise inherits the GitHub App installation's
+  full permissions. `owner` / `repositories` alone do not silence the rule.
+  No autofix: which permission the step needs is not static (#552).
+- `.zghalint.yml` `rules.<ID>.exclude` globs silence one rule on matching
+  paths. File-level `ignore` is unchanged (#556).
+- `--fail-on <severity>` selects whether exit code 1 starts at `error`
+  (default, unchanged), `warning`, or `info`. Output is unchanged (#557).
+- Inline `# zghalint-disable-line` / `# zghalint-disable-next-line` comments
+  suppress named rule IDs on that line (or the next line). JSON summary
+  includes `suppressed` (#558).
+- `--stdin` (`-` is the same) reads one workflow from standard input.
+  `--stdin-filename` is the path used for `ignore` and for routing
+  `action.yml` / `dependabot.yml`; it defaults to `<stdin>`. `--fix` is
+  rejected because there is no file to write back (#559).
+- 週次 bench を 1 周し、実運用ワークフロー群で doghooding D8 を回した。
+  新規の G40 は無く、既知の G29 だけが再確認された (#555)。
+- `--format github` emits GitHub Actions workflow commands
+  (`::error file=,line=,col=::`) so PRs can show annotations without Code
+  Scanning. `info` / `hint` map to `notice` (#561).
+- `.zghalint.yml` has a JSON Schema at `docs/schema/zghalint.schema.json`,
+  generated from `src/config.zig`. Unknown keys are reported as stderr
+  warnings and do not change the exit code (#560).
+- `scripts/gen-advisories.py` generates the SC003 offline snapshot
+  (`src/rules/data/advisories.zig`) from GitHub Security Advisories. Embedded
+  data tables and their refresh commands are listed in `docs/maintenance.md`
+  (#563).
+- Fuzz targets for `.zghalint.yml` (`parseConfig`) and expression typecheck
+  (`validateExpressionEnv`) join the YAML / expression parser seeds in
+  `src/fuzz_test.zig` (#566).
+- 形式モデルの job `outputs:` 伝播を 2 hop にし、`CODE_EXECUTING_INPUTS` を
+  `popular_actions.zig` から生成、SEC025 を P13 として載せる (#564)。
+- PERM / BP / PERF の検出 PBT、YAML `parse(emit(parse(s)))` ラウンドトリップ、
+  ファイル順序非依存と severity override の単調性 (#565)。
+
+### Changed
+
+- **BP003 / ACT002: `node20` を廃止済みランタイムとして扱う。** GitHub が
+  2026-09-23 にランナーから外すため、`node12` / `node16` と同じ扱いに移した。
+  BP003 は `uses:` 先が `node20` で動くとき `error`、ACT002 は自リポジトリの
+  `action.yml` の `runs.using: node20` を warning で報告し、受理する `using` は
+  `node24` / `docker` / `composite` になる。切替を日付ではなくリリースで行う
+  理由は `docs/adr/0018-runtime-retirement.md` (#548, #550)。
+- **BP003 の推奨先を node24 で動く最初の major に上げた。** キュレーション表が
+  `actions/checkout@v4` のように同じルールが廃止済みと報告する major を
+  `--fix` で書き込んでいたため、8 件全て（checkout v5 / setup-node v5 /
+  setup-python v6 / setup-go v6 / setup-java v5 / upload-artifact v6 /
+  download-artifact v7 / cache v5）を移した (#548)。
+- **ACT002 の未知の `using` に対する rename autofix が広がった。** 受理する
+  Node の値が `node24` だけになったことで、`node22` / `node18` のような
+  打ち間違いの did-you-mean 候補が一意に定まり、`--fix`（safe）で `node24` へ
+  書き換わるようになった。以前は `node20` と `node24` が同点で候補が決まらず、
+  診断だけを出していた (#548)。
+- **BP003 の behind-current-major 判定は、最新 major が廃止済みランタイムで
+  動くアクションを黙るようになった。** `--fix-unsafe` が書き込んだ `@vN` を
+  同じルールが即 `error` と報告する自己矛盾を避けるため（例:
+  `actions/dependency-review-action`）(#548)。
+- 埋め込みメタデータ表 `src/rules/data/popular_actions.zig` を再生成し、27
+  アクションの新しい major を足した（105 エントリ）。BP003 の「現行 major より
+  古い」判定と DEP005 / DEP006 の入力名検証がその分広がる (#549)。
+
+### Fixed
+
+- `docs/rules.md` と `README.md` のルール数見出しが 108 のままだったのを 110
+  に直し、README のカテゴリ別内訳も registry と揃えた。`src/docs_sync_test.zig`
+  が見出しの数字と `documented_rule_ids.len` を突き合わせるようになった (#562)。
+
 ## [0.0.2] - 2026-09-15
 
 ### Changed

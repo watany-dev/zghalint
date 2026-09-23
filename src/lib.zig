@@ -3,6 +3,7 @@ pub const runtime = @import("runtime.zig");
 pub const yaml = struct {
     pub const Parser = @import("yaml/parser.zig").Parser;
     pub const types = @import("yaml/types.zig");
+    pub const emit = @import("yaml/emit.zig");
 };
 
 pub const workflow = struct {
@@ -23,6 +24,8 @@ pub const output = struct {
     pub const renderJson = json.renderJson;
     pub const sarif = @import("output/sarif.zig");
     pub const renderSarif = sarif.renderSarif;
+    pub const github = @import("output/github.zig");
+    pub const renderGithub = github.renderGithub;
 };
 
 pub const rules = struct {
@@ -60,11 +63,13 @@ pub const ColorMode = config.ColorMode;
 
 pub const util = @import("util.zig");
 pub const workspace = @import("workspace.zig");
+pub const suppress = @import("suppress.zig");
 
 test {
     _ = @import("yaml/tokenizer.zig");
     _ = @import("yaml/types.zig");
     _ = @import("yaml/parser.zig");
+    _ = @import("yaml/emit.zig");
     _ = @import("workflow/types.zig");
     _ = @import("workflow/parser.zig");
     _ = @import("workflow/events.zig");
@@ -129,11 +134,13 @@ test {
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
+    _ = @import("output/github.zig");
     _ = @import("fix/engine.zig");
     _ = @import("fix/builder.zig");
     _ = @import("config.zig");
     _ = @import("util.zig");
     _ = @import("workspace.zig");
+    _ = @import("suppress.zig");
     _ = @import("e2e_test.zig");
     _ = @import("catalog_test.zig");
     _ = @import("docs_sync_test.zig");

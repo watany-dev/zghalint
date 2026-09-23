@@ -214,13 +214,14 @@ test "lookup matches a major version and ignores everything else" {
 }
 
 test "latestMajor answers for a major the table has no entry for (#358)" {
-    // The table carries only the current major of this action.
-    try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v1")));
-    try testing.expectEqual(@as(?u16, 2), latestMajor(ActionRef.parse("softprops/action-gh-release@v9")));
+    // A major older than anything the table carries still gets an answer.
+    try testing.expectEqual(@as(?u16, 3), latestMajor(ActionRef.parse("softprops/action-gh-release@v1")));
+    // So does one newer than the table knows.
+    try testing.expectEqual(@as(?u16, 3), latestMajor(ActionRef.parse("softprops/action-gh-release@v9")));
     // Several majors: the newest wins, whichever one is referenced.
     try testing.expectEqual(@as(?u16, 7), latestMajor(ActionRef.parse("actions/checkout@v2")));
     // Sub-directory actions are their own entries.
-    try testing.expectEqual(@as(?u16, 4), latestMajor(ActionRef.parse("actions/cache/restore@v3")));
+    try testing.expectEqual(@as(?u16, 6), latestMajor(ActionRef.parse("actions/cache/restore@v3")));
 
     try testing.expectEqual(@as(?u16, null), latestMajor(ActionRef.parse("some-org/unknown@v1")));
     try testing.expectEqual(@as(?u16, null), latestMajor(ActionRef.parse("./local")));

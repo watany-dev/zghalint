@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **108 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **111 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -61,6 +61,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
 | SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
+| SEC025 | use-scoped-github-app-token | warning | `actions/create-github-app-token` without `permission-*` inputs inherits the GitHub App installation's full permissions |
 
 ### SEC014 の自動修正
 
@@ -380,6 +381,16 @@ GitHub 自身も同じ組み合わせに warning annotation を付ける。
 のも既定と同じなので報告しない。式や未知の値は不確定として報告しない。
 `--fix` は付けない — キーを消すと実行時のキャッシュ権限が変わる。
 
+### SEC025 use-scoped-github-app-token
+
+`actions/create-github-app-token` は `permission-*` 入力が無いとき、GitHub App
+installation が持つ全スコープをトークンに載せる。`permissions:` の最小化と同じ
+理由で warning。`owner` / `repositories` はどの installation から発行するかを
+絞るだけで、その installation の権限集合はそのまま残る。
+
+`permission-issues: write` のように `permission-` で始まる入力が 1 つでもあれ
+ば沈黙する。どの permission が要るかは静的に決まらないので `--fix` は付けない。
+
 ## Supply Chain Security Rules (SC)
 
 Detect supply chain risks in action and container image references.
@@ -496,7 +507,7 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
 | BP002 | missing-step-name | info | `run:` step is missing a `name` field. `uses:`-only steps are skipped |
-| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (`node12` / `node16`, error), a still-running but ending runtime (`node20`, warning), or a major older than the newest one the metadata table knows (info) |
+| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (`node12` / `node16` / `node20`, error), a runtime whose removal is announced but not yet in effect (warning), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
@@ -531,9 +542,10 @@ jobs:
   固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
   `--fix` で `@vN` を書き換えられる。
 - **ランタイム判定**: アクションの `runs.using` が GitHub の廃止済みランタイム
-  （`node12` / `node16`）なら `error` で報告する。まだ動くが削除予定の
-  `node20`（2026-09-23）は `warning`。`runs.using: node20` を `node24` に
-  書き換える autofix は付けない（Action 本体の互換確認が必要）。
+  （`node12` / `node16` / `node20`。`node20` は 2026-09-23 に停止）なら `error`
+  で報告する。削除予定が告知されただけのランタイムは `warning` だが、現時点で
+  該当するものは無い。`runs.using` を `node24` に書き換える autofix は付けない
+  （Action 本体の互換確認が必要）。
   `actions/setup-node` の `node-version: 20` は Action の実行ランタイムではない。
   ローカルアクション（`uses: ./{path}`）は `action.yml` を読み、リモートアクションは
   DEP005 の埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
@@ -1375,11 +1387,15 @@ GitHub 自身が案内しているのはこの 2 つの配置なので既定は�
 
 ### ACT002 が受理する `using`
 
-`node20` / `node24` / `docker` / `composite` の 4 つを受理する。`node12` /
-`node16` は GitHub が実行を停止したランタイム、`node20` は 2026-09-23 に
-削除予定なので、いずれも warning として報告する。それ以外の未知の値は
-error として報告する（編集距離 2 以内で候補が一意に定まるときは
-`did you mean ...?` を添える）。`node20` → `node24` の autofix は付けない。
+`node24` / `docker` / `composite` の 3 つを受理する。`node12` / `node16` /
+`node20` は GitHub が実行を停止するランタイムなので、未知の値ではなく
+「廃止済み」として warning で報告する（実行できないという判定は BP003 が
+`error` で出す）。それ以外の未知の値は error として報告する（編集距離 2 以内で
+候補が一意に定まるときは `did you mean ...?` を添え、その候補への rename を
+autofix にする）。受理する Node の値が `node24` だけになったので、`node22` /
+`node18` のような打ち間違いは候補が一意に定まり `--fix` で書き換わる。
+一方 `node20` → `node24` の autofix は付けない。廃止済みの値は打ち間違いではなく、
+ランタイムを上げるとアクションの実装側も直す必要があるため。
 
 ### 個々の定義に対する検査
 
@@ -1634,6 +1650,8 @@ You can override rule severity or disable rules in `.zghalint.yml`:
 rules:
   SEC001:
     severity: error        # Upgrade from warning to error
+    exclude:
+      - "**/release.yml"   # Silence this rule on matching paths only
   BP002:
     enabled: false         # Disable a rule
   SEC007:
@@ -1641,3 +1659,7 @@ rules:
 ```
 
 See the [README](../README.md#configuration) for full configuration options.
+
+A single finding can also be silenced with `# zghalint-disable-line RULE`
+or `# zghalint-disable-next-line RULE` on the YAML line. Multiple IDs are
+comma-separated. `--format json` reports how many diagnostics were suppressed.

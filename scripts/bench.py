@@ -166,7 +166,7 @@ DEFAULT_KIND_MAP: dict[str, dict[str, list[str] | None]] = {
         "actionlint": None,
     },
     "github-app": {
-        "zghalint": None,
+        "zghalint": ["SEC025"],
         "zizmor": ["github-app"],
         "actionlint": None,
     },

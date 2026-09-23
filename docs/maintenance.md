@@ -134,7 +134,7 @@ GitHub 上の発見経路がある。新しいチャネルが「このタグの 
 
 2. GitHub Marketplace。root の `action.yml` は掲載条件を満たしている
    （`name` / `description` / `branding`、公開リポジトリ）。
-   既存の Release（例: `v0.0.2`）を Edit し、
+   既存の Release（例: `v0.0.3`）を Edit し、
    **Publish this Action to the GitHub Marketplace** にチェックする。
    Primary category は Code quality、Secondary は Security。
    利用規約の同意が初回だけ要る。掲載後、README 先頭に Marketplace バッジを足す:
@@ -223,6 +223,34 @@ Scoop / Nix / WinGet / GHCR は、ハッシュの写しが増えるので待っ�
 4. `python3 scripts/bench.py` を回し、新たな FP / FN は別 issue にする。本更新で parity 差分を黙って吸収しない
 5. `docs/design/external-linter-parity.md` §2 の版表を同じ数字に直す
 
+## 埋め込みデータ表
+
+リリース前にこの節の表を上から流す。日付は各ファイル先頭（`Last generated` /
+`Last reviewed`）に残す。
+
+| 表 | ファイル | 更新方法 | 日付の置き場 |
+|---|---|---|---|
+| SC003 advisories | `src/rules/data/advisories.zig` | `python3 scripts/gen-advisories.py`（GitHub `advisories?ecosystem=actions`。任意で `GITHUB_TOKEN`） | `//! Last generated:` と `generated_at` |
+| popular actions | `src/rules/data/popular_actions.zig` | 下の「popular actions メタデータの更新」 | 本ファイルの再生成履歴 |
+| SC002 compromised | `src/rules/data/compromised_actions.zig` | 公表済み侵害の GHSA を手で 1 件足す。SHA は 40 桁小文字 hex、`disclosed` は YYYY-MM-DD | `//! Last reviewed:` |
+| SEC001 trusted | `src/rules/data/trusted_actions.zig` | GitHub 公式 `actions/*` を足すときだけ。同じ owner 内で編集距離 2 以下の repo 名はテストが落とす | `//! Last reviewed:` |
+| RUNNER002 labels | `src/rules/runner.zig` の `known_labels` | [GitHub-hosted runners](https://docs.github.com/en/actions/using-github-hosted-runners/using-github-hosted-runners/about-github-hosted-runners) の現行ラベルと照合し、廃止分は `retired` / `deprecated` + `replacement` | 配列直前の `Last reviewed` |
+
+SC003 は実行時に GitHub から取り直す。生成物は `--offline` とキャッシュ欠落時の
+スナップショットで、手で 21 件を並べる手順は持たない。
+
+手順（advisories）:
+
+1. `python3 scripts/gen-advisories.py`（保存済み JSON なら `--input-json path`）
+2. 件数と `generated_at` を確認する
+3. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
+
+## ランタイム廃止への追従
+
+`runs.using` の世代交代（node12 / node16 / node20 …）で触る箇所と、日付では
+切り替えずリリースで切り替える理由は
+[ADR 0018](adr/0018-runtime-retirement.md) にまとめてある。
+
 ## popular actions メタデータの更新
 
 **真は各アクションの `action.yml`。** それを読んで生成したスナップショットが
@@ -240,6 +268,13 @@ Scoop / Nix / WinGet / GHCR は、ハッシュの写しが増えるので待っ�
 3. 生成物の差分を確認する。入力が消えているだけの差分は、上流が本当に消したのか
    一覧の `ref` を巻き戻していないかを疑う
 4. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
+5. 下の再生成履歴に日付と範囲を 1 行足す
+
+### 再生成履歴
+
+| 日付 | 範囲 |
+|---|---|
+| 2026-09-15 | node20 廃止 (#549) に合わせて 27 アクションの新しい major を追加し全件再生成（105 エントリ） |
 
 データが古いと「上流が足したばかりの入力を未知として報告する」誤検出になる。
 一覧に載せるのは、古くなればすぐ気付かれる程度に広く使われているアクションだけに

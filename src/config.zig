@@ -12,6 +12,7 @@ pub const OutputFormat = enum {
     terminal,
     json,
     sarif,
+    github,
 };
 
 pub const ColorMode = enum {
@@ -29,6 +30,8 @@ pub const Visibility = enum {
 pub const RuleOverride = struct {
     severity: ?Severity = null,
     enabled: bool = true,
+    /// Glob patterns; a diagnostic from this rule is dropped when the file path matches.
+    exclude: []const []const u8 = &.{},
 };
 
 /// Forces a cache manager regardless of the lockfile probe result.
@@ -50,6 +53,9 @@ pub const Config = struct {
     /// Owns string data (rule IDs, ignore patterns) referenced by the fields
     /// above. Decouples Config lifetime from the YAML source buffer.
     strings_arena: std.heap.ArenaAllocator,
+    /// Dotted paths of keys `parseConfig` does not read. Printed on stderr
+    /// as warnings; they do not change the exit code (#560).
+    unknown_keys: []const []const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return .{
@@ -88,7 +94,28 @@ pub const Config = struct {
         }
         return false;
     }
+
+    pub fn isRuleExcluded(self: *const Config, rule_id: []const u8, path: []const u8) bool {
+        const override = self.rule_overrides.get(rule_id) orelse return false;
+        for (override.exclude) |pattern| {
+            if (matchGlob(pattern, path)) return true;
+        }
+        return false;
+    }
+
+    pub fn writeUnknownKeyWarnings(self: *const Config, writer: *std.Io.Writer) void {
+        for (self.unknown_keys) |key| {
+            writer.print("warning: unknown config key '{s}'\n", .{key}) catch {};
+        }
+    }
 };
+
+/// Keys `parseConfig` accepts. `scripts/gen-config-schema.py` copies them
+/// into `docs/schema/zghalint.schema.json`.
+pub const schema_root_keys = [_][]const u8{ "rules", "ignore", "runner", "output", "repo_visibility" };
+pub const schema_rule_keys = [_][]const u8{ "severity", "enabled", "exclude", "node_cache_manager", "python_cache_manager" };
+pub const schema_output_keys = [_][]const u8{ "format", "color" };
+pub const schema_runner_keys = [_][]const u8{"labels"};
 
 pub const ConfigError = error{
     InvalidYaml,
@@ -136,6 +163,9 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
                             if (rule_map.getScalar("enabled")) |en_str| {
                                 override.enabled = parseBool(en_str);
                             }
+                            if (rule_map.get("exclude")) |ex_node| {
+                                override.exclude = try parseStringSequence(strings, ex_node);
+                            }
                             if (std.mem.eql(u8, rule_id, "PERF001")) {
                                 if (rule_map.getScalar("node_cache_manager")) |v| {
                                     config.perf001.node_cache_manager = std.meta.stringToEnum(workspace.NodeCache, v);
@@ -156,20 +186,8 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
     }
 
     if (root.get("ignore")) |ignore_node| {
-        switch (ignore_node) {
-            .sequence => |seq| {
-                for (seq.items) |item| {
-                    switch (item) {
-                        .scalar => |s| {
-                            const pattern = try strings.dupe(u8, s.value);
-                            try config.ignore_patterns.append(allocator, pattern);
-                        },
-                        else => {},
-                    }
-                }
-            },
-            else => {},
-        }
+        const patterns = try parseStringSequence(strings, ignore_node);
+        try config.ignore_patterns.appendSlice(allocator, patterns);
     }
 
     if (root.get("runner")) |runner_node| {
@@ -220,7 +238,68 @@ fn parseConfigFromNode(allocator: std.mem.Allocator, node: Node) ConfigError!Con
         }
     }
 
+    var unknown: std.ArrayList([]const u8) = .empty;
+    try collectUnknownKeys(strings, root, &unknown);
+    config.unknown_keys = try unknown.toOwnedSlice(strings);
+
     return config;
+}
+
+fn keyIsKnown(known: []const []const u8, name: []const u8) bool {
+    for (known) |k| {
+        if (std.mem.eql(u8, k, name)) return true;
+    }
+    return false;
+}
+
+fn collectMappingKeys(
+    strings: std.mem.Allocator,
+    mapping: yaml_types.Mapping,
+    known: []const []const u8,
+    prefix: []const u8,
+    out: *std.ArrayList([]const u8),
+) !void {
+    for (mapping.entries) |entry| {
+        if (keyIsKnown(known, entry.key.value)) continue;
+        const path = if (prefix.len == 0)
+            try strings.dupe(u8, entry.key.value)
+        else
+            try std.fmt.allocPrint(strings, "{s}.{s}", .{ prefix, entry.key.value });
+        try out.append(strings, path);
+    }
+}
+
+fn collectUnknownKeys(
+    strings: std.mem.Allocator,
+    root: yaml_types.Mapping,
+    out: *std.ArrayList([]const u8),
+) !void {
+    try collectMappingKeys(strings, root, &schema_root_keys, "", out);
+
+    if (root.get("rules")) |rules_node| switch (rules_node) {
+        .mapping => |m| {
+            for (m.entries) |entry| {
+                switch (entry.value) {
+                    .mapping => |rule_map| {
+                        const prefix = try std.fmt.allocPrint(strings, "rules.{s}", .{entry.key.value});
+                        try collectMappingKeys(strings, rule_map, &schema_rule_keys, prefix, out);
+                    },
+                    else => {},
+                }
+            }
+        },
+        else => {},
+    };
+
+    if (root.get("output")) |output_node| switch (output_node) {
+        .mapping => |m| try collectMappingKeys(strings, m, &schema_output_keys, "output", out),
+        else => {},
+    };
+
+    if (root.get("runner")) |runner_node| switch (runner_node) {
+        .mapping => |m| try collectMappingKeys(strings, m, &schema_runner_keys, "runner", out),
+        else => {},
+    };
 }
 
 fn parseBool(s: []const u8) bool {
@@ -259,6 +338,22 @@ fn matchGlob(pattern: []const u8, str: []const u8) bool {
     return pi == pattern.len;
 }
 
+fn parseStringSequence(strings: std.mem.Allocator, node: Node) ConfigError![]const []const u8 {
+    const seq = switch (node) {
+        .sequence => |s| s,
+        else => return &.{},
+    };
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer list.deinit(strings);
+    for (seq.items) |item| {
+        switch (item) {
+            .scalar => |s| try list.append(strings, try strings.dupe(u8, s.value)),
+            else => {},
+        }
+    }
+    return list.toOwnedSlice(strings);
+}
+
 /// No upward search is performed.
 pub fn defaultConfigPath() ?[]const u8 {
     const path = ".zghalint.yml";
@@ -292,6 +387,49 @@ test "parse config with rules" {
     try std.testing.expect(!config.isRuleEnabled("BP002"));
     try std.testing.expect(config.isRuleEnabled("SEC001"));
     try std.testing.expectEqual(Severity.@"error", config.getEffectiveSeverity("SEC001", .warning));
+}
+
+test "parse config with per-rule exclude" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\rules:
+        \\  SEC001:
+        \\    exclude:
+        \\      - "**/release.yml"
+        \\      - ".github/workflows/legacy-*.yml"
+        \\  BP001:
+        \\    enabled: false
+        \\    exclude:
+        \\      - "never-reached.yml"
+    ;
+
+    var config = try parseConfig(arena.allocator(), source);
+    defer config.deinit();
+
+    try std.testing.expect(config.isRuleExcluded("SEC001", ".github/workflows/release.yml"));
+    try std.testing.expect(config.isRuleExcluded("SEC001", ".github/workflows/legacy-ci.yml"));
+    try std.testing.expect(!config.isRuleExcluded("SEC001", ".github/workflows/ci.yml"));
+    try std.testing.expect(!config.isRuleExcluded("SEC002", ".github/workflows/release.yml"));
+    try std.testing.expect(!config.isRuleEnabled("BP001"));
+    try std.testing.expect(config.isRuleExcluded("BP001", "never-reached.yml"));
+}
+
+test "per-rule exclude unknown glob does not fail parse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\rules:
+        \\  SEC001:
+        \\    exclude:
+        \\      - "[*"
+        \\      - { not: a glob }
+    ;
+
+    var config = try parseConfig(arena.allocator(), source);
+    defer config.deinit();
+
+    try std.testing.expect(!config.isRuleExcluded("SEC001", ".github/workflows/ci.yml"));
 }
 
 test "parse config with ignore patterns" {
@@ -596,6 +734,62 @@ test "config outlives source buffer (runner label)" {
 
     try std.testing.expectEqual(@as(usize, 1), config.runner_labels.items.len);
     try std.testing.expectEqualStrings("ubuntu-nvidia", config.runner_labels.items[0]);
+}
+
+test "unknown config keys are recorded and printed" {
+    var config = try parseConfig(std.testing.allocator,
+        \\foo: 1
+        \\output:
+        \\  format: json
+        \\  pretty: true
+        \\rules:
+        \\  SEC001:
+        \\    severity: error
+        \\    extra: 1
+        \\runner:
+        \\  labels: [self-hosted]
+        \\  pool: gpu
+        \\
+    );
+    defer config.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), config.unknown_keys.len);
+    try std.testing.expectEqualStrings("foo", config.unknown_keys[0]);
+    try std.testing.expectEqualStrings("rules.SEC001.extra", config.unknown_keys[1]);
+    try std.testing.expectEqualStrings("output.pretty", config.unknown_keys[2]);
+    try std.testing.expectEqualStrings("runner.pool", config.unknown_keys[3]);
+    try std.testing.expectEqual(OutputFormat.json, config.output_format);
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    config.writeUnknownKeyWarnings(&out.writer);
+    try std.testing.expectEqualStrings(
+        \\warning: unknown config key 'foo'
+        \\warning: unknown config key 'rules.SEC001.extra'
+        \\warning: unknown config key 'output.pretty'
+        \\warning: unknown config key 'runner.pool'
+        \\
+    , out.written());
+}
+
+test "known config keys are not recorded as unknown" {
+    var config = try parseConfig(std.testing.allocator,
+        \\rules:
+        \\  SEC001:
+        \\    severity: warning
+        \\    enabled: true
+        \\    exclude:
+        \\      - "**/release.yml"
+        \\ignore:
+        \\  - "*.yml"
+        \\output:
+        \\  format: terminal
+        \\  color: never
+        \\repo_visibility: private
+        \\
+    );
+    defer config.deinit();
+    try std.testing.expectEqual(@as(usize, 0), config.unknown_keys.len);
 }
 
 /// Mirrors `main.loadConfig`: the YAML source buffer is freed before the Config

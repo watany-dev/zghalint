@@ -67,6 +67,14 @@ def _code_executing_inputs(source: str) -> dict[str, list[str]]:
     return _nonempty(found, "code_executing_inputs")
 
 
+def _sec025_actions(source: str) -> list[str]:
+    """Probe: actions SEC025 names. Absent is empty, not an error."""
+    if not re.search(r'\.id = "SEC025"', source):
+        return []
+    found = re.findall(r'isAction\(ref, "([^"]+)"\)', source)
+    return [name for name in found if name.endswith("create-github-app-token")]
+
+
 def _marker_fn(source: str, name: str) -> list[str]:
     return _nonempty(
         _STRING.findall(_block(source, f"fn {name}(value: []const u8) bool {{", "});")), name
@@ -126,15 +134,17 @@ class Impl:
     code_executing_inputs: dict[str, list[str]]
     #: Flows SEC002 follows (see spec.FLOWS). `checkScriptInjection` walks
     #: `env:` keys, step outputs, and job outputs as well as the direct use
-    #: (#314), outputs of actions that echo attacker content (`action_output`,
-    #: #535), and a local composite action's interpolated `inputs.*`
-    #: (`action_input`, #536).
+    #: (#314). Job outputs are a fixed-point, so a re-export through a second
+    #: job is `job_output_2hop` (#564). Also: outputs of actions that echo
+    #: attacker content (`action_output`, #535), and a local composite
+    #: action's interpolated `inputs.*` (`action_input`, #536).
     followed_flows: list[str] = field(
         default_factory=lambda: [
             "direct",
             "step_output",
             "env_context",
             "job_output",
+            "job_output_2hop",
             "action_output",
             "action_input",
         ]
@@ -147,6 +157,9 @@ class Impl:
     artifact_run_id_contexts: list[str] = field(default_factory=list)
     #: Actions whose outputs SEC002 treats as attacker text (spec.ACTION_OUTPUTS).
     untrusted_output_actions: list[str] = field(default_factory=list)
+    #: Actions SEC025 flags when `permission-*` is missing. Empty until the
+    #: rule lands (B1 #552).
+    github_app_token_actions: list[str] = field(default_factory=list)
 
 
 def load() -> Impl:
@@ -168,6 +181,7 @@ def load() -> Impl:
         shell_fetch_contexts=_probe_string_table(sec, "shell_fetch_contexts"),
         artifact_run_id_contexts=_probe_string_table(sec, "artifact_run_id_contexts"),
         untrusted_output_actions=_probe_string_table(sec, "untrusted_output_actions"),
+        github_app_token_actions=_sec025_actions(sec),
     )
 
 

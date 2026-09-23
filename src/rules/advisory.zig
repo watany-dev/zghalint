@@ -337,9 +337,15 @@ fn loadAdvisories(allocator: Allocator) ?[]const Advisory {
     }
 
     if (dir_opt) |dir| {
-        return readCacheFile(allocator, dir) catch null;
+        return readCacheFile(allocator, dir) catch fallbackSnapshot(allocator);
     }
-    return null;
+    return fallbackSnapshot(allocator);
+}
+
+const snapshot = @import("data/advisories.zig");
+
+fn fallbackSnapshot(allocator: Allocator) ?[]const Advisory {
+    return deserializeAdvisories(allocator, snapshot.tsv) catch null;
 }
 
 const api_url = "https://api.github.com/advisories?type=reviewed&ecosystem=actions&per_page=100";
@@ -1194,4 +1200,12 @@ test "SC003: no patched_version means no fix" {
 
     try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
     try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "advisory snapshot deserializes" {
+    const rows = try deserializeAdvisories(testing.allocator, snapshot.tsv);
+    defer testing.allocator.free(rows);
+    try testing.expect(rows.len > 0);
+    try testing.expectEqual(@as(usize, 10), snapshot.generated_at.len);
+    try testing.expect(std.ascii.isDigit(snapshot.generated_at[0]));
 }

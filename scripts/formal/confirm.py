@@ -109,6 +109,17 @@ def workflow_for(w: model.Witness) -> str:
             "        with:\n"
             f'          {input_name}: echo "{expr}"\n'
         )
+    if w.sink == "app_token":
+        action, _, _ = w.action.partition("#")
+        return head + (
+            "  j:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            f"      - uses: {action}@v2\n"
+            "        with:\n"
+            "          app-id: ${{ vars.APP_ID }}\n"
+            "          private-key: ${{ secrets.APP_KEY }}\n"
+        )
     if w.flow == "action_output":
         ao = _action_output(w)
         return head + (
@@ -183,6 +194,25 @@ def workflow_for(w: model.Witness) -> str:
             "    runs-on: ubuntu-latest\n"
             "    steps:\n"
             '      - run: echo "${{ needs.a.outputs.title }}"\n'
+        )
+    if w.flow == "job_output_2hop":
+        return head + (
+            "  a:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    outputs:\n"
+            "      title: ${{ steps.s.outputs.title }}\n"
+            "    steps:\n" + capture + "  b:\n"
+            "    needs: a\n"
+            "    runs-on: ubuntu-latest\n"
+            "    outputs:\n"
+            "      title: ${{ needs.a.outputs.title }}\n"
+            "    steps:\n"
+            "      - run: echo skip\n"
+            "  c:\n"
+            "    needs: b\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            '      - run: echo "${{ needs.b.outputs.title }}"\n'
         )
     if w.flow == "step_output":
         return head + (

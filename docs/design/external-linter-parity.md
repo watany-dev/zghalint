@@ -1,6 +1,6 @@
 # 外部リンター統合と parity 整理
 
-最終更新: 2026-09-12
+最終更新: 2026-09-16
 
 ## 1. 目的
 
@@ -554,7 +554,7 @@ zizmor も指摘しないので parity gap ではないが、2 経路の隙間�
 `docs/adr/0015-bp003-behind-current-major.md`。回帰ケースは
 `tests/fixtures/e2e/bp003-behind-current-major.yml`。
 
-#### G29. `actions/create-github-app-token` が installation の全権限を継承する — 要ルール追加
+#### G29 (#552). `actions/create-github-app-token` が installation の全権限を継承する — 対応済み
 
 `bench/cases/d-permissions-secrets/github-app-token-unscoped.yml`。
 
@@ -567,9 +567,15 @@ zizmor も指摘しないので parity gap ではないが、2 経路の隙間�
 
 `permission-*` 入力を付けないと、発行されるトークンは GitHub App の
 installation が持つ全スコープを継承する。zizmor は `github-app` として
-指摘する。zghalint には該当ルールが無い。実運用のワークフロー群を三者比較
-したところで 3 件出た。`permission-issues: write` のようにスコープを書いた
-呼び出しは zizmor も黙るので、入力の有無で切れる。
+指摘する。実運用のワークフロー群を三者比較したところで 3 件出た。
+`permission-issues: write` のようにスコープを書いた呼び出しは zizmor も黙る
+ので、入力の有無で切れる。
+
+SEC025 (`use-scoped-github-app-token`, warning) が同じ切れ方で報告する。
+`owner` / `repositories` はどの installation から発行するかを絞るだけで、
+権限集合はそのまま残るので沈黙しない。どの permission が要るかは静的に
+決まらないので autofix は付けない。回帰は
+`tests/fixtures/e2e/sec025-github-app-token-unscoped.yml`。
 
 #### G30 (#382). オブジェクト軸の未定義プロパティを EXPR011 が見ない — 対応済み
 
@@ -695,6 +701,47 @@ YAML の plain scalar は次のより深い行へ続き、改行は空白に畳�
 した継続行（空行を含む）まで `}}` を探す。閉じが見つかればトークンは行を
 またぎ、EXPR001 は出ず SEC002 は式全体を見る。同じ桁か浅い行の `}}` は次の
 キーであり、閉じには使わない。flow コレクションは従来どおり同一行に限る。
+
+#### G38 (#424). コンテキストパスの数値ブラケットアクセスを式エラーにする (FP) — 対応済み
+
+`bench/cases/e-expression/numeric-bracket-index.yml`。
+
+```yaml
+run: echo "${{ github.event.workflow_run.pull_requests[0].number }}"
+```
+
+GitHub Actions の式は配列への数値インデックス (`[0]`) を正規の構文として
+受け付ける。当時の `parseContextAccess` はブラケット内を string literal だけ
+許可し、`expected string in bracket access` (EXPR001) を出していた。関数結果
+への `[0]` は G9 で postfix の `index_access` として読めるようになっており、
+コンテキストパス側だけが残っていた。actionlint は沈黙する。`.number` は
+サーバ生成の整数なので SEC002 が発火しないのは正しい。
+
+実運用のワークフロー群を三者比較したところ、`workflow_run.pull_requests[0]`
+を `run:` に展開する形で zghalint だけが EXPR001 を出した。#424 で
+ブラケット内を string または number として読むようにした。
+
+#### G39 (#425). ローカル `uses:` のパスセグメント先頭の `@` を ref と誤認する (FP) — 対応済み
+
+`bench/cases/c-supply-chain/local-scoped-path.yml`。
+
+```yaml
+- uses: ./tools/@scope/tool
+```
+
+当時の DEP003 はローカル参照 (`./` / `$/`) に `@` が 1 文字でもあれば
+`@ref` 付きとみなしていた。GitHub はローカル action に ref を付けられない
+一方、パスセグメントの名前として `@scope` は存在する。actionlint / zizmor
+は形式不正としない。`./my-action@v1` のようにセグメント途中の `@` は
+今までどおり形式不正でよい。
+
+実運用のワークフロー群を三者比較したところ、ローカル composite を
+`./tools/@scope/...` から呼ぶ形で zghalint だけが DEP003 を出した。#425 で
+セグメント先頭の `@` だけをディレクトリ名として扱うようにした。
+
+PR #426 は G38 / G39 の bench ケースと本節の下書きだったが、コード修正
+(#424 / #425) の後に main から遅れて conflict したため close し、文書と
+回帰ケースをこちらで入れた。
 
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
@@ -1068,6 +1115,44 @@ CI / bench のピンを actionlint 1.7.12 と zizmor 1.30.1 に揃えた。歴�
 zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / FP は
 出なかった。空ワークフローで exit 3 になる既知の挙動は変わっていない。
 
+### 4.11 2026-09-16 の滞留 PR 清算 (#554)
+
+PR #395 は `docs/roadmap.md` の v0.0.3 版（#543）で置換済みで、既に close。
+PR #306 の数値（G16 / G17 後のパース失敗 0 件、Debug と shellcheck 無しが
+§4.6 の性能表を歪めたこと、G20 / G21 の発見）は §4.6〜§4.7 と G20 / G21
+の節に既に入っている。残っていたのはコーパスを平坦化していた
+`scripts/fetch-corpus.py` と、many-small が `action.yml` までタイルしていた
+こと、`--perf` 報告にビルド種別が無かったこと。それらをこちらで取り込み、
+#306 は close する。
+
+PR #217 の Alloy / TLA+ 仕様は Z3 モデル（`docs/design/formal-rule-model.md`、
+#307）で代替済みなので close。issue #409（AF6）は子の AF7〜AF14 が 0.0.2
+で全部 close 済みなので umbrella も close する。
+
+### 4.12 2026-09-16 の週次ループと doghooding D8 (#555)
+
+`scripts/bench.py` → `scripts/bench_gate.py` を actionlint 1.7.12 / zizmor
+1.30.1 で 1 周した。142 ケース、zghalint recall 100% (117/117)、位置一致
+97% (114/117)、`bench:forbid` 違反 0。回帰も新規 FN ケースも無い。G40 は
+切らない。
+
+同じピンで、実運用のワークフロー群 14 ファイルを三者比較した
+（`doghooding` スキル、オフライン）。zghalint は 103 件、exit 1
+（parse error / exit 2 は 0）。機械的な突き合わせで zghalint が欠ける行は
+あったが、ファイルを読んで分類すると新規 gap は無い。
+
+| 相手の指摘 | 件数の目安 | 扱い |
+|---|---|---|
+| zizmor `artipacked` | 複数 | SEC018 が `uses:` の次行。行ずれであり FN ではない |
+| zizmor `github-app` | 1 | 既知の G29（#552）。`permission-*` なしの App token |
+| zizmor `dangerous-triggers` | 1 | §4.3。トリガ自体 vs 危険な checkout |
+| zizmor `template-injection` | 複数 | `steps.*.outputs` やシークレット由来の action 出力。SEC002 の汚染源 1 hop とは別物で、§4.3 の既存方針 |
+| actionlint `concurrency.queue` | 複数 | GitHub が 2026-05-07 から受理するキー。zghalint は SYN025 で値を検査済み。actionlint 1.7.12 側の未知キー |
+| actionlint 空文字の `choice` 入力 | 1 | 省略可能な `workflow_dispatch` 入力の `default: ''`。GitHub は受理する |
+
+zghalint だけの指摘（timeout / permissions / pin / cache）は読んだ範囲で妥当で、
+C 群の FP 起票にはしない。
+
 ## 5. 次アクション
 
 - [x] G1: SEC016 に「既定でキャッシュする setup action」リストを追加する
@@ -1100,7 +1185,7 @@ zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / F
 - [x] G26 (#358): BP003 が表の最新 major より古い major を `info` で報告する
 - [x] G27 (#359): EXPR011 を動的マトリクス (`include: ${{ }}`) のジョブで沈黙させる
 - [x] G28 (#360): EXPR007 を条件の位置 (`if:`) に限り、値の位置の `||` / `&&` で沈黙させる
-- [ ] G29: `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する
+- [x] G29 (#552): `actions/create-github-app-token` に `permission-*` が無い呼び出しを指摘する (SEC025)
 - [x] G30 (#382): EXPR011 がオブジェクト軸の未定義プロパティを指摘する
 - [x] G31 (#383): DEP003 が `$/` の自己参照 `uses:` を受理する
 - [x] G32 (#384): `ubuntu-slim` を現行の GitHub-hosted ラベルとして認める
@@ -1109,3 +1194,6 @@ zizmor 1.30.1 の採点行列に、1.30.0 には無かった unique-win / FN / F
 - [x] G35 (#375): SEC023 の表に `cargo publish` + `CARGO_REGISTRY_TOKEN` を加える
 - [x] G36 (#419): 真偽値を返す組み込み呼び出しを SEC002 から除外する
 - [x] G37 (#421): 行をまたぐ plain scalar の `${{ }}` を一つの式として読む
+- [x] G38 (#424): コンテキストパスの数値ブラケット (`[0]`) を式として受理する
+- [x] G39 (#425): ローカル `uses:` の `@` がパスセグメント先頭のときだけディレクトリ名として扱う
+- [x] B4 (#555): 週次 bench 1 周と doghooding D8。新規 G40 なし（G29 の再確認のみ）

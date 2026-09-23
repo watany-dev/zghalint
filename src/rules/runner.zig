@@ -58,6 +58,9 @@ const LabelKind = enum {
     convention,
 };
 
+/// GitHub-hosted and well-known `runs-on` labels. Last reviewed: 2026-09-16
+/// against https://docs.github.com/en/actions/using-github-hosted-runners
+/// — see docs/maintenance.md.
 const known_labels = [_]KnownLabel{
     .{ .label = "ubuntu-latest" },
     .{ .label = "ubuntu-24.04" },

@@ -43,7 +43,7 @@ Options are passed after `-s --`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/watany-dev/zghalint/main/install.sh \
-  | sh -s -- --version v0.0.2 --prefix "$HOME/.local"
+  | sh -s -- --version v0.0.3 --prefix "$HOME/.local"
 ```
 
 `--version` takes a release tag and defaults to the release the script was
@@ -74,7 +74,7 @@ registries:
     ref: main
     path: packaging/aqua-registry.yaml
 packages:
-  - name: watany-dev/zghalint@v0.0.2
+  - name: watany-dev/zghalint@v0.0.3
 ```
 
 ### mise
@@ -90,13 +90,13 @@ The asset names are `zghalint-<os>-<arch>.tar.gz` (`.zip` on Windows).
 
 Requires zghalint on `PATH` (Homebrew, `install.sh`, aqua, or mise). The
 hook runs `--offline` so a commit does not wait on the GitHub API.
-`.pre-commit-hooks.yaml` is not in `v0.0.2`; until the next release, set
+`.pre-commit-hooks.yaml` is not in `v0.0.3`; until the next release, set
 `rev` to a commit on `main` that contains that file.
 
 ```yaml
 repos:
   - repo: https://github.com/watany-dev/zghalint
-    rev: v0.0.2
+    rev: v0.0.3
     hooks:
       - id: zghalint
 ```
@@ -116,7 +116,7 @@ The binary will be at `./zig-out/bin/zghalint`.
 ### Download release binary
 
 Pre-built binaries for Linux, macOS, and Windows (x86_64 / aarch64) are available on the [Releases](https://github.com/watany-dev/zghalint/releases) page.
-The current release is `v0.0.2`.
+The current release is `v0.0.3`.
 Tags follow `v<semver>`, with prereleases as `v<semver>-rc.<N>`; see [docs/maintenance.md](docs/maintenance.md) for the release procedure.
 
 #### Verifying a release artifact
@@ -126,7 +126,7 @@ Every release archive is published with a `SHA256SUMS` file and a
 checked against both the published checksum and the workflow that produced it.
 
 ```bash
-TAG=v0.0.2
+TAG=v0.0.3
 ARCHIVE=zghalint-linux-x86_64.tar.gz
 BASE=https://github.com/watany-dev/zghalint/releases/download/$TAG
 
@@ -148,7 +148,7 @@ from this repository's release pipeline.
 ### Use as a GitHub Action
 
 ```yaml
-- uses: watany-dev/zghalint@v0.0.2
+- uses: watany-dev/zghalint@v0.0.3
   with:
     paths: ".github/workflows/*.yml"
 ```
@@ -156,7 +156,7 @@ from this repository's release pipeline.
 With auto-fix enabled:
 
 ```yaml
-- uses: watany-dev/zghalint@v0.0.2
+- uses: watany-dev/zghalint@v0.0.3
   with:
     paths: ".github/workflows/*.yml"
     fix: safe
@@ -170,7 +170,7 @@ part of a release; a commit made after a version bump but before its tag has no
 archive to download yet.
 
 ```yaml
-- uses: watany-dev/zghalint@<full-sha> # v0.0.2
+- uses: watany-dev/zghalint@<full-sha> # v0.0.3
   with:
     paths: ".github/workflows/*.yml"
 ```
@@ -178,15 +178,15 @@ archive to download yet.
 Pass `version` to download a specific release regardless of the ref:
 
 ```yaml
-- uses: watany-dev/zghalint@<full-sha> # v0.0.2
+- uses: watany-dev/zghalint@<full-sha> # v0.0.3
   with:
-    version: v0.0.2
+    version: v0.0.3
     paths: ".github/workflows/*.yml"
 ```
 
 Write SARIF to a file with `output` and upload it for
 [GitHub Code Scanning](https://docs.github.com/en/code-security/code-scanning).
-`output` is not in the `v0.0.2` action; pin a commit that includes it, or
+`output` is not in the `v0.0.3` action; pin a commit that includes it, or
 the next release tag.
 
 ```yaml
@@ -213,7 +213,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Lint workflows
-        uses: watany-dev/zghalint@v0.0.2
+        uses: watany-dev/zghalint@v0.0.3
         with:
           format: sarif
           output: zghalint.sarif
@@ -299,11 +299,11 @@ forces a refresh.
 
 ## Rules
 
-zghalint includes **108 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
+zghalint includes **111 rules** across 11 categories. See [docs/rules.md](docs/rules.md) for the complete rule reference with detailed descriptions.
 
-### Security (23 rules)
+### Security (25 rules)
 
-Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, fork-controlled `workflow_run` gates, publishing with a long-lived API token instead of OIDC, and more.
+Script injection, unpinned actions, hardcoded secrets, environment injection, secrets management, container credentials, cache poisoning, self-hosted runners on fork-accessible triggers, fork-controlled `workflow_run` gates, publishing with a long-lived API token instead of OIDC, unscoped GitHub App installation tokens, and more.
 
 ### Supply Chain (8 rules)
 
@@ -322,11 +322,11 @@ Missing timeouts, step naming, deprecated actions, cross-platform shell, concurr
 Overly broad scopes, missing job-level permissions, unknown scope names and
 invalid permission levels.
 
-### Expression Validation (13 rules)
+### Expression Validation (19 rules)
 
 `${{ }}` syntax errors, unknown contexts/properties/functions, argument count validation, unsound conditions, `steps.<id>` resolution, unsynchronized background outputs.
 
-### Dependencies (3 rules)
+### Dependencies (6 rules)
 
 Dependabot cooldown configuration, insecure external code execution settings,
 `uses:` reference format for actions and reusable workflow calls.
@@ -337,15 +337,21 @@ Deprecated or retired `runs-on:` label detection, unknown `runs-on:` label
 detection (typos such as `ubunut-latest`), and conflicting label sets that no
 single runner can satisfy (`runs-on: [ubuntu-latest, windows-latest]`).
 
-### Action Metadata (4 rules)
+### Action Metadata (5 rules)
 
 Required keys in `action.yml` / `action.yaml`, supported and deprecated
 `runs.using` runtimes, unknown metadata keys, and the shape of `inputs` /
 `outputs` definitions.
 
-### Syntax (22 rules)
+### Syntax (26 rules)
 
 Empty workflow sections, unknown keys, duplicate keys, mapping value types, duplicate job/step IDs, job/step ID naming, duplicated job IDs in `needs`, unknown `on:` event names, invalid `types:` activity types, event filters the event does not offer, mutually exclusive event filters specified together, invalid filter globs, cron syntax and frequency, `schedule` timezone names, `cache-mode` values, `concurrency.queue` values and conflict with `cancel-in-progress: true`, YAML merge key `<<`, `workflow_dispatch` input definitions, duplicate `strategy.matrix` values, `strategy.matrix` `include` / `exclude` consistency, workflow files with no content at all.
+
+### Reusable Workflow (5 rules)
+
+`workflow_call` input definitions, required inputs and secrets a caller omits,
+input values that do not match the declared type, and outputs that read a job
+or job output that does not exist.
 
 ## Configuration
 
@@ -356,10 +362,13 @@ Create a `.zghalint.yml` file in your project root to customize behavior:
 rules:
   SEC001:
     severity: error        # Upgrade from warning to error
+    exclude:
+      - "**/release.yml"   # Silence this rule on matching paths only
   BP002:
     enabled: false         # Disable missing-step-name rule
   SEC007:
     severity: warning      # Upgrade from info to warning
+
   # PERF001 picks a cache manager from lockfiles it detects in the
   # workspace (package-lock.json / yarn.lock / pnpm-lock.yaml /
   # Pipfile.lock / poetry.lock / requirements.txt / go.sum). Override
@@ -384,7 +393,7 @@ ignore:
 
 # Output settings
 output:
-  format: terminal         # terminal, json, sarif
+  format: terminal         # terminal, json, sarif, github
   color: auto              # auto, always, never
 
 # Repository visibility (used by SEC020)
@@ -394,17 +403,28 @@ output:
 repo_visibility: unknown
 ```
 
+A finding can also be silenced in the workflow with
+`# zghalint-disable-line SEC001` or `# zghalint-disable-next-line SEC001`.
+Multiple IDs are comma-separated. `--format json` includes the suppressed
+count in `summary.suppressed`.
+
+The same keys are described by [`docs/schema/zghalint.schema.json`](docs/schema/zghalint.schema.json).
+Unknown keys are reported as stderr warnings and do not change the exit code.
+
 ## CLI Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--config <path>` | Load rule overrides from a `.zghalint.yml` file | None |
-| `--format <fmt>` | Output format: `terminal`, `json`, `sarif` | `terminal` |
+| `--format <fmt>` | Output format: `terminal`, `json`, `sarif`, `github` | `terminal` |
 | `--color <mode>` | Color control: `auto`, `always`, `never` | `auto` |
 | `--quick` | Disable network requests and use only local data/cache (`--offline` is also accepted) | Off |
 | `--no-cache` | Bypass the on-disk prefetch cache and refetch from the network | Off |
 | `--fix` | Apply safe auto-fixes and rewrite files in place | |
 | `--fix-unsafe` | Apply all auto-fixes, including unsafe ones | |
+| `--fail-on <severity>` | Exit 1 from this severity up: `error`, `warning`, `info` | `error` |
+| `--stdin` / `-` | Read one workflow from stdin | Off |
+| `--stdin-filename <path>` | Path used for ignore / Dependabot / action routing when reading stdin | `<stdin>` |
 | `-h`, `--help` | Show help message | |
 | `-v`, `--version` | Show version | |
 
