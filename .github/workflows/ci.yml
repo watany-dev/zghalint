@@ -323,7 +323,7 @@ jobs:
           offline: 'true'
 
   released-action:
-    name: Released Action (v0.0.2)
+    name: Released Action (v0.0.3)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -339,15 +339,15 @@ jobs:
       # 動くことを担保する。
       #
       # ref は SEC001 が求めるとおり full SHA でピンし、`version` で落とす
-      # リリースを明示する。この v0.0.2 は「公開済みの最新リリース」であって
+      # リリースを明示する。この v0.0.3 は「公開済みの最新リリース」であって
       # build.zig.zon の `.version` の写しではないため、
       # scripts/check-version-sync.sh の対象には入れない（次のリリースの
       # バージョン上げコミット時点ではまだタグが無く、落とせないため）。
       # 新しいリリースを切った後に追随させる。
       - name: Run the published action against our own workflows
-        uses: watany-dev/zghalint@49748850f6fa16bcb5302539425b0879275c259e # v0.0.2
+        uses: watany-dev/zghalint@83188550edee2d9b3f219a76ecd8848c004adcf8 # v0.0.3
         with:
-          version: v0.0.2
+          version: v0.0.3
           paths: '.github/workflows/*.yml'
           # ネットワークルール (SC003-SC006) は GitHub API に依存し、fork から
           # の PR やレート制限で結果が揺れる。self-lint と同じく切っておく。
