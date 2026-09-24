@@ -1,7 +1,7 @@
 const std = @import("std");
 const util = @import("../../util.zig");
 
-/// Last reviewed: 2026-09-16. See docs/maintenance.md.
+/// Last reviewed: 2026-09-24. See docs/maintenance.md.
 pub const TrustedAction = struct {
     owner: []const u8,
     repo: []const u8,

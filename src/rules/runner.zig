@@ -58,7 +58,7 @@ const LabelKind = enum {
     convention,
 };
 
-/// GitHub-hosted and well-known `runs-on` labels. Last reviewed: 2026-09-16
+/// GitHub-hosted and well-known `runs-on` labels. Last reviewed: 2026-09-24
 /// against https://docs.github.com/en/actions/using-github-hosted-runners
 /// — see docs/maintenance.md.
 const known_labels = [_]KnownLabel{
@@ -68,16 +68,21 @@ const known_labels = [_]KnownLabel{
     .{ .label = "ubuntu-26.04" },
     .{ .label = "ubuntu-24.04-arm" },
     .{ .label = "ubuntu-22.04-arm" },
+    .{ .label = "ubuntu-26.04-arm" },
     // Extends no other label, so the prefix match cannot cover it.
     .{ .label = "ubuntu-slim" },
     .{ .label = "windows-latest" },
     .{ .label = "windows-2025" },
+    .{ .label = "windows-2025-vs2026" },
     .{ .label = "windows-2022" },
     .{ .label = "windows-11-arm" },
+    .{ .label = "windows-11-vs2026-arm" },
     .{ .label = "macos-latest" },
     .{ .label = "macos-26" },
     .{ .label = "macos-15" },
     .{ .label = "macos-14" },
+    .{ .label = "macos-26-intel" },
+    .{ .label = "macos-15-intel" },
     .{ .label = "self-hosted", .kind = .convention },
     .{ .label = "linux", .kind = .convention },
     .{ .label = "windows", .kind = .convention },

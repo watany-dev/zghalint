@@ -86,6 +86,10 @@ each ID means.
 - 埋め込みメタデータ表 `src/rules/data/popular_actions.zig` を再生成し、27
   アクションの新しい major を足した（105 エントリ）。BP003 の「現行 major より
   古い」判定と DEP005 / DEP006 の入力名検証がその分広がる (#549)。
+- RUNNER002 の既知ラベルに `ubuntu-26.04-arm` / `windows-2025-vs2026` /
+  `windows-11-vs2026-arm` / `macos-15-intel` / `macos-26-intel` を足した。
+  前方一致で既知扱いにはなっていたが、typo の did-you-mean 候補に入るように
+  なる (#589)。
 
 ### Fixed
 
