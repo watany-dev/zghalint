@@ -883,7 +883,9 @@ pub const JobIndex = struct {
     pub fn build(allocator: std.mem.Allocator, jobs: []const Job) !JobIndex {
         var by_id: util.IgnoreCaseMap(usize) = .empty;
         errdefer by_id.deinit(allocator);
-        try by_id.ensureTotalCapacity(allocator, @intCast(jobs.len));
+        // The map counts in u32; a job list past that could never be allocated.
+        const capacity = std.math.cast(u32, jobs.len) orelse return error.OutOfMemory;
+        try by_id.ensureTotalCapacity(allocator, capacity);
         for (jobs, 0..) |*job, i| {
             const entry = by_id.getOrPutAssumeCapacity(job.id);
             if (!entry.found_existing) entry.value_ptr.* = i;
