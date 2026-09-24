@@ -13,6 +13,8 @@ each ID means.
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-09-24
+
 ### Added
 
 - GitHub Action `output` input writes diagnostics to a file so `format: sarif`
@@ -20,11 +22,6 @@ each ID means.
 - pre-commit hook (`.pre-commit-hooks.yaml`, `language: system`, `--offline`).
 - In-repo aqua registry (`packaging/aqua-registry.yaml`) and mise / Code
   Scanning install docs. Policy is `docs/adr/0019-distribution-channels.md`.
-
-## [0.0.3] - 2026-09-23
-
-### Added
-
 - SEC025 (`use-scoped-github-app-token`, warning): report
   `actions/create-github-app-token` when no `permission-*` input scopes the
   minted token. The action otherwise inherits the GitHub App installation's
@@ -86,6 +83,10 @@ each ID means.
 - 埋め込みメタデータ表 `src/rules/data/popular_actions.zig` を再生成し、27
   アクションの新しい major を足した（105 エントリ）。BP003 の「現行 major より
   古い」判定と DEP005 / DEP006 の入力名検証がその分広がる (#549)。
+- RUNNER002 の既知ラベルに `ubuntu-26.04-arm` / `windows-2025-vs2026` /
+  `windows-11-vs2026-arm` / `macos-15-intel` / `macos-26-intel` を足した。
+  前方一致で既知扱いにはなっていたが、typo の did-you-mean 候補に入るように
+  なる (#589)。
 
 ### Fixed
 

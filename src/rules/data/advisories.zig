@@ -2,9 +2,9 @@
 //!
 //! GENERATED FILE — do not edit by hand. Regenerate with
 //! `python3 scripts/gen-advisories.py`; see docs/maintenance.md.
-//! Last generated: 2026-09-16
+//! Last generated: 2026-09-24
 
-pub const generated_at = "2026-09-16";
+pub const generated_at = "2026-09-24";
 
 /// TSV used as the last-resort table when the network and the on-disk cache
 /// are both unavailable. Same columns as `advisory.serializeAdvisories`.
