@@ -728,6 +728,34 @@ test "RW002: a missing required input is reported" {
     try testing.expect(std.mem.find(u8, diags.get(0).message, "version") != null);
 }
 
+test "RW002: every caller of one workflow is checked while the cache is active" {
+    called_source = required_input_workflow;
+    called_workflow.overrideSource(&calledLookup);
+    defer called_workflow.overrideSource(null);
+    called_workflow.initCache(testing.allocator);
+    defer called_workflow.deinitCache();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  first:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\  second:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runCallInputCheck(arena.allocator(), source, &diags);
+
+    try testing.expectEqual(@as(usize, 2), diags.len());
+    try testing.expectEqualStrings("RW002", diags.get(0).rule_id);
+    try testing.expectEqualStrings("RW002", diags.get(1).rule_id);
+}
+
 test "RW002: a passed required input is accepted" {
     called_source = required_input_workflow;
     called_workflow.overrideSource(&calledLookup);

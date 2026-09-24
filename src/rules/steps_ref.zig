@@ -38,22 +38,24 @@ const step_properties = [_][]const u8{ "outputs", "conclusion", "outcome" };
 const DefinedSteps = util.IgnoreCaseMap(usize);
 
 /// Fills `defined`, and `ids` with the same ids in source order for the
-/// suggestions.
+/// suggestions. False when either could not be completed: a partial table
+/// would report steps that exist as undefined.
 fn collectStepIds(
     job: *const Job,
     defined: *DefinedSteps,
     ids: *std.ArrayList([]const u8),
     alloc: std.mem.Allocator,
-) void {
-    defined.ensureTotalCapacity(alloc, std.math.cast(u32, job.steps.len) orelse return) catch return;
+) bool {
+    if (!util.reserve(defined, alloc, job.steps.len)) return false;
     for (job.steps, 0..) |step, index| {
         const id = step.id orelse continue;
         if (id.len == 0) continue;
         const slot = defined.getOrPutAssumeCapacity(id);
         if (slot.found_existing) continue;
         slot.value_ptr.* = index;
-        ids.append(alloc, id) catch return;
+        ids.append(alloc, id) catch return false;
     }
+    return true;
 }
 
 const Resolver = struct {
@@ -207,7 +209,7 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
 
     var defined: DefinedSteps = .empty;
     var ids: std.ArrayList([]const u8) = .empty;
-    collectStepIds(job, &defined, &ids, alloc);
+    if (!collectStepIds(job, &defined, &ids, alloc)) return;
 
     // A job where no step carries an `id:` is not skipped: there every
     // `steps.<id>` reference is certainly undefined.

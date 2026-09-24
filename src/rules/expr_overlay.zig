@@ -86,19 +86,19 @@ const PropList = struct {
         self.appendNew(entry.value_ptr, name, ty);
     }
 
-    /// A failed append leaves the map entry pointing past the list; the next
-    /// `put` of that name then finds it and returns, which is the same silent
-    /// drop an allocation failure caused before.
     fn appendNew(self: *PropList, position: *usize, name: []const u8, ty: TypeRef) void {
         position.* = self.items.items.len;
-        self.items.append(self.alloc, .{ .name = name, .ty = ty }) catch return;
+        self.items.append(self.alloc, .{ .name = name, .ty = ty }) catch {
+            // Left in, the entry would send a later `merge` past the list.
+            _ = self.positions.remove(name);
+        };
     }
 
     /// Sizes both containers up front when the caller knows how many keys
     /// are coming, so a long list does not grow (and rehash) in steps.
     fn reserve(self: *PropList, count: usize) void {
         self.items.ensureTotalCapacity(self.alloc, count) catch {};
-        self.positions.ensureTotalCapacity(self.alloc, std.math.cast(u32, count) orelse return) catch {};
+        _ = util.reserve(&self.positions, self.alloc, count);
     }
 
     fn finish(self: *PropList) ?[]const Prop {

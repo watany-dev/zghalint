@@ -88,6 +88,16 @@ pub fn IgnoreCaseMap(comptime V: type) type {
     return std.HashMapUnmanaged([]const u8, V, IgnoreCaseContext, std.hash_map.default_max_load_percentage);
 }
 
+/// Room for `count` entries in an unmanaged hash map, or false when the count
+/// does not fit the map's capacity type or the table could not be allocated.
+/// A caller that gets false has to fall back or bail; a half-filled table is
+/// never the right answer.
+pub fn reserve(map: anytype, alloc: std.mem.Allocator, count: usize) bool {
+    const capacity = std.math.cast(u32, count) orelse return false;
+    map.ensureTotalCapacity(alloc, capacity) catch return false;
+    return true;
+}
+
 /// The nearest `candidates` entry within edit distance 2, or null when the
 /// input matches one exactly or two candidates tie for nearest.
 pub fn didYouMean(key: []const u8, candidates: []const []const u8) ?[]const u8 {
@@ -124,6 +134,15 @@ test "IgnoreCaseMap matches keys regardless of ASCII case" {
     const gop = try map.getOrPut(std.testing.allocator, "bUiLd");
     try std.testing.expect(gop.found_existing);
     try std.testing.expectEqual(@as(usize, 1), map.count());
+}
+
+test "reserve reports whether the table has room" {
+    var map: IgnoreCaseMap(usize) = .empty;
+    defer map.deinit(std.testing.allocator);
+    try std.testing.expect(reserve(&map, std.testing.allocator, 3));
+    try std.testing.expect(map.capacity() >= 3);
+    try std.testing.expect(!reserve(&map, std.testing.failing_allocator, 1 << 20));
+    try std.testing.expect(!reserve(&map, std.testing.allocator, std.math.maxInt(usize)));
 }
 
 test "IgnoreCaseContext hashes long keys the same in every case" {

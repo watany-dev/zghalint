@@ -167,14 +167,6 @@ fn reportDuplicateKey(
     }) catch return;
 }
 
-/// Room for `count` case-insensitive keys, or false when the table could not
-/// be allocated and the caller has to fall back to scanning.
-fn reserveIgnoreCase(map: *util.IgnoreCaseMap(usize), alloc: std.mem.Allocator, count: usize) bool {
-    const capacity = std.math.cast(u32, count) orelse return false;
-    map.ensureTotalCapacity(alloc, capacity) catch return false;
-    return true;
-}
-
 /// Index of the first earlier sibling whose key equals entry `i`'s, ignoring
 /// case. `seen` maps each key to its first index and is filled in as the
 /// walk goes; without it the earlier siblings are scanned instead.
@@ -205,12 +197,13 @@ fn checkMapping(
     const report = !isSameEntries(mapping.entries, skip);
 
     // Each key's first entry, so a repeat points back at it without a rescan
-    // of every earlier sibling on every entry.
+    // of every earlier sibling on every entry. Short mappings, which is
+    // nearly all of them, are cheaper to scan than to hash.
     var first_by_key: util.IgnoreCaseMap(usize) = .empty;
     defer first_by_key.deinit(list.allocator);
     const seen: ?*util.IgnoreCaseMap(usize) = if (report and
-        mapping.entries.len >= 2 and
-        reserveIgnoreCase(&first_by_key, list.allocator, mapping.entries.len))
+        mapping.entries.len >= 16 and
+        util.reserve(&first_by_key, list.allocator, mapping.entries.len))
         &first_by_key
     else
         null;
@@ -407,7 +400,7 @@ fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
     // Each ID's first step, so every later occurrence points back at it.
     var first_by_id: util.IgnoreCaseMap(usize) = .empty;
     defer first_by_id.deinit(list.allocator);
-    if (!reserveIgnoreCase(&first_by_id, list.allocator, job.steps.len)) return;
+    if (!util.reserve(&first_by_id, list.allocator, job.steps.len)) return;
 
     for (job.steps, 0..) |*step, i| {
         const step_id = step.id orelse continue;
@@ -513,7 +506,7 @@ fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
     // single diagnostic.
     var seen_before: util.IgnoreCaseMap(usize) = .empty;
     defer seen_before.deinit(diag_list.allocator);
-    seen_before.ensureTotalCapacity(diag_list.allocator, std.math.cast(u32, job.needs.len) orelse return) catch return;
+    if (!util.reserve(&seen_before, diag_list.allocator, job.needs.len)) return;
     for (job.needs, 0..) |dep, i| {
         const entry = seen_before.getOrPut(diag_list.allocator, dep) catch return;
         const prior = if (entry.found_existing) entry.value_ptr.* else 0;
@@ -572,14 +565,10 @@ const ScalarChain = struct {
         var chain = ScalarChain{};
         chain.next = alloc.alloc(usize, values.len) catch return null;
         @memset(chain.next, values.len);
-        const capacity = std.math.cast(u32, values.len) orelse {
+        if (!util.reserve(&chain.ends, alloc, values.len)) {
             chain.deinit(alloc);
             return null;
-        };
-        chain.ends.ensureTotalCapacity(alloc, capacity) catch {
-            chain.deinit(alloc);
-            return null;
-        };
+        }
         for (values, 0..) |value, i| {
             const text = switch (value) {
                 .scalar => |s| s.value,
@@ -648,12 +637,14 @@ fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
 
     for (matrix.axes) |axis| {
         if (axis.values.len < 2) continue;
-        var chain = ScalarChain.build(list.allocator, axis.values) orelse return;
-        defer chain.deinit(list.allocator);
+        // Without the chain the scalars take the structural scan too, so an
+        // allocation failure costs time rather than diagnostics.
+        var chain_opt = ScalarChain.build(list.allocator, axis.values);
+        defer if (chain_opt) |*chain| chain.deinit(list.allocator);
 
         for (axis.values, 0..) |value, i| {
             const repeat = (switch (value) {
-                .scalar => |s| chain.repeatOf(s.value, i),
+                .scalar => |s| if (chain_opt) |chain| chain.repeatOf(s.value, i) else structuralRepeat(axis.values, i),
                 else => structuralRepeat(axis.values, i),
             }) orelse continue;
 
@@ -671,7 +662,7 @@ fn checkDuplicateMatrixValues(job: *const Job, list: *DiagnosticList) void {
             var fix: ?diagnostics_mod.Fix = null;
             if (repeat.first_repeat and axis.value_deletes.len == axis.values.len) {
                 const indices = switch (value) {
-                    .scalar => chain.indicesFrom(alloc, i),
+                    .scalar => if (chain_opt) |chain| chain.indicesFrom(alloc, i) else structuralIndicesFrom(alloc, axis.values, i),
                     else => structuralIndicesFrom(alloc, axis.values, i),
                 };
                 if (indices) |found| fix = buildDuplicateMatrixFix(alloc, axis, found);
