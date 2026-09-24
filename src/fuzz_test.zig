@@ -1,6 +1,6 @@
-//! Fuzz targets for the three hand-written parsers zghalint feeds untrusted
-//! bytes into: the YAML tokenizer, the YAML parser, and the `${{ }}`
-//! expression parser.
+//! Fuzz targets for the parsers zghalint feeds untrusted bytes into: the YAML
+//! tokenizer, the YAML parser, the YAML round-trip emitter, the `${{ }}`
+//! expression parser / typecheck, and `.zghalint.yml`.
 //!
 //! Each target is written so that `zig build test` (no `--fuzz`) still runs it
 //! once per corpus entry — that keeps the seeds working as ordinary regression
@@ -18,7 +18,10 @@ const std = @import("std");
 
 const tokenizer = @import("yaml/tokenizer.zig");
 const yaml_parser = @import("yaml/parser.zig");
+const yaml_emit = @import("yaml/emit.zig");
 const expressions = @import("rules/expressions.zig");
+const expr_check = @import("rules/expr_check.zig");
+const config_mod = @import("config.zig");
 const diagnostics = @import("diagnostics.zig");
 
 /// Seeds shared by the YAML targets: the shapes a workflow file is made of,
@@ -88,6 +91,32 @@ test "fuzz: yaml parser survives arbitrary input" {
     try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = yaml_corpus });
 }
 
+test "fuzz: yaml parse-emit-parse preserves the AST" {
+    const Context = struct {
+        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
+            var buffer: [64 * 1024]u8 = undefined;
+            const input = buffer[0..smith.slice(&buffer)];
+            var first_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer first_arena.deinit();
+            var first_parser = yaml_parser.Parser.init(first_arena.allocator(), input);
+            const first = first_parser.parse() catch return;
+
+            const serialized = yaml_emit.emit(std.testing.allocator, first) catch |err| switch (err) {
+                error.UnrepresentableScalar => return,
+                else => |e| return e,
+            };
+            defer std.testing.allocator.free(serialized);
+
+            var second_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer second_arena.deinit();
+            var second_parser = yaml_parser.Parser.init(second_arena.allocator(), serialized);
+            const second = try second_parser.parse();
+            try std.testing.expect(first.eql(second));
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = yaml_corpus });
+}
+
 test "fuzz: expression parser survives arbitrary input" {
     const Context = struct {
         fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
@@ -127,6 +156,73 @@ test "fuzz: expression parser survives arbitrary input" {
         "steps.x.outputs['k']",
         "matrix.*.name",
         "1 > 2 || 3 <= 4",
+        "",
+    } });
+}
+
+const config_corpus: []const []const u8 = &.{
+    "",
+    "rules:\n  SEC001:\n    severity: error\n    enabled: false\n",
+    "ignore:\n  - '*.yml'\noutput:\n  format: json\n  color: never\n",
+    "runner:\n  labels: [self-hosted]\nrepo_visibility: private\n",
+    "rules:\n  PERF001:\n    node_cache_manager: pnpm\n    python_cache_manager: poetry\n",
+    "not: a: mapping\n",
+    "- sequence root\n",
+    "rules: [1, 2]\n",
+    "output:\n  format: not-a-format\n  extra: 1\n",
+};
+
+test "fuzz: config parser survives arbitrary input" {
+    const Context = struct {
+        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
+            var buffer: [64 * 1024]u8 = undefined;
+            const input = buffer[0..smith.slice(&buffer)];
+            var cfg = config_mod.parseConfig(std.testing.allocator, input) catch return;
+            defer cfg.deinit();
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = config_corpus });
+}
+
+test "fuzz: expression typecheck survives arbitrary input" {
+    const Context = struct {
+        fn testOne(_: @This(), smith: *std.testing.Smith) anyerror!void {
+            var buffer: [64 * 1024]u8 = undefined;
+            const input = buffer[0..smith.slice(&buffer)];
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+
+            var list = diagnostics.DiagnosticList.init(arena.allocator());
+            defer list.deinit();
+
+            const use: expressions.ExprUse = if (input.len > 0 and input[0] & 1 == 0)
+                .interpolation
+            else
+                .condition;
+            expressions.validateExpressionEnv(
+                arena.allocator(),
+                input,
+                diagnostics.Span.point(1, 1, 0),
+                &list,
+                0,
+                &expr_check.TypeEnv.empty,
+                use,
+            );
+            var i: usize = 0;
+            while (i < list.len()) : (i += 1) {
+                const diag = list.get(i);
+                try std.testing.expect(diag.rule_id.len > 0);
+                try std.testing.expect(diag.message.len > 0);
+            }
+        }
+    };
+    try std.testing.fuzz(Context{}, Context.testOne, .{ .corpus = &.{
+        "github.event.head_commit.message",
+        "success() && hashFiles('**/package-lock.json') != ''",
+        "fromJSON(inputs.matrix)[0].name",
+        "github.event.foo.bar",
+        "1 == 'x'",
+        "always()",
         "",
     } });
 }

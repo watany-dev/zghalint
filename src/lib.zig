@@ -3,6 +3,7 @@ pub const runtime = @import("runtime.zig");
 pub const yaml = struct {
     pub const Parser = @import("yaml/parser.zig").Parser;
     pub const types = @import("yaml/types.zig");
+    pub const emit = @import("yaml/emit.zig");
 };
 
 pub const workflow = struct {
@@ -23,6 +24,8 @@ pub const output = struct {
     pub const renderJson = json.renderJson;
     pub const sarif = @import("output/sarif.zig");
     pub const renderSarif = sarif.renderSarif;
+    pub const github = @import("output/github.zig");
+    pub const renderGithub = github.renderGithub;
 };
 
 pub const rules = struct {
@@ -38,12 +41,12 @@ pub const rules = struct {
     pub const stale_refs = @import("rules/stale_refs.zig");
     pub const impostor = @import("rules/impostor.zig");
     pub const sha_pin = @import("rules/sha_pin.zig");
+    pub const image_digest = @import("rules/image_digest.zig");
     pub const http_client = @import("rules/http_client.zig");
     pub const net_status = @import("rules/net_status.zig");
     pub const prefetch = @import("rules/prefetch.zig");
     pub const runner = @import("rules/runner.zig");
     pub const syntax = @import("rules/syntax.zig");
-    pub const composite_steps = @import("rules/composite_steps.zig");
     pub const local_action = @import("rules/local_action.zig");
     pub const called_workflow = @import("rules/called_workflow.zig");
 };
@@ -61,11 +64,13 @@ pub const ColorMode = config.ColorMode;
 
 pub const util = @import("util.zig");
 pub const workspace = @import("workspace.zig");
+pub const suppress = @import("suppress.zig");
 
 test {
     _ = @import("yaml/tokenizer.zig");
     _ = @import("yaml/types.zig");
     _ = @import("yaml/parser.zig");
+    _ = @import("yaml/emit.zig");
     _ = @import("workflow/types.zig");
     _ = @import("workflow/parser.zig");
     _ = @import("workflow/events.zig");
@@ -89,6 +94,7 @@ test {
     _ = @import("rules/secrets_context.zig");
     _ = @import("rules/steps_ref.zig");
     _ = @import("rules/expr_availability.zig");
+    _ = @import("rules/background_sync.zig");
     _ = @import("rules/security.zig");
     _ = @import("rules/performance.zig");
     _ = @import("rules/best_practices.zig");
@@ -98,13 +104,17 @@ test {
     _ = @import("rules/dependabot.zig");
     _ = @import("rules/action_metadata.zig");
     _ = @import("rules/archived.zig");
+    _ = @import("rules/ref_cache.zig");
     _ = @import("rules/stale_refs.zig");
     _ = @import("rules/sha_pin.zig");
+    _ = @import("rules/image_digest.zig");
     _ = @import("rules/impostor.zig");
     _ = @import("rules/impostor_compare.zig");
     _ = @import("rules/runner.zig");
     _ = @import("rules/syntax.zig");
+    _ = @import("rules/yaml_merge.zig");
     _ = @import("rules/uses.zig");
+    _ = @import("rules/prefer_self_repo.zig");
     _ = @import("rules/composite_steps.zig");
     _ = @import("rules/local_action.zig");
     _ = @import("rules/reusable_workflow.zig");
@@ -117,18 +127,23 @@ test {
     _ = @import("rules/cache_dir.zig");
     _ = @import("rules/rest_fallback.zig");
     _ = @import("rules/json_util.zig");
+    _ = @import("rules/setup_node_cache.zig");
+    _ = @import("rules/checkout_capability.zig");
     _ = @import("rules/rename.zig");
     _ = @import("rules/data/compromised_actions.zig");
     _ = @import("rules/data/trusted_actions.zig");
     _ = @import("output/terminal.zig");
     _ = @import("output/json.zig");
     _ = @import("output/sarif.zig");
+    _ = @import("output/github.zig");
     _ = @import("fix/engine.zig");
     _ = @import("fix/builder.zig");
     _ = @import("config.zig");
     _ = @import("util.zig");
     _ = @import("workspace.zig");
+    _ = @import("suppress.zig");
     _ = @import("e2e_test.zig");
+    _ = @import("catalog_test.zig");
     _ = @import("docs_sync_test.zig");
     _ = @import("fuzz_test.zig");
 }

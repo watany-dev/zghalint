@@ -1,0 +1,14 @@
+# zghalint:forbid PERF001 SEC016
+name: ci
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    cache-mode: none
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24

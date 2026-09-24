@@ -1,0 +1,16 @@
+# zghalint:forbid SYN026 SYN001
+name: ga12 alias without merge
+on: push
+permissions:
+  contents: read
+defaults: &defaults
+  run:
+    shell: bash
+jobs:
+  a:
+    defaults: *defaults
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run
+        run: echo hi

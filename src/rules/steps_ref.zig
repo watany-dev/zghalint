@@ -6,6 +6,7 @@
 //! per-job step list is workflow data, not catalog data, so the check lives
 //! here and hangs off `check_job`: only a job knows its steps *and* their
 //! order, and order is what makes `steps.<id>` valid or not at a given step.
+//! Step IDs match case-insensitively (`steps.Setup` reaches `id: setup`).
 //!
 //! It is the first of the contextual-typing rules (EXPR010-EXPR014), so the
 //! reference resolution here is written to be shared by the rest.
@@ -30,7 +31,8 @@ const Span = spans.Span;
 /// (DEP004 / DEP005 own that).
 const step_properties = [_][]const u8{ "outputs", "conclusion", "outcome" };
 
-/// Step id to the index of the *first* step carrying it. Duplicate ids are
+/// Step id to the index of the *first* top-level step carrying it; a nested
+/// `parallel:` child is filed under its top-level parent. Duplicate ids are
 /// SYN006's finding; resolving to the earliest one keeps this rule from
 /// piling a second, order-based complaint on top of it. Ids match
 /// case-insensitively because GitHub resolves expression paths that way
@@ -47,13 +49,43 @@ fn collectStepIds(
     alloc: std.mem.Allocator,
 ) bool {
     if (!util.reserve(defined, alloc, job.steps.len)) return false;
-    for (job.steps, 0..) |step, index| {
-        const id = step.id orelse continue;
-        if (id.len == 0) continue;
-        const slot = defined.getOrPutAssumeCapacity(id);
-        if (slot.found_existing) continue;
-        slot.value_ptr.* = index;
-        ids.append(alloc, id) catch return false;
+    for (job.steps, 0..) |*step, index| {
+        if (!addDefinedStep(step.id, index, defined, ids, alloc)) return false;
+        if (!addNestedDefinedSteps(step.nestedSteps(), index, defined, ids, alloc)) return false;
+    }
+    return true;
+}
+
+fn addDefinedStep(
+    id: ?[]const u8,
+    index: usize,
+    defined: *DefinedSteps,
+    ids: *std.ArrayList([]const u8),
+    alloc: std.mem.Allocator,
+) bool {
+    const step_id = id orelse return true;
+    if (step_id.len == 0) return true;
+    // Nested ids are not counted by the reservation, so the table may grow.
+    const slot = defined.getOrPut(alloc, step_id) catch return false;
+    if (slot.found_existing) return true;
+    slot.value_ptr.* = index;
+    ids.append(alloc, step_id) catch {
+        defined.removeByPtr(slot.key_ptr);
+        return false;
+    };
+    return true;
+}
+
+fn addNestedDefinedSteps(
+    steps: []const Step,
+    index: usize,
+    defined: *DefinedSteps,
+    ids: *std.ArrayList([]const u8),
+    alloc: std.mem.Allocator,
+) bool {
+    for (steps) |*step| {
+        if (!addDefinedStep(step.id, index, defined, ids, alloc)) return false;
+        if (!addNestedDefinedSteps(step.nestedSteps(), index, defined, ids, alloc)) return false;
     }
     return true;
 }
@@ -64,16 +96,20 @@ const Resolver = struct {
     /// target either, but it is still the likeliest typo source, so it stays
     /// in the list.
     ids: []const []const u8,
-    /// Index of the step whose expressions are being scanned.
+    /// Index of the *top-level* step whose expressions are being scanned.
+    /// Nested `parallel:` children share this index so they are not "earlier"
+    /// than each other; `current_id` distinguishes a true self-reference
+    /// from a sibling in the same group.
     current: usize,
+    current_id: ?[]const u8 = null,
     /// Backs the expression parse trees, which never outlive a walk;
     /// diagnostic messages go to the list's own arena instead.
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
     /// The hook `expr_scan` calls for every context access it finds.
-    pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
-        checkStepPath(self, path, span);
+    pub fn checkPath(self: Resolver, path: []const u8, loc: expr_scan.Loc) void {
+        checkStepPath(self, path, loc);
     }
 };
 
@@ -155,42 +191,37 @@ fn appendUnknownProperty(res: Resolver, path: []const u8, id: []const u8, prop: 
 
 /// `steps.*` and `steps[expr]` carry no resolvable id, so they are skipped
 /// rather than guessed at.
-fn segmentName(seg: expr_check.Segment) ?[]const u8 {
-    return switch (seg) {
-        .ident => |name| name,
-        .index_string => |name| name,
-        .star => null,
-    };
-}
-
-fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
+fn checkStepPath(res: Resolver, path: []const u8, loc: expr_scan.Loc) void {
     var iter = expr_check.SegmentIter{ .path = path };
-    const root = iter.next() orelse return;
-    const root_name = segmentName(root) orelse return;
+    const root_name = iter.nextName() orelse return;
     if (!std.ascii.eqlIgnoreCase(root_name, "steps")) return;
 
-    const id_seg = iter.next() orelse return;
-    const id = segmentName(id_seg) orelse return;
+    const id = iter.nextName() orelse return;
 
     const target = res.defined.get(id) orelse {
-        appendUnknownStep(res, path, id, span);
+        appendUnknownStep(res, path, id, loc.resolve());
         return;
     };
     if (target == res.current) {
-        appendSelfReference(res, id, span);
+        if (res.current_id) |own| {
+            if (std.ascii.eqlIgnoreCase(own, id)) {
+                appendSelfReference(res, id, loc.resolve());
+                return;
+            }
+        }
+        appendForwardReference(res, id, loc.resolve());
         return;
     }
     if (target > res.current) {
-        appendForwardReference(res, id, span);
+        appendForwardReference(res, id, loc.resolve());
         return;
     }
 
-    const prop_seg = iter.next() orelse return;
-    const prop = segmentName(prop_seg) orelse return;
+    const prop = iter.nextName() orelse return;
     for (step_properties) |valid| {
         if (std.ascii.eqlIgnoreCase(prop, valid)) return;
     }
-    appendUnknownProperty(res, path, id, prop, span);
+    appendUnknownProperty(res, path, id, prop, loc.resolve());
 }
 
 pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
@@ -209,17 +240,24 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     // A job where no step carries an `id:` is not skipped: there every
     // `steps.<id>` reference is certainly undefined.
     for (job.steps, 0..) |*step, index| {
-        expr_scan.scanStep(Resolver{
+        scanStepTree(step, Resolver{
             .defined = &defined,
             .ids = ids.items,
             .current = index,
             .alloc = alloc,
             .list = list,
-        }, step);
+        });
     }
 }
 
-pub const step_reference_rule = Rule{
+fn scanStepTree(step: *const Step, resolver: Resolver) void {
+    var current = resolver;
+    current.current_id = step.id;
+    expr_scan.scanStep(current, step);
+    for (step.nestedSteps()) |*child| scanStepTree(child, resolver);
+}
+
+const step_reference_rule = Rule{
     .id = "EXPR010",
     .name = "undefined-step-reference",
     .description = "`steps.<id>` must name a step defined earlier in the same job",
@@ -232,36 +270,18 @@ pub const rules = [_]Rule{step_reference_rule};
 
 const testing = std.testing;
 
+const job_check: test_support.Check = .{ .job = &checkJob };
+
 fn runOnSource(source: []const u8, list: *DiagnosticList) !void {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
-    for (wf.jobs) |*job| checkJob(job, list);
+    try test_support.lintSource(source, job_check, list);
 }
 
 fn expectMessage(source: []const u8, needle: []const u8) !void {
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-    try runOnSource(source, &list);
-
-    const diag = test_support.findDiagnostic(&list, "EXPR010") orelse {
-        std.debug.print("no EXPR010 diagnostic for source:\n{s}\n", .{source});
-        return error.MissingDiagnostic;
-    };
-    if (std.mem.find(u8, diag.message, needle) == null) {
-        std.debug.print("message \"{s}\" does not contain \"{s}\"\n", .{ diag.message, needle });
-        return error.UnexpectedMessage;
-    }
+    try test_support.expectMessage(source, job_check, "EXPR010", needle);
 }
 
 fn expectNoDiagnostics(source: []const u8) !void {
-    var list = DiagnosticList.init(testing.allocator);
-    defer list.deinit();
-    try runOnSource(source, &list);
-    if (list.len() != 0) {
-        std.debug.print("unexpected diagnostic: {s}\n", .{list.get(0).message});
-        return error.UnexpectedDiagnostic;
-    }
+    try test_support.expectNoDiagnostics(source, job_check);
 }
 
 test "EXPR010: a misspelled step id is reported with a suggestion" {
@@ -491,4 +511,51 @@ test "EXPR010: the diagnostic points at the reference inside a run scalar" {
 
     const diag = test_support.findDiagnostic(&list, "EXPR010").?;
     try testing.expectEqual(@as(u32, 8), diag.span.start_line);
+}
+
+test "EXPR010: a parallel sibling is not this step itself" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo v=1 >> "$GITHUB_OUTPUT"
+        \\          - run: echo "${{ steps.frontend.outputs.v }}"
+    ,
+        "step \"frontend\" is defined after this step",
+    );
+}
+
+test "EXPR010: a parallel child's outputs are available after the group" {
+    try expectNoDiagnostics(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo v=1 >> "$GITHUB_OUTPUT"
+        \\          - run: echo backend
+        \\      - run: echo "${{ steps.frontend.outputs.v }}"
+    );
+}
+
+test "EXPR010: a self-reference inside parallel is still this step" {
+    try expectMessage(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo "${{ steps.frontend.outputs.v }}"
+        \\          - run: echo backend
+    ,
+        "step \"frontend\" is this step itself",
+    );
 }

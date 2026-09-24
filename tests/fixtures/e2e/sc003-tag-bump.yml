@@ -1,0 +1,15 @@
+# zghalint:expect SC003
+# The e2e harness injects a local advisory for zghalint-test/vulnerable-action.
+# No tag oid is available offline, so --fix-unsafe only rewrites the tag.
+name: sc003 tag bump
+on: push
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: zghalint-test/vulnerable-action@v0.9.0

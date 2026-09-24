@@ -1,7 +1,7 @@
 # bench:expect missing-timeout@24
 # bench:forbid unknown-key
 # bench:forbid mapping-value-type
-# bench:skip actionlint alias node を解決せず defaults を型エラーとして弾く
+# actionlint 1.7.10 以降は alias を解決する。merge key `<<:` の拒否は GA12 (#439)。
 name: workflow built out of anchors, aliases and a merge key
 on: push
 concurrency:

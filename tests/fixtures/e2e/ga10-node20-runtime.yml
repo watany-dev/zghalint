@@ -1,0 +1,14 @@
+# zghalint:expect BP003@12
+# zghalint:forbid BP001
+name: ci
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false

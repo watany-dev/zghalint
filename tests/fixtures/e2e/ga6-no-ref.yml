@@ -1,0 +1,17 @@
+# zghalint:forbid EXPR019 SYN001
+name: background without output ref
+on: workflow_dispatch
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Produce a value
+        id: producer
+        background: true
+        run: |
+          printf 'value=ready\n' >> "$GITHUB_OUTPUT"
+      - name: Independent work
+        run: |
+          printf 'Independent work\n'

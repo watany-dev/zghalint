@@ -1,0 +1,16 @@
+# zghalint:expect PERF001
+# zghalint:forbid SEC016
+name: release
+on:
+  release:
+    types: [published]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24

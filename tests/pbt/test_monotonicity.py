@@ -3,11 +3,13 @@ Also: disabling rules via config never increases diagnostic count."""
 
 from __future__ import annotations
 
+import json
 import os
 
 from hypothesis import HealthCheck, assume, given, settings
 
 from tests.pbt.conftest import (
+    lint_workflow,
     lint_workflow_json,
     run_zghalint,
     write_temp_config,
@@ -127,3 +129,43 @@ def test_disabling_all_rules_yields_zero_diagnostics(zghalint_bin, content):
     finally:
         os.unlink(config_path)
         os.unlink(wf_path)
+
+
+def _finding_keys(data: dict) -> list[tuple[int, int, str]]:
+    return sorted((d["line"], d["column"], d["rule_id"]) for d in data["diagnostics"])
+
+
+@given(content=workflow_yaml())
+@PBT_SETTINGS
+def test_severity_override_does_not_drop_or_add_findings(zghalint_bin, content):
+    """Changing a rule's severity must keep the same findings, only retag that rule."""
+    baseline = lint_workflow_json(zghalint_bin, content)
+    assume(len(baseline["diagnostics"]) > 0)
+    rule = baseline["diagnostics"][0]["rule_id"]
+    base_keys = _finding_keys(baseline)
+
+    for sev in ("error", "warning", "info"):
+        config_path = write_temp_config({rule: {"severity": sev}})
+        try:
+            result = lint_workflow(
+                zghalint_bin,
+                content,
+                "--format",
+                "json",
+                "--color",
+                "never",
+                "--config",
+                config_path,
+            )
+            data = json.loads(result.stdout)
+            assert _finding_keys(data) == base_keys, (
+                f"severity {sev} for {rule} changed findings:\n"
+                f"base={base_keys}\noverride={_finding_keys(data)}\n{content}"
+            )
+            for d in data["diagnostics"]:
+                if d["rule_id"] == rule:
+                    assert d["severity"] == sev, (
+                        f"{rule} severity is {d['severity']}, expected {sev}"
+                    )
+        finally:
+            os.unlink(config_path)

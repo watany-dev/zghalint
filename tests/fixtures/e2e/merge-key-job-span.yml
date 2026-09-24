@@ -2,7 +2,7 @@
 # entries live at the anchor, which sits earlier in the file, so taking the
 # mapping's range off the merged list made BP001 end before it began (#367).
 # zghalint:expect BP001@13
-# zghalint:expect BP001@18 BP002
+# zghalint:expect BP001@18 BP002 SYN026@13 SYN026@18
 on: push
 permissions:
   contents: read

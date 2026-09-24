@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the extra GitHub Actions linters compared by `scripts/bench.py --perf`.
-# actionlint and zizmor stay pinned in ci.yml / .github/lint-requirements.txt.
+# actionlint and zizmor stay pinned in ci.yml / .github/requirements.txt.
 #
 # Linux x86_64 only — the weekly bench runner is ubuntu-latest. Pins live here
 # so bench.yml and a local install share one checksum.

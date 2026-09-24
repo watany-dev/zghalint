@@ -1,5 +1,5 @@
 name: 'zghalint'
-description: 'Fast, comprehensive GitHub Actions workflow linter'
+description: 'Lint GitHub Actions workflows for security, supply chain, expressions, and permissions'
 inputs:
   paths:
     description: 'Glob pattern for workflow files'
@@ -10,6 +10,11 @@ inputs:
   format:
     description: 'Output format (terminal, json, sarif)'
     default: 'terminal'
+  output:
+    description: >-
+      Write diagnostics to this file instead of stdout. Empty keeps stdout.
+      Use with `format: sarif` to feed `github/codeql-action/upload-sarif`.
+    default: ''
   offline:
     description: 'Disable network requests and use only local data/cache'
     default: 'false'
@@ -50,7 +55,7 @@ runs:
 
         # The release this commit belongs to. Kept in sync with
         # `build.zig.zon`'s `.version` by CI (see docs/maintenance.md).
-        FALLBACK_VERSION=v0.0.1-rc.2
+        FALLBACK_VERSION=v0.0.3
 
         # $GITHUB_ACTION_REF is whatever the caller wrote after `@`, and only a
         # release tag names a downloadable archive. A SHA (what SEC001 asks
@@ -117,6 +122,7 @@ runs:
         INPUT_PATHS: ${{ inputs.paths }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_FORMAT: ${{ inputs.format }}
+        INPUT_OUTPUT: ${{ inputs.output }}
         INPUT_OFFLINE: ${{ inputs.offline }}
         INPUT_FIX: ${{ inputs.fix }}
         INPUT_BINARY: ${{ inputs.binary }}
@@ -153,4 +159,9 @@ runs:
         # as an option.
         shopt -s nullglob
         # shellcheck disable=SC2086
-        "$BIN" "${CONFIG_ARGS[@]}" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS
+        set -- "$BIN" "${CONFIG_ARGS[@]}" --format "$INPUT_FORMAT" $OFFLINE_FLAG $FIX_FLAG -- $INPUT_PATHS
+        if [ -n "$INPUT_OUTPUT" ]; then
+          "$@" > "$INPUT_OUTPUT"
+        else
+          "$@"
+        fi

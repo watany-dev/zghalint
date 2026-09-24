@@ -165,17 +165,18 @@ fn checkPermissionsScope(
     }
 }
 
+fn expectedPermissionLevels(scope: []const u8) []const u8 {
+    if (std.mem.eql(u8, scope, "vulnerability-alerts")) return "\"read\" or \"none\"";
+    return "\"read\", \"write\" or \"none\"";
+}
+
 fn permissionProblemMessage(
     alloc: std.mem.Allocator,
     problem: workflow_types.PermissionProblem,
 ) ?[]const u8 {
     return switch (problem.kind) {
         .unknown_scope => blk: {
-            var suffix_buf: [64]u8 = undefined;
-            const suffix = if (util.didYouMean(problem.text, workflow_types.permission_scope_keys)) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.didYouMeanSuffix(alloc, problem.text, workflow_types.permission_scope_keys);
             break :blk std.fmt.allocPrint(
                 alloc,
                 "unknown permission scope \"{s}\"{s}",
@@ -186,12 +187,12 @@ fn permissionProblemMessage(
         // is no level to quote back.
         .invalid_level => if (problem.text.len == 0) std.fmt.allocPrint(
             alloc,
-            "missing permission level for \"{s}\". expected \"read\", \"write\" or \"none\"",
-            .{problem.scope},
+            "missing permission level for \"{s}\". expected {s}",
+            .{ problem.scope, expectedPermissionLevels(problem.scope) },
         ) catch null else std.fmt.allocPrint(
             alloc,
-            "invalid permission level \"{s}\" for \"{s}\". expected \"read\", \"write\" or \"none\"",
-            .{ problem.text, problem.scope },
+            "invalid permission level \"{s}\" for \"{s}\". expected {s}",
+            .{ problem.text, problem.scope, expectedPermissionLevels(problem.scope) },
         ) catch null,
         .invalid_all => std.fmt.allocPrint(
             alloc,
@@ -215,7 +216,10 @@ fn reportPermissionProblems(
             .span = problem.span,
             .fix_hint = switch (problem.kind) {
                 .unknown_scope => "use one of the permission scopes GitHub Actions defines.",
-                .invalid_level => "use 'read', 'write' or 'none' as the permission level.",
+                .invalid_level => if (std.mem.eql(u8, problem.scope, "vulnerability-alerts"))
+                    "use 'read' or 'none' as the permission level."
+                else
+                    "use 'read', 'write' or 'none' as the permission level.",
                 .invalid_all => "use 'read-all' or 'write-all', or list scopes individually.",
             },
             .fix = unknownScopeFix(diag_list, problem),
@@ -269,24 +273,30 @@ fn checkJobPermissions(job: *const Job, diag_list: *DiagnosticList) void {
     if (job.permissions != null) return;
     if (workflow_types.hasEmptySection(job.empty_sections, "permissions")) return;
 
-    for (job.steps) |*step| {
-        if (step.uses) |action_ref| {
-            if (action_ref.is_local or action_ref.is_docker) continue;
+    const Ctx = struct {
+        job: *const Job,
+        diag_list: *DiagnosticList,
+        found: bool = false,
+        pub fn visit(self: *@This(), step: *const Step) void {
+            if (self.found) return;
+            const action_ref = step.uses orelse return;
+            if (action_ref.is_local or action_ref.is_docker) return;
+            const owner = action_ref.owner orelse return;
+            if (std.mem.eql(u8, owner, "actions") or std.mem.eql(u8, owner, "github")) return;
 
-            const owner = action_ref.owner orelse continue;
-            if (std.mem.eql(u8, owner, "actions") or std.mem.eql(u8, owner, "github")) continue;
-
-            diag_list.append(.{
+            self.diag_list.append(.{
                 .rule_id = "PERM002",
                 .severity = .warning,
                 .message = "Job uses third-party actions without job-level 'permissions'. Define explicit permissions to limit token scope.",
                 .span = spans.usesSpan(step),
                 .fix_hint = "Add a 'permissions' block to this job to restrict the GITHUB_TOKEN scope.",
-                .fix = buildJobPermissionsFix(diag_list, job),
+                .fix = buildJobPermissionsFix(self.diag_list, self.job),
             }) catch return;
-            return;
+            self.found = true;
         }
-    }
+    };
+    var ctx = Ctx{ .job = job, .diag_list = diag_list };
+    workflow_types.walkSteps(job.steps, &ctx);
 }
 
 /// A workflow-level `permissions:` that grants no write already limits
@@ -1052,6 +1062,7 @@ test "PERM003: valid permissions produce no diagnostics" {
         \\      id-token: write
         \\      artifact-metadata: read
         \\      models: read
+        \\      vulnerability-alerts: read
         \\    steps:
         \\      - run: echo hi
         \\  other:
@@ -1063,4 +1074,30 @@ test "PERM003: valid permissions produce no diagnostics" {
     , &diags);
 
     try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERM003: vulnerability-alerts write is an invalid level" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diags = DiagnosticList.init(arena.allocator());
+
+    try runInvalidPermissions(arena.allocator(),
+        \\name: t
+        \\on: push
+        \\permissions:
+        \\  vulnerability-alerts: write
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+        \\
+    , &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("PERM003", diags.get(0).rule_id);
+    try std.testing.expectEqualStrings(
+        "invalid permission level \"write\" for \"vulnerability-alerts\". expected \"read\" or \"none\"",
+        diags.get(0).message,
+    );
 }

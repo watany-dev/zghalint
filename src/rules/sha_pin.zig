@@ -87,6 +87,26 @@ pub fn lookupTagOid(owner: []const u8, repo: []const u8, tag: []const u8) ?TagOi
     return oid_cache.get(key);
 }
 
+/// The tag whose stored oid is `oid`, or null when this run has no answer.
+/// A miss is not evidence that the SHA is unknown upstream — the store is
+/// only filled on `--fix` prefetch — so callers must not treat it as a
+/// capability.
+pub fn lookupTagForOid(owner: []const u8, repo: []const u8, oid: []const u8) ?[]const u8 {
+    if (oid_arena == null) return null;
+
+    var it = oid_cache.iterator();
+    while (it.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.value_ptr.oid, oid)) continue;
+        const key = entry.key_ptr.*;
+        const at = std.mem.lastIndexOfScalar(u8, key, '@') orelse continue;
+        const slash = std.mem.findScalar(u8, key[0..at], '/') orelse continue;
+        if (!std.ascii.eqlIgnoreCase(key[0..slash], owner)) continue;
+        if (!std.ascii.eqlIgnoreCase(key[slash + 1 .. at], repo)) continue;
+        return key[at + 1 ..];
+    }
+    return null;
+}
+
 /// `"{owner}/{repo}@{tag}"` — each component is bounded by
 /// `engine.isValidGitRef` (255 bytes), plus the `/` and `@` separators.
 const max_key_len = 255 * 3 + 2;
@@ -177,6 +197,15 @@ test "tag_oids: round-trips a stored oid" {
     try testing.expectEqualStrings(valid_oid, lookupTagOid("actions", "checkout", "v4").?.oid);
 }
 
+test "tag_oids: lookupTagForOid reverses a stored oid" {
+    initTagOids(testing.allocator, false, true);
+    defer deinitTagOids();
+
+    setCachedTagOid("actions", "setup-node", "v5", valid_oid, false);
+    try testing.expectEqualStrings("v5", lookupTagForOid("actions", "setup-node", valid_oid).?);
+    try testing.expect(lookupTagForOid("actions", "checkout", valid_oid) == null);
+}
+
 test "tag_oids: a miss is not an answer" {
     initTagOids(testing.allocator, false, true);
     defer deinitTagOids();
@@ -184,6 +213,14 @@ test "tag_oids: a miss is not an answer" {
     setCachedTagOid("actions", "checkout", "v4", valid_oid, false);
     try testing.expect(lookupTagOid("actions", "checkout", "v3") == null);
     try testing.expect(lookupTagOid("actions", "setup-node", "v4") == null);
+    try testing.expect(lookupTagForOid("actions", "checkout", valid_oid) != null);
+    try testing.expect(lookupTagForOid("actions", "setup-node", valid_oid) == null);
+}
+
+test "tag_oids: lookupTagForOid is inactive without the store" {
+    deinitTagOids();
+    setCachedTagOid("actions", "setup-node", "v5", valid_oid, false);
+    try testing.expect(lookupTagForOid("actions", "setup-node", valid_oid) == null);
 }
 
 test "tag_oids: rejects a non-SHA oid" {

@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **92 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **111 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -20,7 +20,13 @@ zghalint includes **92 rules** across 11 categories to help you write secure, ef
 ないため `--fix-unsafe` でのみ適用する。候補が定まらない場合は診断のみで、
 autofix は付かない。
 
-対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021、EXPR010–EXPR014、
+EXPR002 / EXPR003 / EXPR004 も、既存の式カタログから最短編集距離が 2 以内で
+候補が一意なら `--fix` でコンテキスト名・strict object のプロパティ名・関数名を
+置き換える。ソース位置が無い場合や、空白によって再構成されたパスとソースの
+長さが異なる場合は fix を付けない。プロパティはドット記法が対象。
+`github.event` 配下は従来どおり EXPR003 の対象外。
+
+対象は SYN001 / SYN009 / SYN010 / SYN016 / SYN019 / SYN021 / SYN023 / SYN024 / SYN025、EXPR010–EXPR014、
 PERM003、ACT002 / ACT003 / ACT005、DEP004 / DEP005、RW003 / RW004。
 
 ---
@@ -32,28 +38,60 @@ Detect security vulnerabilities in workflow definitions.
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
 | SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA |
-| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block or a code-executing action input (`actions/github-script`'s `with.script`) risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数として読む） |
+| SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block, a code-executing action input (`actions/github-script` `script:`, `azure/cli` `inlineScript:`, and similar), or a local composite action's interpolated `with:` input risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
-| SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout of PR head is dangerous |
+| SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout or a git/gh fetch of PR head is dangerous |
 | SEC006 | untrusted-input-condition | warning | Attacker-authored text used as a gate in an `if:` condition expression |
 | SEC007 | missing-permissions | info | Workflow should define top-level permissions |
 | SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数として読む） |
-| SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks |
-| SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit` |
+| SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out or git/gh-fetches a ref, or downloads an artifact from the triggering workflow, which may allow arbitrary code execution from forks |
+| SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit`（ローカル呼び先が `workflow_call.secrets` を宣言しているときは `--fix-unsafe` で明示マップへ展開） |
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |
 | SEC012 | unredacted-secrets | error | Secrets processed via `toJSON()`/`fromJSON()` bypass masking and may be exposed in logs |
 | SEC013 | hardcoded-container-credentials | error | Plaintext `username` / `password` in `container.credentials` / `services.*.credentials`. `${{ }}` expressions (including `github.actor` + `secrets.GITHUB_TOKEN`, the documented GHCR login) are not hardcoded |
-| SEC014 | bot-conditions | warning | Bot account checks using `github.actor` are spoofable |
+| SEC014 | bot-conditions | warning | Bot account checks using `github.actor` are spoofable（単純比較は `--fix-unsafe` で `github.event.sender.type` 比較へ置換） |
 | SEC015 | artipacked | warning | Checkout with persisted credentials followed by `upload-artifact` can leak `GITHUB_TOKEN` |
 | SEC016 | cache-poisoning | warning | Cache usage in release/deploy workflows risks cache poisoning attacks |
 | SEC017 | insecure-commands | warning | `ACTIONS_ALLOW_UNSECURE_COMMANDS` re-enables deprecated insecure workflow commands |
-| SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists `GITHUB_TOKEN` in `.git/config` by default |
+| SEC018 | checkout-persist-credentials | warning | `actions/checkout` persists credentials by default so later steps can still use the token |
 | SEC019 | secrets-outside-env | info | Secrets should be bound to `env:` variables instead of used directly in `run:`/`with:`（`--fix-unsafe` で `run:` 中の参照を step の `env:` に束縛する） |
 | SEC020 | self-hosted-runner-fork-triggered | warning | Self-hosted runners used with fork-accessible triggers allow untrusted code execution |
-| SEC021 | untrusted-checkout-ref | error | `actions/checkout` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
+| SEC021 | untrusted-checkout-ref | error | `actions/checkout` or a git/gh fetch in `run:` resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers |
 | SEC022 | workflow-run-branch-gate | error | `workflow_run` job is gated on an attribute of the triggering run that a fork controls |
 | SEC023 | use-trusted-publishing | info | Package publish steps pass a long-lived API token where the registry supports OIDC trusted publishing |
+| SEC024 | untrusted-cache-write | warning | `cache-mode: write` / `write-only` on a low-trust trigger (`pull_request_target` / `issue_comment` / `workflow_run`) overrides the restore-only default |
+| SEC025 | use-scoped-github-app-token | warning | `actions/create-github-app-token` without `permission-*` inputs inherits the GitHub App installation's full permissions |
+
+### SEC014 の自動修正
+
+SEC014 の `--fix-unsafe` は、`if:` 全体が `github.actor` または
+`github.triggering_actor` と `'…[bot]'` の `==` / `!=` 比較である場合に、
+`github.event.sender.type == 'Bot'` / `!= 'Bot'` へ置き換える。左右の順序は
+どちらでもよく、plain / quoted scalar と `${{ }}` を保持する。特定 bot 名から
+汎用の bot 判定へ意味が変わるため unsafe。AND / OR を含む条件、`contains()`、
+block scalar、ソース位置を取得できない条件には fix を付けない。
+
+### SEC010 の自動修正
+
+SEC010 の `--fix-unsafe` は、同じリポジトリ内の reusable workflow
+（`./.github/workflows/…`）を呼び、呼び先が `on.workflow_call.secrets` を
+宣言しているときに `secrets: inherit` を明示マップへ展開する。値は
+`${{ secrets.<name> }}` に固定する。リモート呼び先、読めない呼び先、宣言
+secrets が空、quoted / flow の `inherit` では fix を付けない。inherit で
+渡していた未宣言 secret は落ちるので unsafe。
+
+### SEC002 と真偽値の展開
+
+SEC002 は `run:` / コードとして実行される action 入力（`actions/github-script`
+の `with.script`、`azure/cli` の `inlineScript` など）に展開する式全体が
+`startsWith(...)` / `endsWith(...)` / `contains(...)` など真偽値を返す組み込みの
+呼び出しであれば、引数の汚染値を理由に報告しない。返る値は `true` / `false`
+だけであり、引数そのものはコードへ届かない。`&&` / `||` で汚染文字列を返す
+条件式や、別の `${{ }}` にある直接参照は引き続き診断・autofix の対象になる。
+`actions/github-script` の `script:` は `--fix-unsafe` で、JS の文字列 /
+テンプレートの中身が式 1 つのときだけ `process.env.VAR` へ置換する。裸の
+埋め込み・混在文字列・コメント内は step 全体を見送る。
 
 ### SEC016 の対象
 
@@ -69,9 +107,17 @@ Detect security vulnerabilities in workflow definitions.
 キャッシュ入力を持つ setup 系 action を見る。入力を書かなくても既定で
 キャッシュする `astral-sh/setup-uv` (`enable-cache`) と `mlugg/setup-zig`
 (`use-cache`) は、入力の省略そのものを指摘する。入力が書かれている場合は
-値を opt-out として読み、`false` のときだけ沈黙する
-(`actions/setup-node` などの `cache:` は指定して初めて有効になるので、
-省略は指摘しない)。
+値を opt-out として読み、`false` のときだけ沈黙する。
+`actions/setup-node` は `cache:` を指定したとき、または action が
+`package-manager-cache` を宣言していて `package.json` の
+`packageManager` / `devEngines.packageManager` が npm のとき、キャッシュが
+有効とみなす。major だけ、または解決できない SHA だけでは有効と断定しない。
+`package-manager-cache: false` は自動キャッシュを切る。
+
+`cache-mode` は restore / save の 2 能力として読む（PERF001 と同じ resolver）。
+`none` はどちらもできないので SEC016 は沈黙する。`read` は restore できるので
+「read-only だから安全」としては抑制しない。式や未知の値は不確定として、
+既存のステップ判定を変えない。
 
 ### SEC015 vs SEC018
 
@@ -80,6 +126,15 @@ the same `actions/checkout` step, plus a later `upload-artifact` in the same
 job. Both recommend `persist-credentials: false`. When SEC015 fires, SEC018 on
 that step is suppressed so the more specific artifact-leakage message is the
 one shown. Disabling SEC015 in `.zghalint.yml` restores SEC018 on those steps.
+
+SEC018 does not assume the token is written to `.git/config`. checkout v6 and
+later store persisted credentials under `$RUNNER_TEMP`; later steps can still
+use git auth, which is what SEC018 reports. SEC015 only treats a workspace
+upload as a leak when the resolved checkout still stores credentials in the
+workspace (`.git/config`). A v6+ checkout plus `upload-artifact` of `dist` /
+`.` is not artipacked unless `path:` names `$RUNNER_TEMP` / `runner.temp`.
+Capability comes from the resolved action metadata (or a SHA that resolves to
+a tag in that table), not from `major >= 6` on an unresolved pin.
 
 ### SEC002 / SEC008 vs. SEC006
 
@@ -110,11 +165,15 @@ block is injection when it is written to `$GITHUB_ENV` too.
   only under the trigger that fills it (#224), and the pairing is the same table
   SEC021 reads, so the two rules cannot disagree about what a caller controls.
 - `steps.<id>.outputs.*` — untrusted when step `<id>` wrote an untrusted value
-  to `$GITHUB_OUTPUT`. Binding the value to `env:` is what makes the *capturing*
-  step safe; it does nothing for whoever expands the output, so only the later
-  step that expands it is reported.
+  to `$GITHUB_OUTPUT`, or when it `uses:` an action whose outputs are derived
+  from attacker content (`tj-actions/changed-files`,
+  `step-security/changed-files`, `jitterbit/get-changed-files`,
+  `tj-actions/branch-names`, `peter-evans/find-comment`) (#535). Binding the
+  value to `env:` is what makes the *capturing* step safe; it does nothing for
+  whoever expands the output, so only the later step that expands it is
+  reported.
 
-Taint then travels one hop further, through the two indirections that otherwise
+Taint then travels one hop further, through the indirections that otherwise
 look like the recommended fix:
 
 - `env.<KEY>` — an `env:` entry bound to an untrusted value taints the
@@ -127,6 +186,10 @@ look like the recommended fix:
   tainted `steps.<id>.outputs.*` (or to an untrusted context directly). The set
   of exporting jobs is closed by iteration, so a chain of jobs is followed
   whatever order they are declared in.
+- a local composite `uses: ./...` — an untrusted `with:` value is reported on
+  the caller when that action's `runs.steps` interpolates `${{ inputs.<name> }}`
+  in a `run:` body or an `actions/github-script` `script:` (#536). Remote
+  `owner/repo@ref` actions are not opened.
 
 The fixed table covers every payload field an attacker authors, not only the
 obvious ones: alongside issue / PR / comment free text and commit messages it
@@ -161,11 +224,35 @@ SEC005 reports a checkout whose `ref` / `repository` names the PR head:
 and `github.event.pull_request.merge_commit_sha` — the test merge of the head
 into the base carries the fork's changes just as `refs/pull/<n>/merge` does.
 
-SEC009 reports `github.event.workflow_run.head_*`, `.display_title` and
-`.pull_requests[*].*`. The last one keeps SEC009 in step with SEC002, which
+When the resolved checkout declares `allow-unsafe-pr-checkout` (the gate
+backported onto current floating majors, and present from v7), SEC005 and
+SEC009 distinguish three cases. A dangerous `actions/checkout` without
+`allow-unsafe-pr-checkout: true` is described as a fetch the action refuses at
+runtime, not as arbitrary code execution that succeeded. Setting the flag is
+the explicit bypass and keeps the strong security warning. An unresolved SHA,
+or a checkout whose metadata does not declare the input, keeps the original
+exploit message. The gate does not run on `pull_request_review` /
+`pull_request_review_comment`, so those triggers stay on the exploit wording
+even with checkout v7. A `run:` `git checkout` / `git fetch` / `git clone` /
+`git pull` / `gh pr checkout` / `gh run download` of the same untrusted ref is
+the same finding: SEC005 / SEC009 / SEC021 report it at the same severity as
+`actions/checkout` `with:`. The action's `allow-unsafe-pr-checkout` gate does
+not apply to a shell fetch, so those stay on the exploit wording. A SHA,
+number, repository name, `clone_url`, or `workflow_run.id` carries no shell
+metacharacters, so SEC002 does not cover this path (#532).
+
+SEC009 reports `github.event.workflow_run.head_*`, `.display_title`,
+`.pull_requests[*].*`, and `.id`. `.id` is the handle `gh run download`
+takes. `pull_requests` keeps SEC009 in step with SEC002, which
 already treats `pull_requests.*.head.ref` as untrusted; GitHub empties the
 array for fork-triggered runs, so the reachable case is a branch name a
 same-repository PR author picks.
+
+SEC009 also reports `actions/download-artifact` `run-id:` and
+`dawidd6/action-download-artifact` `run_id:` when they take
+`github.event.workflow_run.id`. That run id picks the upstream (fork) job's
+artifact, which is the same untrusted input as a SHA that picks its code
+(#533). The same fork guard that silences a checkout silences this download.
 
 ### Fork guards
 
@@ -183,8 +270,8 @@ has no such gate: the triggers it owns (`workflow_dispatch`, `issue_comment`,
 
 ### SEC021 vs. SEC005 / SEC009
 
-All three report the same shape — `actions/checkout` fed a ref the attacker
-picks — split by trigger. SEC005 owns the privileged PR-head triggers above,
+All three report the same shape — `actions/checkout` `with:` or a git/gh fetch
+in `run:` fed a ref the attacker picks — split by trigger. SEC005 owns the privileged PR-head triggers above,
 SEC009 owns
 `workflow_run`, and SEC021 covers what is left: `workflow_dispatch`,
 `repository_dispatch`, `issues`, `issue_comment`, `discussion` and
@@ -282,20 +369,49 @@ publish するのかを静的に決められないため対象外。また
 ある可能性があるので報告しない — crates.io の trusted publishing は
 まさにこの形（auth step が短命トークンを出力する）を取る。
 
+### SEC024 untrusted-cache-write
+
+低信頼トリガ（`pull_request_target` / `issue_comment` / `workflow_run`）では
+GitHub の既定キャッシュ権限は restore-only。そこに `cache-mode: write` または
+`write-only` を明示すると、その既定を解除して cache poisoning のリスクが上がる。
+GitHub 自身も同じ組み合わせに warning annotation を付ける。
+
+`cache-mode` を省略したワークフローは既定のままなので報告しない。`read` /
+`none` も報告しない。`on: push` だけのように信頼できるトリガへ `write` を書く
+のも既定と同じなので報告しない。式や未知の値は不確定として報告しない。
+`--fix` は付けない — キーを消すと実行時のキャッシュ権限が変わる。
+
+### SEC025 use-scoped-github-app-token
+
+`actions/create-github-app-token` は `permission-*` 入力が無いとき、GitHub App
+installation が持つ全スコープをトークンに載せる。`permissions:` の最小化と同じ
+理由で warning。`owner` / `repositories` はどの installation から発行するかを
+絞るだけで、その installation の権限集合はそのまま残る。
+
+`permission-issues: write` のように `permission-` で始まる入力が 1 つでもあれ
+ば沈黙する。どの permission が要るかは静的に決まらないので `--fix` は付けない。
+
 ## Supply Chain Security Rules (SC)
 
 Detect supply chain risks in action and container image references.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| SC001 | unpinned-images | warning | Container images (`container.image`, `services.*.image`, `uses: docker://...`) should be pinned to a SHA256 digest for supply chain security |
+| SC001 | unpinned-images | warning | Container images (`container.image`, `services.*.image`, `uses: docker://...`) should be pinned to a SHA256 digest for supply chain security（`--fix` で Docker Hub / GHCR のタグを取得時点の index digest へピン止めする） |
 | SC002 | compromised-action-sha | error | Action references a SHA or tag of a known-compromised release |
-| SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database |
+| SC003 | known-vulnerable-action | warning | Action has known security advisories (CVE) in GitHub Advisory Database（`--fix-unsafe` で `patched_version` へ bump。SHA ピンは oid が取れるときだけ再ピン） |
 | SC004 | archived-uses | warning | Action references an archived (unmaintained) repository |
 | SC005 | stale-action-refs | info | SHA-pinned action does not correspond to any known Git tag |
 | SC006 | ref-confusion | warning | Action ref matches both a tag and branch, creating exploitable ambiguity |
 | SC007 | typosquat-action | warning | Action name is similar to a well-known `actions/*` action (possible typosquat) |
 | SC008 | impostor-commit | warning | SHA-pinned action ref is not reachable from any branch or tag of the upstream repo |
+
+### SC001 の自動修正
+
+`--fix` のときだけ Docker Hub / GHCR からマニフェストを取り、タグが指していた
+index digest へ書き換える。匿名が先で、GHCR の 401 だけ `GITHUB_TOKEN` を使う。
+取れないイメージ・未対応レジストリ・`--offline` は診断だけ残す。通常 lint の
+ネットワークには乗せない。
 
 ### SC007 typosquat-action
 
@@ -325,6 +441,25 @@ semver 判定する。SEC001 の autofix も、ほかのピン止めツールも
 求めている以上、既に修正済みのバージョンにピンした利用者を warning で罰しては
 ならない。ただしバージョン範囲を持たない advisory（全バージョンが対象）は、版が
 分からなくても該当するため warning のままにする。
+
+### SC003 の自動修正
+
+SC003 の `--fix-unsafe` は advisory の `patched_version` があるときに `uses:` の
+ref を書き換える。
+
+- タグ参照（`@v1.2.3` / `@v1`）はネットワークなしで `@<patched_version>` へ bump
+  する。`--quick` / `--offline` でも、アドバイザリ表が既に載っているなら出す。
+- その patched タグの commit oid が SEC001 と同じ `tag_oids` ストアにあるときは、
+  `@<oid> # <patched_version>` へ一度にピンする。SEC001 が同じ `uses:` をピン
+  しようとしても、SC003 の編集が `@` を含む分だけ先に始まり、重なりでは SC003
+  が残る（脆弱タグへピンするのは誤りのため）。
+- SHA ピンは `--fix-unsafe` かつ patched タグの oid が取れるときだけ、SHA と
+  `# vX.Y.Z` コメントを差し替える。`--quick` / `--offline` では SHA 再ピンは
+  出ない。版が取れず info に落ちている SHA ピン、`patched_version` が null の
+  advisory は診断のみ。
+
+major を跨ぐ更新も抑止しない。パッチが次 major にしか無い advisory で fix が
+消えるより、unsafe として出す。
 
 ### SEC001 / SC006 の SHA ピン止め autofix
 
@@ -360,7 +495,7 @@ Detect CI performance issues and resource waste.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただしリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は SEC016 と逆向きの助言になるため指摘しない |
+| PERF001 | cache-not-used | warning | Job uses a language setup action (`actions/setup-node`, `actions/setup-python`, `actions/setup-go`, `oven-sh/setup-bun`, `astral-sh/setup-uv`) without caching enabled。ただし `cache-mode: none` のジョブ、setup-node が `package.json` の npm 指定から自動キャッシュする場合、およびリリース / デプロイのジョブでの `astral-sh/setup-uv` の `enable-cache: false` は指摘しない（後者は SEC016 と逆向きの助言になるため） |
 | PERF002 | redundant-checkout | warning | Multiple `actions/checkout` without `path` in the same job (`--fix-unsafe` で 2 つ目のステップを削除) |
 | PERF003 | fail-fast-disabled | warning | Strategy has `fail-fast` disabled, wasting CI resources on failures |
 
@@ -372,11 +507,12 @@ Enforce workflow best practices for maintainability and reliability.
 |----|------|----------|-------------|
 | BP001 | missing-timeout | warning | Job is missing `timeout-minutes` (default 6 hours is too long)。`uses:` ジョブ（reusable workflow 呼び出し）は GitHub Actions が `timeout-minutes` を受け付けないため対象外 |
 | BP002 | missing-step-name | info | `run:` step is missing a `name` field. `uses:`-only steps are skipped |
-| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (error), or a major older than the newest one the metadata table knows (info) |
+| BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (`node12` / `node16` / `node20`, error), a runtime whose removal is announced but not yet in effect (warning), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
 | BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
+| BP009 | prefer-self-repository | info | Job-level `uses: ./…` that names a workflow file in this repository can use `$/` instead. No autofix |
 
 ### BP002 missing-step-name
 
@@ -384,15 +520,35 @@ Enforce workflow best practices for maintainability and reliability.
 action name, and requiring `name:` there is not the usual style. Unnamed
 `run:` steps are still reported, because the log label is the command text.
 
+### BP009 prefer-self-repository
+
+Job-level `uses: ./.github/workflows/…` は、ワークフローファイルがあるリポジトリ
+を指す。`$/.github/workflows/…` は同じリポジトリの、そのワークフローが載っている
+コミットを指す。ディスク上にそのファイルがあるときだけ info で `$/` を勧める。
+
+step の `uses: ./` は GITHUB_WORKSPACE なので対象外。checkout 後の生成物や別
+リポジトリの作業コピーを指している可能性がある。`./` → `$/` の書き換えは参照先
+が変わるので `--fix` / `--fix-unsafe` は付けない。
+
+```yaml
+jobs:
+  call:
+    uses: ./.github/workflows/ci.yml   # info: prefer "$/.github/workflows/ci.yml"
+```
+
 ### BP003 の 3 つの判定
 
 - **バージョン表**: `actions/checkout` など置き換え先が判明しているアクションを
   固定表と突き合わせ、`warning` で報告する。置き換え先が分かっているので
   `--fix` で `@vN` を書き換えられる。
 - **ランタイム判定**: アクションの `runs.using` が GitHub の廃止済みランタイム
-  （`node12` / `node16`）なら `error` で報告する。ローカルアクション
-  （`uses: ./{path}`）は `action.yml` を読み、リモートアクションは DEP005 の
-  埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
+  （`node12` / `node16` / `node20`。`node20` は 2026-09-23 に停止）なら `error`
+  で報告する。削除予定が告知されただけのランタイムは `warning` だが、現時点で
+  該当するものは無い。`runs.using` を `node24` に書き換える autofix は付けない
+  （Action 本体の互換確認が必要）。
+  `actions/setup-node` の `node-version: 20` は Action の実行ランタイムではない。
+  ローカルアクション（`uses: ./{path}`）は `action.yml` を読み、リモートアクションは
+  DEP005 の埋め込みメタデータ（`src/rules/data/popular_actions.zig`）を引く。
 - **現行 major との比較**: 参照している major が、埋め込みメタデータが知る最新の
   major より古ければ `info` で報告する（#358）。第三者アクションは現行 major しか
   表に無いため、古い major は `using` が分からずランタイム判定に掛からない。この
@@ -427,6 +583,9 @@ write scope (`contents: read`, `read-all`, `{}`). The token is already
 minimized for every job. `write-all` or any `: write` at workflow level still
 warns, because those jobs should narrow the grant (#334).
 
+`permissions.vulnerability-alerts` accepts `read` / `none` only. `write` is
+PERM003, not a broad-write finding.
+
 ## Expression Validation Rules (EXPR)
 
 Validate `${{ }}` expression syntax, context access, and function calls.
@@ -439,11 +598,11 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| EXPR001 | invalid-syntax | error | Empty expression, syntax error, or nesting deeper than 256 levels in `${{ }}` |
+| EXPR001 | invalid-syntax | error | Empty expression, syntax error, or nesting deeper than 256 levels in `${{ }}`; context paths accept numeric/string brackets mixed with dot access |
 | EXPR002 | unknown-context | error | Unknown context reference (e.g. `${{ foo.bar }}`) |
 | EXPR003 | unknown-property | warning | Unknown context property at any depth (e.g. `${{ github.unknown }}`, `${{ job.container.i }}`) |
 | EXPR004 | unknown-function | error | Unknown function name |
-| EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments |
+| EXPR005 | wrong-argument-count | error | Function called with wrong number of arguments (`case()` also requires an odd count: condition/result pairs plus a fallback) |
 | EXPR006 | unsound-contains | warning | `contains()` uses substring matching which may match unintended values |
 | EXPR007 | unsound-condition | warning | Bare literal in a condition's logical operator, constant `if:` condition, or text mixed with `${{ }}` |
 | EXPR008 | format-placeholders | error/warning | `format()` placeholder indices must match provided arguments |
@@ -457,10 +616,35 @@ Validate `${{ }}` expression syntax, context access, and function calls.
 | EXPR016 | function-availability | error | `success()` / `failure()` / `always()` / `cancelled()` outside an `if:`, or `hashFiles()` under a key that does not provide it |
 | EXPR017 | incomparable-types | warning | Comparison between values whose types can never be equal (e.g. `${{ github.event == 1 }}`, `${{ github.event.issue == 'bug' }}`) |
 | EXPR018 | argument-type | warning | An object or array passed where a builtin function takes a string (e.g. `${{ startsWith(github.event, 'a') }}`), or interpolated into a string where it renders as `Object` / `Array` / nothing |
+| EXPR019 | background-output-before-wait | warning | `steps.<id>.outputs` refers to a `background:` step (or a `parallel:` sibling) that has not been waited on yet |
+
+`case()` is pairs of `(condition, result)` followed by a fallback, so EXPR005
+requires an odd argument count of at least 3. Even counts (4, 6, …) are
+rejected. No autofix: inventing a fallback would change the expression's
+meaning.
 
 EXPR006 is substring matching, so it fires only when the first argument is a
 string. Array membership — `contains(github.event.pull_request.labels.*.name, 'label')`,
 `fromJSON('[...]')`, or a `TypeEnv` array — is exact and is not reported (#333).
+
+### EXPR019 background-output-before-wait
+
+A `background: true` step runs alongside later steps. Its `outputs` exist only
+after `wait:` / `wait-all:` (or after a `parallel:` group, which waits for its
+own children). Job-level `outputs:` and post-job cleanup already see an
+implicit wait-all, so a background step with no output reference is not
+reported. `conclusion` / `outcome` are not flagged. No autofix: inserting
+`wait` can hang the job on a long-running producer.
+
+```yaml
+steps:
+  - id: producer
+    background: true
+    run: echo value=ready >> "$GITHUB_OUTPUT"
+  - run: echo ${{ steps.producer.outputs.value }}  # warning: not waited
+  - wait: producer
+  - run: echo ${{ steps.producer.outputs.value }}  # ok
+```
 
 ## Dependency Rules (DEP)
 
@@ -484,6 +668,8 @@ action / reusable workflow references.
 - `./{path}` — ローカルアクション（`@ref` を付けられない）
 - `$/{path}` — ワークフロー自身のリポジトリの実行中コミット（`@ref` を付けられない）
 - `docker://{image}`
+
+ローカルアクションのパス要素先頭の `@`（例: `./tools/@scope/tool`、`$/tools/@scope/tool`）はディレクトリ名として受理する。`tool@v1` のような途中の `@` は ref として報告する。
 
 ジョブの `uses:`（再利用可能ワークフロー呼び出し）:
 
@@ -612,7 +798,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN009 | unknown-event | error | `on:` names an event GitHub Actions does not support, so the workflow never triggers |
 | SYN010 | invalid-activity-type | error | `types:` names an activity type the event does not define, so the workflow never triggers |
 | SYN011 | unavailable-event-filter | error | Event filter is not available for the event it is written under, or is not a filter name at all (`--fix` で綴りを修正、候補が無ければ `--fix-unsafe` でキーを削除) |
-| SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event |
+| SYN012 | exclusive-event-filters | error | `branches`/`branches-ignore`, `tags`/`tags-ignore` or `paths`/`paths-ignore` specified together for the same event; `--fix-unsafe` removes the later conflicting filter |
 | SYN013 | invalid-filter-glob | error | Event filter value (`branches`, `tags`, `paths`, or their `-ignore` forms) uses invalid GitHub Actions glob syntax |
 | SYN014 | invalid-cron | error | `schedule` cron expression is not valid POSIX 5-field cron syntax |
 | SYN015 | cron-too-frequent | error | scheduled workflow runs more often than GitHub Actions allows (once every 5 minutes) |
@@ -623,6 +809,10 @@ Validate the structural correctness of the workflow definition itself.
 | SYN020 | empty-workflow | error | ワークフローファイルに中身が無い（コメントと空白だけ、または空のマッピング） |
 | SYN021 | undefined-needs-job | error | `needs:` がこのワークフローに無いジョブ名を指している（`--fix` で綴りを修正） |
 | SYN022 | needs-cycle | error | ジョブの依存関係が閉路になっており、その中のジョブは永遠に実行されない |
+| SYN023 | invalid-cache-mode | error | `cache-mode` が `none` / `read` / `write` / `write-only` のいずれでもない |
+| SYN024 | undefined-step-control-ref | error | `wait` / `cancel` がこのジョブに無い step id を指している（`--fix` で綴りを修正） |
+| SYN025 | invalid-concurrency-configuration | error | `concurrency.queue` が `single` / `max` でない、または `queue: max` と `cancel-in-progress: true` が同時に指定されている |
+| SYN026 | unsupported-yaml-merge | error | GitHub Actions が受理しない YAML merge key `<<` が使われている |
 
 ### SYN001 unknown-key
 
@@ -1095,6 +1285,80 @@ jobs:
 ジョブ（`entry: needs: [a]`）は閉路の一部ではないので報告しない。指摘の位置は
 閉路が戻ってくるジョブのキーで、メッセージには閉路の並びをそのまま載せる。
 
+### SYN023 invalid-cache-mode
+
+`cache-mode` は workflow または job で指定し、job の値が workflow の値を上書きする。
+受理されるのは `none` / `read` / `write` / `write-only` だけ。未知の値は実行時に
+拒否されるので error とし、編集距離 2 以内で候補が一意なら `did you mean` と
+`--fix` の rename を付ける。値の推論（`read-write` → `write` など）はしない。
+
+意味は線形な強弱ではなく restore / save の 2 能力である（`read` は restore のみ、
+`write-only` は save のみ）。SEC016 / PERF001 / SEC024 が同じ resolver を使う。
+
+```yaml
+cache-mode: reed          # error: did you mean "read"?
+jobs:
+  build:
+    cache-mode: readwrite # error: not a documented mode
+```
+
+`${{ }}` 式で作った値は実行時まで決まらないので検査しない。
+
+### SYN024 undefined-step-control-ref
+
+`wait:` と `cancel:` は同じジョブの step `id` を指す。存在しない id はランナーが実行時に拒否するので error とし、編集距離 2 以内で候補が一意なら `did you mean` と `--fix` の rename を付ける。`wait-all` は引数を取らないので対象外。
+
+```yaml
+steps:
+  - id: producer
+    background: true
+    run: echo ready
+  - wait: produer   # error: did you mean "producer"?
+  - cancel: ghost   # error: no such step id
+```
+
+SYN006 が既に拒否する不正な id と、`${{ }}` 式で作った値はここでは見ない。
+
+### SYN025 invalid-concurrency-configuration
+
+`concurrency.queue` は 2026-05-07 から使える。受理されるのは `single`（既定）と
+`max`（同じグループに最大 100 件まで pending を積む）だけ。未知の値は実行時に
+拒否されるので error とし、編集距離 2 以内で候補が一意なら `did you mean` と
+`--fix` の rename を付ける。
+
+`queue: max` と `cancel-in-progress: true` は GitHub がワークフロー検証で拒否する
+組み合わせなので、同じブロックに両方あるときも error とする。矛盾するキーの
+削除は実行意味が変わるため autofix は付けない。`cancel-in-progress: false` か
+省略との組み合わせ、および `queue: single` との組み合わせは合法。
+
+```yaml
+concurrency:
+  group: deploy-production
+  queue: max
+  cancel-in-progress: true   # error: cannot combine with queue: max
+
+concurrency:
+  group: ci
+  queue: huge                # error: expected "single" or "max"
+```
+
+`${{ }}` 式で作った `queue` / `cancel-in-progress` は実行時まで決まらないので
+検査しない。deploy ジョブへ `queue: max` を強制するスタイルルールにはしない。
+
+### SYN026 unsupported-yaml-merge
+
+GitHub Actions のワークフロー YAML は merge key `<<` を受理しない。zghalint の
+パーサは `<<:` を展開したまま他のルールを走らせるが、`<<` 自体は error とする。
+展開結果をファイルへ書き戻す autofix は付けない。anchor / alias だけで merge
+していないファイルは報告しない。
+
+```yaml
+jobs:
+  a:
+    <<: *defaults   # error: GitHub Actions does not support YAML merge key "<<"
+    runs-on: ubuntu-latest
+```
+
 ## Action Metadata Rules (ACT)
 
 Validate action metadata files (`action.yml` / `action.yaml`) — the manifest of
@@ -1103,7 +1367,7 @@ a composite, JavaScript, or Docker action. これらはワークフローでは�
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入） |
+| ACT001 | action-missing-required-key | error | `name` / `runs`、および `runs.using` が要求するキー（node は `main`、docker は `image`、composite は `steps`）が無い（`--fix-unsafe` で仮の値を挿入）。composite の欠落 `shell` は `--fix` で `bash` を挿入 |
 | ACT002 | action-invalid-runs-using | error/warning | `runs.using` が未対応のランタイム（error）、または GitHub が廃止予定のランタイム（warning） |
 | ACT003 | action-unknown-key | error | メタデータ・`runs`・各 input / output 定義に、仕様にないキーがある |
 | ACT004 | action-invalid-definition | error | 値の形が仕様と違う（ドキュメントや `runs` がマッピングでない、`required` が真偽値でない、composite 以外の `value` など） |
@@ -1123,10 +1387,15 @@ GitHub 自身が案内しているのはこの 2 つの配置なので既定は�
 
 ### ACT002 が受理する `using`
 
-`node20` / `node24` / `docker` / `composite` の 4 つ。`node12` / `node16` は
-GitHub が実行を停止するランタイムなので warning として報告し、それ以外の未知の値は
-error として報告する（編集距離 2 以内で候補が一意に定まるときは
-`did you mean ...?` を添える）。
+`node24` / `docker` / `composite` の 3 つを受理する。`node12` / `node16` /
+`node20` は GitHub が実行を停止するランタイムなので、未知の値ではなく
+「廃止済み」として warning で報告する（実行できないという判定は BP003 が
+`error` で出す）。それ以外の未知の値は error として報告する（編集距離 2 以内で
+候補が一意に定まるときは `did you mean ...?` を添え、その候補への rename を
+autofix にする）。受理する Node の値が `node24` だけになったので、`node22` /
+`node18` のような打ち間違いは候補が一意に定まり `--fix` で書き換わる。
+一方 `node20` → `node24` の autofix は付けない。廃止済みの値は打ち間違いではなく、
+ランタイムを上げるとアクションの実装側も直す必要があるため。
 
 ### 個々の定義に対する検査
 
@@ -1166,6 +1435,7 @@ composite action の step は、ワークフローの step と同じ実体なの
 
 - `run:` を持つ step には `shell:` が必須。既定のシェルも `defaults.run` も無く、
   GitHub は実行時にエラーにするため、ACT001（必須キーが無い）として報告する。
+  挿入位置が確定できる場合、`--fix` で `shell: bash` を追加する。既存の `shell:` は変更しない。
   `shell:` の値そのものの妥当性は BP004 と同じ表で判定する。
 - 式検証（EXPR 系）は composite 用の context で行う。`inputs.<name>` はその action
   自身の `inputs:` を指すため、宣言されていない名前は ACT005 として報告する
@@ -1380,6 +1650,8 @@ You can override rule severity or disable rules in `.zghalint.yml`:
 rules:
   SEC001:
     severity: error        # Upgrade from warning to error
+    exclude:
+      - "**/release.yml"   # Silence this rule on matching paths only
   BP002:
     enabled: false         # Disable a rule
   SEC007:
@@ -1387,3 +1659,7 @@ rules:
 ```
 
 See the [README](../README.md#configuration) for full configuration options.
+
+A single finding can also be silenced with `# zghalint-disable-line RULE`
+or `# zghalint-disable-next-line RULE` on the YAML line. Multiple IDs are
+comma-separated. `--format json` reports how many diagnostics were suppressed.

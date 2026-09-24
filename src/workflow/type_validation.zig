@@ -107,15 +107,7 @@ pub fn checkMapping(
     mismatches: ?*std.ArrayList(TypeMismatch),
     allocator: std.mem.Allocator,
 ) bool {
-    if (node == .mapping) return true;
-    if (node == .scalar and containsExpression(node.scalar.value)) return false;
-    report(mismatches, allocator, .{
-        .field = field,
-        .expected = "mapping",
-        .actual = nodeKindLabel(node),
-        .span = node.getSpan(),
-    });
-    return false;
+    return checkKind(.mapping, node, field, mismatches, allocator);
 }
 
 /// A field whose value must be a sequence. Reports the mismatch and answers
@@ -126,11 +118,21 @@ pub fn checkSequence(
     mismatches: ?*std.ArrayList(TypeMismatch),
     allocator: std.mem.Allocator,
 ) bool {
-    if (node == .sequence) return true;
+    return checkKind(.sequence, node, field, mismatches, allocator);
+}
+
+fn checkKind(
+    comptime kind: std.meta.Tag(Node),
+    node: Node,
+    field: []const u8,
+    mismatches: ?*std.ArrayList(TypeMismatch),
+    allocator: std.mem.Allocator,
+) bool {
+    if (node == kind) return true;
     if (node == .scalar and containsExpression(node.scalar.value)) return false;
     report(mismatches, allocator, .{
         .field = field,
-        .expected = "sequence",
+        .expected = @tagName(kind),
         .actual = nodeKindLabel(node),
         .span = node.getSpan(),
     });

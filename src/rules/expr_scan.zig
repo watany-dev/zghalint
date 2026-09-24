@@ -5,10 +5,11 @@
 //! context paths inside it against workflow data. Only the resolution differs,
 //! so the walk lives here and the caller supplies a visitor with an `alloc`
 //! field backing the expression parse trees and either or both of
-//! `checkPath(path, span)` and `checkCall(name, span)`.
+//! `checkPath(path, loc)` and `checkCall(name, loc)`.
 //!
-//! Spans are node-precise: a path is reported at its own byte range inside the
-//! scalar, not at the whole step.
+//! `Loc` is unresolved: `Anchor.at` only runs when the visitor emits a
+//! diagnostic (#527). Paths are node-precise: a finding points at the path's
+//! own byte range inside the scalar, not at the whole step.
 
 const std = @import("std");
 const expressions = @import("expressions.zig");
@@ -21,6 +22,21 @@ const Span = spans.Span;
 const Anchor = spans.Anchor;
 const Cursor = spans.Cursor;
 const ExprNode = expressions.ExprNode;
+
+/// Byte range of a path or call inside a scalar. `resolve` walks the scalar
+/// only for a finding (#527), and from the last resolved position rather than
+/// from the scalar's first byte, so a `run:` block with many findings is not
+/// re-counted for each of them. The cursor lives for the scan of its scalar,
+/// which is where the visitor is called.
+pub const Loc = struct {
+    cursor: *Cursor,
+    offset: usize,
+    len: usize,
+
+    pub fn resolve(self: Loc) Span {
+        return self.cursor.at(self.offset, self.len);
+    }
+};
 
 fn Walk(comptime Visitor: type) type {
     return struct {
@@ -42,23 +58,23 @@ fn Walk(comptime Visitor: type) type {
             }
         }
 
-        fn spanOf(self: Self, node: *const ExprNode) Span {
+        fn locOf(self: Self, node: *const ExprNode) Loc {
             const start = self.expr_offset + node.start_byte;
             const len = if (node.end_byte > node.start_byte) node.end_byte - node.start_byte else 0;
-            return self.cursor.at(start, len);
+            return .{ .cursor = self.cursor, .offset = start, .len = len };
         }
 
         fn walk(self: Self, node: *const ExprNode) void {
             switch (node.kind) {
                 .context_access => {
                     if (@hasDecl(Visitor, "checkPath")) {
-                        self.visitor.checkPath(node.value, self.spanOf(node));
+                        self.visitor.checkPath(node.value, self.locOf(node));
                     }
                     return;
                 },
                 .function_call => {
                     if (@hasDecl(Visitor, "checkCall")) {
-                        self.visitor.checkCall(node.value, self.spanOf(node));
+                        self.visitor.checkCall(node.value, self.locOf(node));
                     }
                 },
                 else => {},
@@ -84,12 +100,8 @@ fn scanExpression(visitor: anytype, cursor: *Cursor, expr_offset: usize, expr: [
 pub fn scanText(visitor: anytype, text: []const u8, anchor: Anchor) void {
     var cursor = anchor.cursor(text);
     var pos: usize = 0;
-    while (pos + 2 < text.len) {
-        if (!(text[pos] == '$' and text[pos + 1] == '{' and text[pos + 2] == '{')) {
-            pos += 1;
-            continue;
-        }
-        const expr_start = pos + 3;
+    while (std.mem.find(u8, text[pos..], "${{")) |rel| {
+        const expr_start = pos + rel + 3;
         const end_offset = std.mem.find(u8, text[expr_start..], "}}") orelse return;
         const content = text[expr_start .. expr_start + end_offset];
         pos = expr_start + end_offset + 2;
@@ -114,9 +126,8 @@ pub fn scanCondition(
         scanText(visitor, value, anchor);
         return;
     }
+    const leading = std.mem.findNone(u8, value, " \t\n\r") orelse return;
     const trimmed = std.mem.trim(u8, value, " \t\n\r");
-    if (trimmed.len == 0) return;
-    const leading: usize = @intFromPtr(trimmed.ptr) - @intFromPtr(value.ptr);
     var cursor = anchor.cursor(value);
     scanExpression(visitor, &cursor, leading, trimmed);
 }
@@ -149,7 +160,7 @@ pub fn scanStep(visitor: anytype, step: *const Step) void {
 /// `runs-on: ${{ matrix.os }}` is the canonical matrix reference; job-level
 /// `with:` feeds a reusable workflow call and has no per-entry spans, so the
 /// job span anchors it.
-pub fn scanJobFields(visitor: anytype, job: *const Job) void {
+fn scanJobFields(visitor: anytype, job: *const Job) void {
     scanCondition(visitor, job.if_condition, job.if_condition_meta, job.span);
     scanScalarMap(visitor, job.env, job.env_meta, job.span);
     scanScalarMap(visitor, job.with, null, job.span);
@@ -166,8 +177,34 @@ pub fn runsOnAnchor(job: *const Job) Anchor {
     return Anchor.fromMeta(.{ .value_span = span, .style = job.runs_on_value_style }, job.span);
 }
 
-/// Every scalar of a job: its own fields and those of each step.
+/// Every scalar of a job: its own fields and those of each step, including
+/// nested `parallel:` children.
 pub fn scanJob(visitor: anytype, job: *const Job) void {
     scanJobFields(visitor, job);
-    for (job.steps) |*step| scanStep(visitor, step);
+    scanStepTree(visitor, job.steps);
+}
+
+fn scanStepTree(visitor: anytype, steps: []const Step) void {
+    for (steps) |*step| {
+        scanStep(visitor, step);
+        scanStepTree(visitor, step.nestedSteps());
+    }
+}
+
+test "Loc.resolve matches Anchor.at" {
+    const token = Span{
+        .start_line = 3,
+        .start_col = 9,
+        .end_line = 3,
+        .end_col = 24,
+        .start_byte = 100,
+        .end_byte = 115,
+    };
+    const value = "github.head_ref";
+    var cursor = Anchor.fromMeta(.{ .value_span = token, .style = .plain }, Span.point(1, 1, 0)).cursor(value);
+    const loc = Loc{ .cursor = &cursor, .offset = 7, .len = 8 };
+    const s = loc.resolve();
+    try std.testing.expectEqual(@as(u32, 3), s.start_line);
+    try std.testing.expectEqual(@as(u32, 16), s.start_col);
+    try std.testing.expectEqual(@as(usize, 107), s.start_byte);
 }

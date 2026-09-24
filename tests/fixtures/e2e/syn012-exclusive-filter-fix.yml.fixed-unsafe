@@ -1,0 +1,15 @@
+# zghalint:expect SYN012
+name: exclusive filters
+on:
+  push:
+    branches: [main]
+    tags-ignore: [draft]
+    paths: [src]
+concurrency: test
+permissions: {}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo hi

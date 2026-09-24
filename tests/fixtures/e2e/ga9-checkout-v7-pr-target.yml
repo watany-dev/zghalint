@@ -1,0 +1,28 @@
+# zghalint:expect SEC005
+# zghalint:forbid SEC021
+# Both jobs are dangerous checkouts. Without the flag, checkout v7 refuses
+# the fetch at runtime; with it, the bypass is explicit. Messages differ;
+# the rule id is the same.
+name: ga9 v7 pull_request_target
+on:
+  pull_request_target:
+permissions:
+  contents: read
+jobs:
+  refused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+  bypassed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: true

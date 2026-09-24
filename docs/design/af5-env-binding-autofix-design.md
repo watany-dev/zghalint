@@ -44,7 +44,8 @@ script injection 系の定石の直し方は「untrusted な式を step の `env
   `env:` に束縛しても `with:` 側は `${{ env.X }}` と書くほかなく、値は結局
   式として展開されるため、リスクも記述量も改善しない
 - `actions/github-script` の `script:` input（SEC002 の第二経路）。
-  JavaScript の構文レベルの書き換えになり、シェルとは別の設計が要る
+  JavaScript の構文レベルの書き換えになり、シェルとは別の設計が要る。
+  その設計は `docs/design/af13-github-script-env-binding-design.md`（#416）
 - 式そのものの検証（`fromJSON(...)` などの関数呼び出しを含む式）。
   後述の「命名できる式」に限定する
 

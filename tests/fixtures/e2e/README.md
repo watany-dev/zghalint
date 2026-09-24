@@ -44,11 +44,23 @@ Two checks run on all fixtures, with no directive needed:
   re-running them on their own output leaves the file alone. A fix whose
   rewrite is not read back the way it was meant re-fires forever (#369, #370).
 
+## Spec catalog (`ga*.yml.meta.yml`)
+
+Fixtures added for GitHub Actions spec follow-up (`ga*.yml`, issue #441) carry
+a sibling sidecar with introduction date, spec URL, valid/invalid, category,
+competitor support, and autofix expectation. `# zghalint:expect` still decides
+whether the linter is right; the sidecar only records *why the case exists*.
+Older fixtures are not migrated. `src/catalog_test.zig` requires a sidecar for
+every `ga*.yml`, checks the keys, and requires `autofix: safe|unsafe` to match
+a `.fixed` / `.fixed-unsafe` sibling (`none` must not have one).
+
 ## Fixtures
 
 | File | Purpose |
 |---|---|
 | `sec002-run-plain-scalar.yml` | #131 repro: `${{ }}` in an unquoted `run:` |
+| `plain-scalar-wrapped-expression.yml` | #421: a more-indented continuation closing `${{ }}` is not EXPR001 |
+| `plain-scalar-wrapped-injection.yml` | #421: the same wrapping with an untrusted context still fires SEC002 |
 | `sec002-run-quoted-scalar.yml` | Same injection in a single-quoted scalar |
 | `sec002-run-block-scalar.yml` | Same injection in a `run: \|` block scalar |
 | `sec002-env-binding.yml` | #327: `--fix-unsafe` binds the tainted expression to the step's `env:` per shell |
@@ -65,6 +77,8 @@ Two checks run on all fixtures, with no directive needed:
 | `sec022-workflow-run-anchor-paths.yml` | #220 repro: an anchor joined with `\|\|` or under `!` |
 | `supply-chain.yml` | Unpinned actions and container images, `write-all` |
 | `expressions.yml` | `${{ }}` syntax and unknown-context errors |
+| `expr005-case-odd.yml` | #429 FP guard: `case()` with 3 or 5 arguments |
+| `expr005-case-even.yml` | #429: `case()` with 4 arguments (no fallback) |
 | `expr010-step-refs.yml` | EXPR010: unknown / misspelled / forward `steps.<id>` references |
 | `expr011-matrix-context.yml` | EXPR011: undeclared / misspelled `matrix.<key>` and jobs without a matrix |
 | `expr013-inputs-context.yml` | EXPR013: undeclared / misspelled `inputs.<name>` against the declared triggers |
@@ -89,19 +103,32 @@ Two checks run on all fixtures, with no directive needed:
 | `perm001-workflow-level-grant.yml` | #285: the same scopes at workflow level, plus `contents: write` |
 | `perm002-workflow-level-read.yml` | #334 FP guard: workflow-level `contents: read` covers jobs |
 | `perm003-invalid-permissions.yml` | Unknown `permissions:` scopes and invalid levels |
+| `ga1-accepted-syntax.yml` | #428: `cache-mode` / `vulnerability-alerts: read\|none` / `job.workflow_*` stay quiet |
+| `ga1-rejected-syntax.yml` | #428: unknown `cache-mode`, `vulnerability-alerts: write`, `github.workflow_repository` |
+| `ga8-setup-node-without-cache.yml` | #435: setup-node without `cache:` and without package.json npm still PERF001 |
+| `ga8-setup-node-release-no-pkg.yml` | #435: the same in a release workflow is not SEC016 |
+| `ga11-accepted-concurrency.yml` | #438: `queue: max` / `single` and `cancel-in-progress: false` stay quiet |
+| `ga11-rejected-concurrency.yml` | #438: `queue: max` + `cancel-in-progress: true`, unknown queue value/key, non-scalar `queue` |
 | `runner002-unknown-label.yml` | #76: unknown/typo'd `runs-on` labels vs. hosted, larger and self-hosted ones |
+| `runner001-macos-13.yml` | #430: retired `macos-13` is RUNNER001, not a current image |
 | `dep005-dep006-action-inputs.yml` | #97/#98/#99: `with:` against the embedded action metadata, and a retired remote runtime |
 | `dep004-checkout-path.yml` | #305 FP guard: a local action under an `actions/checkout` `path:` only exists on the runner |
 | `best-practices.yml` | Timeouts, step names, concurrency, retired runners |
 | `bp004-shell-names.yml` | BP004: unknown shell names and OS-unavailable shells |
 | `bp004-shell-after-quoted-continuation.yml` | #173 repro: line numbers after a `\` line continuation in a double-quoted scalar |
 | `bp008-workflow-commands.yml` | #326: every deprecated workflow command rewritten by `--fix`, with a piped line left alone |
-| `bp003-behind-current-major.yml` | #358: a third-party action older than its current major, with `actions/checkout@v4` as the FP guard |
+| `ga13-prefer-self.yml` | #440: job-level `uses: ./` of an on-disk workflow is BP009 |
+| `ga13-workspace-uses.yml` | #440 FP guard: missing `./` workflow, `$/`, and step-level `./` stay quiet |
+| `bp003-behind-current-major.yml` | #358: a third-party action older than its current major, with `actions/checkout@v5` as the FP guard |
+| `ga10-node20-runtime.yml` | #548: `actions/checkout@v4` (retired `runs.using: node20`) is a BP003 error |
+| `ga10-node-version-not-using.yml` | #437: setup-node `node-version: 20` is not `runs.using` |
 | `rw001-input-type-fix.yml` | #326: `--fix-unsafe` infers a `workflow_call` input `type:` from its `default:` |
 | `clean.yml` | A well-formed workflow: nothing may fire |
 | `rename-fix-schema.yml` | #323: every did-you-mean rename on schema keys and values, with its `--fix` result pinned |
 | `rename-fix-contexts.yml` | #323: the same for the `needs` / `inputs` / `secrets` expression contexts |
 | `merge-key-job-span.yml` | #367 repro: a job built from `<<:` must report a forward span |
+| `ga12-merge-key.yml` | #439: YAML merge key `<<` is SYN026 |
+| `ga12-alias-only.yml` | #439 FP guard: an alias without `<<` stays quiet |
 | `on-block-nested-sequence-insert.yml` | #368 repro: the SEC007 insertion lands after the `on:` block, not inside a nested sequence item |
 | `expr010-rename-invalid-id.yml` | #369 repro: a step id that is not a path identifier gets no rename fix |
 | `sec018-with-not-a-block-mapping.yml` | #370 repro: `with:` that is not a block mapping gets no persist-credentials fix |

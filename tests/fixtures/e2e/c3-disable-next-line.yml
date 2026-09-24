@@ -1,0 +1,18 @@
+# zghalint:forbid SEC002@17
+# zghalint:expect SEC002@18
+name: suppress
+on:
+  issues:
+    types: [opened]
+concurrency:
+  group: suppress-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # zghalint-disable-next-line SEC002
+      - run: echo "${{ github.event.issue.title }}"
+      - run: echo "${{ github.event.issue.body }}"

@@ -159,6 +159,9 @@ fn addRepoFiles(b: *std.Build, module: *std.Build.Module) void {
     module.addAnonymousImport("docs_rules_md", .{
         .root_source_file = b.path("docs/rules.md"),
     });
+    module.addAnonymousImport("readme_md", .{
+        .root_source_file = b.path("README.md"),
+    });
     // src/rules/popular_actions.zig
     module.addAnonymousImport("popular_actions_manifest", .{
         .root_source_file = b.path("scripts/popular-actions.txt"),

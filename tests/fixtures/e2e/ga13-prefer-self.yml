@@ -1,0 +1,11 @@
+# zghalint:expect BP009@11
+# zghalint:forbid BP001
+name: ga13 prefer self repository
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: ga13-prefer-self
+jobs:
+  call:
+    uses: ./.github/workflows/ci.yml

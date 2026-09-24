@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Last reviewed: 2026-09-24. See docs/maintenance.md.
 pub const CompromisedAction = struct {
     owner: []const u8,
     repo: []const u8,
@@ -20,6 +21,10 @@ fn majorTagRange(comptime first: u8, comptime last: u8) [last - first + 1][]cons
     return out;
 }
 
+/// Not listed: aquasecurity/trivy-action and setup-trivy (GHSA-69fq-xp46-6x23,
+/// 2026-03-19). Their tags were force-pushed to malicious commits and then
+/// restored, so today's tags are safe, and the advisory's `< 0.35.0` range
+/// already reaches SC003 through advisories.zig.
 pub const compromised_actions = [_]CompromisedAction{
     // tj-actions/changed-files compromise (GHSA-mrrh-fwg8-r2c3, 2025-03-14).
     // Many existing tags were retroactively re-pointed to the malicious commit.

@@ -1,0 +1,12 @@
+# zghalint:expect EXPR005@12
+name: case even arity
+on: push
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: four arguments without a fallback
+        run: echo ${{ case(github.ref == 'refs/heads/main', 'prod', github.ref == 'refs/heads/dev', 'dev') }}

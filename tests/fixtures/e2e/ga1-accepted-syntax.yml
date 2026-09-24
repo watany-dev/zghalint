@@ -1,0 +1,33 @@
+# zghalint:forbid SYN001 SYN023 PERM003 EXPR003
+name: accepted ga1 syntax
+on: push
+permissions:
+  contents: read
+  vulnerability-alerts: read
+cache-mode: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    cache-mode: none
+    permissions:
+      vulnerability-alerts: none
+    steps:
+      - name: job workflow identity
+        run: echo ${{ job.workflow_ref }} ${{ job.workflow_sha }} ${{ job.workflow_repository }} ${{ job.workflow_file_path }}
+      - name: github workflow identity
+        run: echo ${{ github.workflow_ref }} ${{ github.workflow_sha }}
+  save:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    cache-mode: write-only
+    steps:
+      - name: Save-only cache access
+        run: echo save
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    cache-mode: read
+    steps:
+      - name: Restore-only cache access
+        run: echo restore

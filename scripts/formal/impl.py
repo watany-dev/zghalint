@@ -45,6 +45,36 @@ def _string_table(source: str, name: str) -> list[str]:
     return _nonempty(_STRING.findall(_block(source, f"const {name} = [_][]const u8{{")), name)
 
 
+def _probe_string_table(source: str, name: str) -> list[str]:
+    """A table for a rule that does not exist yet. Absent is *not* an error:
+    the witnesses an empty probe leaves are the open issues. Once the rule
+    lands under this name the probe becomes a real table; if it lands under
+    another name, `confirm.py` shows the witness as `covered` while
+    `model.py` still lists it — the cue to rename the probe."""
+    try:
+        return _STRING.findall(_block(source, f"const {name} = [_][]const u8{{"))
+    except LookupError:
+        return []
+
+
+def _code_executing_inputs(source: str) -> dict[str, list[str]]:
+    """`code_executing_inputs`: action → the `with:` keys it executes as code."""
+    body = _block(source, "const code_executing_inputs = [_]CodeExecutingInput{")
+    entries = re.findall(r'\.action\s*=\s*"([^"]+)"\s*,\s*\.input\s*=\s*"([^"]+)"', body)
+    found: dict[str, list[str]] = {}
+    for action, input_name in entries:
+        found.setdefault(action, []).append(input_name)
+    return _nonempty(found, "code_executing_inputs")
+
+
+def _sec025_actions(source: str) -> list[str]:
+    """Probe: actions SEC025 names. Absent is empty, not an error."""
+    if not re.search(r'\.id = "SEC025"', source):
+        return []
+    found = re.findall(r'isAction\(ref, "([^"]+)"\)', source)
+    return [name for name in found if name.endswith("create-github-app-token")]
+
+
 def _marker_fn(source: str, name: str) -> list[str]:
     return _nonempty(
         _STRING.findall(_block(source, f"fn {name}(value: []const u8) bool {{", "});")), name
@@ -99,12 +129,37 @@ class Impl:
     trigger_contexts: dict[str, list[str]]
     #: SEC020: triggers a fork can reach.
     fork_accessible_triggers: list[str]
+    #: SEC002 on action inputs executed as code: action → inputs
+    #: (`checkScriptInputInjection`).
+    code_executing_inputs: dict[str, list[str]]
     #: Flows SEC002 follows (see spec.FLOWS). `checkScriptInjection` walks
     #: `env:` keys, step outputs, and job outputs as well as the direct use
-    #: (#314).
+    #: (#314). Job outputs are a fixed-point, so a re-export through a second
+    #: job is `job_output_2hop` (#564). Also: outputs of actions that echo
+    #: attacker content (`action_output`, #535), and a local composite
+    #: action's interpolated `inputs.*` (`action_input`, #536).
     followed_flows: list[str] = field(
-        default_factory=lambda: ["direct", "step_output", "env_context", "job_output"]
+        default_factory=lambda: [
+            "direct",
+            "step_output",
+            "env_context",
+            "job_output",
+            "job_output_2hop",
+            "action_output",
+            "action_input",
+        ]
     )
+    #: Probes (`_probe_string_table`): rules the specification asks for that
+    #: have no table yet. Names are placeholders to rename when the rule lands.
+    #: Contexts a `git` / `gh` fetch inside `run:` may not take (spec sink `run_fetch`).
+    shell_fetch_contexts: list[str] = field(default_factory=list)
+    #: Contexts an artifact download's `run-id` may not take (spec sink `artifact_run_id`).
+    artifact_run_id_contexts: list[str] = field(default_factory=list)
+    #: Actions whose outputs SEC002 treats as attacker text (spec.ACTION_OUTPUTS).
+    untrusted_output_actions: list[str] = field(default_factory=list)
+    #: Actions SEC025 flags when `permission-*` is missing. Empty until the
+    #: rule lands (B1 #552).
+    github_app_token_actions: list[str] = field(default_factory=list)
 
 
 def load() -> Impl:
@@ -122,6 +177,11 @@ def load() -> Impl:
         workflow_run_markers=_marker_fn(sec, "isWorkflowRunValue"),
         trigger_contexts=_merge_trigger_tables(dispatch_payload, attacker_text),
         fork_accessible_triggers=_switch_true_arms(sec, "hasForkAccessibleTrigger"),
+        code_executing_inputs=_code_executing_inputs(sec),
+        shell_fetch_contexts=_probe_string_table(sec, "shell_fetch_contexts"),
+        artifact_run_id_contexts=_probe_string_table(sec, "artifact_run_id_contexts"),
+        untrusted_output_actions=_probe_string_table(sec, "untrusted_output_actions"),
+        github_app_token_actions=_sec025_actions(sec),
     )
 
 
@@ -145,6 +205,11 @@ def matches_any_prefix(path: str, table: list[str]) -> bool:
 def matches_marker(value: str, markers: list[str]) -> bool:
     """`containsAnyMarker`: plain substring search on the `with:` value."""
     return any(marker in value for marker in markers)
+
+
+def matches_action(name: str, table: list[str]) -> bool:
+    """`isAction`: `owner/repo` compared case-insensitively."""
+    return name.lower() in {entry.lower() for entry in table}
 
 
 if __name__ == "__main__":

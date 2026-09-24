@@ -13,9 +13,239 @@ each ID means.
 
 ## [Unreleased]
 
-Nothing released yet. `v0.0.1-rc.1` is the first planned tag; the CLI contract
-(flag names, exit codes, output shapes) is not yet stable, and rule IDs may
-still be renumbered before 1.0.
+## [0.0.3] - 2026-09-24
+
+### Added
+
+- GitHub Action `output` input writes diagnostics to a file so `format: sarif`
+  can be uploaded with `github/codeql-action/upload-sarif`.
+- pre-commit hook (`.pre-commit-hooks.yaml`, `language: system`, `--offline`).
+- In-repo aqua registry (`packaging/aqua-registry.yaml`) and mise / Code
+  Scanning install docs. Policy is `docs/adr/0019-distribution-channels.md`.
+- SEC025 (`use-scoped-github-app-token`, warning): report
+  `actions/create-github-app-token` when no `permission-*` input scopes the
+  minted token. The action otherwise inherits the GitHub App installation's
+  full permissions. `owner` / `repositories` alone do not silence the rule.
+  No autofix: which permission the step needs is not static (#552).
+- `.zghalint.yml` `rules.<ID>.exclude` globs silence one rule on matching
+  paths. File-level `ignore` is unchanged (#556).
+- `--fail-on <severity>` selects whether exit code 1 starts at `error`
+  (default, unchanged), `warning`, or `info`. Output is unchanged (#557).
+- Inline `# zghalint-disable-line` / `# zghalint-disable-next-line` comments
+  suppress named rule IDs on that line (or the next line). JSON summary
+  includes `suppressed` (#558).
+- `--stdin` (`-` is the same) reads one workflow from standard input.
+  `--stdin-filename` is the path used for `ignore` and for routing
+  `action.yml` / `dependabot.yml`; it defaults to `<stdin>`. `--fix` is
+  rejected because there is no file to write back (#559).
+- 週次 bench を 1 周し、実運用ワークフロー群で doghooding D8 を回した。
+  新規の G40 は無く、既知の G29 だけが再確認された (#555)。
+- `--format github` emits GitHub Actions workflow commands
+  (`::error file=,line=,col=::`) so PRs can show annotations without Code
+  Scanning. `info` / `hint` map to `notice` (#561).
+- `.zghalint.yml` has a JSON Schema at `docs/schema/zghalint.schema.json`,
+  generated from `src/config.zig`. Unknown keys are reported as stderr
+  warnings and do not change the exit code (#560).
+- `scripts/gen-advisories.py` generates the SC003 offline snapshot
+  (`src/rules/data/advisories.zig`) from GitHub Security Advisories. Embedded
+  data tables and their refresh commands are listed in `docs/maintenance.md`
+  (#563).
+- Fuzz targets for `.zghalint.yml` (`parseConfig`) and expression typecheck
+  (`validateExpressionEnv`) join the YAML / expression parser seeds in
+  `src/fuzz_test.zig` (#566).
+- 形式モデルの job `outputs:` 伝播を 2 hop にし、`CODE_EXECUTING_INPUTS` を
+  `popular_actions.zig` から生成、SEC025 を P13 として載せる (#564)。
+- PERM / BP / PERF の検出 PBT、YAML `parse(emit(parse(s)))` ラウンドトリップ、
+  ファイル順序非依存と severity override の単調性 (#565)。
+
+### Changed
+
+- **BP003 / ACT002: `node20` を廃止済みランタイムとして扱う。** GitHub が
+  2026-09-23 にランナーから外すため、`node12` / `node16` と同じ扱いに移した。
+  BP003 は `uses:` 先が `node20` で動くとき `error`、ACT002 は自リポジトリの
+  `action.yml` の `runs.using: node20` を warning で報告し、受理する `using` は
+  `node24` / `docker` / `composite` になる。切替を日付ではなくリリースで行う
+  理由は `docs/adr/0018-runtime-retirement.md` (#548, #550)。
+- **BP003 の推奨先を node24 で動く最初の major に上げた。** キュレーション表が
+  `actions/checkout@v4` のように同じルールが廃止済みと報告する major を
+  `--fix` で書き込んでいたため、8 件全て（checkout v5 / setup-node v5 /
+  setup-python v6 / setup-go v6 / setup-java v5 / upload-artifact v6 /
+  download-artifact v7 / cache v5）を移した (#548)。
+- **ACT002 の未知の `using` に対する rename autofix が広がった。** 受理する
+  Node の値が `node24` だけになったことで、`node22` / `node18` のような
+  打ち間違いの did-you-mean 候補が一意に定まり、`--fix`（safe）で `node24` へ
+  書き換わるようになった。以前は `node20` と `node24` が同点で候補が決まらず、
+  診断だけを出していた (#548)。
+- **BP003 の behind-current-major 判定は、最新 major が廃止済みランタイムで
+  動くアクションを黙るようになった。** `--fix-unsafe` が書き込んだ `@vN` を
+  同じルールが即 `error` と報告する自己矛盾を避けるため（例:
+  `actions/dependency-review-action`）(#548)。
+- 埋め込みメタデータ表 `src/rules/data/popular_actions.zig` を再生成し、27
+  アクションの新しい major を足した（105 エントリ）。BP003 の「現行 major より
+  古い」判定と DEP005 / DEP006 の入力名検証がその分広がる (#549)。
+- RUNNER002 の既知ラベルに `ubuntu-26.04-arm` / `windows-2025-vs2026` /
+  `windows-11-vs2026-arm` / `macos-15-intel` / `macos-26-intel` を足した。
+  前方一致で既知扱いにはなっていたが、typo の did-you-mean 候補に入るように
+  なる (#589)。
+
+### Fixed
+
+- `docs/rules.md` と `README.md` のルール数見出しが 108 のままだったのを 110
+  に直し、README のカテゴリ別内訳も registry と揃えた。`src/docs_sync_test.zig`
+  が見出しの数字と `documented_rule_ids.len` を突き合わせるようになった (#562)。
+
+## [0.0.2] - 2026-09-15
+
+### Changed
+
+- SEC005 / SEC009 / SEC021 report `git fetch` / `git checkout` / `git clone` /
+  `git pull` / `gh pr checkout` / `gh run download` in `run:` when the command
+  takes an untrusted ref (including a one-hop `$VAR` from `env:`). A SHA,
+  issue number, repository name, `clone_url`, or `workflow_run.id` is not
+  script injection, so SEC002 stayed silent on these fetches (#532).
+- SEC009 reports `actions/download-artifact` `run-id:` and
+  `dawidd6/action-download-artifact` `run_id:` when they take
+  `github.event.workflow_run.id` (artifact poisoning from a fork's CI run)
+  (#533).
+- SEC002 scans code-executing action inputs beyond `actions/github-script`
+  `script:`: `azure/cli` / `azure/powershell` `inlineScript`,
+  `nick-fields/retry` `command`, `addnab/docker-run-action` `run`,
+  `appleboy/ssh-action` `script`, and `jannekem/run-python-script-action`
+  `script`. Shell inputs get the same `$VAR` env-binding fix as `run:`;
+  python has no shell spelling so it stays a diagnostic (#534).
+- SEC002 treats outputs of `tj-actions/changed-files`,
+  `step-security/changed-files`, `jitterbit/get-changed-files`,
+  `tj-actions/branch-names`, and `peter-evans/find-comment` as attacker
+  text, so interpolating `steps.<id>.outputs.*` of those steps into `run:`
+  is script injection (#535).
+- SEC002 reports an untrusted `with:` value on `uses: ./local` when that
+  composite action interpolates `${{ inputs.<name> }}` in a `run:` step or an
+  `actions/github-script` `script:` (#536).
+
+### Fixed
+
+- SEC002 no longer treats a whole boolean-returning builtin call such as
+  `startsWith(...)`, `endsWith(...)`, or `contains(...)` as script injection.
+  String-valued expressions in the same script remain diagnosed and fixed
+  independently (#419).
+- A `${{ }}` whose closing `}}` sits on the next, more-indented line of a
+  plain scalar is one expression. EXPR001 no longer reports it as unclosed,
+  and SEC002 sees untrusted contexts inside it (#421).
+
+### Added
+
+- SEC002's `actions/github-script` `script:` path offers the same unsafe env
+  binding as `run:`, rewriting a JS string or template whose contents are a
+  single `${{ }}` into `process.env.VAR` (#416).
+- The formal model under `scripts/formal/` specifies five known vulnerability
+  classes as sinks and flows (shell-level untrusted fetch, `workflow_run`
+  artifact poisoning, code-executing action inputs beyond github-script,
+  attacker-derived action outputs, local composite action inputs) and confirms
+  them against the binary (see `docs/design/formal-rule-model.md` §7).
+- SC001 offers a safe fix that pins Docker Hub and GHCR image tags to the
+  manifest digest fetched on `--fix`. Other registries, `--offline`, and
+  fetch misses stay as diagnostics (#417).
+- EXPR002 / EXPR003 / EXPR004 offer safe rename fixes for a unique nearby
+  context, strict-object property, or function name from the expression
+  catalog, when the source token can be located (#410).
+- SEC014 offers an unsafe fix for a whole `if:` condition comparing
+  `github.actor` or `github.triggering_actor` to a bot name with `==` / `!=`.
+  It preserves YAML quotes and expression wrappers, replacing the comparison
+  with `github.event.sender.type` and the generic `Bot` type (#413).
+- SYN012 offers an unsafe fix that removes the later conflicting branch, tag,
+  or path filter while keeping the earlier one (#412). Guarded flow-mapping
+  deletion spans are shared with SYN011; uncertain or anchored ranges are skipped.
+- ACT001 safely inserts `shell: bash` for composite `run:` steps with a missing
+  shell when the insertion position is known (#411).
+- SEC010 offers an unsafe fix that expands `secrets: inherit` into the secrets
+  declared by a local reusable workflow (#414). Remote, unreadable, or empty
+  callees, and quoted or flow-style `inherit`, keep the diagnostic without a rewrite.
+- SC003 offers an unsafe fix that bumps a vulnerable action tag to the
+  advisory's `patched_version` (#415). SHA pins are re-pinned only when
+  `--fix-unsafe` can resolve that tag's commit; `--quick` / `--offline` leave
+  SHA pins as diagnostics. An undetermined SHA pin (no `# vX.Y.Z` comment)
+  still has no fix.
+
+- SYN023 reports an unknown `cache-mode` at workflow or job level. The
+  documented values are `none` / `read` / `write` / `write-only` (#428).
+- `background` / `wait` / `wait-all` / `cancel` / `parallel` are accepted
+  step keys. Nested `parallel:` steps are walked by existing SEC / SC / BP /
+  EXPR rules. SYN024 reports `wait` / `cancel` targeting a missing step id
+  (#432).
+- EXPR019 warns when `steps.<id>.outputs` reads a background step that has
+  not been waited on yet. A missing `wait` with no output reference is not
+  reported. No autofix (#433).
+- SEC016 and PERF001 share a `cache-mode` capability model (`can_restore` /
+  `can_save`). `cache-mode: none` silences PERF001 and SEC016. `cache-mode:
+  read` does not silence SEC016 (#434).
+- SEC016 treats `actions/setup-node` as caching when `cache:` is set or when
+  the resolved action declares `package-manager-cache` and `package.json`
+  names npm via `packageManager` / `devEngines.packageManager`. Unresolved
+  refs are not treated as enabled (#435).
+- SEC024 warns when `cache-mode: write` or `write-only` is declared on a
+  low-trust trigger (`pull_request_target`, `issue_comment`, `workflow_run`),
+  which overrides GitHub's restore-only default. No autofix (#434).
+- BP009 suggests `$/` instead of `./` on a job-level reusable workflow call
+  when that workflow file exists in the repository being linted. Step-level
+  `uses: ./` is GITHUB_WORKSPACE and stays quiet. No autofix (#440).
+- SYN025 reports an unknown `concurrency.queue` value and the illegal
+  combination of `queue: max` with `cancel-in-progress: true`. Documented
+  values are `single` and `max`. Unknown-value typos get a safe rename when
+  the candidate is unique. The conflicting keys are not deleted (#438).
+- SYN026 reports YAML merge key `<<`, which GitHub Actions rejects. The
+  parser still expands the merge so other rules see the folded keys.
+  Anchors and aliases without `<<` stay quiet. No autofix (#439).
+- `ga*.yml` e2e fixtures carry a `*.yml.meta.yml` sidecar (introduction date,
+  spec URL, valid/invalid, category, competitor support, autofix). Existing
+  non-`ga*` fixtures are unchanged (#441).
+
+### Changed
+
+- Lint of many files spends less time on idle step walks, repeated `${{`
+  scans, and per-byte JSON / YAML / BP007 / context-path matching. Multi-file
+  reports follow CLI order rather than sorting paths lexicographically (#527).
+- The v0.2.0 GitHub Actions spec-follow track (GA1–GA14) is complete (#427).
+- `cache-mode` is a known workflow and job key, so it no longer fires SYN001
+  (#428).
+- PERF001 no longer asks to add a cache when setup-node would enable npm
+  caching from `package.json` and the action declares `package-manager-cache`
+  (#435).
+- SEC018 reports that later steps can still use persisted checkout credentials,
+  without assuming they live in `.git/config`. SEC015 no longer treats a
+  workspace `upload-artifact` as a leak when the resolved checkout stores
+  credentials under `$RUNNER_TEMP` (v6+). Unresolved SHAs keep the previous
+  artipacked behavior (#436).
+- SEC005 / SEC009 distinguish a checkout that `allow-unsafe-pr-checkout` will
+  refuse at runtime from an explicit bypass. Unresolved SHAs and `run:` `git
+  checkout` stay on the original exploit wording (#436).
+- `permissions.vulnerability-alerts` is a known scope. `read` and `none` are
+  accepted; `write` is PERM003 (#428).
+- `job.workflow_ref` / `job.workflow_sha` / `job.workflow_repository` /
+  `job.workflow_file_path` are known job-context properties and no longer
+  fire EXPR003. They are not the same as `github.workflow_ref` /
+  `github.workflow_sha` (#428).
+- `concurrency.queue` is a known key under `concurrency:`, so `queue: max`
+  no longer fires SYN001. Nested unknown keys under `concurrency:` are
+  reported as SYN001 (#438).
+- EXPR005 rejects `case()` calls with an even number of arguments. `case()` is
+  pairs of `(condition, result)` plus a fallback, so the count must be odd and
+  at least 3 (#429).
+- RUNNER001 treats `macos-13` as retired (removed 2025-12-04). `macos-11` /
+  `macos-12` / `macos-13` now rewrite to `macos-15`, a current catalog entry
+  (#430). Deprecated and retired replacements are checked at compile time so
+  they cannot point at another retired label.
+- CI and bench now pin actionlint 1.7.12 and zizmor 1.30.1, the versions used
+  as the comparison baseline (#431).
+- ACT002 / BP003 treat `runs.using: node20` as deprecated (removal 2026-09-23).
+  Severity is warning, not the error used for already-retired `node12` /
+  `node16`. `node24` is unchanged. `actions/setup-node`'s `node-version: 20`
+  is not `runs.using`. No autofix (#437).
+
+## [0.0.1] - 2026-09-10
+
+First public release. Preceded by prereleases `v0.0.1-rc.1` and `v0.0.1-rc.2`.
+The CLI contract (flag names, exit codes, output shapes) is not yet stable, and
+rule IDs may still be renumbered before 1.0.
 
 ### Changed
 
@@ -45,8 +275,17 @@ still be renumbered before 1.0.
 - BP007 no longer treats `$NAME = ...` at the start of a line as a command.
   That is PowerShell assignment (`$PACK_OUTPUT = npm pack`); `$CMD == ...`
   is still a command.
+- SC* GitHub API lookups now fail fast after a transport failure (connection
+  refused, network unreachable) and bound each remaining request to the
+  leftover deadline, instead of hanging until the overall timeout (#402).
+  Once the network is unreachable, the REST fallback is skipped.
 
 ### Fixed
+
+- EXPR001 accepts numeric context indices and mixed dot/bracket paths such as
+  `github.event.workflow_run.pull_requests[0].number` (#424).
+- DEP003 accepts scoped local action paths such as `./tools/@scope/tool` and
+  `$/tools/@scope/tool`, while still rejecting `tool@v1` ref suffixes (#425).
 
 - A `steps:` holding a mapping instead of a sequence no longer aborts the
   workflow parse and silences every diagnostic in the file. It now reports

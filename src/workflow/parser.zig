@@ -217,12 +217,20 @@ pub fn parseWorkflowTracked(
         }
     }
 
+    var cache_mode: ?[]const u8 = null;
+    var cache_mode_span: ?yaml.Span = null;
+    if (root.get("cache-mode")) |n| {
+        applyOptionalScalar(&ctx, n, "cache-mode", &cache_mode, &cache_mode_span);
+    }
+
     var workflow = types.Workflow{
         .name = root.getScalar("name"),
         .on = trigger,
         .concurrency = concurrency,
         .jobs = jobs,
         .job_index = try types.JobIndex.build(allocator, jobs),
+        .cache_mode = cache_mode,
+        .cache_mode_span = cache_mode_span,
         .type_mismatches = try type_mismatches.toOwnedSlice(allocator),
         .yaml_root = node,
     };
@@ -263,6 +271,7 @@ pub fn parseWorkflowTracked(
 
     try unknown_collector.checkMapping(root, "workflow", &schema.workflow_keys, &.{schema.workflow_on_key_alias});
     if (root.get("defaults")) |n| try unknown_collector.checkDefaults(n);
+    if (root.get("concurrency")) |n| try unknown_collector.checkConcurrency(n);
 
     workflow.unknown_keys = try unknown_collector.toOwnedSlice();
     workflow.empty_sections = try empty.toOwnedSlice(allocator);
@@ -653,10 +662,46 @@ fn collectEventConfigKeys(allocator: std.mem.Allocator, m: Mapping, has_tail: bo
         keys[i] = .{
             .name = entry.key.value,
             .span = entry.key.span,
-            .full_span = if (empties) null else entry.full_span,
+            .full_span = if (empties) null else eventKeyFullSpan(m, i),
         };
     }
     return keys;
+}
+
+fn eventKeyFullSpan(mapping: Mapping, index: usize) ?yaml.Span {
+    const entry = mapping.entries[index];
+    if (entry.full_span) |span| return span;
+    if (!mapping.flow or mapping.entries.len < 2) return null;
+    const close = mapping.close_byte orelse return null;
+    var span = entry.key.span;
+    const value_span = entry.value.getSpan();
+    // A wider gap can contain an anchor definition that deletion would remove.
+    if (value_span.start_byte <= span.end_byte or value_span.start_byte - span.end_byte > 2) return null;
+    _ = eventFilterValueEnd(entry.value) orelse return null;
+    if (span.start_byte <= mapping.span.start_byte or span.end_byte >= close) return null;
+    if (index + 1 < mapping.entries.len) {
+        const next = mapping.entries[index + 1].key.span;
+        if (next.start_byte <= span.end_byte or next.start_byte >= close) return null;
+        span.end_byte = next.start_byte;
+        span.end_line = next.start_line;
+        span.end_col = next.start_col;
+    } else {
+        const previous = mapping.entries[index - 1];
+        const start = eventFilterValueEnd(previous.value) orelse return null;
+        const end = eventFilterValueEnd(entry.value) orelse return null;
+        if (start <= previous.key.span.end_byte or start >= span.start_byte or end <= span.end_byte or end >= close) return null;
+        span.start_byte = start;
+        span.end_byte = end;
+    }
+    return span;
+}
+
+fn eventFilterValueEnd(node: Node) ?usize {
+    return switch (node) {
+        .scalar => |s| if (s.unterminated) null else s.span.end_byte,
+        .sequence => |s| if (s.item_deletes.len == s.items.len) s.close_byte else null,
+        else => null,
+    };
 }
 
 /// `types:` is read for every event, not just the ones with a filter, so an
@@ -1071,6 +1116,18 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         if (!isEmptyContainer(n)) {
             job.secrets = try parseSecretsConfig(ctx.allocator, n);
             job.secrets_args = try parseCallArgs(ctx.allocator, n);
+            // A flow `{secrets: inherit}` cannot take a block mapping, and a
+            // quoted `'inherit'` would leave the quotes around the rewrite.
+            if (job.secrets) |secrets| {
+                if (secrets == .inherit and !m.flow) {
+                    switch (n) {
+                        .scalar => |s| {
+                            if (s.style == .plain) job.secrets_inherit_span = s.span;
+                        },
+                        else => {},
+                    }
+                }
+            }
         }
     }
     if (m.get("container")) |n| {
@@ -1093,10 +1150,14 @@ fn parseJob(ctx: *ParseContext, id: []const u8, id_span: yaml.Span, node: Node) 
         try recordEmpty(&empty, ctx.allocator, "defaults", n);
         job.defaults = parseDefaults(n);
     }
+    if (m.get("cache-mode")) |n| {
+        applyOptionalScalar(ctx, n, "cache-mode", &job.cache_mode, &job.cache_mode_span);
+    }
 
     if (ctx.unknown_collector) |c| {
         try c.checkMapping(m, "job", &schema.job_keys, &.{});
         if (m.get("defaults")) |n| try c.checkDefaults(n);
+        if (m.get("concurrency")) |n| try c.checkConcurrency(n);
         if (m.get("strategy")) |n| {
             if (n == .mapping) try c.checkMapping(n.mapping, "strategy", &schema.strategy_keys, &.{});
         }
@@ -1196,6 +1257,53 @@ fn blockScalarIndentationOpen(value: []const u8, key_column: u32) bool {
     return true;
 }
 
+fn parseStepControl(ctx: *ParseContext, m: Mapping, step: *types.Step) ParseError!void {
+    if (m.get("wait")) |n| {
+        const parsed = try parseStringArrayWithSpans(ctx.allocator, n);
+        const refs = try ctx.allocator.alloc(types.StepRef, parsed.values.len);
+        for (parsed.values, parsed.spans, refs) |id, span, *ref| {
+            ref.* = .{ .id = id, .span = span };
+        }
+        step.control = .{ .wait = refs };
+        return;
+    }
+    if (m.get("wait-all") != null) {
+        step.control = .wait_all;
+        return;
+    }
+    if (m.get("cancel")) |n| {
+        switch (n) {
+            .scalar => |s| {
+                step.control = .{ .cancel = .{ .id = s.value, .span = s.span } };
+            },
+            else => {
+                if (ctx.type_mismatches) |list| {
+                    list.append(ctx.allocator, .{
+                        .field = "cancel",
+                        .expected = "string",
+                        .actual = switch (n) {
+                            .mapping => "mapping",
+                            .sequence => "sequence",
+                            .null_value => "null",
+                            .scalar => "string",
+                        },
+                        .span = n.getSpan(),
+                    }) catch {};
+                }
+                step.control = .{ .cancel = .{ .id = "", .span = n.getSpan() } };
+            },
+        }
+        return;
+    }
+    if (m.get("parallel")) |n| {
+        if (!type_validation.checkSequence(n, "parallel", ctx.type_mismatches, ctx.allocator)) {
+            step.control = .{ .parallel = &.{} };
+            return;
+        }
+        step.control = .{ .parallel = try parseSteps(ctx, n, keyLine(m, "parallel")) };
+    }
+}
+
 fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
     const m = switch (node) {
         .mapping => |mp| mp,
@@ -1277,6 +1385,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
                 step.uses_value_style = s.style;
                 step.uses_value_ends_line = s.ends_line;
                 step.uses_line_comment = s.line_comment;
+                step.uses_line_comment_start_byte = s.line_comment_start_byte;
             },
             else => {},
         }
@@ -1303,6 +1412,17 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
             ctx.allocator,
         );
     }
+    if (m.get("background")) |n| {
+        if (type_validation.checkBool(
+            n,
+            "background",
+            ctx.type_mismatches,
+            ctx.allocator,
+        )) |value| {
+            step.background = value;
+        }
+    }
+    try parseStepControl(ctx, m, &step);
     var empty = std.ArrayList(types.EmptySection).empty;
     defer empty.deinit(ctx.allocator);
     if (m.get("with")) |with_node| {
@@ -1414,8 +1534,17 @@ fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedP
                         // value span for `meta` is always available alongside
                         // the level.
                         if (level) |lvl| {
-                            @field(perms, field) = lvl;
-                            @field(meta, field) = entry.value.scalar.span;
+                            if (types.isAllowedPermissionLevel(comptime types.permissionScopeKey(field), lvl)) {
+                                @field(perms, field) = lvl;
+                                @field(meta, field) = entry.value.scalar.span;
+                            } else {
+                                try problems.append(allocator, .{
+                                    .kind = .invalid_level,
+                                    .text = entry.value.scalar.value,
+                                    .scope = entry.key.value,
+                                    .span = entry.value.scalar.span,
+                                });
+                            }
                         }
                         break;
                     }
@@ -1451,6 +1580,35 @@ fn parsePermissions(allocator: std.mem.Allocator, node: Node) ParseError!ParsedP
     }
 }
 
+fn applyOptionalScalar(
+    ctx: *ParseContext,
+    node: Node,
+    field: []const u8,
+    value: *?[]const u8,
+    span: *?yaml.Span,
+) void {
+    switch (node) {
+        .scalar => |s| {
+            value.* = s.value;
+            span.* = s.span;
+        },
+        else => {
+            const mismatches = ctx.type_mismatches orelse return;
+            mismatches.append(ctx.allocator, .{
+                .field = field,
+                .expected = "string",
+                .actual = switch (node) {
+                    .mapping => "mapping",
+                    .sequence => "sequence",
+                    .null_value => "null",
+                    .scalar => unreachable,
+                },
+                .span = node.getSpan(),
+            }) catch {};
+        },
+    }
+}
+
 fn parsePermissionLevel(node: Node) ?types.PermissionLevel {
     switch (node) {
         .scalar => |s| {
@@ -1477,17 +1635,21 @@ fn parseConcurrency(ctx: *ParseContext, node: Node) ParseError!types.Concurrency
                 .scalar => |s| s,
                 else => return error.MissingField,
             };
-            const concurrency = types.Concurrency{
+            var concurrency = types.Concurrency{
                 .group = group.value,
                 .group_meta = scalarMeta(group),
             };
             if (m.get("cancel-in-progress")) |n| {
-                _ = type_validation.checkBool(
+                concurrency.cancel_in_progress = type_validation.checkBool(
                     n,
                     "cancel-in-progress",
                     ctx.type_mismatches,
                     ctx.allocator,
                 );
+                concurrency.cancel_in_progress_span = n.getSpan();
+            }
+            if (m.get("queue")) |n| {
+                applyOptionalScalar(ctx, n, "queue", &concurrency.queue, &concurrency.queue_span);
             }
             return concurrency;
         },
@@ -1602,6 +1764,15 @@ fn parseCredentials(
     };
 }
 
+fn parseImageScalar(s: yaml.Scalar, span_trusted: bool) struct {
+    image: []const u8,
+    image_meta: ?types.ScalarValueMeta,
+    image_ends_line: bool,
+} {
+    if (!span_trusted) return .{ .image = s.value, .image_meta = null, .image_ends_line = false };
+    return .{ .image = s.value, .image_meta = scalarMeta(s), .image_ends_line = s.ends_line };
+}
+
 fn parseContainer(
     allocator: std.mem.Allocator,
     node: Node,
@@ -1609,11 +1780,30 @@ fn parseContainer(
 ) ParseError!types.Container {
     switch (node) {
         .scalar => |s| {
-            return .{ .image = s.value };
+            const parsed = parseImageScalar(s, !s.unterminated);
+            return .{
+                .image = parsed.image,
+                .image_meta = parsed.image_meta,
+                .image_ends_line = parsed.image_ends_line,
+            };
         },
         .mapping => |m| {
+            var image: ?[]const u8 = null;
+            var image_meta: ?types.ScalarValueMeta = null;
+            var image_ends_line = false;
+            if (m.get("image")) |n| switch (n) {
+                .scalar => |s| {
+                    const parsed = parseImageScalar(s, !s.unterminated and !m.hasIndentedTail("image"));
+                    image = parsed.image;
+                    image_meta = parsed.image_meta;
+                    image_ends_line = parsed.image_ends_line;
+                },
+                else => {},
+            };
             return .{
-                .image = m.getScalar("image"),
+                .image = image,
+                .image_meta = image_meta,
+                .image_ends_line = image_ends_line,
                 .credentials = if (m.get("credentials")) |n|
                     try parseCredentials(allocator, n, mismatches)
                 else
@@ -1640,9 +1830,23 @@ fn parseServices(
     for (m.entries, 0..) |entry, i| {
         switch (entry.value) {
             .mapping => |vm| {
+                var image: ?[]const u8 = null;
+                var image_meta: ?types.ScalarValueMeta = null;
+                var image_ends_line = false;
+                if (vm.get("image")) |n| switch (n) {
+                    .scalar => |s| {
+                        const parsed = parseImageScalar(s, !s.unterminated and !vm.hasIndentedTail("image"));
+                        image = parsed.image;
+                        image_meta = parsed.image_meta;
+                        image_ends_line = parsed.image_ends_line;
+                    },
+                    else => {},
+                };
                 services[i] = .{
                     .name = entry.key.value,
-                    .image = vm.getScalar("image"),
+                    .image = image,
+                    .image_meta = image_meta,
+                    .image_ends_line = image_ends_line,
                     .credentials = if (vm.get("credentials")) |n|
                         try parseCredentials(allocator, n, mismatches)
                     else
@@ -1651,9 +1855,12 @@ fn parseServices(
                 };
             },
             .scalar => |s| {
+                const parsed = parseImageScalar(s, !s.unterminated);
                 services[i] = .{
                     .name = entry.key.value,
-                    .image = s.value,
+                    .image = parsed.image,
+                    .image_meta = parsed.image_meta,
+                    .image_ends_line = parsed.image_ends_line,
                 };
             },
             // A service written with nothing under it names no image. It is
@@ -2084,11 +2291,26 @@ test "parseConcurrency mapping" {
     var entries = [_]yaml.MappingEntry{
         .{ .key = mkScalarS("group"), .value = mkScalar("ci"), .span = mkSpan() },
         .{ .key = mkScalarS("cancel-in-progress"), .value = mkScalar("true"), .span = mkSpan() },
+        .{ .key = mkScalarS("queue"), .value = mkScalar("max"), .span = mkSpan() },
     };
 
     var ctx = testCtx(testing.allocator);
     const c = try parseConcurrency(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("ci", c.group);
+    try testing.expectEqual(true, c.cancel_in_progress.?);
+    try testing.expectEqualStrings("max", c.queue.?);
+}
+
+test "parseConcurrency keeps an unknown queue value" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("group"), .value = mkScalar("ci"), .span = mkSpan() },
+        .{ .key = mkScalarS("queue"), .value = mkScalar("huge"), .span = mkSpan() },
+    };
+
+    var ctx = testCtx(testing.allocator);
+    const c = try parseConcurrency(&ctx, mkMapping(&entries));
+    try testing.expectEqualStrings("huge", c.queue.?);
+    try testing.expect(c.cancel_in_progress == null);
 }
 
 test "parseStep with uses" {
@@ -2121,6 +2343,80 @@ test "parseStep with run" {
     const step = try parseStep(&ctx, mkMapping(&entries));
     try testing.expectEqualStrings("make build", step.run.?);
     try testing.expectEqualStrings("bash", step.shell.?);
+}
+
+test "parseStep accepts background wait wait-all cancel and parallel" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        background: true
+        \\        run: echo value=ready >> "$GITHUB_OUTPUT"
+        \\      - name: Wait for producer
+        \\        wait: producer
+        \\      - wait-all:
+        \\      - cancel: producer
+        \\      - parallel:
+        \\          - run: echo frontend
+        \\          - run: echo backend
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqual(@as(usize, 5), wf.jobs[0].steps.len);
+
+    const producer = wf.jobs[0].steps[0];
+    try testing.expect(producer.background);
+    try testing.expectEqual(types.StepKind.run, producer.kind());
+
+    const wait_step = wf.jobs[0].steps[1];
+    try testing.expectEqual(types.StepKind.wait, wait_step.kind());
+    const wait_refs = wait_step.control.?.wait;
+    try testing.expectEqual(@as(usize, 1), wait_refs.len);
+    try testing.expectEqualStrings("producer", wait_refs[0].id);
+
+    try testing.expectEqual(types.StepKind.wait_all, wf.jobs[0].steps[2].kind());
+    try testing.expectEqual(types.StepKind.cancel, wf.jobs[0].steps[3].kind());
+    try testing.expectEqualStrings("producer", wf.jobs[0].steps[3].control.?.cancel.id);
+
+    const parallel = wf.jobs[0].steps[4];
+    try testing.expectEqual(types.StepKind.parallel, parallel.kind());
+    try testing.expectEqual(@as(usize, 2), parallel.nestedSteps().len);
+    try testing.expectEqualStrings("echo frontend", parallel.nestedSteps()[0].run.?);
+    try testing.expectEqualStrings("echo backend", parallel.nestedSteps()[1].run.?);
+    try testing.expectEqual(@as(usize, 0), wf.unknown_keys.len);
+}
+
+test "parseStep records a type mismatch for a non-scalar cancel" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - cancel: [producer]
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    var failure: ?Failure = null;
+    const wf = try parseWorkflowTracked(alloc, try yp.parse(), &failure);
+    try testing.expectEqual(types.StepKind.cancel, wf.jobs[0].steps[0].kind());
+    try testing.expectEqualStrings("", wf.jobs[0].steps[0].control.?.cancel.id);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("cancel", wf.type_mismatches[0].field);
 }
 
 test "parseJob with needs" {
@@ -2171,6 +2467,61 @@ test "parseJob reusable workflow" {
     switch (job.secrets.?) {
         .inherit => {},
         .map => unreachable,
+    }
+}
+
+test "parseJob records secrets_inherit_span for a block-style plain inherit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+    const source =
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets: inherit
+        \\
+    ;
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    const job = wf.jobs[0];
+    try testing.expect(job.secrets.? == .inherit);
+    const span = job.secrets_inherit_span orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("inherit", source[span.start_byte..span.end_byte]);
+}
+
+test "parseJob leaves secrets_inherit_span null for quoted and flow inherit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    {
+        const source =
+            \\on: push
+            \\jobs:
+            \\  call:
+            \\    uses: ./.github/workflows/reusable.yml
+            \\    secrets: "inherit"
+            \\
+        ;
+        var yp = yaml_parser_mod.Parser.init(alloc, source);
+        const wf = try parseWorkflow(alloc, try yp.parse());
+        try testing.expect(wf.jobs[0].secrets.? == .inherit);
+        try testing.expect(wf.jobs[0].secrets_inherit_span == null);
+    }
+    {
+        const source =
+            \\on: push
+            \\jobs:
+            \\  call: { uses: ./.github/workflows/reusable.yml, secrets: inherit }
+            \\
+        ;
+        var yp = yaml_parser_mod.Parser.init(alloc, source);
+        const wf = try parseWorkflow(alloc, try yp.parse());
+        try testing.expect(wf.jobs[0].secrets.? == .inherit);
+        try testing.expect(wf.jobs[0].secrets_inherit_span == null);
     }
 }
 
@@ -2357,6 +2708,69 @@ test "parseJob captures runs_on_value_span for scalar runs-on" {
 
     const span = wf.jobs[0].runs_on_value_span.?;
     try testing.expectEqualStrings("ubuntu-20.04", source[span.start_byte..span.end_byte]);
+}
+
+test "parseJob captures image_meta for container and service image scalars" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container: alpine:3.19
+        \\    services:
+        \\      redis: redis:7
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    const container = wf.jobs[0].container.?;
+    try testing.expectEqualStrings("alpine:3.19", container.image.?);
+    const cspan = container.image_meta.?.value_span;
+    try testing.expectEqualStrings("alpine:3.19", source[cspan.start_byte..cspan.end_byte]);
+    try testing.expect(container.image_ends_line);
+
+    try testing.expectEqualStrings("redis:7", wf.jobs[0].services[0].image.?);
+    const sspan = wf.jobs[0].services[0].image_meta.?.value_span;
+    try testing.expectEqualStrings("redis:7", source[sspan.start_byte..sspan.end_byte]);
+}
+
+test "parseJob captures image_meta for container.image mapping form" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: node:20
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const yaml_node = try yp.parse();
+    const wf = try parseWorkflow(alloc, yaml_node);
+
+    const container = wf.jobs[0].container.?;
+    try testing.expectEqualStrings("node:20", container.image.?);
+    const span = container.image_meta.?.value_span;
+    try testing.expectEqualStrings("node:20", source[span.start_byte..span.end_byte]);
+    try testing.expect(container.image_ends_line);
 }
 
 test "parseDefaults captures defaults.run.shell at workflow and job level" {
@@ -3171,6 +3585,170 @@ test "parsePermissions accepts artifact-metadata and models" {
     try testing.expectEqual(@as(usize, 0), parsed.problems.len);
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.artifact_metadata.?);
     try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.models.?);
+}
+
+test "parsePermissions accepts vulnerability-alerts read and none" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("vulnerability-alerts"), .value = mkScalar("read"), .span = mkSpan() },
+    };
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expectEqual(@as(usize, 0), parsed.problems.len);
+    try testing.expectEqual(types.PermissionLevel.read, parsed.permissions.vulnerability_alerts.?);
+
+    var none_entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("vulnerability-alerts"), .value = mkScalar("none"), .span = mkSpan() },
+    };
+    const none_parsed = try parsePermissions(testing.allocator, mkMapping(&none_entries));
+    defer testing.allocator.free(none_parsed.problems);
+    try testing.expectEqual(types.PermissionLevel.none, none_parsed.permissions.vulnerability_alerts.?);
+}
+
+test "parsePermissions rejects vulnerability-alerts write" {
+    var entries = [_]yaml.MappingEntry{
+        .{ .key = mkScalarS("vulnerability-alerts"), .value = mkScalar("write"), .span = mkSpan() },
+    };
+    const parsed = try parsePermissions(testing.allocator, mkMapping(&entries));
+    defer testing.allocator.free(parsed.problems);
+    try testing.expect(parsed.permissions.vulnerability_alerts == null);
+    try testing.expectEqual(@as(usize, 1), parsed.problems.len);
+    try testing.expectEqual(types.PermissionProblemKind.invalid_level, parsed.problems[0].kind);
+    try testing.expectEqualStrings("write", parsed.problems[0].text);
+    try testing.expectEqualStrings("vulnerability-alerts", parsed.problems[0].scope);
+}
+
+test "parseWorkflow captures cache-mode on workflow and job" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\cache-mode: write
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: read
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqualStrings("write", wf.cache_mode.?);
+    try testing.expectEqualStrings("read", wf.jobs[0].cache_mode.?);
+    try testing.expectEqual(@as(usize, 0), wf.unknown_keys.len);
+}
+
+test "parseWorkflow keeps an unknown cache-mode value" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\cache-mode: reed
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqualStrings("reed", wf.cache_mode.?);
+    try testing.expect(wf.cache_mode_span != null);
+}
+
+test "parseWorkflow reports a non-scalar cache-mode as a type mismatch" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\cache-mode:
+        \\  foo: bar
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expect(wf.cache_mode == null);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("cache-mode", wf.type_mismatches[0].field);
+    try testing.expectEqualStrings("mapping", wf.type_mismatches[0].actual);
+}
+
+test "parseWorkflow captures concurrency queue and cancel-in-progress" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  cancel-in-progress: false
+        \\  queue: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: single
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expectEqual(false, wf.concurrency.?.cancel_in_progress.?);
+    try testing.expectEqualStrings("max", wf.concurrency.?.queue.?);
+    try testing.expectEqualStrings("single", wf.jobs[0].concurrency.?.queue.?);
+    try testing.expect(wf.jobs[0].concurrency.?.cancel_in_progress == null);
+    try testing.expectEqual(@as(usize, 0), wf.unknown_keys.len);
+}
+
+test "parseWorkflow reports a non-scalar concurrency queue as a type mismatch" {
+    const yaml_parser_mod = @import("../yaml/parser.zig");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queue:
+        \\    size: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var yp = yaml_parser_mod.Parser.init(alloc, source);
+    const wf = try parseWorkflow(alloc, try yp.parse());
+    try testing.expect(wf.concurrency.?.queue == null);
+    try testing.expectEqual(@as(usize, 1), wf.type_mismatches.len);
+    try testing.expectEqualStrings("queue", wf.type_mismatches[0].field);
+    try testing.expectEqualStrings("mapping", wf.type_mismatches[0].actual);
 }
 
 test "parsePermissions with empty mapping" {

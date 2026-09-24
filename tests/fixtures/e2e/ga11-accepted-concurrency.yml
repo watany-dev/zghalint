@@ -1,0 +1,29 @@
+# zghalint:forbid SYN001 SYN004 SYN025
+name: accepted ga11 concurrency
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: deploy-production
+  queue: max
+  cancel-in-progress: false
+jobs:
+  queue-max-omitted-cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: deploy-job
+      queue: max
+    steps:
+      - name: Deploy in order
+        run: echo deploy
+  queue-single-cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: pr
+      queue: single
+      cancel-in-progress: true
+    steps:
+      - name: Latest only
+        run: echo pr

@@ -1,4 +1,4 @@
-# bench:expect github-app@18 zizmor=github-app zghalint=- actionlint=-
+# bench:expect github-app@18 zizmor=github-app zghalint=SEC025 actionlint=-
 name: labeler
 on:
   issues:

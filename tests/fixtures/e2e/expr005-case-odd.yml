@@ -1,0 +1,14 @@
+# zghalint:forbid EXPR005
+name: case odd arity
+on: push
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: three arguments
+        run: echo ${{ case(github.ref == 'refs/heads/main', 'prod', 'dev') }}
+      - name: five arguments
+        run: echo ${{ case(github.ref == 'refs/heads/main', 'prod', github.ref == 'refs/heads/dev', 'dev', 'other') }}

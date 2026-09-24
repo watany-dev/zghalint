@@ -1,8 +1,11 @@
 //! The one fix SEC002 / SEC008 / SEC019 share: bind an untrusted or secret
 //! `${{ ... }}` in a step's `run:` to that step's `env:`, and read it back as a
-//! shell variable so the value never reaches the shell as code.
+//! shell variable so the value never reaches the shell as code. SEC002's
+//! `github-script` `script:` path uses the same naming and env insertion, with
+//! a `process.env.VAR` rewrite in place of the shell form.
 //!
-//! Design: `docs/design/af5-env-binding-autofix-design.md`.
+//! Design: `docs/design/af5-env-binding-autofix-design.md`,
+//! `docs/design/af13-github-script-env-binding-design.md`.
 
 const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
@@ -19,14 +22,14 @@ const Job = workflow_types.Job;
 const Workflow = workflow_types.Workflow;
 
 /// A `${{ ... }}` occurrence inside `Step.run`, in normalized-value offsets.
-pub const Occurrence = struct {
+const Occurrence = struct {
     offset: usize,
     len: usize,
 };
 
 /// The occurrences of one step. A step with more than this many offending
 /// expressions gets no fix rather than a partial one.
-pub const max_occurrences = 16;
+const max_occurrences = 16;
 
 pub const Occurrences = struct {
     /// Spelled out at every construction site rather than defaulted to
@@ -180,7 +183,7 @@ fn isNameSegment(seg: []const u8) bool {
 /// The env var name for one expression, or null when the expression is not a
 /// plain context path (a function call, an index, an operator). Null means the
 /// whole step gets no fix: a partly bound step reads as fixed without being it.
-pub fn deriveName(alloc: std.mem.Allocator, inner: []const u8) ?[]const u8 {
+fn deriveName(alloc: std.mem.Allocator, inner: []const u8) ?[]const u8 {
     const path = std.mem.trim(u8, inner, " \t\n\r");
     if (path.len == 0) return null;
 
@@ -266,12 +269,55 @@ pub fn buildFix(
     occs: *const Occurrences,
     description: []const u8,
 ) ?Fix {
-    if (occs.overflowed or occs.len == 0) return null;
+    return buildBodyFix(
+        list,
+        step,
+        step.run orelse return null,
+        step.run_meta orelse return null,
+        spans.runAnchor(step),
+        shell,
+        occs,
+        description,
+    );
+}
 
-    const run = step.run orelse return null;
-    const meta = step.run_meta orelse return null;
-    // Only these two styles keep `run` byte-identical to the source, which is
-    // what makes the offset mapping exact (design doc §4).
+/// Same binding as `buildFix`, but the body is a `with:` input the action
+/// executes as a shell script (azure/cli `inlineScript`, and the like).
+pub fn buildWithValueFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    input_key: []const u8,
+    value: []const u8,
+    shell: Shell,
+    occs: *const Occurrences,
+    description: []const u8,
+) ?Fix {
+    const meta = (if (step.with_meta) |m| m.get(input_key) else null) orelse return null;
+    return buildBodyFix(
+        list,
+        step,
+        value,
+        meta,
+        spans.Anchor.fromMeta(meta, step.span),
+        shell,
+        occs,
+        description,
+    );
+}
+
+fn buildBodyFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    body: []const u8,
+    meta: workflow_types.ScalarValueMeta,
+    anchor: spans.Anchor,
+    shell: Shell,
+    occs: *const Occurrences,
+    description: []const u8,
+) ?Fix {
+    if (occs.overflowed or occs.len == 0) return null;
+    // Only these two styles keep the body byte-identical to the source, which
+    // is what makes the offset mapping exact (design doc §4).
     switch (meta.style) {
         .plain, .literal => {},
         else => return null,
@@ -286,18 +332,17 @@ pub fn buildFix(
     var binding_count: usize = 0;
     var edits = std.ArrayList(Edit).empty;
     defer edits.deinit(alloc);
-    var cursor = spans.runAnchor(step).cursor(run);
+    var cursor = anchor.cursor(body);
 
     for (occs.slice()) |occ| {
-        if (occ.offset + occ.len > run.len) return null;
-        const expr = run[occ.offset .. occ.offset + occ.len];
+        if (occ.offset + occ.len > body.len) return null;
+        const expr = body[occ.offset .. occ.offset + occ.len];
         if (!std.mem.startsWith(u8, expr, "${{") or !std.mem.endsWith(u8, expr, "}}")) return null;
         const inner = expr[3 .. expr.len - 2];
 
-        const state = quoteStateAt(run, occ.offset);
+        const state = quoteStateAt(body, occ.offset);
         if (state == .squote) return null;
 
-        // The same expression twice in one step shares one binding.
         var name: ?[]const u8 = null;
         for (bindings[0..binding_count]) |b| {
             if (std.mem.eql(u8, b.expr, expr)) name = b.name;
@@ -317,6 +362,180 @@ pub fn buildFix(
             .end_byte = span.end_byte,
             .replacement = ref,
             .expects = expr,
+        }) catch return null;
+    }
+
+    var subs: [max_occurrences]fix_builder.SubEntry = undefined;
+    for (bindings[0..binding_count], 0..) |b, i| {
+        subs[i] = .{ .key = b.name, .value = b.expr };
+    }
+
+    const env_edits = buildEnvEdits(alloc, step, subs[0..binding_count]) orelse return null;
+    edits.appendSlice(alloc, env_edits) catch return null;
+
+    const owned = edits.toOwnedSlice(alloc) catch return null;
+    return .{ .description = description, .safety = .unsafe, .edits = owned };
+}
+
+const JsLiteral = struct { start: usize, end: usize };
+
+const JsState = enum { plain, dquote, squote, template, line_comment, block_comment };
+
+fn isJsWs(c: u8) bool {
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
+}
+
+fn onlyWhitespace(s: []const u8) bool {
+    for (s) |c| {
+        if (!isJsWs(c)) return false;
+    }
+    return true;
+}
+
+fn jsLiteralAround(script: []const u8, occ: Occurrence, string_start: usize, quote: u8) ?JsLiteral {
+    if (string_start >= occ.offset) return null;
+    if (!onlyWhitespace(script[string_start + 1 .. occ.offset])) return null;
+    const after = occ.offset + occ.len;
+    if (after > script.len) return null;
+    var j = after;
+    while (j < script.len and isJsWs(script[j])) j += 1;
+    if (j >= script.len or script[j] != quote) return null;
+    return .{ .start = string_start, .end = j + 1 };
+}
+
+/// One pass from the start of `script:`. A miss on any occurrence (bare
+/// embedding, mixed string, comment, unclosed quote) drops the whole step,
+/// matching AF5's no-partial-apply contract.
+fn planScriptRewrites(script: []const u8, occs: []const Occurrence) ?[max_occurrences]JsLiteral {
+    var planned: [max_occurrences]JsLiteral = undefined;
+    var occ_i: usize = 0;
+    var state: JsState = .plain;
+    var string_start: usize = 0;
+    var quote: u8 = 0;
+    var i: usize = 0;
+    while (i < script.len) {
+        if (occ_i < occs.len and i == occs[occ_i].offset) {
+            const range: ?JsLiteral = switch (state) {
+                .dquote, .squote, .template => jsLiteralAround(script, occs[occ_i], string_start, quote),
+                .plain, .line_comment, .block_comment => null,
+            };
+            planned[occ_i] = range orelse return null;
+            occ_i += 1;
+        }
+
+        switch (state) {
+            .plain => {
+                if (i + 1 < script.len and script[i] == '/' and script[i + 1] == '/') {
+                    state = .line_comment;
+                    i += 2;
+                    continue;
+                }
+                if (i + 1 < script.len and script[i] == '/' and script[i + 1] == '*') {
+                    state = .block_comment;
+                    i += 2;
+                    continue;
+                }
+                switch (script[i]) {
+                    '"' => {
+                        state = .dquote;
+                        string_start = i;
+                        quote = '"';
+                    },
+                    '\'' => {
+                        state = .squote;
+                        string_start = i;
+                        quote = '\'';
+                    },
+                    '`' => {
+                        state = .template;
+                        string_start = i;
+                        quote = '`';
+                    },
+                    else => {},
+                }
+                i += 1;
+            },
+            .dquote, .squote, .template => {
+                if (script[i] == '\\' and i + 1 < script.len) {
+                    i += 2;
+                    continue;
+                }
+                if (script[i] == quote) state = .plain;
+                i += 1;
+            },
+            .line_comment => {
+                if (script[i] == '\n') state = .plain;
+                i += 1;
+            },
+            .block_comment => {
+                if (i + 1 < script.len and script[i] == '*' and script[i + 1] == '/') {
+                    state = .plain;
+                    i += 2;
+                    continue;
+                }
+                i += 1;
+            },
+        }
+    }
+    if (occ_i != occs.len) return null;
+    return planned;
+}
+
+/// Same env binding as `buildFix`, but the body is `with.script` and the
+/// reference is a bare `process.env.VAR` that replaces the JS literal.
+pub fn buildScriptFix(
+    list: *DiagnosticList,
+    step: *const Step,
+    script_key: []const u8,
+    script: []const u8,
+    occs: *const Occurrences,
+    description: []const u8,
+) ?Fix {
+    if (occs.overflowed or occs.len == 0) return null;
+
+    const meta = (if (step.with_meta) |m| m.get(script_key) else null) orelse return null;
+    switch (meta.style) {
+        .plain, .literal => {},
+        else => return null,
+    }
+    if (step.env == null and step.env_key_present) return null;
+
+    const planned = planScriptRewrites(script, occs.slice()) orelse return null;
+    const alloc = list.fixAllocator();
+    const anchor = spans.Anchor.fromMeta(meta, step.span);
+
+    var bindings: [max_occurrences]Binding = undefined;
+    var binding_count: usize = 0;
+    var edits = std.ArrayList(Edit).empty;
+    defer edits.deinit(alloc);
+
+    for (occs.slice(), 0..) |occ, i| {
+        if (occ.offset + occ.len > script.len) return null;
+        const expr = script[occ.offset .. occ.offset + occ.len];
+        if (!std.mem.startsWith(u8, expr, "${{") or !std.mem.endsWith(u8, expr, "}}")) return null;
+        const inner = expr[3 .. expr.len - 2];
+
+        var name: ?[]const u8 = null;
+        for (bindings[0..binding_count]) |b| {
+            if (std.mem.eql(u8, b.expr, expr)) name = b.name;
+        }
+        if (name == null) {
+            const base = deriveName(alloc, inner) orelse return null;
+            const unique = uniqueName(alloc, step, bindings[0..binding_count], base) orelse return null;
+            bindings[binding_count] = .{ .expr = expr, .name = unique };
+            binding_count += 1;
+            name = unique;
+        }
+
+        const range = planned[i];
+        const literal = script[range.start..range.end];
+        const span = anchor.at(script, range.start, range.end - range.start);
+        const ref = std.fmt.allocPrint(alloc, "process.env.{s}", .{name.?}) catch return null;
+        edits.append(alloc, .{
+            .start_byte = span.start_byte,
+            .end_byte = span.end_byte,
+            .replacement = ref,
+            .expects = literal,
         }) catch return null;
     }
 
@@ -464,4 +683,37 @@ test "Occurrences marks the overflow instead of truncating silently" {
     while (i < max_occurrences + 1) : (i += 1) occs.append(.{ .offset = i, .len = 1 });
     try testing.expectEqual(max_occurrences, occs.len);
     try testing.expect(occs.overflowed);
+}
+
+fn occAt(script: []const u8, needle: []const u8) Occurrence {
+    const offset = std.mem.find(u8, script, needle).?;
+    return .{ .offset = offset, .len = needle.len };
+}
+
+test "planScriptRewrites accepts a lone expression inside any of the three JS quotes" {
+    const cases = [_][]const u8{
+        "const title = \"${{ github.event.issue.title }}\";",
+        "const title = '${{ github.event.issue.title }}';",
+        "const title = `${{ github.event.issue.title }}`;",
+    };
+    for (cases) |script| {
+        const occ = occAt(script, "${{ github.event.issue.title }}");
+        const planned = planScriptRewrites(script, &.{occ}).?;
+        try testing.expectEqual(@as(u8, script[planned[0].start]), script[planned[0].end - 1]);
+        try testing.expect(script[planned[0].start] == '"' or script[planned[0].start] == '\'' or script[planned[0].start] == '`');
+    }
+}
+
+test "planScriptRewrites rejects mixed strings, bare embeddings, comments, and unclosed quotes" {
+    const mixed = "const title = \"prefix ${{ github.event.issue.title }}\";";
+    const bare = "const title = ${{ github.event.issue.title }};";
+    const line_c = "// ${{ github.event.issue.title }}\nconst x = 1;";
+    const block_c = "/* ${{ github.event.issue.title }} */\nconst x = 1;";
+    const unclosed = "const title = \"${{ github.event.issue.title }}";
+    const needle = "${{ github.event.issue.title }}";
+    try testing.expect(planScriptRewrites(mixed, &.{occAt(mixed, needle)}) == null);
+    try testing.expect(planScriptRewrites(bare, &.{occAt(bare, needle)}) == null);
+    try testing.expect(planScriptRewrites(line_c, &.{occAt(line_c, needle)}) == null);
+    try testing.expect(planScriptRewrites(block_c, &.{occAt(block_c, needle)}) == null);
+    try testing.expect(planScriptRewrites(unclosed, &.{occAt(unclosed, needle)}) == null);
 }

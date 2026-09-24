@@ -1,0 +1,11 @@
+# zghalint:expect SYN012
+name: exclusive flow filters
+on: {push: {branches: [main], branches-ignore: [wip], paths: [src]}, pull_request: {branches-ignore: [draft], branches: [main]}}
+concurrency: test
+permissions: {}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: echo hi

@@ -32,7 +32,7 @@ fn severityColor(sev: Severity) []const u8 {
 /// source alignment, and every other code point is copied through intact.
 /// Untouched bytes are flushed in runs rather than one at a time: a
 /// `writeByte` per byte made this the hottest part of terminal output (#192).
-fn writeSanitized(writer: anytype, s: []const u8) !void {
+fn writeSanitized(writer: *std.Io.Writer, s: []const u8) !void {
     var i: usize = 0;
     var run_start: usize = 0;
     while (i < s.len) {
@@ -102,7 +102,7 @@ fn isInvisibleControl(cp: u21) bool {
         (cp >= 0x2066 and cp <= 0x2069);
 }
 
-pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !void {
+fn renderDiagnostic(writer: *std.Io.Writer, diag: Diagnostic, use_color: bool) !void {
     const file_str = diag.file orelse "<unknown>";
     const sev_str = @tagName(diag.severity);
     const sev_color = if (use_color) severityColor(diag.severity) else "";
@@ -131,7 +131,7 @@ pub fn renderDiagnostic(writer: anytype, diag: Diagnostic, use_color: bool) !voi
     }
 }
 
-pub fn renderDiagnostics(writer: anytype, list: DiagnosticList, use_color: bool) !void {
+pub fn renderDiagnostics(writer: *std.Io.Writer, list: DiagnosticList, use_color: bool) !void {
     for (list.items.items) |diag| {
         try renderDiagnostic(writer, diag, use_color);
         try writer.writeAll("\n");
@@ -140,7 +140,7 @@ pub fn renderDiagnostics(writer: anytype, list: DiagnosticList, use_color: bool)
     try renderSummary(writer, list, use_color);
 }
 
-pub fn renderSummary(writer: anytype, list: DiagnosticList, use_color: bool) !void {
+fn renderSummary(writer: *std.Io.Writer, list: DiagnosticList, use_color: bool) !void {
     const counts = list.countBySeverity();
     const errors = counts.@"error";
     const warnings = counts.warning;

@@ -9,6 +9,7 @@ const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
 const workspace = @import("../workspace.zig");
 const security = @import("security.zig");
+const setup_node_cache = @import("setup_node_cache.zig");
 
 const Rule = engine.Rule;
 const Job = engine.Job;
@@ -83,45 +84,50 @@ fn buildCacheFix(
 
     var edits = std.ArrayList(diagnostics_mod.Edit).empty;
 
-    for (job.steps) |step| {
-        const action_ref = step.uses orelse continue;
-        const action_name = util.actionBaseName(action_ref.raw);
-        if (!std.mem.eql(u8, action_name, setup_action)) continue;
+    const Ctx = struct {
+        setup_action: []const u8,
+        cache_value: []const u8,
+        alloc: std.mem.Allocator,
+        edits: *std.ArrayList(diagnostics_mod.Edit),
+        pub fn visit(self: @This(), step: *const Step) void {
+            const action_ref = step.uses orelse return;
+            const action_name = util.actionBaseName(action_ref.raw);
+            if (!std.mem.eql(u8, action_name, self.setup_action)) return;
 
-        if (step.with) |with| {
-            if (with.get("cache")) |_| continue;
+            if (step.with) |with| {
+                if (with.get("cache")) |_| return;
+            }
+
+            if (!step.own_line) return;
+            const col = step.uses_key_col orelse return;
+            if (col == 0) return;
+
+            if (step.with != null) {
+                const anchor = step.with_last_entry_end_byte orelse return;
+                const with_col = step.with_key_col orelse return;
+                if (with_col == 0) return;
+                const appended = fix_builder.appendMappingEntry(
+                    self.alloc,
+                    anchor,
+                    with_col - 1,
+                    "cache",
+                    self.cache_value,
+                ) orelse return;
+                self.edits.appendSlice(self.alloc, appended) catch return;
+            } else {
+                if (step.with_key_present) return;
+                const anchor = step.uses_value_end_byte orelse return;
+                const inserted = fix_builder.insertWithEntry(self.alloc, anchor, col, "cache", self.cache_value) orelse return;
+                self.edits.appendSlice(self.alloc, inserted) catch return;
+            }
         }
-
-        // Both shapes below open a block line under the step, which needs the
-        // step to own its own line to begin with.
-        if (!step.own_line) continue;
-        const col = step.uses_key_col orelse continue;
-        if (col == 0) continue;
-
-        if (step.with != null) {
-            const anchor = step.with_last_entry_end_byte orelse continue;
-            // The existing `with:` keys, not the `uses:` column, decide the
-            // indent: an appended key off their column falls out of the mapping.
-            const with_col = step.with_key_col orelse continue;
-            if (with_col == 0) continue;
-            const appended = fix_builder.appendMappingEntry(
-                alloc,
-                anchor,
-                with_col - 1,
-                "cache",
-                cache_value,
-            ) orelse continue;
-            edits.appendSlice(alloc, appended) catch continue;
-        } else {
-            // `with: {}`, `with:` and `with: 4` parse to a null `with` while the
-            // key is still in source; inserting another `with:` block would
-            // duplicate it (#171, fuzz).
-            if (step.with_key_present) continue;
-            const anchor = step.uses_value_end_byte orelse continue;
-            const inserted = fix_builder.insertWithEntry(alloc, anchor, col, "cache", cache_value) orelse continue;
-            edits.appendSlice(alloc, inserted) catch continue;
-        }
-    }
+    };
+    workflow_types.walkSteps(job.steps, Ctx{
+        .setup_action = setup_action,
+        .cache_value = cache_value,
+        .alloc = alloc,
+        .edits = &edits,
+    });
 
     if (edits.items.len == 0) return null;
 
@@ -173,7 +179,7 @@ fn dispatchCacheFix(
     inline for (inferred_cache_setups) |setup| {
         if (std.mem.eql(u8, setup_action, setup.action)) {
             if (@field(ctx, setup.manager)) |mgr| {
-                const mgr_str = mgr.toString();
+                const mgr_str = @tagName(mgr);
                 const description = std.fmt.allocPrint(
                     alloc,
                     "add \"cache: {s}\" to {s} step(s)",
@@ -227,6 +233,10 @@ fn formatAmbiguity(
 
 fn checkCacheNotUsedWorkflow(wf: *const Workflow, diag_list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
+        // `cache-mode: none` cannot restore or save, so "add a cache" is
+        // advice the job cannot take. Unknown / expression values stay on
+        // the existing path (ADR-0009).
+        if (!workflow_types.jobAllowsCache(wf, job)) continue;
         checkCacheNotUsedInJob(job, diag_list, security.isCachePoisoningScope(wf, job));
     }
 }
@@ -251,43 +261,49 @@ fn checkCacheableSetup(
     job: *const Job,
     diag_list: *DiagnosticList,
 ) void {
-    // Span of the first setup step that warrants a warning, so the diagnostic
-    // points at the action rather than at the job.
-    var setup_span: ?Span = null;
-    var has_cache = false;
+    const Ctx = struct {
+        ca: CacheableSetup,
+        setup_span: ?Span = null,
+        has_cache: bool = false,
+        pub fn visit(self: *@This(), step: *const Step) void {
+            const action_ref = step.uses orelse return;
+            const action_name = util.actionBaseName(action_ref.raw);
 
-    for (job.steps) |*step| {
-        const action_ref = step.uses orelse continue;
-        const action_name = util.actionBaseName(action_ref.raw);
+            if (std.mem.eql(u8, action_name, "actions/cache")) {
+                self.has_cache = true;
+                return;
+            }
+            if (!std.mem.eql(u8, action_name, self.ca.setup_action)) return;
 
-        if (std.mem.eql(u8, action_name, "actions/cache")) {
-            has_cache = true;
-            continue;
+            switch (self.ca.kind) {
+                .with_cache_input => {
+                    if (self.setup_span == null) self.setup_span = spans.usesSpan(step);
+                    if (std.mem.eql(u8, self.ca.setup_action, "actions/setup-node")) {
+                        if (setup_node_cache.enabled(step)) self.has_cache = true;
+                        return;
+                    }
+                    const with = step.with orelse return;
+                    const val = with.get(self.ca.cache_key) orelse return;
+                    if (val.len > 0) self.has_cache = true;
+                },
+                .bun_independent => {
+                    if (self.setup_span == null) self.setup_span = spans.usesSpan(step);
+                },
+                .uv_independent => {
+                    const with = step.with orelse return;
+                    const val = with.get(self.ca.cache_key) orelse return;
+                    if (std.mem.eql(u8, val, "false") and self.setup_span == null) {
+                        self.setup_span = spans.usesSpan(step);
+                    }
+                },
+            }
         }
-        if (!std.mem.eql(u8, action_name, ca.setup_action)) continue;
+    };
+    var ctx = Ctx{ .ca = ca };
+    workflow_types.walkSteps(job.steps, &ctx);
 
-        switch (comptime ca.kind) {
-            .with_cache_input => {
-                if (setup_span == null) setup_span = spans.usesSpan(step);
-                const with = step.with orelse continue;
-                const val = with.get(ca.cache_key) orelse continue;
-                if (val.len > 0) has_cache = true;
-            },
-            .bun_independent => {
-                if (setup_span == null) setup_span = spans.usesSpan(step);
-            },
-            .uv_independent => {
-                const with = step.with orelse continue;
-                const val = with.get(ca.cache_key) orelse continue;
-                if (std.mem.eql(u8, val, "false") and setup_span == null) {
-                    setup_span = spans.usesSpan(step);
-                }
-            },
-        }
-    }
-
-    const span = setup_span orelse return;
-    if (has_cache) return;
+    const span = ctx.setup_span orelse return;
+    if (ctx.has_cache) return;
 
     const dispatched: DispatchResult = switch (comptime ca.kind) {
         .with_cache_input => dispatchCacheFix(diag_list, job, ca.setup_action),
@@ -464,6 +480,52 @@ test "PERF001: detect missing cache for setup-node" {
     checkCacheNotUsed(&job, &diags);
     try std.testing.expectEqual(@as(usize, 1), diags.len());
     try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
+}
+
+test "PERF001: auto-cache from package.json silences setup-node" {
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("actions/setup-node@v5") },
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: v5 without package.json still asks for a cache" {
+    defer workspace.clear();
+    const job = Job{
+        .id = "build",
+        .steps = &.{
+            Step{ .uses = ActionRef.parse("actions/setup-node@v5") },
+        },
+    };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
+}
+
+test "PERF001: package-manager-cache false still asks for a cache" {
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(std.testing.allocator);
+    try with.put(std.testing.allocator, "package-manager-cache", "false");
+    const steps = [_]Step{
+        Step{ .uses = ActionRef.parse("actions/setup-node@v5"), .with = with },
+    };
+    const job = Job{ .id = "build", .steps = &steps };
+    var diags = DiagnosticList.init(std.testing.allocator);
+    defer diags.deinit();
+    checkCacheNotUsed(&job, &diags);
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
 }
 
 test "PERF001: no warning when cache input is set" {
@@ -1015,6 +1077,112 @@ test "PERF001: a missing cache is still reported in a release workflow" {
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+}
+
+test "PERF001: cache-mode none does not ask to add a cache" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: none
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: workflow cache-mode none is inherited" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\cache-mode: none
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/setup-python@v5
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "PERF001: cache-mode read still asks to enable restore" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: read
+        \\    steps:
+        \\      - uses: actions/setup-node@v4
+        \\
+    ;
+
+    const wf = try test_support.parseWorkflowSource(alloc, source);
+
+    var diags = DiagnosticList.init(alloc);
+    defer diags.deinit();
+    checkCacheNotUsedWorkflow(&wf, &diags);
+
+    try std.testing.expectEqual(@as(usize, 1), diags.len());
+    try std.testing.expectEqualStrings("PERF001", diags.get(0).rule_id);
+}
+
+test "PERF001: job write overrides workflow none" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source =
+        \\name: ci
+        \\on: push
+        \\cache-mode: none
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: write
+        \\    steps:
+        \\      - uses: actions/setup-go@v5
         \\
     ;
 

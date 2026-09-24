@@ -87,6 +87,7 @@ pub const Permissions = struct {
     repository_projects: ?PermissionLevel = null,
     security_events: ?PermissionLevel = null,
     statuses: ?PermissionLevel = null,
+    vulnerability_alerts: ?PermissionLevel = null,
     read_all: bool = false,
     write_all: bool = false,
     /// Span of the permissions value in the YAML source (for autofix)
@@ -96,23 +97,16 @@ pub const Permissions = struct {
 /// Per-field value spans for `Permissions` mapping entries. Populated only
 /// when `permissions:` is given as a mapping (not `read-all`/`write-all`).
 /// Used by PERM001 autofix to target the value of a specific scope key.
-pub const PermissionsMeta = struct {
-    actions: ?yaml_types.Span = null,
-    artifact_metadata: ?yaml_types.Span = null,
-    attestations: ?yaml_types.Span = null,
-    checks: ?yaml_types.Span = null,
-    contents: ?yaml_types.Span = null,
-    deployments: ?yaml_types.Span = null,
-    discussions: ?yaml_types.Span = null,
-    id_token: ?yaml_types.Span = null,
-    issues: ?yaml_types.Span = null,
-    models: ?yaml_types.Span = null,
-    packages: ?yaml_types.Span = null,
-    pages: ?yaml_types.Span = null,
-    pull_requests: ?yaml_types.Span = null,
-    repository_projects: ?yaml_types.Span = null,
-    security_events: ?yaml_types.Span = null,
-    statuses: ?yaml_types.Span = null,
+pub const PermissionsMeta = blk: {
+    var names: []const []const u8 = &.{};
+    for (std.meta.fields(Permissions)) |field| {
+        if (field.type == ?PermissionLevel) names = names ++ .{field.name};
+    }
+    const types = [_]type{?yaml_types.Span} ** names.len;
+    const attrs = [_]std.builtin.Type.StructField.Attributes{
+        .{ .default_value_ptr = &@as(?yaml_types.Span, null) },
+    } ** names.len;
+    break :blk @Struct(.auto, null, names, &types, &attrs);
 };
 
 /// The `permissions:` scope keys, in schema order. `Permissions` and
@@ -141,6 +135,64 @@ pub const permission_scope_keys: []const []const u8 = blk: {
     break :blk &frozen;
 };
 
+/// `vulnerability-alerts` accepts `read` / `none` only (2026-09-03).
+pub fn isAllowedPermissionLevel(scope: []const u8, level: PermissionLevel) bool {
+    if (std.mem.eql(u8, scope, "vulnerability-alerts")) return level != .write;
+    return true;
+}
+
+/// `cache-mode:` at workflow or job level (2026-09-10). Job overrides workflow.
+pub const cache_mode_values = [_][]const u8{ "none", "read", "write", "write-only" };
+
+pub fn isCacheMode(value: []const u8) bool {
+    return CacheCapability.fromMode(value) != null;
+}
+
+/// Restore/save abilities implied by `cache-mode`. This is a partial lattice,
+/// not a linear scale: `read` restores, `write-only` saves, `write` does both,
+/// `none` does neither.
+pub const CacheCapability = struct {
+    can_restore: bool,
+    can_save: bool,
+
+    pub const none: CacheCapability = .{ .can_restore = false, .can_save = false };
+    pub const read: CacheCapability = .{ .can_restore = true, .can_save = false };
+    pub const write: CacheCapability = .{ .can_restore = true, .can_save = true };
+    pub const write_only: CacheCapability = .{ .can_restore = false, .can_save = true };
+    pub const unrestricted: CacheCapability = write;
+
+    pub fn fromMode(mode: []const u8) ?CacheCapability {
+        if (std.mem.eql(u8, mode, "none")) return none;
+        if (std.mem.eql(u8, mode, "read")) return read;
+        if (std.mem.eql(u8, mode, "write")) return write;
+        if (std.mem.eql(u8, mode, "write-only")) return write_only;
+        return null;
+    }
+
+    pub fn allowsCache(self: CacheCapability) bool {
+        return self.can_restore or self.can_save;
+    }
+};
+
+/// Job `cache-mode` replaces the workflow value. Returns `null` for an
+/// expression or unknown value so callers do not treat uncertainty as a
+/// finding (ADR-0009). Omitted `cache-mode` is unrestricted by this key;
+/// GitHub may still deny writes on low-trust events.
+///
+/// A reusable workflow cannot exceed the caller's grant at runtime; this
+/// function only sees one file.
+pub fn resolveCacheCapability(wf: *const Workflow, job: *const Job) ?CacheCapability {
+    const raw = job.cache_mode orelse wf.cache_mode orelse return CacheCapability.unrestricted;
+    return CacheCapability.fromMode(raw);
+}
+
+/// Unknown / expression modes stay permissive so SEC016 and PERF001 do not
+/// guess a disable.
+pub fn jobAllowsCache(wf: *const Workflow, job: *const Job) bool {
+    const cap = resolveCacheCapability(wf, job) orelse return true;
+    return cap.allowsCache();
+}
+
 pub const PermissionProblemKind = enum {
     unknown_scope,
     invalid_level,
@@ -160,11 +212,29 @@ pub const PermissionProblem = struct {
     span: yaml_types.Span,
 };
 
+/// `concurrency.queue` (2026-05-07). `single` is the historical default;
+/// `max` allows up to 100 pending runs in the group.
+pub const concurrency_queue_values = [_][]const u8{ "max", "single" };
+
+pub fn isConcurrencyQueue(value: []const u8) bool {
+    for (concurrency_queue_values) |allowed| {
+        if (std.mem.eql(u8, value, allowed)) return true;
+    }
+    return false;
+}
+
 pub const Concurrency = struct {
     group: []const u8,
     /// Value span and style of the `group` scalar, so an expression inside it
     /// can be reported where it appears (EXPR015/EXPR016).
     group_meta: ?ScalarValueMeta = null,
+    /// Expressions leave this null so SYN025 does not guess (ADR-0009).
+    cancel_in_progress: ?bool = null,
+    cancel_in_progress_span: ?yaml_types.Span = null,
+    /// Invalid values are kept so SYN025 can report them instead of dropping
+    /// the key.
+    queue: ?[]const u8 = null,
+    queue_span: ?yaml_types.Span = null,
 };
 
 /// `defaults:` at workflow or job level. Only `run.shell` is modelled, since
@@ -178,7 +248,7 @@ pub const Defaults = struct {
 /// Key spans for the mutually exclusive `EventFilter` entries. A non-null
 /// field means the key appeared in the source, which the value arrays alone
 /// cannot express (`branches: []` yields an empty array but is still present).
-pub const EventFilterSpans = struct {
+const EventFilterSpans = struct {
     branches: ?yaml_types.Span = null,
     branches_ignore: ?yaml_types.Span = null,
     tags: ?yaml_types.Span = null,
@@ -352,7 +422,7 @@ pub const DispatchInputDef = struct {
     default_span: ?yaml_types.Span = null,
 };
 
-pub const WorkflowDispatchInputProblemKind = enum {
+const WorkflowDispatchInputProblemKind = enum {
     invalid_type,
     missing_options,
     empty_options,
@@ -546,6 +616,33 @@ pub const Strategy = struct {
     matrix_key_present: bool = false,
 };
 
+/// Discriminator for a job step. `background: true` is a flag on `run` /
+/// `action` steps, not a kind of its own.
+pub const StepKind = enum {
+    run,
+    action,
+    wait,
+    wait_all,
+    cancel,
+    parallel,
+};
+
+/// A `wait:` / `cancel:` target, with the span of the YAML scalar so a
+/// missing id can be reported on the token rather than the whole step.
+pub const StepRef = struct {
+    id: []const u8,
+    span: yaml_types.Span,
+};
+
+/// Control-flow payload for `wait` / `wait-all` / `cancel` / `parallel`.
+/// Ordinary `run:` / `uses:` steps leave this null.
+pub const StepControl = union(enum) {
+    wait: []const StepRef,
+    wait_all,
+    cancel: StepRef,
+    parallel: []const Step,
+};
+
 pub const Step = struct {
     id: ?[]const u8 = null,
     /// Span of the `id:` scalar value (for SYN005/SYN006 diagnostics).
@@ -615,6 +712,9 @@ pub const Step = struct {
     /// pin hides the version it stands for, so SC003 reads the `# v1.2.3`
     /// convention that SEC001's autofix (and every pinning tool) writes.
     uses_line_comment: ?[]const u8 = null,
+    /// Byte of the first non-blank of `uses_line_comment`, for SC003's rewrite
+    /// of an existing `# v1.2.3` pin comment.
+    uses_line_comment_start_byte: ?usize = null,
     /// Byte position at the start of the next line after `run:` (insertion point for `shell:`).
     shell_insertion_byte: ?usize = null,
     /// Start byte and column of the step mapping's first key. A new `env:`
@@ -627,7 +727,35 @@ pub const Step = struct {
     env_last_entry_end_byte: ?usize = null,
     /// Column of the first `env:` key, which appended entries align with.
     env_key_col: ?u32 = null,
+    background: bool = false,
+    control: ?StepControl = null,
+
+    pub fn kind(self: *const Step) StepKind {
+        if (self.control) |c| return switch (c) {
+            .wait => .wait,
+            .wait_all => .wait_all,
+            .cancel => .cancel,
+            .parallel => .parallel,
+        };
+        if (self.uses != null) return .action;
+        return .run;
+    }
+
+    pub fn nestedSteps(self: *const Step) []const Step {
+        return switch (self.control orelse return &.{}) {
+            .parallel => |children| children,
+            else => &.{},
+        };
+    }
 };
+
+/// Depth-first visit of `steps` and every nested `parallel:` child.
+pub fn walkSteps(steps: []const Step, ctx: anytype) void {
+    for (steps) |*step| {
+        ctx.visit(step);
+        walkSteps(step.nestedSteps(), ctx);
+    }
+}
 
 pub const SecretsConfig = union(enum) {
     inherit,
@@ -641,6 +769,11 @@ pub const Credentials = struct {
 
 pub const Container = struct {
     image: ?[]const u8 = null,
+    /// Value span and style of `container` / `container.image` (SC001).
+    image_meta: ?ScalarValueMeta = null,
+    /// Nothing but blanks or a comment follows the image scalar, so a digest
+    /// pin may append `# <tag>` after it. False inside a flow collection.
+    image_ends_line: bool = false,
     credentials: ?Credentials = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},
@@ -649,6 +782,8 @@ pub const Container = struct {
 pub const Service = struct {
     name: []const u8,
     image: ?[]const u8 = null,
+    image_meta: ?ScalarValueMeta = null,
+    image_ends_line: bool = false,
     credentials: ?Credentials = null,
     /// Keys of the `env:` mapping in source order (for SYN007).
     env_keys: []const EnvKey = &.{},
@@ -709,6 +844,9 @@ pub const Job = struct {
     /// Entries of the job-level `secrets:` mapping in source order (for RW004).
     /// Empty for `secrets: inherit`, which names nothing.
     secrets_args: []const CallArg = &.{},
+    /// Token span of a block-style plain `secrets: inherit` value (SEC010 autofix).
+    /// Null when the value is quoted, in a flow mapping, or not inherit.
+    secrets_inherit_span: ?yaml_types.Span = null,
     /// Column (1-based) at which this job's child keys are indented.
     job_indent: u32 = 0,
     /// The job body starts on a line of its own rather than on the job id's
@@ -728,6 +866,10 @@ pub const Job = struct {
     runs_on_labels: []const []const u8 = &.{},
     /// Value spans of `runs_on_labels`, parallel to it. Empty when absent.
     runs_on_label_spans: []const yaml_types.Span = &.{},
+    /// `cache-mode:` scalar as written. Invalid values are kept so SYN023 can
+    /// report them instead of dropping the key.
+    cache_mode: ?[]const u8 = null,
+    cache_mode_span: ?yaml_types.Span = null,
 };
 
 /// Job IDs by position, matched case-insensitively the way the runner
@@ -781,6 +923,10 @@ pub const Workflow = struct {
     concurrency_insertion_byte: ?usize = null,
     /// Original YAML root. SYN002 walks this for case-insensitive duplicate keys.
     yaml_root: ?yaml_types.Node = null,
+    /// `cache-mode:` scalar as written. Invalid values are kept so SYN023 can
+    /// report them instead of dropping the key.
+    cache_mode: ?[]const u8 = null,
+    cache_mode_span: ?yaml_types.Span = null,
 
     /// Many rules only apply to a single trigger, so they gate on this before
     /// walking the jobs.
@@ -911,4 +1057,88 @@ test "CallableInputType.inferFromScalar reads a plain default" {
 test "CallableInputType.inferFromScalar treats a quoted default as a string" {
     try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("true", .double_quoted));
     try std.testing.expectEqual(CallableInputType.string, CallableInputType.inferFromScalar("3", .single_quoted));
+}
+
+test "cache_mode_values matches the documented modes" {
+    try std.testing.expect(isCacheMode("none"));
+    try std.testing.expect(isCacheMode("read"));
+    try std.testing.expect(isCacheMode("write"));
+    try std.testing.expect(isCacheMode("write-only"));
+    try std.testing.expect(!isCacheMode("read-write"));
+    try std.testing.expect(!isCacheMode("writeonly"));
+}
+
+test "CacheCapability.fromMode is restore/save, not a linear scale" {
+    try std.testing.expectEqual(CacheCapability.none, CacheCapability.fromMode("none").?);
+    try std.testing.expectEqual(CacheCapability.read, CacheCapability.fromMode("read").?);
+    try std.testing.expectEqual(CacheCapability.write, CacheCapability.fromMode("write").?);
+    try std.testing.expectEqual(CacheCapability.write_only, CacheCapability.fromMode("write-only").?);
+    try std.testing.expect(CacheCapability.fromMode("reed") == null);
+    try std.testing.expect(CacheCapability.fromMode("${{ inputs.mode }}") == null);
+    try std.testing.expect(CacheCapability.none.allowsCache() == false);
+    try std.testing.expect(CacheCapability.read.allowsCache());
+    try std.testing.expect(CacheCapability.write_only.allowsCache());
+}
+
+test "every cache_mode_values entry has a capability" {
+    for (cache_mode_values) |mode| {
+        try std.testing.expect(CacheCapability.fromMode(mode) != null);
+        try std.testing.expect(isCacheMode(mode));
+    }
+}
+
+test "isConcurrencyQueue accepts only documented values" {
+    try std.testing.expect(isConcurrencyQueue("max"));
+    try std.testing.expect(isConcurrencyQueue("single"));
+    try std.testing.expect(!isConcurrencyQueue("huge"));
+    try std.testing.expect(!isConcurrencyQueue("Max"));
+}
+
+test "resolveCacheCapability: job overrides workflow" {
+    const jobs = [_]Job{
+        .{ .id = "restricted", .cache_mode = "none" },
+        .{ .id = "inherited", .cache_mode = null },
+        .{ .id = "unknown", .cache_mode = "reed" },
+    };
+    const wf = Workflow{
+        .on = .{ .events = &.{} },
+        .jobs = &jobs,
+        .cache_mode = "write",
+    };
+    try std.testing.expectEqual(CacheCapability.none, resolveCacheCapability(&wf, &jobs[0]).?);
+    try std.testing.expectEqual(CacheCapability.write, resolveCacheCapability(&wf, &jobs[1]).?);
+    try std.testing.expect(resolveCacheCapability(&wf, &jobs[2]) == null);
+}
+
+test "resolveCacheCapability: omitted cache-mode is unrestricted" {
+    const jobs = [_]Job{.{ .id = "build" }};
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    try std.testing.expectEqual(CacheCapability.unrestricted, resolveCacheCapability(&wf, &jobs[0]).?);
+    try std.testing.expect(jobAllowsCache(&wf, &jobs[0]));
+}
+
+test "jobAllowsCache: none is a disable, unknown is not" {
+    const jobs = [_]Job{
+        .{ .id = "off", .cache_mode = "none" },
+        .{ .id = "unknown", .cache_mode = "reed" },
+        .{ .id = "read", .cache_mode = "read" },
+    };
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    try std.testing.expect(!jobAllowsCache(&wf, &jobs[0]));
+    try std.testing.expect(jobAllowsCache(&wf, &jobs[1]));
+    try std.testing.expect(jobAllowsCache(&wf, &jobs[2]));
+}
+
+test "vulnerability-alerts rejects write" {
+    try std.testing.expect(!isAllowedPermissionLevel("vulnerability-alerts", .write));
+    try std.testing.expect(isAllowedPermissionLevel("vulnerability-alerts", .read));
+    try std.testing.expect(isAllowedPermissionLevel("vulnerability-alerts", .none));
+    try std.testing.expect(isAllowedPermissionLevel("contents", .write));
+}
+
+test "hasEmptySection matches by name" {
+    const sections = [_]EmptySection{.{ .name = "with", .span = yaml_types.Span.point(1, 1, 0) }};
+    try std.testing.expect(hasEmptySection(&sections, "with"));
+    try std.testing.expect(!hasEmptySection(&sections, "env"));
+    try std.testing.expect(!hasEmptySection(&.{}, "with"));
 }

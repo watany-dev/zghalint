@@ -1,11 +1,15 @@
 """The trust model of GitHub Actions, written down independently of zghalint.
 
-This is the *specification* side of the check in ``model.py``. Nothing here is
-derived from ``src/``; every relation is transcribed from GitHub's own
-documentation (webhook payloads, "Security hardening for GitHub Actions",
-`github.head_ref` availability) and from the untrusted-input lists that
-actionlint and zizmor publish. When the two sides disagree the model produces
-a counterexample and ``confirm.py`` checks it against the real binary.
+This is the *specification* side of the check in ``model.py``. Trust relations
+are transcribed from GitHub's own documentation (webhook payloads,
+"Security hardening for GitHub Actions", `github.head_ref` availability) and
+from the untrusted-input lists that actionlint and zizmor publish; they are
+not derived from ``security.zig``. ``CODE_EXECUTING_INPUTS`` is the one
+catalog exception: which actions execute an input as code is generated from
+``popular_actions.zig`` plus zizmor extras (``gen_actions.py``), because that
+is an action-catalog fact, not a trust-model fact. When the two sides disagree
+the model produces a counterexample and ``confirm.py`` checks it against the
+real binary.
 
 Vocabulary
 ----------
@@ -22,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from gen_actions import load_code_executing_rows
+
 
 class Author(Enum):
     EXTERNAL = "external"
@@ -37,6 +43,10 @@ class Context:
     ref_shaped: bool = False
     #: Free text a human types (title, body, message, description ...).
     free_text: bool = False
+    #: ``ref_shaped``, but only a shell command accepts it as the handle
+    #: (``git clone <url>``, ``gh run download <id>``); ``actions/checkout``
+    #: has no ``with:`` key for it.
+    fetch_only: bool = False
 
 
 TRIGGERS = [
@@ -102,8 +112,10 @@ CARRIES_FORK_CODE = {
 E, D, C = Author.EXTERNAL, Author.DISPATCHER, Author.COLLABORATOR
 
 
-def _ctx(path: str, author: Author, *, ref: bool = False, text: bool = False) -> Context:
-    return Context(path, author, ref_shaped=ref, free_text=text)
+def _ctx(
+    path: str, author: Author, *, ref: bool = False, text: bool = False, fetch_only: bool = False
+) -> Context:
+    return Context(path, author, ref_shaped=ref, free_text=text, fetch_only=fetch_only)
 
 
 _PR_FIELDS = [
@@ -113,6 +125,8 @@ _PR_FIELDS = [
     _ctx("github.event.pull_request.head.label", E, ref=True, text=True),
     _ctx("github.event.pull_request.head.sha", E, ref=True),
     _ctx("github.event.pull_request.head.repo.full_name", E, ref=True),
+    # `git clone <url>` fetches the fork itself.
+    _ctx("github.event.pull_request.head.repo.clone_url", E, ref=True, fetch_only=True),
     _ctx("github.event.pull_request.head.repo.default_branch", E, ref=True, text=True),
     _ctx("github.event.pull_request.head.repo.description", E, text=True),
     _ctx("github.event.pull_request.head.repo.homepage", E, text=True),
@@ -148,6 +162,10 @@ _COMMIT_FIELDS = [
 ]
 
 _WORKFLOW_RUN_FIELDS = [
+    # The upstream run was the fork's `pull_request` run: its artifacts are
+    # whatever the fork's code produced, so the run id picks attacker output
+    # the same way a SHA picks attacker code (artifact poisoning).
+    _ctx("github.event.workflow_run.id", E, ref=True, fetch_only=True),
     _ctx("github.event.workflow_run.head_branch", E, ref=True, text=True),
     _ctx("github.event.workflow_run.head_sha", E, ref=True),
     _ctx("github.event.workflow_run.head_commit.message", E, text=True),
@@ -172,7 +190,10 @@ _HEAD_REF = _ctx("github.head_ref", E, ref=True, text=True)
 _INPUTS = _ctx("inputs.*", D, ref=True, text=True)
 _EVENT_INPUTS = _ctx("github.event.inputs.*", D, ref=True, text=True)
 _CLIENT_PAYLOAD = _ctx("github.event.client_payload.*", D, ref=True, text=True)
-_PAGES = _ctx("github.event.pages.*.page_name", E, text=True)
+_PAGES = [
+    _ctx("github.event.pages.*.page_name", E, text=True),
+    _ctx("github.event.pages.*.title", E, text=True),
+]
 _RELEASE = [
     _ctx("github.event.release.name", C, text=True),
     _ctx("github.event.release.body", C, text=True),
@@ -200,7 +221,7 @@ AVAILABLE: dict[str, list[Context]] = {
     "repository_dispatch": [_CLIENT_PAYLOAD],
     "schedule": [],
     "release": _RELEASE,
-    "gollum": [_PAGES],
+    "gollum": _PAGES,
     "merge_group": [],
     "fork": [],
     "watch": [],
@@ -246,6 +267,23 @@ def checkout_with(path: str) -> str:
     return f"ref: {expr}"
 
 
+def fetch_command(path: str) -> str:
+    """The shell command through which `path` picks the code when the job
+    fetches it itself instead of through `actions/checkout`: the ChatOps
+    `gh pr checkout <n>`, `git clone` of the fork, `gh run download` of the
+    upstream run's artifact, or a plain `git fetch` of the ref / SHA."""
+    expr = "${{ " + concrete(path) + " }}"
+    if path in _NUMBER_CONTEXTS:
+        return f"gh pr checkout {expr}"
+    if path in _REPOSITORY_CONTEXTS:
+        return f"git clone https://github.com/{expr} src"
+    if path == "github.event.pull_request.head.repo.clone_url":
+        return f"git clone {expr} src"
+    if path == "github.event.workflow_run.id":
+        return f"gh run download {expr} -n build"
+    return f"git fetch origin {expr} && git checkout FETCH_HEAD"
+
+
 SINKS = [
     # Interpolated into a shell script → command injection.
     "run",
@@ -255,10 +293,24 @@ SINKS = [
     "checkout_ref",
     # `if:` gate that attacker-authored text can satisfy on purpose.
     "condition",
+    # `git checkout` / `git clone` / `gh pr checkout` / `gh run download`
+    # inside `run:` → attacker picks the code, without `actions/checkout`
+    # being involved. A SHA or number carries no shell metacharacters, so
+    # this is not injection (P1); the fetched code runs in the next step.
+    "run_fetch",
+    # `with.run-id` of an artifact download in a `workflow_run` job → the
+    # upstream (fork) run's artifact is unpacked and used (artifact poisoning).
+    "artifact_run_id",
+    # An action input the action executes as code (`actions/github-script`
+    # `with.script` and the like, see CODE_EXECUTING_INPUTS) → same as `run:`.
+    "action_script",
+    # `actions/create-github-app-token` without `permission-*` inputs.
+    "app_token",
 ]
 
 #: How a value reaches a sink. ``direct`` is `${{ ctx }}` at the sink itself;
-#: the rest are one hop of indirection the runner performs.
+#: ``job_output_2hop`` is two hops of job ``outputs:``; the rest are one hop
+#: of indirection the runner (or an action) performs.
 FLOWS = [
     "direct",
     # `env: {X: ${{ ctx }}}` then `${{ env.X }}` at the sink (not `$X`, which is safe).
@@ -267,4 +319,95 @@ FLOWS = [
     "step_output",
     # job `outputs: {k: ${{ steps.id.outputs.k }}}` then `${{ needs.job.outputs.k }}`.
     "job_output",
+    # `uses: ./local` with `with: {k: ${{ ctx }}}`, then `${{ inputs.k }}`
+    # in a `run:` of that composite action's `runs.steps`.
+    "action_input",
+    # An action computes an output from the attacker's payload (the file
+    # names of the PR head, the branch name, a comment it looked up) and the
+    # workflow interpolates `${{ steps.id.outputs.k }}`; see ACTION_OUTPUTS.
+    "action_output",
+    # Two hops: job A exports a tainted output, job B re-exports
+    # `needs.a.outputs.k` as its own output, job C interpolates
+    # `needs.b.outputs.k` in `run:`.
+    "job_output_2hop",
 ]
+
+
+@dataclass(frozen=True)
+class CodeInput:
+    """An action input that the action executes, so `${{ }}` inside it is
+    script injection exactly as in `run:`. Built from popular_actions.zig
+    plus zizmor-named extras not in that snapshot (scripts/formal/gen_actions.py)."""
+
+    action: str
+    input: str
+    #: What the input is fed to.
+    runtime: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.action}#{self.input}"
+
+
+CODE_EXECUTING_INPUTS = [
+    CodeInput(action, input_name, runtime)
+    for action, input_name, runtime in load_code_executing_rows()
+]
+
+
+@dataclass(frozen=True)
+class ActionOutput:
+    """A step output an action derives from attacker-authored content. The
+    value never appears as a `${{ github.* }}` context in the workflow, so
+    a taint table keyed by context path cannot see it; the action itself is
+    the source. `source` names the payload field the output is a function
+    of and `trigger` a privileged trigger under which that field is the
+    attacker's."""
+
+    action: str
+    output: str
+    source: str
+    trigger: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.action}#{self.output}"
+
+
+_PR_HEAD_SHA = "github.event.pull_request.head.sha"
+
+ACTION_OUTPUTS = [
+    # File names in the PR head; CVE-2023-51664 was this in the action itself.
+    ActionOutput(
+        "tj-actions/changed-files", "all_changed_files", _PR_HEAD_SHA, "pull_request_target"
+    ),
+    ActionOutput(
+        "step-security/changed-files", "all_changed_files", _PR_HEAD_SHA, "pull_request_target"
+    ),
+    ActionOutput("jitterbit/get-changed-files", "all", _PR_HEAD_SHA, "pull_request_target"),
+    # The PR head branch name, i.e. `github.head_ref` by another route.
+    ActionOutput(
+        "tj-actions/branch-names", "head_ref_branch", "github.head_ref", "pull_request_target"
+    ),
+    # The body of a comment the action looked up.
+    ActionOutput(
+        "peter-evans/find-comment", "comment-body", "github.event.comment.body", "issue_comment"
+    ),
+]
+
+for _ao in ACTION_OUTPUTS:
+    assert _ao.source in {c.path for c in AVAILABLE[_ao.trigger]}, _ao
+    assert _ao.trigger in PRIVILEGED, _ao
+
+#: Action sort of the model: the union of both tables plus ``NO_ACTION`` for
+#: the properties that are not about an action, and the GitHub App token
+#: action for P13 (SEC025).
+NO_ACTION = "-"
+GITHUB_APP_TOKEN = "actions/create-github-app-token#token"
+ACTIONS = (
+    [NO_ACTION]
+    + [ci.key for ci in CODE_EXECUTING_INPUTS]
+    + [ao.key for ao in ACTION_OUTPUTS]
+    + [GITHUB_APP_TOKEN]
+)
+assert len(set(ACTIONS)) == len(ACTIONS), "duplicate action key"

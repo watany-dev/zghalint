@@ -198,10 +198,17 @@ def many_small_scenario(corpus_dir: Path, tmp: Path) -> Scenario:
 
     Tiling repeats files when the corpus is smaller than the target, which
     keeps the file count (the thing this scenario varies) fixed across corpus
-    refreshes.
+    refreshes. Only `.github/workflows/` is taken: the corpus keeps each
+    repository's shape (see `scripts/fetch-corpus.py`), so a bare `rglob`
+    would also tile the action definitions the workflows reference, which
+    none of the three tools lints as a workflow.
     """
     description = f"多数小ファイル (実コーパス {MANY_SMALL_FILES:,} 件)"
-    sources = sorted(p for p in corpus_dir.rglob("*") if p.suffix in (".yml", ".yaml"))
+    sources = sorted(
+        p
+        for p in corpus_dir.rglob("*")
+        if p.is_file() and p.suffix in (".yml", ".yaml") and p.parent.name == "workflows"
+    )
     if not sources:
         return Scenario(
             "many-small",
@@ -215,7 +222,9 @@ def many_small_scenario(corpus_dir: Path, tmp: Path) -> Scenario:
     files = []
     for i in range(MANY_SMALL_FILES):
         src = sources[i % len(sources)]
-        name = f"{i:04d}-{src.parent.name}-{src.name}"
+        # `src.parent` is always `workflows`; the repository directory three
+        # levels up is what makes the tiled name traceable to its origin.
+        name = f"{i:04d}-{src.parents[2].name}-{src.name}"
         shutil.copyfile(src, root / name)
         files.append(name)
     return Scenario(
@@ -626,6 +635,7 @@ def run_perf(
         "timer": _version(["hyperfine", "--version"]) if hyperfine else "in-process loop",
         "rss": f"GNU time `{rss_tool} -f %M`" if rss_tool else "未計測 (GNU time が無い)",
         "zghalint": f"`{zghalint}` {_version([str(zghalint), '--version'])}",
+        "zghalint build": _build_mode(zghalint),
         "actionlint": _version(["actionlint", "-version"]).splitlines()[0],
         "zizmor": _version(["zizmor", "--version"]),
         "ghalint": _version(["ghalint", "version"]),
@@ -635,6 +645,24 @@ def run_perf(
         "shellcheck": _shellcheck_version(),
     }
     return PerfReport(scenarios, rows, skipped, environment)
+
+
+#: Zig keeps this safety panic message in Debug and ReleaseSafe binaries and
+#: drops it from ReleaseFast / ReleaseSmall. Nothing in `--version` says which
+#: build was measured, and a Debug binary is an order of magnitude slower, so
+#: without this row a report cannot be compared with another one.
+SAFETY_PANIC_MARKER = b"reached unreachable code"
+
+
+def _build_mode(binary: Path) -> str:
+    """Whether `binary` still carries Zig's safety checks."""
+    try:
+        blob = binary.read_bytes()
+    except OSError as exc:
+        return f"不明 ({exc})"
+    if SAFETY_PANIC_MARKER in blob:
+        return "**Debug / ReleaseSafe** — `zig build -Doptimize=ReleaseFast` で測り直すこと"
+    return "最適化ビルド (ReleaseFast / ReleaseSmall)"
 
 
 def _version(argv: list[str]) -> str:

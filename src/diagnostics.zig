@@ -55,6 +55,10 @@ pub const Diagnostic = struct {
     severity: Severity,
     message: []const u8,
     file: ?[]const u8 = null,
+    /// 1-based index of the file in CLI order. `DiagnosticList.sort` compares
+    /// this instead of the path string when it is set, which is the many-file
+    /// case (#527). Zero keeps the path comparison for tests that do not stamp it.
+    file_index: u32 = 0,
     span: Span,
     fix_hint: ?[]const u8 = null,
     fix: ?Fix = null,
@@ -98,13 +102,6 @@ pub const DiagnosticList = struct {
         try self.items.append(self.allocator, d);
     }
 
-    pub fn allocEdit(self: *DiagnosticList, edit: Edit) ?[]const Edit {
-        const alloc = self.fix_arena.allocator();
-        const edits = alloc.alloc(Edit, 1) catch return null;
-        edits[0] = edit;
-        return edits;
-    }
-
     pub fn sort(self: *DiagnosticList) void {
         std.mem.sort(Diagnostic, self.items.items, {}, lessThan);
     }
@@ -130,11 +127,18 @@ pub const DiagnosticList = struct {
     }
 
     fn lessThan(_: void, a: Diagnostic, b: Diagnostic) bool {
-        const file_a = a.file orelse "";
-        const file_b = b.file orelse "";
-        const file_cmp = std.mem.order(u8, file_a, file_b);
-        if (file_cmp == .lt) return true;
-        if (file_cmp == .gt) return false;
+        if (a.file_index != 0 or b.file_index != 0) {
+            if (a.file_index < b.file_index) return true;
+            if (a.file_index > b.file_index) return false;
+        } else {
+            const file_a = a.file orelse "";
+            const file_b = b.file orelse "";
+            if (file_a.ptr != file_b.ptr or file_a.len != file_b.len) {
+                const file_cmp = std.mem.order(u8, file_a, file_b);
+                if (file_cmp == .lt) return true;
+                if (file_cmp == .gt) return false;
+            }
+        }
 
         if (a.span.start_line < b.span.start_line) return true;
         if (a.span.start_line > b.span.start_line) return false;
@@ -220,20 +224,40 @@ test "diagnostic list sort by file then line then col" {
     try std.testing.expectEqualStrings("R3", list.get(3).rule_id);
 }
 
-test "allocEdit returns valid slice" {
+test "diagnostic list sort by file_index then line then col" {
     var list = DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
 
-    const edits = list.allocEdit(.{
-        .start_byte = 10,
-        .end_byte = 20,
-        .replacement = "replacement text",
+    try list.append(.{
+        .rule_id = "later-file",
+        .severity = .info,
+        .message = "b",
+        .file = "zzz.yml",
+        .file_index = 2,
+        .span = Span.point(1, 1, 0),
     });
-    try std.testing.expect(edits != null);
-    try std.testing.expectEqual(@as(usize, 1), edits.?.len);
-    try std.testing.expectEqual(@as(usize, 10), edits.?[0].start_byte);
-    try std.testing.expectEqual(@as(usize, 20), edits.?[0].end_byte);
-    try std.testing.expectEqualStrings("replacement text", edits.?[0].replacement);
+    try list.append(.{
+        .rule_id = "earlier-file-late-line",
+        .severity = .warning,
+        .message = "a2",
+        .file = "aaa.yml",
+        .file_index = 1,
+        .span = Span.point(9, 1, 0),
+    });
+    try list.append(.{
+        .rule_id = "earlier-file-early-line",
+        .severity = .@"error",
+        .message = "a1",
+        .file = "aaa.yml",
+        .file_index = 1,
+        .span = Span.point(2, 1, 0),
+    });
+
+    list.sort();
+
+    try std.testing.expectEqualStrings("earlier-file-early-line", list.get(0).rule_id);
+    try std.testing.expectEqualStrings("earlier-file-late-line", list.get(1).rule_id);
+    try std.testing.expectEqualStrings("later-file", list.get(2).rule_id);
 }
 
 test "fixAllocator returns valid allocator" {
@@ -276,11 +300,11 @@ test "appendOwning deep-clones fix across lists" {
         defer src.deinit();
 
         const replacement = try src.fixAllocator().dupe(u8, "replacement-text");
-        const edits = src.allocEdit(.{
+        const edits = try src.fixAllocator().dupe(Edit, &.{.{
             .start_byte = 10,
             .end_byte = 20,
             .replacement = replacement,
-        }) orelse return error.OutOfMemory;
+        }});
 
         const description = try src.fixAllocator().dupe(u8, "description-text");
         try src.append(.{

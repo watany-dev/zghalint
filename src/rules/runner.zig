@@ -58,6 +58,9 @@ const LabelKind = enum {
     convention,
 };
 
+/// GitHub-hosted and well-known `runs-on` labels. Last reviewed: 2026-09-24
+/// against https://docs.github.com/en/actions/using-github-hosted-runners
+/// — see docs/maintenance.md.
 const known_labels = [_]KnownLabel{
     .{ .label = "ubuntu-latest" },
     .{ .label = "ubuntu-24.04" },
@@ -65,17 +68,21 @@ const known_labels = [_]KnownLabel{
     .{ .label = "ubuntu-26.04" },
     .{ .label = "ubuntu-24.04-arm" },
     .{ .label = "ubuntu-22.04-arm" },
+    .{ .label = "ubuntu-26.04-arm" },
     // Extends no other label, so the prefix match cannot cover it.
     .{ .label = "ubuntu-slim" },
     .{ .label = "windows-latest" },
     .{ .label = "windows-2025" },
+    .{ .label = "windows-2025-vs2026" },
     .{ .label = "windows-2022" },
     .{ .label = "windows-11-arm" },
+    .{ .label = "windows-11-vs2026-arm" },
     .{ .label = "macos-latest" },
     .{ .label = "macos-26" },
     .{ .label = "macos-15" },
     .{ .label = "macos-14" },
-    .{ .label = "macos-13" },
+    .{ .label = "macos-26-intel" },
+    .{ .label = "macos-15-intel" },
     .{ .label = "self-hosted", .kind = .convention },
     .{ .label = "linux", .kind = .convention },
     .{ .label = "windows", .kind = .convention },
@@ -86,15 +93,29 @@ const known_labels = [_]KnownLabel{
     .{ .label = "arm64", .kind = .convention },
     .{ .label = "ubuntu-18.04", .status = .retired, .replacement = "ubuntu-22.04" },
     .{ .label = "ubuntu-20.04", .status = .retired, .replacement = "ubuntu-22.04" },
-    .{ .label = "macos-11", .status = .retired, .replacement = "macos-13" },
-    .{ .label = "macos-12", .status = .retired, .replacement = "macos-13" },
+    .{ .label = "macos-11", .status = .retired, .replacement = "macos-15" },
+    .{ .label = "macos-12", .status = .retired, .replacement = "macos-15" },
+    .{ .label = "macos-13", .status = .retired, .replacement = "macos-15" },
     .{ .label = "windows-2019", .status = .deprecated, .replacement = "windows-2022" },
 };
 
 comptime {
     for (known_labels) |entry| {
-        if (entry.status != .current and entry.replacement.len == 0) {
+        if (entry.status == .current) continue;
+        if (entry.replacement.len == 0) {
             @compileError("deprecated/retired label needs a replacement: " ++ entry.label);
+        }
+        var found = false;
+        for (known_labels) |other| {
+            if (!std.mem.eql(u8, other.label, entry.replacement)) continue;
+            found = true;
+            if (other.status != .current) {
+                @compileError("replacement must be current: " ++ entry.label ++ " -> " ++ entry.replacement);
+            }
+            break;
+        }
+        if (!found) {
+            @compileError("replacement is not in the catalog: " ++ entry.label ++ " -> " ++ entry.replacement);
         }
     }
 }
@@ -148,11 +169,11 @@ fn checkDeprecatedRunner(job: *const Job, diag_list: *DiagnosticList) void {
 
             const span = label.value_span orelse job.span;
             const fix: ?Fix = if (label.value_span) |vs| blk: {
-                const edits = diag_list.allocEdit(.{
+                const edits = diag_list.fixAllocator().dupe(Edit, &.{.{
                     .start_byte = vs.start_byte,
                     .end_byte = vs.end_byte,
                     .replacement = entry.replacement,
-                }) orelse break :blk null;
+                }}) catch break :blk null;
                 break :blk Fix{
                     .description = "Replace with supported runner label",
                     .safety = .unsafe,
@@ -183,15 +204,11 @@ pub fn setAllowedLabels(labels: []const []const u8) void {
     allowed_labels = labels;
 }
 
-/// Runner labels are matched case-insensitively by GitHub.
-fn eqlLabel(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
+/// GitHub matches runner labels case-insensitively.
 fn hasLabelPrefix(label: []const u8, base: []const u8) bool {
     if (label.len <= base.len + 1) return false;
     if (label[base.len] != '-') return false;
-    return eqlLabel(label[0..base.len], base);
+    return std.ascii.eqlIgnoreCase(label[0..base.len], base);
 }
 
 /// Larger runners and self-hosted fleets extend a known base label with their
@@ -199,11 +216,11 @@ fn hasLabelPrefix(label: []const u8, base: []const u8) bool {
 /// would only produce false positives.
 fn isKnownLabel(label: []const u8) bool {
     for (known_labels) |entry| {
-        if (eqlLabel(label, entry.label)) return true;
+        if (std.ascii.eqlIgnoreCase(label, entry.label)) return true;
         if (entry.kind == .hosted and hasLabelPrefix(label, entry.label)) return true;
     }
     for (allowed_labels) |extra| {
-        if (eqlLabel(label, extra)) return true;
+        if (std.ascii.eqlIgnoreCase(label, extra)) return true;
     }
     return false;
 }
@@ -231,7 +248,7 @@ fn editDistance(a: []const u8, b: []const u8) usize {
 }
 
 /// Nearest currently-offered label, but only when the guess is unmistakable:
-/// `macos-99` sits two edits from macos-13, macos-14 and macos-15 alike, and a
+/// `macos-99` sits two edits from macos-14, macos-15 and macos-26 alike, and a
 /// tie is no basis for rewriting somebody's workflow.
 fn nearestKnownLabel(label: []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
@@ -272,7 +289,7 @@ fn looksLikeHostedLabel(label: []const u8) bool {
 fn hasSelfHostedLabel(job: *const Job) bool {
     var labels = runsOnLabels(job);
     while (labels.next()) |label| {
-        if (eqlLabel(label.value, "self-hosted")) return true;
+        if (std.ascii.eqlIgnoreCase(label.value, "self-hosted")) return true;
     }
     return false;
 }
@@ -438,7 +455,7 @@ fn matrixLabelEdits(
                     .scalar => |s| s,
                     else => continue,
                 };
-                if (!eqlLabel(excluded.value, scalar.value)) continue;
+                if (!std.ascii.eqlIgnoreCase(excluded.value, scalar.value)) continue;
                 const edit = labelEdit(excluded, replacement) orelse continue;
                 edits.append(alloc, edit) catch return null;
             }
@@ -469,11 +486,11 @@ fn checkUnknownLabel(job: *const Job, label: LabelRef, diag_list: *DiagnosticLis
     const unknown = classifyLabel(label.value) orelse return;
     const edits: ?[]const Edit = if (unknown.suggestion) |name| blk: {
         const value_span = label.value_span orelse break :blk null;
-        break :blk diag_list.allocEdit(.{
+        break :blk diag_list.fixAllocator().dupe(Edit, &.{.{
             .start_byte = value_span.start_byte,
             .end_byte = value_span.end_byte,
             .replacement = name,
-        });
+        }}) catch null;
     } else null;
     reportUnknownLabel(unknown, label.value_span orelse job.span, edits, diag_list);
 }
@@ -488,9 +505,9 @@ fn labelOs(label: []const u8) ?RunnerOs {
     // A fleet is free to call a Linux box `macos-m1`, so an unrecognised label
     // names no OS: guessing at one would invent conflicts that do not exist.
     if (!isKnownLabel(label)) return null;
-    if (eqlLabel(label, "linux") or eqlLabel(label, "ubuntu") or hasLabelPrefix(label, "ubuntu")) return .linux;
-    if (eqlLabel(label, "windows") or hasLabelPrefix(label, "windows")) return .windows;
-    if (eqlLabel(label, "macos") or hasLabelPrefix(label, "macos")) return .macos;
+    if (std.ascii.eqlIgnoreCase(label, "linux") or std.ascii.eqlIgnoreCase(label, "ubuntu") or hasLabelPrefix(label, "ubuntu")) return .linux;
+    if (std.ascii.eqlIgnoreCase(label, "windows") or hasLabelPrefix(label, "windows")) return .windows;
+    if (std.ascii.eqlIgnoreCase(label, "macos") or hasLabelPrefix(label, "macos")) return .macos;
     return null;
 }
 
@@ -626,6 +643,59 @@ test "RUNNER001: current runner produces no diagnostic" {
     try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
+test "RUNNER001: macos-13 is retired with a current replacement" {
+    const job = Job{
+        .id = "build",
+        .runs_on = "macos-13",
+        .runs_on_value_span = dummySpan(20, 28),
+    };
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+
+    checkDeprecatedRunner(&job, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expectEqualStrings("RUNNER001", diag.rule_id);
+    try testing.expect(diag.severity == .@"error");
+    const fix = diag.fix orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("macos-15", fix.edits[0].replacement);
+}
+
+test "RUNNER001: macos-11 and macos-12 replace with a current label" {
+    for ([_][]const u8{ "macos-11", "macos-12" }) |label| {
+        const job = Job{
+            .id = "build",
+            .runs_on = label,
+            .runs_on_value_span = dummySpan(0, label.len),
+        };
+        var diags = DiagnosticList.init(testing.allocator);
+        defer diags.deinit();
+
+        checkDeprecatedRunner(&job, &diags);
+
+        try testing.expectEqual(@as(usize, 1), diags.len());
+        const fix = diags.get(0).fix orelse return error.TestUnexpectedResult;
+        try testing.expectEqualStrings("macos-15", fix.edits[0].replacement);
+    }
+}
+
+test "deprecated and retired replacements are current catalog entries" {
+    for (known_labels) |entry| {
+        if (entry.status == .current) {
+            try testing.expectEqual(@as(usize, 0), entry.replacement.len);
+            continue;
+        }
+        try testing.expect(entry.replacement.len > 0);
+        const replacement = for (known_labels) |other| {
+            if (std.mem.eql(u8, other.label, entry.replacement)) break other;
+        } else {
+            return error.ReplacementMissingFromCatalog;
+        };
+        try testing.expectEqual(LabelStatus.current, replacement.status);
+    }
+}
+
 test "RUNNER001: reusable workflow job without runs-on is ignored" {
     const job = Job{
         .id = "call",
@@ -709,7 +779,7 @@ test "RUNNER002: unknown version of a hosted OS is reported without a guess" {
     checkUnknownRunner(&job, &diags);
 
     try testing.expectEqual(@as(usize, 1), diags.len());
-    // macos-13/14/15 are all two edits away, so no single label can be named.
+    // macos-14/15/26 are all two edits away, so no single label can be named.
     try testing.expect(diags.get(0).fix_hint == null);
     try testing.expect(diags.get(0).fix == null);
 }

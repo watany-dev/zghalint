@@ -27,6 +27,10 @@ const CliArgs = struct {
     show_help: bool = false,
     show_version: bool = false,
     fix_mode: FixMode = .off,
+    fail_on: zghalint.diagnostics.Severity = .@"error",
+    read_stdin: bool = false,
+    stdin_filename: ?[]const u8 = null,
+    check_yaml_roundtrip: bool = false,
 
     fn deinit(self: *CliArgs) void {
         self.files.deinit(self.allocator);
@@ -66,10 +70,10 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr
             args.config_path = try optionValue(argv, &i, stderr);
         } else if (std.mem.eql(u8, arg, "--format")) {
             const value = try optionValue(argv, &i, stderr);
-            args.format = OutputFormat.fromString(value) orelse return invalidValue(arg, value, stderr);
+            args.format = std.meta.stringToEnum(OutputFormat, value) orelse return invalidValue(arg, value, stderr);
         } else if (std.mem.eql(u8, arg, "--color")) {
             const value = try optionValue(argv, &i, stderr);
-            args.color = ColorMode.fromString(value) orelse return invalidValue(arg, value, stderr);
+            args.color = std.meta.stringToEnum(ColorMode, value) orelse return invalidValue(arg, value, stderr);
         } else if (std.mem.eql(u8, arg, "--offline") or std.mem.eql(u8, arg, "--quick")) {
             args.offline = true;
         } else if (std.mem.eql(u8, arg, "--no-cache")) {
@@ -78,6 +82,18 @@ fn parseArgsSlice(allocator: std.mem.Allocator, argv: []const []const u8, stderr
             args.fix_mode = .safe;
         } else if (std.mem.eql(u8, arg, "--fix-unsafe")) {
             args.fix_mode = .all;
+        } else if (std.mem.eql(u8, arg, "--fail-on")) {
+            const value = try optionValue(argv, &i, stderr);
+            const sev = std.meta.stringToEnum(zghalint.diagnostics.Severity, value) orelse
+                return invalidValue(arg, value, stderr);
+            if (sev == .hint) return invalidValue(arg, value, stderr);
+            args.fail_on = sev;
+        } else if (std.mem.eql(u8, arg, "--stdin") or std.mem.eql(u8, arg, "-")) {
+            args.read_stdin = true;
+        } else if (std.mem.eql(u8, arg, "--stdin-filename")) {
+            args.stdin_filename = try optionValue(argv, &i, stderr);
+        } else if (std.mem.eql(u8, arg, "--check-yaml-roundtrip")) {
+            args.check_yaml_roundtrip = true;
         } else if (std.mem.startsWith(u8, arg, "-") and arg.len > 1) {
             stderr.print("error: unknown option '{s}' (see --help)\n", .{arg}) catch {};
             return error.UnknownOption;
@@ -119,19 +135,24 @@ fn printHelp(writer: anytype) !void {
         \\
         \\Options:
         \\  --config <path>   Path to config file (default: .zghalint.yml)
-        \\  --format <fmt>    Output format: terminal, json, sarif (default: terminal)
+        \\  --format <fmt>    Output format: terminal, json, sarif, github (default: terminal)
         \\  --color <mode>    Color mode: auto, always, never (default: auto)
         \\  --quick           Disable network requests and use only local data/cache
         \\  --offline         Alias for --quick
         \\  --no-cache        Ignore the on-disk prefetch cache and refetch from the network
         \\  --fix             Apply safe auto-fixes and rewrite files
         \\  --fix-unsafe      Apply all auto-fixes (safe + unsafe)
+        \\  --fail-on <sev>   Exit 1 from this severity up: error, warning, info (default: error)
+        \\  --stdin           Read one workflow from stdin (`-` is the same)
+        \\  --stdin-filename  Path used for ignore / routing when reading stdin
+        \\                    (default: <stdin>)
+        \\  --check-yaml-roundtrip  Exit 0 iff parse(emit(parse(s))) equals parse(s)
         \\  -h, --help        Show this help
         \\  -v, --version     Show version
         \\
         \\Exit codes:
-        \\  0  no error-severity diagnostics
-        \\  1  at least one error-severity diagnostic
+        \\  0  no diagnostics at or above --fail-on (default: error)
+        \\  1  at least one diagnostic at or above --fail-on
         \\  2  a file or the config could not be read or parsed, invalid arguments,
         \\     or a --fix write failed
         \\
@@ -250,6 +271,38 @@ fn readSourceFile(
     };
 }
 
+const stdin_placeholder = "<stdin>";
+
+fn stdinPath(args: CliArgs) []const u8 {
+    return args.stdin_filename orelse stdin_placeholder;
+}
+
+fn readStdinSource(allocator: std.mem.Allocator, io: std.Io, stderr: *std.Io.Writer) ?[]u8 {
+    var reader = std.Io.File.stdin().readerStreaming(io, &.{});
+    return reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024)) catch |err| {
+        stderr.print("error: cannot read stdin: {s}\n", .{@errorName(err)}) catch {};
+        return null;
+    };
+}
+
+/// `--stdin` is a single input: no sibling files, and nothing to write `--fix` back to.
+fn stdinUsageError(args: CliArgs, stderr: *std.Io.Writer) bool {
+    if (args.stdin_filename != null and !args.read_stdin) {
+        stderr.writeAll("error: --stdin-filename requires --stdin or -\n") catch {};
+        return true;
+    }
+    if (!args.read_stdin) return false;
+    if (args.files.items.len > 0) {
+        stderr.writeAll("error: --stdin cannot be combined with file arguments\n") catch {};
+        return true;
+    }
+    if (args.fix_mode != .off) {
+        stderr.writeAll("error: --fix cannot be used with --stdin\n") catch {};
+        return true;
+    }
+    return false;
+}
+
 fn documentLintFn(path: []const u8) ?*const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void {
     if (isDependabotFile(path)) return &zghalint.rules.dependabot.lintDependabot;
     if (isActionMetadataFile(path)) return &zghalint.rules.action_metadata.lintActionMetadata;
@@ -319,12 +372,21 @@ fn appendFiltered(
     diag_list: *zghalint.DiagnosticList,
     config: *const Config,
     file_path: []const u8,
+    file_index: u32,
+    suppressions: []const zghalint.suppress.Suppression,
+    suppressed: *usize,
 ) void {
     for (diag_list.items.items) |diag| {
         if (!config.isRuleEnabled(diag.rule_id)) continue;
+        if (config.isRuleExcluded(diag.rule_id, file_path)) continue;
+        if (zghalint.suppress.covers(suppressions, diag.span.start_line, diag.rule_id)) {
+            suppressed.* += 1;
+            continue;
+        }
         var d = diag;
         d.severity = config.getEffectiveSeverity(diag.rule_id, diag.severity);
         d.file = file_path;
+        d.file_index = file_index;
         all_diags.appendOwning(d) catch {};
     }
 }
@@ -339,9 +401,13 @@ fn lintDocumentFile(
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
     lint_fn: *const fn (zghalint.yaml.types.Node, *zghalint.DiagnosticList) void,
+    file_index: u32,
+    suppressed: *usize,
+    source_override: ?[]const u8,
 ) !void {
-    const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
-    defer allocator.free(source);
+    const owned = if (source_override == null) readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile else null;
+    defer if (owned) |s| allocator.free(s);
+    const source = source_override orelse owned.?;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -359,7 +425,8 @@ fn lintDocumentFile(
 
     lint_fn(yaml_node, &diag_list);
 
-    appendFiltered(all_diags, &diag_list, config, file_path);
+    const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index, suppressions, suppressed);
 }
 
 /// Runs on a throwaway arena so the cost of parsing twice (once here, once
@@ -396,7 +463,9 @@ fn prefetchNetworkData(
         scratch,
         workflows.items,
         .{ .no_cache = no_cache },
-    ) catch return;
+    ) catch {};
+
+    zghalint.rules.image_digest.prefetch(scratch, workflows.items, no_cache);
 }
 
 /// 注記を出すだけで終了コードは変えない — 既存の 0/1/2 の意味を動かすと
@@ -457,10 +526,12 @@ fn loadConfig(allocator: std.mem.Allocator, config_path: ?[]const u8, stderr: *s
     };
     defer allocator.free(source);
 
-    return zghalint.config.parseConfig(allocator, source) catch |err| {
+    var config = zghalint.config.parseConfig(allocator, source) catch |err| {
         stderr.print("error: invalid config '{s}': {s}\n", .{ path, @errorName(err) }) catch {};
         return err;
     };
+    config.writeUnknownKeyWarnings(stderr);
+    return config;
 }
 
 /// `--fix` re-reads each file and applies offsets computed during the lint
@@ -504,9 +575,13 @@ fn lintFile(
     config: *const Config,
     all_diags: *zghalint.DiagnosticList,
     stderr: *std.Io.Writer,
+    file_index: u32,
+    suppressed: *usize,
+    source_override: ?[]const u8,
 ) !void {
-    const source = readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile;
-    defer allocator.free(source);
+    const owned = if (source_override == null) readSourceFile(allocator, file_path, stderr) orelse return error.UnreadableFile else null;
+    defer if (owned) |s| allocator.free(s);
+    const source = source_override orelse owned.?;
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -524,7 +599,8 @@ fn lintFile(
     var empty_diags = zghalint.DiagnosticList.init(allocator);
     defer empty_diags.deinit();
     if (zghalint.rules.syntax.lintEmptyWorkflow(yaml_node, &empty_diags)) {
-        appendFiltered(all_diags, &empty_diags, config, file_path);
+        const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+        appendFiltered(all_diags, &empty_diags, config, file_path, file_index, suppressions, suppressed);
         return;
     }
 
@@ -549,7 +625,8 @@ fn lintFile(
         .drop_sec018 = config.isRuleEnabled("SEC015"),
     });
 
-    appendFiltered(all_diags, &diag_list, config, file_path);
+    const suppressions = zghalint.suppress.collect(arena_alloc, source) catch &.{};
+    appendFiltered(all_diags, &diag_list, config, file_path, file_index, suppressions, suppressed);
 }
 
 const FixOutcome = struct {
@@ -625,8 +702,12 @@ fn applyFixesForFile(
 }
 
 fn hasErrors(diag_list: *zghalint.DiagnosticList) bool {
+    return failsOn(diag_list, .@"error");
+}
+
+fn failsOn(diag_list: *zghalint.DiagnosticList, threshold: zghalint.diagnostics.Severity) bool {
     for (diag_list.items.items) |diag| {
-        if (diag.severity == .@"error") return true;
+        if (@intFromEnum(diag.severity) <= @intFromEnum(threshold)) return true;
     }
     return false;
 }
@@ -665,9 +746,8 @@ fn initWorkspaceContext(
     // whether or not the lockfile probe below runs.
     zghalint.workspace.setRepoRoot(root);
 
-    // PERF001 is the sole consumer of the probe, so a disabled rule makes the
-    // directory scan pure startup cost.
-    if (!config.isRuleEnabled("PERF001")) return;
+    // PERF001 (lockfiles) and SEC016 (setup-node auto-cache) share this probe.
+    if (!config.isRuleEnabled("PERF001") and !config.isRuleEnabled("SEC016")) return;
 
     var ctx = zghalint.workspace.detectFromRoot(arena, root) catch zghalint.workspace.Context{};
 
@@ -681,6 +761,47 @@ fn initWorkspaceContext(
     }
 
     zghalint.workspace.set(ctx);
+}
+
+fn checkYamlRoundtrip(
+    allocator: std.mem.Allocator,
+    files: []const []const u8,
+    stderr: *std.Io.Writer,
+) u8 {
+    var failed: u8 = 0;
+    for (files) |path| {
+        const source = readSourceFile(allocator, path, stderr) orelse return 2;
+        defer allocator.free(source);
+
+        var first_arena = std.heap.ArenaAllocator.init(allocator);
+        defer first_arena.deinit();
+        var first_parser = zghalint.yaml.Parser.init(first_arena.allocator(), source);
+        const first = first_parser.parse() catch continue;
+
+        const serialized = zghalint.yaml.emit.emit(allocator, first) catch |err| switch (err) {
+            error.UnrepresentableScalar => continue,
+            else => {
+                stderr.print("error: {s}: emit failed: {s}\n", .{ path, @errorName(err) }) catch {};
+                failed = 1;
+                continue;
+            },
+        };
+        defer allocator.free(serialized);
+
+        var second_arena = std.heap.ArenaAllocator.init(allocator);
+        defer second_arena.deinit();
+        var second_parser = zghalint.yaml.Parser.init(second_arena.allocator(), serialized);
+        const second = second_parser.parse() catch {
+            stderr.print("error: {s}: emitted YAML did not parse\n", .{path}) catch {};
+            failed = 1;
+            continue;
+        };
+        if (!first.eql(second)) {
+            stderr.print("error: {s}: parse(emit(parse(s))) differs from parse(s)\n", .{path}) catch {};
+            failed = 1;
+        }
+    }
+    return failed;
 }
 
 pub fn main(init: std.process.Init) !u8 {
@@ -721,13 +842,23 @@ pub fn main(init: std.process.Init) !u8 {
     if (cli_args.format) |fmt| config.output_format = fmt;
     if (cli_args.color) |color| config.color_mode = color;
 
+    if (stdinUsageError(cli_args, stderr)) return 2;
+
+    var stdin_owned: ?[]u8 = null;
+    defer if (stdin_owned) |s| allocator.free(s);
+    const stdin_display = stdinPath(cli_args);
+    const stdin_as_files = [_][]const u8{stdin_display};
+
     var owned_files: ?std.ArrayList([]const u8) = null;
     defer if (owned_files) |*of| {
         for (of.items) |p| allocator.free(p);
         of.deinit(allocator);
     };
 
-    const requested_files = if (cli_args.files.items.len > 0)
+    const requested_files = if (cli_args.read_stdin) blk: {
+        stdin_owned = readStdinSource(allocator, init.io, stderr) orelse return 2;
+        break :blk stdin_as_files[0..];
+    } else if (cli_args.files.items.len > 0)
         cli_args.files.items
     else blk: {
         owned_files = collectDefaultFiles(allocator) catch {
@@ -746,6 +877,10 @@ pub fn main(init: std.process.Init) !u8 {
     if (files.len == 0) {
         stderr.writeAll("No workflow files found.\n") catch {};
         return 0;
+    }
+
+    if (cli_args.check_yaml_roundtrip) {
+        return checkYamlRoundtrip(allocator, files, stderr);
     }
 
     // Resolve the repository root (the RW rules read a called workflow
@@ -799,12 +934,15 @@ pub fn main(init: std.process.Init) !u8 {
     zghalint.rules.sha_pin.initTagOids(allocator, cli_args.offline, cli_args.fix_mode != .off);
     defer zghalint.rules.sha_pin.deinitTagOids();
 
+    zghalint.rules.image_digest.initDigests(allocator, cli_args.offline, cli_args.fix_mode != .off);
+    defer zghalint.rules.image_digest.deinitDigests();
+
     zghalint.rules.net_status.reset();
     defer zghalint.rules.net_status.reset();
 
     // Batch all network-rule fetches before the lint pass so TLS/TCP
     // connections, advisories, and repo metadata are primed in the caches.
-    if (!cli_args.offline) {
+    if (!cli_args.offline and !cli_args.read_stdin) {
         prefetchNetworkData(allocator, files, cli_args.no_cache) catch {};
     }
 
@@ -815,12 +953,15 @@ pub fn main(init: std.process.Init) !u8 {
     // clean report would be a false negative; such runs exit 2 instead.
     var had_fatal = false;
     var unlinted_count: usize = 0;
+    var suppressed: usize = 0;
 
-    for (files) |file_path| {
+    for (files, 0..) |file_path, i| {
+        const file_index: u32 = @intCast(i + 1);
+        const source_override: ?[]const u8 = if (cli_args.read_stdin) stdin_owned else null;
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
-            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn)
+            lintDocumentFile(allocator, file_path, &config, &all_diags, stderr, lint_fn, file_index, &suppressed, source_override)
         else
-            lintFile(allocator, file_path, &config, &all_diags, stderr);
+            lintFile(allocator, file_path, &config, &all_diags, stderr, file_index, &suppressed, source_override);
         // lintFile / lintDocumentFile already reported the reason on stderr.
         lint_result catch {
             had_fatal = true;
@@ -882,8 +1023,9 @@ pub fn main(init: std.process.Init) !u8 {
     // formats get an explicit trailing newline.
     const rendered = switch (config.output_format) {
         .terminal => zghalint.output.terminal.renderDiagnostics(stdout, all_diags, use_color),
-        .json => zghalint.output.renderJson(stdout, all_diags, files.len),
+        .json => zghalint.output.renderJson(stdout, all_diags, files.len, suppressed),
         .sarif => zghalint.output.renderSarif(stdout, all_diags, &all_rules),
+        .github => zghalint.output.renderGithub(stdout, all_diags),
     };
     rendered catch return 2;
     if (config.output_format != .terminal) stdout.writeAll("\n") catch return 2;
@@ -896,7 +1038,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
     reportUnreachableRules(stderr, &config, &all_diags);
     if (had_fatal) return 2;
-    if (hasErrors(&all_diags)) return 1;
+    if (failsOn(&all_diags, cli_args.fail_on)) return 1;
     return 0;
 }
 
@@ -1006,6 +1148,46 @@ test "documentLintFn routes non-workflow files" {
     try std.testing.expect(documentLintFn(".github/workflows/automerge-dependabot.yml") == null);
 }
 
+test "appendFiltered drops excluded rule diagnostics" {
+    var config = try zghalint.config.parseConfig(std.testing.allocator,
+        \\rules:
+        \\  SEC001:
+        \\    exclude:
+        \\      - "**/release.yml"
+        \\
+    );
+    defer config.deinit();
+
+    var src = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer src.deinit();
+    try src.append(.{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = "unpinned",
+        .span = zghalint.yaml.types.Span.point(1, 1, 0),
+    });
+    try src.append(.{
+        .rule_id = "SEC002",
+        .severity = .@"error",
+        .message = "inject",
+        .span = zghalint.yaml.types.Span.point(2, 1, 0),
+    });
+
+    const suppressions = [_]zghalint.suppress.Suppression{};
+    var suppressed: usize = 0;
+    var all = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer all.deinit();
+    appendFiltered(&all, &src, &config, ".github/workflows/release.yml", 1, &suppressions, &suppressed);
+    try std.testing.expectEqual(@as(usize, 1), all.items.items.len);
+    try std.testing.expectEqualStrings("SEC002", all.items.items[0].rule_id);
+    try std.testing.expectEqual(@as(usize, 0), suppressed);
+
+    var kept = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer kept.deinit();
+    appendFiltered(&kept, &src, &config, ".github/workflows/ci.yml", 2, &suppressions, &suppressed);
+    try std.testing.expectEqual(@as(usize, 2), kept.items.items.len);
+}
+
 test "hasErrors detects error severity" {
     var list = zghalint.DiagnosticList.init(std.testing.allocator);
     defer list.deinit();
@@ -1029,6 +1211,77 @@ test "hasErrors detects error severity" {
     try std.testing.expect(hasErrors(&list));
 }
 
+test "failsOn respects --fail-on threshold" {
+    var list = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+
+    try list.append(.{
+        .rule_id = "I1",
+        .severity = .info,
+        .message = "info",
+        .span = zghalint.yaml.types.Span.point(1, 1, 0),
+    });
+    try std.testing.expect(!failsOn(&list, .@"error"));
+    try std.testing.expect(!failsOn(&list, .warning));
+    try std.testing.expect(failsOn(&list, .info));
+
+    try list.append(.{
+        .rule_id = "W1",
+        .severity = .warning,
+        .message = "warn",
+        .span = zghalint.yaml.types.Span.point(2, 1, 0),
+    });
+    try std.testing.expect(!failsOn(&list, .@"error"));
+    try std.testing.expect(failsOn(&list, .warning));
+    try std.testing.expect(failsOn(&list, .info));
+}
+
+test "failsOn ignores hint below every threshold" {
+    var list = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer list.deinit();
+    try list.append(.{
+        .rule_id = "H1",
+        .severity = .hint,
+        .message = "hint",
+        .span = zghalint.yaml.types.Span.point(1, 1, 0),
+    });
+    try std.testing.expect(!failsOn(&list, .@"error"));
+    try std.testing.expect(!failsOn(&list, .warning));
+    try std.testing.expect(!failsOn(&list, .info));
+}
+
+test "appendFiltered drops inline-suppressed diagnostics and counts them" {
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+
+    var src = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer src.deinit();
+    try src.append(.{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = "unpinned",
+        .span = zghalint.yaml.types.Span.point(3, 1, 0),
+    });
+    try src.append(.{
+        .rule_id = "SEC002",
+        .severity = .@"error",
+        .message = "inject",
+        .span = zghalint.yaml.types.Span.point(3, 1, 0),
+    });
+
+    const suppressions = [_]zghalint.suppress.Suppression{.{
+        .line = 3,
+        .ids = &.{"SEC001"},
+    }};
+    var all = zghalint.DiagnosticList.init(std.testing.allocator);
+    defer all.deinit();
+    var suppressed: usize = 0;
+    appendFiltered(&all, &src, &config, "w.yml", 1, &suppressions, &suppressed);
+    try std.testing.expectEqual(@as(usize, 1), suppressed);
+    try std.testing.expectEqual(@as(usize, 1), all.len());
+    try std.testing.expectEqualStrings("SEC002", all.get(0).rule_id);
+}
+
 test "printHelp outputs usage text" {
     var buf = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer buf.deinit();
@@ -1041,6 +1294,19 @@ test "printHelp outputs usage text" {
     try std.testing.expect(std.mem.find(u8, buf.written(), "--offline") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--no-cache") != null);
     try std.testing.expect(std.mem.find(u8, buf.written(), "--fix") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--fail-on") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--stdin-filename") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "github") != null);
+    try std.testing.expect(std.mem.find(u8, buf.written(), "--check-yaml-roundtrip") != null);
+}
+
+test "parseArgsSlice parses check-yaml-roundtrip flag" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--check-yaml-roundtrip", "a.yml" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expect(args.check_yaml_roundtrip);
+    try std.testing.expectEqualStrings("a.yml", args.files.items[0]);
 }
 
 test "parseArgsSlice parses offline flag" {
@@ -1094,6 +1360,112 @@ test "parseArgsSlice parses config and format options" {
     try std.testing.expectEqual(OutputFormat.json, args.format.?);
     try std.testing.expectEqual(ColorMode.never, args.color.?);
     try std.testing.expectEqual(FixMode.all, args.fix_mode);
+}
+
+test "parseArgsSlice parses fail-on warning" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--fail-on", "warning" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expectEqual(zghalint.diagnostics.Severity.warning, args.fail_on);
+}
+
+test "parseArgsSlice fail-on defaults to error" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{"a.yml"}, &discard.writer);
+    defer args.deinit();
+    try std.testing.expectEqual(zghalint.diagnostics.Severity.@"error", args.fail_on);
+}
+
+test "parseArgsSlice rejects fail-on hint" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    try std.testing.expectError(
+        error.InvalidOptionValue,
+        parseArgsSlice(std.testing.allocator, &.{ "--fail-on", "hint" }, &discard.writer),
+    );
+}
+
+test "parseArgsSlice rejects unknown fail-on value" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    try std.testing.expectError(
+        error.InvalidOptionValue,
+        parseArgsSlice(std.testing.allocator, &.{ "--fail-on", "fatal" }, &discard.writer),
+    );
+}
+
+test "parseArgsSlice treats lone - and --stdin as stdin" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{"-"}, &discard.writer);
+        defer args.deinit();
+        try std.testing.expect(args.read_stdin);
+        try std.testing.expectEqual(@as(usize, 0), args.files.items.len);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin", "--stdin-filename", ".github/workflows/ci.yml" }, &discard.writer);
+        defer args.deinit();
+        try std.testing.expect(args.read_stdin);
+        try std.testing.expectEqualStrings(".github/workflows/ci.yml", args.stdin_filename.?);
+    }
+}
+
+test "parseArgsSlice treats -- - as a file named dash" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--", "-" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expect(!args.read_stdin);
+    try std.testing.expectEqual(@as(usize, 1), args.files.items.len);
+    try std.testing.expectEqualStrings("-", args.files.items[0]);
+}
+
+test "stdinUsageError rejects files, --fix, and a filename without stdin" {
+    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer out.deinit();
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin", "a.yml" }, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(stdinUsageError(args, &out.writer));
+        try std.testing.expect(std.mem.find(u8, out.written(), "cannot be combined") != null);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin", "--fix" }, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(stdinUsageError(args, &out.writer));
+        try std.testing.expect(std.mem.find(u8, out.written(), "--fix cannot be used") != null);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{ "--stdin-filename", "ci.yml" }, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(stdinUsageError(args, &out.writer));
+        try std.testing.expect(std.mem.find(u8, out.written(), "requires --stdin") != null);
+    }
+    {
+        var args = try parseArgsSlice(std.testing.allocator, &.{"--stdin"}, &out.writer);
+        defer args.deinit();
+        try std.testing.expect(!stdinUsageError(args, &out.writer));
+    }
+}
+
+test "stdin-filename is used for ignore and document routing" {
+    try std.testing.expect(documentLintFn("action.yml") != null);
+    try std.testing.expect(documentLintFn("<stdin>") == null);
+    try std.testing.expectEqualStrings("<stdin>", stdinPath(.{ .files = .empty, .allocator = std.testing.allocator }));
+    try std.testing.expectEqualStrings(
+        ".github/workflows/ci.yml",
+        stdinPath(.{ .files = .empty, .allocator = std.testing.allocator, .stdin_filename = ".github/workflows/ci.yml" }),
+    );
+
+    var config = Config.init(std.testing.allocator);
+    defer config.deinit();
+    try config.ignore_patterns.append(std.testing.allocator, try config.strings_arena.allocator().dupe(u8, ".github/workflows/ci.yml"));
+    try std.testing.expect(config.isIgnored(".github/workflows/ci.yml"));
+    try std.testing.expect(!config.isIgnored("<stdin>"));
+}
+
+test "parseArgsSlice parses github format" {
+    var discard = std.Io.Writer.Discarding.init(&.{});
+    var args = try parseArgsSlice(std.testing.allocator, &.{ "--format", "github" }, &discard.writer);
+    defer args.deinit();
+    try std.testing.expectEqual(OutputFormat.github, args.format.?);
 }
 
 test "parseArgsSlice treats everything after -- as files" {

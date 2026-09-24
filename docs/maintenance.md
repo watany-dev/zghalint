@@ -10,7 +10,7 @@
 
 | 参照元 | 読み方 |
 |---|---|
-| CI / Release ワークフロー | `mlugg/setup-zig` に `version:` を渡さない。省略時に `build.zig.zon` の `minimum_zig_version` が使われる |
+| CI / Release ワークフロー | `.github/actions/setup-zig` に `version:` を渡さない。省略時に `build.zig.zon` の `minimum_zig_version` が使われる |
 | `scripts/setup-zig.sh` | `build.zig.zon` から `minimum_zig_version` を `sed` で読み出す |
 
 手順:
@@ -21,10 +21,15 @@
    - `README.md` の "Requires **Zig X.Y.Z** or later"
    - `AGENTS.md` の Prerequisites
 
-`mlugg/setup-zig` を更新する際は、`version` 省略時のフォールバック挙動
-（`build.zig.zon` の `minimum_zig_version` を読む）が維持されているか確認する。
-挙動が変わった場合はワークフローに `version:` を戻すのではなく、
-`build.zig.zon` を読むステップを 1 つ足して各ジョブへ渡す。
+`mlugg/setup-zig` は `runs.using: node20` のままで、GitHub は 2026-09-23 に
+そのランタイムをランナーから外す。CI / Release は Node を使わない
+`.github/actions/setup-zig`（`scripts/install-zig.py`）に置き換えた。
+`version` 省略時のフォールバックは以前と同じく `build.zig.zon` の
+`minimum_zig_version` である。インストーラを変えるときはその読み取りが
+維持されているか確認する。挙動が変わった場合はワークフローに `version:`
+を戻すのではなく、`build.zig.zon` を読むステップを 1 つ足して各ジョブへ渡す。
+ワークフローからの参照は checkout 後の `uses: ./.github/actions/setup-zig`
+にする。`$/` は actionlint 1.7.12 が ref 欠落として落とす。
 
 ### 0.16 移行時の選択 (#398)
 
@@ -103,8 +108,43 @@
 
 ## 配布経路
 
-リリース資産のほかに、`curl | sh` と Homebrew の 2 経路がある。どちらも
-公開済みの `SHA256SUMS` を照合するので、資産が揃う前に走らせてはならない。
+リリース資産のほかに、ハッシュをその場で `SHA256SUMS` から読む経路と、
+GitHub 上の発見経路がある。新しいチャネルが「このタグの sha256 は …」を
+ファイルに書くなら Homebrew と同じく生成物にし、手書きの版は増やさない。
+判断は [ADR 0019](adr/0019-distribution-channels.md)。
+
+### 発見（コードでは完了しない）
+
+リポジトリの About と Marketplace は GitHub の UI / `gh` でしか書けない。
+
+1. About
+
+   ```bash
+   gh repo edit watany-dev/zghalint \
+     --description "Fast GitHub Actions workflow linter (security, supply chain, expressions, permissions)" \
+     --add-topic github-actions \
+     --add-topic linter \
+     --add-topic security \
+     --add-topic zig \
+     --add-topic static-analysis \
+     --add-topic cicd \
+     --add-topic sarif \
+     --add-topic supply-chain
+   ```
+
+2. GitHub Marketplace。root の `action.yml` は掲載条件を満たしている
+   （`name` / `description` / `branding`、公開リポジトリ）。
+   既存の Release（例: `v0.0.3`）を Edit し、
+   **Publish this Action to the GitHub Marketplace** にチェックする。
+   Primary category は Code quality、Secondary は Security。
+   利用規約の同意が初回だけ要る。掲載後、README 先頭に Marketplace バッジを足す:
+
+   `https://github.com/marketplace/actions/zghalint`
+
+3. `aquaproj/aqua-registry` へ `packaging/aqua-registry.yaml` を
+   `pkgs/watany-dev/zghalint/registry.yaml` として PR する。
+   標準レジストリに入るまで README の `github_content` 例を使う。
+   コントリビューションは upstream の `aqua gr` 手順に従う。
 
 ### install.sh
 
@@ -136,12 +176,27 @@
   および `contents: write` を持つ PAT を zghalint 側の secret
   `HOMEBREW_TAP_TOKEN` に置くこと。secret が空ならジョブは `::warning::` を
   出して何もせず成功する（リリース自体は止めない）
-- 生成物の妥当性は `ci.yml` の `lint` が毎回確認する（ダミーの `SHA256SUMS` で
-  生成して `ruby -c`、およびエントリ欠落時に落ちること）
+- 生成物の妥当性は `tests/pbt/test_gen_homebrew_formula.py` が毎回確認する
+  （ダミーの `SHA256SUMS` で生成して `ruby -c`、およびエントリ欠落時に落ちること）
+
+### pre-commit / aqua / mise
+
+どれもリリースのたびにファイルを書き換えない。
+
+| 経路 | 場所 | 版の持ち方 |
+|---|---|---|
+| pre-commit | `.pre-commit-hooks.yaml` | 利用者が `.pre-commit-config.yaml` の `rev` でタグを指定。hook は `language: system` なので PATH 上のバイナリを呼ぶ。`--offline` 固定 |
+| aqua | `packaging/aqua-registry.yaml` | asset 名と `checksum.asset: SHA256SUMS` だけ。Windows ARM64 はリリースが無いので `supported_envs` から外す |
+| mise | README の `mise use ubi:watany-dev/zghalint` | ubi が GitHub Release の asset 名から OS/Arch を当てる |
+
+形の検査は `tests/pbt/test_packaging.py`。
+
+Scoop / Nix / WinGet / GHCR は、ハッシュの写しが増えるので待っている利用者が
+現れてから `scripts/gen-homebrew-formula.sh` と同じ生成パターンで足す。
 
 ## 依存の更新
 
-- GitHub Actions（SHA ピン）と `tests/pbt/requirements.txt` は
+- GitHub Actions（SHA ピン）、`tests/pbt/requirements.txt`、`.github/requirements.txt` は
   `.github/dependabot.yml` により weekly でグループ化された PR が作られる
 - action の更新 PR では SHA と `# vX.Y.Z` コメントの両方が書き換わることを確認する
 - PBT の依存は `==` で固定する。Hypothesis はバージョン間で生成戦略と
@@ -150,6 +205,51 @@
   は `scripts/install-perf-rivals.sh` の VERSION / SHA256 が一箇所の真。
   上げるときはチェックサムを取り直し、`bench.yml` の perf ジョブで
   `scripts/bench.py --perf` を回して §4 に記録する
+
+## actionlint / zizmor の版
+
+三者比較と自リポジトリ lint が同じ版を使う。ピンは次の 2 箇所に置く。
+
+| ツール | 真 | 写し |
+|---|---|---|
+| actionlint | `.github/workflows/ci.yml` の `ACTIONLINT_VERSION` / `ACTIONLINT_SHA256`（linux amd64） | `.github/workflows/bench.yml` の同名 env（score ジョブと perf ジョブの 2 箇所） |
+| zizmor | `.github/requirements.txt` の `zizmor==` | `ci.yml` と `bench.yml` がこのファイルを `pip install -r` する |
+
+手順:
+
+1. actionlint は GitHub Releases の `checksums.txt` から `linux_amd64.tar.gz` の SHA256 を取る
+2. ci.yml と bench.yml（2 箇所）を同じ VERSION / SHA256 に揃える
+3. zizmor は `.github/requirements.txt` だけを上げる
+4. `python3 scripts/bench.py` を回し、新たな FP / FN は別 issue にする。本更新で parity 差分を黙って吸収しない
+5. `docs/design/external-linter-parity.md` §2 の版表を同じ数字に直す
+
+## 埋め込みデータ表
+
+リリース前にこの節の表を上から流す。日付は各ファイル先頭（`Last generated` /
+`Last reviewed`）に残す。
+
+| 表 | ファイル | 更新方法 | 日付の置き場 |
+|---|---|---|---|
+| SC003 advisories | `src/rules/data/advisories.zig` | `python3 scripts/gen-advisories.py`（GitHub `advisories?ecosystem=actions`。任意で `GITHUB_TOKEN`） | `//! Last generated:` と `generated_at` |
+| popular actions | `src/rules/data/popular_actions.zig` | 下の「popular actions メタデータの更新」 | 本ファイルの再生成履歴 |
+| SC002 compromised | `src/rules/data/compromised_actions.zig` | 公表済み侵害の GHSA を手で 1 件足す。SHA は 40 桁小文字 hex、`disclosed` は YYYY-MM-DD | `//! Last reviewed:` |
+| SEC001 trusted | `src/rules/data/trusted_actions.zig` | GitHub 公式 `actions/*` を足すときだけ。同じ owner 内で編集距離 2 以下の repo 名はテストが落とす | `//! Last reviewed:` |
+| RUNNER002 labels | `src/rules/runner.zig` の `known_labels` | [GitHub-hosted runners](https://docs.github.com/en/actions/using-github-hosted-runners/using-github-hosted-runners/about-github-hosted-runners) の現行ラベルと照合し、廃止分は `retired` / `deprecated` + `replacement` | 配列直前の `Last reviewed` |
+
+SC003 は実行時に GitHub から取り直す。生成物は `--offline` とキャッシュ欠落時の
+スナップショットで、手で 21 件を並べる手順は持たない。
+
+手順（advisories）:
+
+1. `python3 scripts/gen-advisories.py`（保存済み JSON なら `--input-json path`）
+2. 件数と `generated_at` を確認する
+3. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
+
+## ランタイム廃止への追従
+
+`runs.using` の世代交代（node12 / node16 / node20 …）で触る箇所と、日付では
+切り替えずリリースで切り替える理由は
+[ADR 0018](adr/0018-runtime-retirement.md) にまとめてある。
 
 ## popular actions メタデータの更新
 
@@ -168,6 +268,13 @@
 3. 生成物の差分を確認する。入力が消えているだけの差分は、上流が本当に消したのか
    一覧の `ref` を巻き戻していないかを疑う
 4. `zig build && zig fmt --check src/ build.zig && zig build test --summary all` を通す
+5. 下の再生成履歴に日付と範囲を 1 行足す
+
+### 再生成履歴
+
+| 日付 | 範囲 |
+|---|---|
+| 2026-09-15 | node20 廃止 (#549) に合わせて 27 アクションの新しい major を追加し全件再生成（105 エントリ） |
 
 データが古いと「上流が足したばかりの入力を未知として報告する」誤検出になる。
 一覧に載せるのは、古くなればすぐ気付かれる程度に広く使われているアクションだけに

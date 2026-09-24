@@ -1,0 +1,15 @@
+# zghalint:expect SEC002@13 EXPR002@15
+# zghalint:forbid SYN001
+name: parallel inner lint
+on: issues
+permissions: {}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - parallel:
+          - name: Injected
+            run: echo ${{ github.event.issue.body }}
+          - name: Unknown context
+            run: echo ${{ not_a_context.foo }}

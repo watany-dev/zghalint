@@ -16,6 +16,7 @@
 //!     ACT005 reports both halves of that.
 
 const std = @import("std");
+const fix_builder = @import("../fix/builder.zig");
 const engine = @import("engine.zig");
 const best_practices = @import("best_practices.zig");
 const security = @import("security.zig");
@@ -184,20 +185,25 @@ fn checkShell(step: *const Step, list: *DiagnosticList) void {
         .message = "\"shell\" is required on a composite action step that uses \"run\"",
         .span = step.span,
         .fix_hint = "add `shell: bash` to the step",
+        .fix = if (step.shell_insertion_byte) |byte| blk: {
+            if (step.span.start_col == 0) break :blk null;
+            const edits = fix_builder.insertMappingEntry(
+                list.fixAllocator(),
+                .{ .byte = byte, .indent = step.span.start_col - 1 },
+                "shell",
+                "bash",
+            ) orelse break :blk null;
+            break :blk .{
+                .description = "add shell: bash to the composite run step",
+                .safety = .safe,
+                .edits = edits,
+            };
+        } else null,
     }) catch return;
 }
 
 /// Only plain identifiers carry a name to resolve; a globbed or computed
 /// segment (`inputs[github.event_name]`) does not.
-fn identSegment(segment: ?expr_check.Segment) ?[]const u8 {
-    const seg = segment orelse return null;
-    return switch (seg) {
-        .ident => |name| name,
-        .index_string => |name| name,
-        .star => null,
-    };
-}
-
 const ContextResolver = struct {
     /// Backs the expression parse trees; diagnostic text comes from the list's
     /// own arena instead.
@@ -205,21 +211,21 @@ const ContextResolver = struct {
     list: *DiagnosticList,
     declared_inputs: ?[]const []const u8,
 
-    pub fn checkPath(self: ContextResolver, path: []const u8, span: Span) void {
+    pub fn checkPath(self: ContextResolver, path: []const u8, loc: expr_scan.Loc) void {
         var iter = expr_check.SegmentIter{ .path = path };
-        const root = identSegment(iter.next()) orelse return;
+        const root = iter.nextName() orelse return;
 
         for (unavailable_contexts) |name| {
-            if (std.ascii.eqlIgnoreCase(root, name)) return self.reportContext(name, span);
+            if (std.ascii.eqlIgnoreCase(root, name)) return self.reportContext(name, loc.resolve());
         }
 
         if (!std.ascii.eqlIgnoreCase(root, "inputs")) return;
         const declared = self.declared_inputs orelse return;
-        const input = identSegment(iter.next()) orelse return;
+        const input = iter.nextName() orelse return;
         for (declared) |name| {
             if (std.ascii.eqlIgnoreCase(name, input)) return;
         }
-        self.reportInput(path, input, declared, span);
+        self.reportInput(path, input, declared, loc.resolve());
     }
 
     fn reportContext(self: ContextResolver, name: []const u8, span: Span) void {
@@ -248,10 +254,7 @@ const ContextResolver = struct {
     ) void {
         const alloc = self.list.fixAllocator();
         const suggestion = util.didYouMean(name, declared);
-        const suffix = if (suggestion) |s|
-            std.fmt.allocPrint(alloc, ". did you mean \"{s}\"?", .{s}) catch ""
-        else
-            "";
+        const suffix = util.suggestionSuffix(alloc, suggestion);
         const message = std.fmt.allocPrint(
             alloc,
             "input \"{s}\" is not declared by this action{s}",
@@ -613,4 +616,14 @@ test "a non-sequence steps value is left to the metadata checks" {
     defer lint.deinit();
 
     try testing.expectEqual(@as(usize, 0), lint.diags.len());
+}
+
+test "ACT001: missing shell has no fix without a reliable insertion point" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkShell(&.{ .run = "echo hi" }, &list);
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expect(list.get(0).fix == null);
+    checkShell(&.{ .run = "echo hi", .shell_insertion_byte = 42 }, &list);
+    try testing.expect(list.get(1).fix == null);
 }

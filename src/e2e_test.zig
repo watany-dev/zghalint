@@ -23,10 +23,14 @@ const tokenizer = @import("yaml/tokenizer.zig");
 const workflow_parser = @import("workflow/parser.zig");
 const registry = @import("rules/registry.zig");
 const local_action = @import("rules/local_action.zig");
+const workspace = @import("workspace.zig");
+const advisory = @import("rules/advisory.zig");
+const image_digest = @import("rules/image_digest.zig");
 const action_metadata = @import("rules/action_metadata.zig");
 const rule_engine = @import("rules/engine.zig");
 const diagnostics = @import("diagnostics.zig");
 const fix_engine = @import("fix/engine.zig");
+const suppress = @import("suppress.zig");
 
 const fixture_dir = "tests/fixtures/e2e";
 const action_fixture_dir = "tests/fixtures/e2e-action";
@@ -98,6 +102,7 @@ fn lintSource(
     const engine = rule_engine.Engine.init(&registry.all_rules);
     var list = engine.run(alloc, &wf);
     rule_engine.postProcess(alloc, &wf, &list, .{});
+    applyInlineSuppressions(alloc, source, &list);
     return list;
 }
 
@@ -111,7 +116,26 @@ fn lintActionSource(
 
     var list = diagnostics.DiagnosticList.init(alloc);
     action_metadata.lintActionMetadata(try yp.parse(), &list);
+    applyInlineSuppressions(alloc, source, &list);
     return list;
+}
+
+/// Same drop the CLI applies in `appendFiltered`: comments never reach the
+/// YAML AST, so the tokenizer is scanned again and matching diagnostics are
+/// removed before expect/forbid see them.
+fn applyInlineSuppressions(
+    alloc: std.mem.Allocator,
+    source: []const u8,
+    list: *diagnostics.DiagnosticList,
+) void {
+    const items = suppress.collect(alloc, source) catch return;
+    var write: usize = 0;
+    for (list.items.items) |diag| {
+        if (suppress.covers(items, diag.span.start_line, diag.rule_id)) continue;
+        list.items.items[write] = diag;
+        write += 1;
+    }
+    list.items.shrinkRetainingCapacity(write);
 }
 
 /// Expected result of `--fix` for a fixture, held in a sibling `<name>.fixed`
@@ -233,6 +257,7 @@ fn runFixtures(
     while (try it.next(runtime.io())) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".yml")) continue;
+        if (std.mem.endsWith(u8, entry.name, ".meta.yml")) continue;
 
         const source = try dir.readFileAlloc(runtime.io(), entry.name, alloc, .limited(256 * 1024));
         const directives = try Directives.parse(alloc, source);
@@ -288,6 +313,28 @@ test "E2E: fixtures produce the declared diagnostics" {
     // a `forbid DEP004` directive could never fail (#305).
     local_action.init(std.testing.allocator, ".");
     defer local_action.deinit();
+
+    // Same root the CLI sets before rules run. BP009, RW checks, and
+    // SEC010's local callee resolution stay quiet/unavailable without it.
+    workspace.setRepoRoot(".");
+    defer workspace.clear();
+
+    const e2e_advisories = [_]advisory.Advisory{.{
+        .ghsa_id = "GHSA-test-e2e-sc003",
+        .action_slug = "zghalint-test/vulnerable-action",
+        .vulnerable_range = "< 1.0.0",
+        .patched_version = "1.0.0",
+        .diagnostic_message = "action 'zghalint-test/vulnerable-action' has a known vulnerability",
+        .diagnostic_hint = "update to version 1.0.0 or later",
+    }};
+    advisory.overrideCacheForTest(&e2e_advisories);
+    defer advisory.deinitAdvisories();
+
+    const e2e_digest = "sha256:1c4eef651f65e2f7daee7ea7320b2504cd83545e8f5da6c45b8c4911eb1aea61";
+    image_digest.initDigests(std.testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", e2e_digest);
+    image_digest.setCachedDigest("docker.io", "redis", "7", e2e_digest);
 
     var covered: std.StringHashMapUnmanaged(void) = .{};
     try runFixtures(alloc, fixture_dir, lintSource, &covered);

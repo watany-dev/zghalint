@@ -25,6 +25,7 @@ const fix_engine = @import("fix/engine.zig");
 const expressions = @import("rules/expressions.zig");
 const json_out = @import("output/json.zig");
 const sarif_out = @import("output/sarif.zig");
+const github_out = @import("output/github.zig");
 const terminal_out = @import("output/terminal.zig");
 const action_metadata = @import("rules/action_metadata.zig");
 const config_mod = @import("config.zig");
@@ -77,6 +78,7 @@ fn loadCorpus(alloc: std.mem.Allocator) ![]const []const u8 {
 /// anchors, and the indicators that drive the tokenizer's state machine.
 const builtin_seeds: []const []const u8 = &.{
     "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ github.event.issue.title }}\n",
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ github.event.issue.title\n          }}\n",
     "a: {b: [1, 2], c: 'x'}\n",
     "a: |\n  one\n  two\n",
     "a: >-\n  folded\n  scalar\n",
@@ -112,6 +114,10 @@ const builtin_seeds: []const []const u8 = &.{
     // Job sections no seed reaches: a matrix with include / exclude, an
     // environment, a service container and job-level defaults and outputs.
     "on: push\njobs:\n  b:\n    runs-on: ${{ matrix.os }}\n    environment:\n      name: prod\n      url: https://x\n    defaults:\n      run:\n        shell: bash\n        working-directory: ./sub\n    outputs:\n      o: ${{ steps.s.outputs.v }}\n    strategy:\n      fail-fast: false\n      max-parallel: 2\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n        include:\n          - os: ubuntu-latest\n            n: 20\n        exclude:\n          - os: macos-latest\n    services:\n      db:\n        image: postgres:16\n        ports:\n          - 5432:5432\n        options: --health-cmd pg_isready\n    container:\n      image: node:20\n      credentials:\n        username: u\n        password: ${{ secrets.P }}\n    steps:\n      - id: s\n        run: echo v=1 >> $GITHUB_OUTPUT\n",
+    // Background / wait / parallel step control flow (GA5).
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - id: s\n        background: true\n        run: echo v=1 >> $GITHUB_OUTPUT\n      - wait: s\n      - wait-all:\n      - cancel: s\n      - parallel:\n          - run: echo a\n          - run: echo b\n",
+    // Unsynchronized background outputs (GA6 / EXPR019).
+    "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - id: s\n        background: true\n        run: echo v=1 >> $GITHUB_OUTPUT\n      - run: echo ${{ steps.s.outputs.v }}\n      - wait: s\n",
     // Shapes the YAML layer alone decides: a tag, an explicit key, a directive,
     // a quoted key, and a second document after the workflow.
     "%YAML 1.2\n---\n!!map\non: !!str push\n? jobs\n: b:\n    runs-on: ubuntu-latest\n---\nsecond: doc\n",
@@ -594,7 +600,7 @@ fn checkSerializers(
     var json_count: ?usize = null;
     {
         var w = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
-        json_out.renderJson(&w.writer, list, 1) catch return;
+        json_out.renderJson(&w.writer, list, 1, 0) catch return;
         buf = w.toArrayList();
         var parsed = std.json.parseFromSlice(std.json.Value, alloc, buf.items, .{}) catch
             return Violation.JsonOutputNotValid;
@@ -623,6 +629,23 @@ fn checkSerializers(
         const sarif_count = arrayLen(first_run, &.{"results"}) orelse return Violation.SarifOutputNotValid;
         if (json_count) |n| {
             if (n != sarif_count) return Violation.SerializerCountMismatch;
+        }
+    }
+
+    buf.clearRetainingCapacity();
+    {
+        var w = std.Io.Writer.Allocating.fromArrayList(alloc, &buf);
+        github_out.renderGithub(&w.writer, list) catch return;
+        buf = w.toArrayList();
+        var n: usize = 0;
+        var it = std.mem.splitScalar(u8, buf.items, '\n');
+        while (it.next()) |line| {
+            if (line.len == 0) continue;
+            if (!std.mem.startsWith(u8, line, "::")) return Violation.SerializerCountMismatch;
+            n += 1;
+        }
+        if (json_count) |want| {
+            if (n != want) return Violation.SerializerCountMismatch;
         }
     }
 

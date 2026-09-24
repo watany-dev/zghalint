@@ -33,7 +33,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       - name: Check formatting
         run: zig fmt --check src/ build.zig
 
@@ -54,16 +54,16 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: .github/lint-requirements.txt
+          cache-dependency-path: .github/requirements.txt
 
       # shellcheck ships on the GitHub-hosted runners; actionlint and zizmor
       # do not.
       - name: Install actionlint
         env:
-          ACTIONLINT_VERSION: 1.7.7
+          ACTIONLINT_VERSION: 1.7.12
           # Pin the archive so a compromised release cannot silently replace
           # the linter that guards these workflows.
-          ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
           curl -fsSL -o actionlint.tar.gz \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
@@ -72,44 +72,25 @@ jobs:
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
 
       - name: Install zizmor and ruff
-        run: pip install -r .github/lint-requirements.txt
+        run: pip install -r .github/requirements.txt
 
       # `action.yml` carries a `# shellcheck disable=SC2086` directive, and the
       # composite action is what every consumer of this repository runs. Its
       # embedded scripts are checked directly; actionlint covers the ones in
-      # .github/workflows/.
+      # .github/workflows/. The CI Zig installer is a composite too.
       - name: shellcheck (scripts/, install.sh and action.yml)
         run: |
           shellcheck scripts/*.sh install.sh
           ./scripts/shellcheck-action.sh action.yml
-
-      # formula 生成はタグ push 時にしか走らないので、壊れていても
-      # リリース途中まで気付けない。
-      - name: Homebrew formula generator
-        run: |
-          SUMS=$(mktemp)
-          FORMULA=$(mktemp)
-          for target in linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64; do
-            printf '%064d  zghalint-%s.tar.gz\n' 0 "$target" >> "$SUMS"
-          done
-          ./scripts/gen-homebrew-formula.sh v9.9.9 "$SUMS" > "$FORMULA"
-          ruby -c "$FORMULA"
-          for target in linux-aarch64 linux-x86_64 macos-aarch64 macos-x86_64; do
-            if ! grep -q "zghalint-$target.tar.gz" "$FORMULA"; then
-              echo "::error::generated formula has no entry for $target"
-              exit 1
-            fi
-          done
-          # 欠けたターゲットを空の sha256 のまま出力してはならない。
-          if ./scripts/gen-homebrew-formula.sh v9.9.9 /dev/null > /dev/null 2>&1; then
-            echo "::error::generator accepted a checksum file with no entries"
-            exit 1
-          fi
+          ./scripts/shellcheck-action.sh .github/actions/setup-zig/action.yml
 
       # action.yml's download fallback and the README examples cannot read
       # build.zig.zon at build time, so drift there is only caught by comparing.
       - name: Version references in sync
         run: ./scripts/check-version-sync.sh
+
+      - name: Config JSON Schema in sync
+        run: ./scripts/check-config-schema.sh
 
       # actionlint shells out to shellcheck for every `run:` block.
       - name: actionlint
@@ -118,7 +99,7 @@ jobs:
       # zizmor overlaps zghalint's own SEC/SC rules; running it here is both a
       # third-party check of these workflows and a source of parity data.
       - name: zizmor
-        run: zizmor --offline --format plain .github/workflows action.yml
+        run: zizmor --offline --format plain .github/workflows action.yml .github/actions/setup-zig/action.yml
 
       - name: ruff
         run: |
@@ -130,32 +111,6 @@ jobs:
       # (#307). The same check lives in tests/pbt/test_formal_extractor.py.
       - name: Formal extractor still finds the tables
         run: python3 scripts/formal/impl.py >/dev/null
-
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-    timeout-minutes: 30
-    strategy:
-      matrix:
-        # macOS は macos-15 に固定する。macos-latest が載せる新しい SDK では
-        # 0.15.2 で libSystem のシンボル（_abort,
-        # __availability_version_check 等）を解決できずビルドが落ちる。
-        # 0.16 の最新 SDK でのネイティブ動作確認までは固定を維持する。
-        # 変更時は release.yml の build マトリクスも揃える。
-        os: [ubuntu-latest, macos-15, windows-latest]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # version を省略すると build.zig.zon の minimum_zig_version が使われる。
-      # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
-      - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
-      - name: Build
-        run: zig build
 
   cross:
     name: Cross-compile ${{ matrix.zig_target }}
@@ -183,7 +138,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       - name: Build ${{ matrix.zig_target }}
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
@@ -198,7 +153,11 @@ jobs:
         # 3 OS × Debug で OS 分岐（ファイルモード・改行コード）の実行時挙動を
         # 押さえ、ReleaseFast を 1 本だけ足して safety check の無い配布形態の
         # UB を拾う。aarch64 は安価な ubuntu-24.04-arm の Debug のみ。
-        # macos-15 の固定理由は build ジョブのコメントを参照。
+        # macOS は macos-15 に固定する。macos-latest が載せる新しい SDK では
+        # 0.15.2 で libSystem のシンボル（_abort,
+        # __availability_version_check 等）を解決できずビルドが落ちる。
+        # 0.16 の最新 SDK でのネイティブ動作確認までは固定を維持する。
+        # 変更時は release.yml の build マトリクスも揃える。
         include:
           - os: ubuntu-latest
             optimize: Debug
@@ -218,7 +177,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       - name: Run unit tests
         run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
 
@@ -230,7 +189,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        # macos-15 の固定理由は build ジョブのコメントを参照。
+        # macos-15 の固定理由は test ジョブのコメントを参照。
         include:
           - os: ubuntu-latest
             exe: ''
@@ -246,7 +205,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       - name: Build
         run: zig build
       # action は `binary` 入力で自前ビルドを指す。リリース資産のダウンロード
@@ -301,6 +260,26 @@ jobs:
           paths: 'smoke/workflows/*.yml'
           format: sarif
           offline: 'true'
+      - name: Run action (sarif to a file)
+        uses: ./
+        with:
+          binary: zig-out/bin/zghalint${{ matrix.exe }}
+          paths: 'smoke/workflows/*.yml'
+          format: sarif
+          output: smoke/zghalint.sarif
+          offline: 'true'
+      - name: Assert the SARIF file was written
+        shell: bash
+        run: |
+          if [ ! -s smoke/zghalint.sarif ]; then
+            echo "::error::action output= did not write a SARIF file"
+            exit 1
+          fi
+          if ! grep -q '"version"' smoke/zghalint.sarif; then
+            echo "::error::SARIF file is missing a version field"
+            cat smoke/zghalint.sarif
+            exit 1
+          fi
       - name: Run action (fix with a config that disables BP001)
         uses: ./
         with:
@@ -343,6 +322,37 @@ jobs:
           paths: 'smoke/workflows/*.yaml smoke/workflows/clean.yml'
           offline: 'true'
 
+  released-action:
+    name: Released Action (v0.0.3)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # action-smoke は `binary` 入力で自前ビルドを指すため、リリース資産の
+      # ダウンロードと SHA256 検証を通らない。ここは公開済みリリースを実際に
+      # 落として動かす唯一の経路で、利用者が README のとおりに書いたときに
+      # 動くことを担保する。
+      #
+      # ref は SEC001 が求めるとおり full SHA でピンし、`version` で落とす
+      # リリースを明示する。この v0.0.3 は「公開済みの最新リリース」であって
+      # build.zig.zon の `.version` の写しではないため、
+      # scripts/check-version-sync.sh の対象には入れない（次のリリースの
+      # バージョン上げコミット時点ではまだタグが無く、落とせないため）。
+      # 新しいリリースを切った後に追随させる。
+      - name: Run the published action against our own workflows
+        uses: watany-dev/zghalint@83188550edee2d9b3f219a76ecd8848c004adcf8 # v0.0.3
+        with:
+          version: v0.0.3
+          paths: '.github/workflows/*.yml'
+          # ネットワークルール (SC003-SC006) は GitHub API に依存し、fork から
+          # の PR やレート制限で結果が揺れる。self-lint と同じく切っておく。
+          offline: 'true'
+
   self-lint:
     name: Self Lint
     runs-on: ubuntu-latest
@@ -359,7 +369,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       - name: Build
         run: zig build
       # `--offline` で回す。ネットワークルール（SC003-SC006）は GitHub API に
@@ -381,7 +391,7 @@ jobs:
           && steps.lint.outputs.exit_code != '2'
           && (github.event_name != 'pull_request'
               || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: zghalint.sarif
           category: zghalint
@@ -408,7 +418,7 @@ jobs:
           persist-credentials: false
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       # 決定的な回帰実行。シードコーパスを 1 件ずつ流すだけなので数秒で終わり、
       # 過去に見つかった入力が再発していれば必ず落ちる。
       # 探索実行は常駐するため、CI は再現可能なシード実行を使う。
@@ -430,7 +440,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       # ubuntu-24.04 (noble) には kcov パッケージが存在しないため
       # (`E: Unable to locate package kcov`)、v43 をソースからビルドする。
       # ビルド結果はキャッシュし、毎 run のビルドを避ける。
@@ -492,7 +502,6 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 30
-    needs: [build]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -501,7 +510,7 @@ jobs:
       # version を省略すると build.zig.zon の minimum_zig_version が使われる。
       # Zig バージョンの定義箇所は build.zig.zon 一箇所に集約する。
       - name: Set up Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        uses: ./.github/actions/setup-zig
       - name: Build
         run: zig build
       - name: Set up Python

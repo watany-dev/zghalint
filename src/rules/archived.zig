@@ -1,11 +1,11 @@
 const std = @import("std");
 const diagnostics = @import("../diagnostics.zig");
 const workflow_types = @import("../workflow/types.zig");
-const yaml = @import("../yaml/types.zig");
 
 const engine = @import("engine.zig");
 const rest_fallback = @import("rest_fallback.zig");
 const net_status = @import("net_status.zig");
+const ref_cache = @import("ref_cache.zig");
 
 const Allocator = std.mem.Allocator;
 const DiagnosticList = diagnostics.DiagnosticList;
@@ -16,37 +16,22 @@ const Job = workflow_types.Job;
 const Workflow = workflow_types.Workflow;
 const isValidGitHubComponent = engine.isValidGitHubComponent;
 
-// Use unmanaged map to avoid storing allocator (pointer stability issue).
-const CacheMap = std.array_hash_map.String(bool);
-
-var archived_cache: CacheMap = .{};
-var archived_arena: ?std.heap.ArenaAllocator = null;
-var is_offline: bool = true;
+var cache: ref_cache.RefCache(bool) = .{};
 
 pub fn initArchived(backing_allocator: Allocator, offline: bool) void {
-    if (offline) return;
-    archived_arena = std.heap.ArenaAllocator.init(backing_allocator);
-    is_offline = false;
+    cache.init(backing_allocator, offline);
 }
 
 pub fn deinitArchived() void {
-    if (archived_arena) |*arena| {
-        archived_cache = .{};
-        arena.deinit();
-        archived_arena = null;
-    }
-    is_offline = true;
+    cache.deinit();
 }
 
 pub fn isActive() bool {
-    return !is_offline and archived_arena != null;
+    return cache.isActive();
 }
 
 pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
-    if (is_offline) return;
-
-    // Get stable pointer to module-level arena via |*a| capture
-    const alloc = if (archived_arena) |*a| a.allocator() else return;
+    const alloc = cache.allocator() orelse return;
 
     const action_ref = step.uses orelse return;
     if (action_ref.is_local or action_ref.is_docker) return;
@@ -73,31 +58,23 @@ pub fn checkArchivedAction(step: *const Step, list: *DiagnosticList) void {
 }
 
 pub fn setCachedResult(owner: []const u8, repo: []const u8, is_archived: bool) void {
-    const alloc = if (archived_arena) |*a| a.allocator() else return;
-    const key = std.fmt.allocPrint(alloc, "{s}/{s}", .{ owner, repo }) catch return;
-    archived_cache.put(alloc, key, is_archived) catch return;
+    const key = cache.makeKey("{s}/{s}", .{ owner, repo }) orelse return;
+    cache.put(key, is_archived);
 }
 
 /// Lets the prefetch pipeline tell "already answered" apart from "still to
 /// fetch" without triggering the REST fallback `lookupOrFetch` would.
 pub fn hasCachedResult(owner: []const u8, repo: []const u8) bool {
-    var buf: [512]u8 = undefined;
-    const key = std.fmt.bufPrint(&buf, "{s}/{s}", .{ owner, repo }) catch return false;
-    return archived_cache.contains(key);
+    const key = cache.makeKey("{s}/{s}", .{ owner, repo }) orelse return false;
+    return cache.contains(key);
 }
 
 fn lookupOrFetch(alloc: Allocator, owner: []const u8, repo: []const u8) ?bool {
-    // Build lookup key on stack to avoid allocation on cache hit
-    var buf: [512]u8 = undefined;
-    const key = std.fmt.bufPrint(&buf, "{s}/{s}", .{ owner, repo }) catch return null;
-
-    if (archived_cache.get(key)) |cached| return cached;
+    const key = cache.makeKey("{s}/{s}", .{ owner, repo }) orelse return null;
+    if (cache.get(key)) |cached| return cached;
 
     const result = rest_fallback.fetchArchiveStatus(alloc, owner, repo) catch return null;
-
-    const permanent_key = std.fmt.allocPrint(alloc, "{s}/{s}", .{ owner, repo }) catch return null;
-    archived_cache.put(alloc, permanent_key, result) catch return null;
-
+    cache.put(key, result);
     return result;
 }
 
@@ -115,10 +92,6 @@ const sc004_rule = [_]engine.Rule{
 };
 
 test "SC004: offline mode produces no diagnostics" {
-    is_offline = true;
-    archived_cache = .{};
-    archived_arena = null;
-
     const steps = [_]Step{.{ .uses = ActionRef.parse("some-org/some-repo@v1") }};
     const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
     const wf = Workflow{ .name = "CI", .on = .{ .events = &.{} }, .jobs = &jobs };

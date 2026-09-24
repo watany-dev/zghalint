@@ -1,0 +1,39 @@
+# zghalint:expect SYN025@10 SYN025@17 SYN001@26 SYN004
+# zghalint:forbid BP001
+name: rejected ga11 concurrency
+on: push
+permissions:
+  contents: read
+concurrency:
+  group: deploy-production
+  queue: max
+  cancel-in-progress: true
+jobs:
+  unknown-value:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ci
+      queue: huge
+    steps:
+      - name: Unknown queue value
+        run: echo huge
+  unknown-key:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ci
+      queues: max
+    steps:
+      - name: Unknown concurrency key
+        run: echo queues
+  bad-type:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ci
+      queue:
+        size: max
+    steps:
+      - name: Non-scalar queue
+        run: echo mapping

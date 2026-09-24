@@ -56,7 +56,7 @@
 - Advisory API は GraphQL スキーマ上で公開されていないため、REST で
   一括取得する既存フローを維持する。
 - GitHub の二次レート制限は HTTP 200 + `errors[].type == "RATE_LIMITED"`
-  で通知される（一次レート制限は 403/429 で返るので `http_client.fetch`
+  で通知される（一次レート制限は 403/429 で返るので `http_client.fetchBounded`
   層で検出可能）。`parseResponse` は body 内の `errors` 配列を走査し、
   `RATE_LIMITED` を見つけたら `error.RateLimited` を返して orchestrator に
   伝搬する。
@@ -118,7 +118,7 @@ pub fn init(allocator: Allocator) void;
 pub fn deinit() void;
 pub fn getAuthHeader(allocator: Allocator) ?[]const u8;
 pub fn writeStandardHeaders(buf: []std.http.Header, auth: ?[]const u8) usize;
-pub fn fetch(opts: std.http.Client.FetchOptions) FetchError!std.http.Client.FetchResult;
+pub fn fetchBounded(opts: std.http.Client.FetchOptions, sink: *BoundedBody) FetchError!std.http.Client.FetchResult;
 
 pub const FetchError = error{
     NotInitialized,
@@ -252,7 +252,7 @@ pub fn isRateLimited() bool;
 
 `queryRefStatus` 内のレート制限フラグ（`rate_limited`）は本モジュールが
 所有する。`refconfusion.{init,deinit}` から `resetRateLimit()` を呼び、
-`http_client.fetch` が 403/429 を返した時点で以降のリクエストを短絡する。
+`http_client.fetchBounded` が 403/429 を返した時点で以降のリクエストを短絡する。
 
 ### 4.5 `prefetch.zig`
 
@@ -286,7 +286,7 @@ main.zig
   ├─ prefetchNetworkData
   │    ├─ 全 workflow を YAML → Workflow へ parse（捨て用 arena）
   │    └─ prefetchAllWithOptions
-  │         ├─ advisory.prefetch()
+  │         ├─ advisory.ensureLoaded()
   │         ├─ collectRefs → {repos, sha_refs, named_refs}
   │         ├─ applyDiskCache
   │         │    └─ repo ごとに disk_cache.load → applyCacheEntry で
@@ -336,6 +336,12 @@ main.zig
   prefetch はこれらを見て REST にフォールバックするか中断するかを決める。
 - rule 本体（advisory/archived/stale_refs/refconfusion）は prefetch が
   失敗しても遅延 fetch 経路で復旧できる。
+- トランスポート失敗（接続・名前解決・TLS・送受信）は `http_client` が
+  `error.NetworkUnreachable` に分類し、以後の全 `fetch` を短絡する
+  sticky フラグを立てる。1 リクエストの待ち時間は `engine.network_deadline_ns`
+  の残りと上限 5 s の小さい方で打ち切る（issue #402。設計は
+  `docs/design/network-fail-fast-design.md`、判断は
+  `docs/adr/0016-network-fail-fast-and-request-budget.md`）。
 
 ## 7. テスト戦略
 
@@ -350,7 +356,7 @@ main.zig
   == "RATE_LIMITED"` で `error.RateLimited`（データ併存時も含む）、100 件
   タグノードでページ上限フォールバック、非 bool `isArchived`、malformed
   JSON。
-- `graphql.encodeRequestBody`: `"` / `\` / `\n` のエスケープ。
+- GraphQL リクエストの `std.json.Stringify.valueAlloc`: `"` / `\` / `\n` のエスケープ。
 - `graphql.batchQuery`: 空入力の短絡。
 - `disk_cache.isFresh`: 範囲内 / 期限切れ / 未来タイムスタンプ。
 - `disk_cache.loadFromDir`/`saveToDir`: `std.testing.tmpDir` を使った
@@ -399,6 +405,10 @@ zig build && zig fmt --check src/ build.zig && zig build test --summary all
 - **stale_refs REST 経路の annotated tag 逐次展開**: token なしユーザー
   向けに 64 件の逐次 REST が残っている。GraphQL に寄せるのが難しい層
   では別の高速化（まとめ取り）が必要。
+- **HTTPS_PROXY 経由の到達**: `std.http.Client.connectProxied` が CONNECT
+  後のトンネルへ平文 HTTP を流すため、https 先へはプロキシ経由で一度も
+  成功しない（issue #402 の付記）。upstream 修正か zghalint 側の実装かは
+  別 issue で扱う。
 
 ## 9. 非対象
 

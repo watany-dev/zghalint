@@ -99,6 +99,9 @@ pub const Scalar = struct {
     /// the `#` and surrounding blanks. Null when the line carries no comment.
     /// SC003 reads the `# v1.2.3` convention next to a SHA-pinned `uses:`.
     line_comment: ?[]const u8 = null,
+    /// Byte offset of `line_comment` in the source. SC003's bump rewrite
+    /// replaces the first word of an existing pin comment in place.
+    line_comment_start_byte: ?usize = null,
     /// A quoted scalar that never met its closing quote, so it ran to the end
     /// of the file. Its span has no boundary after it: text an autofix writes
     /// there becomes more quoted content instead of the key it was meant to be.
@@ -166,54 +169,50 @@ pub const Mapping = struct {
     close_byte: ?usize = null,
     /// Written with `{ }` rather than as a block. See `Sequence.flow`.
     flow: bool = false,
+    /// `<<` key tokens collected for the whole document. GitHub Actions
+    /// rejects `<<`, so SYN026 reports these spans after the parser has
+    /// already expanded them. Nested mappings leave this empty; only the
+    /// document root holds the list.
+    merge_key_spans: []const Span = &.{},
 
     pub fn get(self: Mapping, key: []const u8) ?Node {
-        for (self.entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, key)) {
-                return entry.value;
-            }
-        }
-        return null;
+        const entry = self.findEntry(key) orelse return null;
+        return entry.value;
     }
 
     /// Span of the key token for `key`, or null when the key is absent.
     /// Distinguishes "key present with an empty value" from "key missing",
     /// which `get` alone cannot express.
     pub fn getKeySpan(self: Mapping, key: []const u8) ?Span {
-        for (self.entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, key)) {
-                return entry.key.span;
-            }
-        }
-        return null;
+        const entry = self.findEntry(key) orelse return null;
+        return entry.key.span;
     }
 
     /// Span covering the whole `key: value` entry, or null when the key is
     /// absent or the entry has no span that removes it and nothing else.
     pub fn getFullSpan(self: Mapping, key: []const u8) ?Span {
-        for (self.entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, key)) {
-                return entry.full_span;
-            }
-        }
-        return null;
+        const entry = self.findEntry(key) orelse return null;
+        return entry.full_span;
     }
 
     /// Whether `key`'s entry took lines the parser dropped under it. False
     /// when the key is absent.
     pub fn hasIndentedTail(self: Mapping, key: []const u8) bool {
-        for (self.entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, key)) return entry.has_indented_tail;
-        }
-        return false;
+        const entry = self.findEntry(key) orelse return false;
+        return entry.has_indented_tail;
     }
 
     pub fn getScalar(self: Mapping, key: []const u8) ?[]const u8 {
-        if (self.get(key)) |node| {
-            switch (node) {
-                .scalar => |s| return s.value,
-                else => return null,
-            }
+        const node = self.get(key) orelse return null;
+        return switch (node) {
+            .scalar => |s| s.value,
+            else => null,
+        };
+    }
+
+    fn findEntry(self: Mapping, key: []const u8) ?MappingEntry {
+        for (self.entries) |entry| {
+            if (std.mem.eql(u8, entry.key.value, key)) return entry;
         }
         return null;
     }

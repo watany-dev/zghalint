@@ -1,0 +1,13 @@
+# zghalint:expect SEC024@7
+# zghalint:forbid SEC016
+name: untrusted
+on: pull_request_target
+permissions:
+  contents: read
+cache-mode: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo restore-only default was overridden

@@ -1,0 +1,14 @@
+# zghalint:expect SC003
+# SHA pin with no version comment is info and has no fix (#372 / #415).
+name: sc003 sha undetermined
+on: push
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: zghalint-test/vulnerable-action@a5ac7e51b41094c92402da3b24376905380afc29

@@ -10,6 +10,7 @@ const util = @import("../util.zig");
 const fix_builder = @import("../fix/builder.zig");
 const diagnostics_mod = @import("../diagnostics.zig");
 const rename = @import("rename.zig");
+const type_validation = @import("../workflow/type_validation.zig");
 
 const Rule = engine.Rule;
 const Workflow = engine.Workflow;
@@ -392,29 +393,98 @@ fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
 }
 
 fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
-    if (job.steps.len < 2) return;
+    if (job.steps.len == 0) return;
 
-    var first_by_id: util.IgnoreCaseMap(usize) = .empty;
+    var first_by_id: util.IgnoreCaseMap(*const Step) = .empty;
     defer first_by_id.deinit(list.allocator);
     if (!util.reserve(&first_by_id, list.allocator, job.steps.len)) return;
+    checkDuplicateStepIdsIn(job.steps, &first_by_id, list);
+}
 
-    for (job.steps, 0..) |*step, i| {
-        const step_id = step.id orelse continue;
-        const slot = first_by_id.getOrPutAssumeCapacity(step_id);
-        if (!slot.found_existing) {
-            slot.value_ptr.* = i;
-            continue;
+/// Nested `parallel:` children share the job's ID space, so one table covers
+/// the whole tree. It is sized for the top-level steps and grows for nested
+/// ones; a failed growth ends the check rather than reporting a half-seen tree.
+fn checkDuplicateStepIdsIn(steps: []const Step, first_by_id: *util.IgnoreCaseMap(*const Step), list: *DiagnosticList) void {
+    for (steps) |*step| {
+        if (step.id) |step_id| {
+            const slot = first_by_id.getOrPut(list.allocator, step_id) catch return;
+            if (slot.found_existing) {
+                const prior_step = slot.value_ptr.*;
+                reportDuplicateId(
+                    list,
+                    step_id,
+                    (prior_step.id_value_span orelse prior_step.span).start_line,
+                    (step.id_value_span orelse step.span),
+                    step_id_dup_fmt,
+                    "use a unique step ID within the job",
+                );
+            } else {
+                slot.value_ptr.* = step;
+            }
         }
-        const prior_step = &job.steps[slot.value_ptr.*];
-        reportDuplicateId(
-            list,
-            step_id,
-            (prior_step.id_value_span orelse prior_step.span).start_line,
-            (step.id_value_span orelse step.span),
-            step_id_dup_fmt,
-            "use a unique step ID within the job",
-        );
+        checkDuplicateStepIdsIn(step.nestedSteps(), first_by_id, list);
     }
+}
+
+fn isCheckableStepRef(id: []const u8) bool {
+    return id.len > 0 and isValidId(id);
+}
+
+fn collectStepIdsForControl(steps: []const Step, buf: *std.ArrayList([]const u8), alloc: std.mem.Allocator) void {
+    for (steps) |*step| {
+        if (step.id) |id| {
+            if (id.len > 0) buf.append(alloc, id) catch return;
+        }
+        collectStepIdsForControl(step.nestedSteps(), buf, alloc);
+    }
+}
+
+fn checkUndefinedStepControlRefs(job: *const Job, list: *DiagnosticList) void {
+    var ids: std.ArrayList([]const u8) = .empty;
+    defer ids.deinit(list.allocator);
+    collectStepIdsForControl(job.steps, &ids, list.allocator);
+    checkStepControlRefs(job.steps, ids.items, list);
+}
+
+fn checkStepControlRefs(steps: []const Step, ids: []const []const u8, list: *DiagnosticList) void {
+    for (steps) |*step| {
+        if (step.control) |control| switch (control) {
+            .wait => |refs| {
+                for (refs) |ref| reportUnknownStepRef(ref, "wait", ids, list);
+            },
+            .cancel => |ref| reportUnknownStepRef(ref, "cancel", ids, list),
+            .wait_all, .parallel => {},
+        };
+        checkStepControlRefs(step.nestedSteps(), ids, list);
+    }
+}
+
+fn reportUnknownStepRef(ref: workflow_types.StepRef, keyword: []const u8, ids: []const []const u8, list: *DiagnosticList) void {
+    if (!isCheckableStepRef(ref.id)) return;
+    for (ids) |id| {
+        if (std.ascii.eqlIgnoreCase(id, ref.id)) return;
+    }
+
+    const alloc = list.fixAllocator();
+    const nearest = if (ref.id.len == 0) null else util.didYouMean(ref.id, ids);
+    const suffix = util.suggestionSuffix(alloc, nearest);
+    const message = std.fmt.allocPrint(
+        alloc,
+        "\"{s}\" in \"{s}\" is not a step id in this job{s}",
+        .{ ref.id, keyword, suffix },
+    ) catch return;
+
+    list.append(.{
+        .rule_id = "SYN024",
+        .severity = .@"error",
+        .message = message,
+        .span = ref.span,
+        .fix_hint = "name a step id defined in this job, or drop the entry",
+        .fix = if (nearest) |near|
+            if (rename.isSimpleName(near)) rename.tokenFix(list, ref.span, ref.id, near) else null
+        else
+            null,
+    }) catch return;
 }
 
 fn checkEnvNames(env_keys: []const workflow_types.EnvKey, list: *DiagnosticList) void {
@@ -699,12 +769,8 @@ fn checkMatrixExclude(
             if (std.mem.find(u8, key, "${{") != null) continue;
 
             const axis = findMatrixAxis(matrix, key) orelse {
-                var suffix_buf: [64]u8 = undefined;
                 const suggestion = util.didYouMean(key, axis_names);
-                const suffix = if (suggestion) |s|
-                    std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-                else
-                    "";
+                const suffix = util.suggestionSuffix(alloc, suggestion);
 
                 list.append(.{
                     .rule_id = "SYN019",
@@ -840,12 +906,8 @@ fn checkUnknownEvents(wf: *const Workflow, list: *DiagnosticList) void {
         if (std.mem.find(u8, event.name, "${{") != null) continue;
         if (workflow_events.isKnown(event.name)) continue;
 
-        var suffix_buf: [64]u8 = undefined;
         const suggestion = util.didYouMean(event.name, &workflow_events.trigger_names);
-        const suffix = if (suggestion) |s|
-            std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-        else
-            "";
+        const suffix = util.suggestionSuffix(alloc, suggestion);
 
         list.append(.{
             .rule_id = "SYN009",
@@ -916,12 +978,8 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
             }
             if (found) continue;
 
-            var suffix_buf: [64]u8 = undefined;
             const suggestion = util.didYouMean(value, known);
-            const suffix = if (suggestion) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.suggestionSuffix(alloc, suggestion);
             const value_span: ?Span = if (i < event.activity_types.spans.len)
                 event.activity_types.spans[i]
             else
@@ -951,10 +1009,8 @@ fn checkActivityTypes(wf: *const Workflow, list: *DiagnosticList) void {
     }
 }
 
-/// Dropping the whole `<key>:` entry is what both halves of SYN011 ask for:
-/// the event does not read the key, so nothing is lost but the lines. Unsafe
-/// because a filter that goes away widens what the workflow runs on — the
-/// author more often meant to move it under an event that accepts it.
+/// Removing an event filter can widen the workflow's trigger scope, whether
+/// the filter is unsupported (SYN011) or conflicts with another (SYN012).
 fn buildEventKeyFix(
     alloc: std.mem.Allocator,
     key: workflow_types.EventConfigKey,
@@ -1003,12 +1059,8 @@ fn checkEventFilters(wf: *const Workflow, list: *DiagnosticList) void {
                 continue;
             }
 
-            var suffix_buf: [64]u8 = undefined;
             const suggestion = util.didYouMean(key.name, candidates);
-            const suffix = if (suggestion) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.suggestionSuffix(alloc, suggestion);
             // "filter" reads wrong for a key that is not one: `workflows` under
             // `workflow_run`, or `inputs` under `workflow_call`.
             const noun = if (suggestion) |s|
@@ -1090,6 +1142,13 @@ fn checkExclusiveFilters(wf: *const Workflow, list: *DiagnosticList) void {
                 .message = pair.message,
                 .span = span,
                 .fix_hint = pair.fix_hint,
+                .fix = blk: {
+                    for (event.config_keys) |key| {
+                        if (key.span.start_byte == span.start_byte)
+                            break :blk buildEventKeyFix(list.fixAllocator(), key, "remove the later conflicting event filter");
+                    }
+                    break :blk null;
+                },
             }) catch return;
         }
     }
@@ -1190,12 +1249,8 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
             if (std.mem.find(u8, tz, "${{") != null) continue;
             if (timezones.isKnown(tz)) continue;
 
-            var suffix_buf: [96]u8 = undefined;
             const suggestion = util.didYouMean(tz, &timezones.timezone_names);
-            const suffix = if (suggestion) |s|
-                std.fmt.bufPrint(&suffix_buf, ". did you mean \"{s}\"?", .{s}) catch ""
-            else
-                "";
+            const suffix = util.suggestionSuffix(alloc, suggestion);
 
             list.append(.{
                 .rule_id = "SYN016",
@@ -1213,6 +1268,92 @@ fn checkScheduleTimezone(wf: *const Workflow, list: *DiagnosticList) void {
                     null,
             }) catch return;
         }
+    }
+}
+
+fn reportInvalidCacheMode(
+    list: *DiagnosticList,
+    value: []const u8,
+    span: Span,
+) void {
+    const suggestion = util.didYouMean(value, &workflow_types.cache_mode_values);
+    const suffix = util.suggestionSuffix(list.fixAllocator(), suggestion);
+
+    list.append(.{
+        .rule_id = "SYN023",
+        .severity = .@"error",
+        .message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "invalid cache-mode \"{s}\". expected \"none\", \"read\", \"write\" or \"write-only\"{s}",
+            .{ value, suffix },
+        ) catch "invalid cache-mode",
+        .span = span,
+        .fix_hint = "use 'none', 'read', 'write', or 'write-only'",
+        .fix = if (suggestion) |s| rename.tokenFix(list, span, value, s) else null,
+    }) catch return;
+}
+
+fn checkOneCacheMode(value: ?[]const u8, span: ?Span, list: *DiagnosticList) void {
+    const mode = value orelse return;
+    if (type_validation.containsExpression(mode) or workflow_types.isCacheMode(mode)) return;
+    if (span) |s| reportInvalidCacheMode(list, mode, s);
+}
+
+fn checkCacheMode(wf: *const Workflow, list: *DiagnosticList) void {
+    checkOneCacheMode(wf.cache_mode, wf.cache_mode_span, list);
+    for (wf.jobs) |job| {
+        checkOneCacheMode(job.cache_mode, job.cache_mode_span, list);
+    }
+}
+
+fn reportInvalidConcurrencyQueue(
+    list: *DiagnosticList,
+    value: []const u8,
+    span: Span,
+) void {
+    const suggestion = util.didYouMean(value, &workflow_types.concurrency_queue_values);
+    const suffix = util.suggestionSuffix(list.fixAllocator(), suggestion);
+
+    list.append(.{
+        .rule_id = "SYN025",
+        .severity = .@"error",
+        .message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "invalid concurrency queue \"{s}\". expected \"single\" or \"max\"{s}",
+            .{ value, suffix },
+        ) catch "invalid concurrency queue",
+        .span = span,
+        .fix_hint = "use 'single' or 'max'",
+        .fix = if (suggestion) |s| rename.tokenFix(list, span, value, s) else null,
+    }) catch return;
+}
+
+fn reportConcurrencyQueueConflict(list: *DiagnosticList, span: Span) void {
+    list.append(.{
+        .rule_id = "SYN025",
+        .severity = .@"error",
+        .message = "\"queue: max\" cannot be combined with \"cancel-in-progress: true\"",
+        .span = span,
+        .fix_hint = "set 'cancel-in-progress: false', omit it, or drop 'queue: max'",
+    }) catch return;
+}
+
+fn checkOneConcurrency(c: workflow_types.Concurrency, list: *DiagnosticList) void {
+    const queue = c.queue orelse return;
+    if (type_validation.containsExpression(queue)) return;
+    if (!workflow_types.isConcurrencyQueue(queue)) {
+        if (c.queue_span) |span| reportInvalidConcurrencyQueue(list, queue, span);
+        return;
+    }
+    if (!std.mem.eql(u8, queue, "max") or c.cancel_in_progress != true) return;
+    const span = c.cancel_in_progress_span orelse return;
+    reportConcurrencyQueueConflict(list, span);
+}
+
+fn checkConcurrencyConfiguration(wf: *const Workflow, list: *DiagnosticList) void {
+    if (wf.concurrency) |c| checkOneConcurrency(c, list);
+    for (wf.jobs) |job| {
+        if (job.concurrency) |c| checkOneConcurrency(c, list);
     }
 }
 
@@ -1459,6 +1600,30 @@ pub const rules = [_]Rule{
         .severity = .@"error",
         .category = .syntax,
     },
+    .{
+        .id = "SYN023",
+        .name = "invalid-cache-mode",
+        .description = "cache-mode is not one of none, read, write, or write-only",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkCacheMode,
+    },
+    .{
+        .id = "SYN024",
+        .name = "undefined-step-control-ref",
+        .description = "wait or cancel names a step id that is not defined in the job",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_job = &checkUndefinedStepControlRefs,
+    },
+    .{
+        .id = "SYN025",
+        .name = "invalid-concurrency-configuration",
+        .description = "concurrency.queue is not single or max, or queue: max is combined with cancel-in-progress: true",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkConcurrencyConfiguration,
+    },
 };
 
 const testing = std.testing;
@@ -1646,6 +1811,54 @@ test "SYN001: unknown strategy key is reported" {
     try testing.expect(std.mem.find(u8, diag.message, "fail_fast") != null);
     try testing.expect(std.mem.find(u8, diag.message, "\"strategy\"") != null);
     try testing.expect(std.mem.find(u8, diag.message, "did you mean \"fail-fast\"") != null);
+}
+
+test "SYN001: unknown concurrency key is reported" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queues: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: max
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 1), diags.len());
+    const diag = diags.get(0);
+    try testing.expect(std.mem.find(u8, diag.message, "queues") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "\"concurrency\"") != null);
+    try testing.expect(std.mem.find(u8, diag.message, "did you mean \"queue\"") != null);
+}
+
+test "SYN001: documented concurrency keys are clean" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  cancel-in-progress: false
+        \\  queue: max
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo hi
+    ;
+
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try runSyn001(source, &diags);
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
 }
 
 test "SYN001: unknown container key is reported" {
@@ -2957,6 +3170,23 @@ test "SYN004: mapping value type validation" {
             \\      - run: echo hi
             ,
             .want = 2,
+        },
+        .{
+            .name = "non-scalar concurrency queue",
+            .source =
+            \\on: push
+            \\concurrency:
+            \\  group: ci
+            \\  queue:
+            \\    size: max
+            \\jobs:
+            \\  build:
+            \\    runs-on: ubuntu-latest
+            \\    steps:
+            \\      - run: echo hi
+            ,
+            .want = 1,
+            .message_contains = "queue",
         },
         .{
             .name = "wrong node kinds",
@@ -4578,6 +4808,316 @@ test "SYN016: IANA names and expression values are clean" {
     defer diags.deinit();
 
     try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn023(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkCacheMode(&wf, &list);
+    return list;
+}
+
+test "SYN023: unknown cache-mode values are reported" {
+    const source =
+        \\on: push
+        \\cache-mode: reed
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: readwrite
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn023(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN023"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean \"read\"") != null);
+    try testing.expectEqual(@as(usize, 2), diags.get(0).span.start_line);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"readwrite\"") != null);
+}
+
+test "SYN023: documented modes and expressions are clean" {
+    const source =
+        \\on: push
+        \\cache-mode: write
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: read
+        \\    steps:
+        \\      - run: echo
+        \\  b:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: write-only
+        \\    steps:
+        \\      - run: echo
+        \\  c:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: none
+        \\    steps:
+        \\      - run: echo
+        \\  d:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: ${{ inputs.mode }}
+        \\    steps:
+        \\      - run: echo
+        \\  e:
+        \\    runs-on: ubuntu-latest
+        \\    cache-mode: $
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn023(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn025(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    checkConcurrencyConfiguration(&wf, &list);
+    return list;
+}
+
+test "SYN025: unknown queue values are reported" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queue: mx
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: huge
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN025"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean \"max\"") != null);
+    try testing.expectEqual(@as(usize, 4), diags.get(0).span.start_line);
+    try testing.expect(std.mem.find(u8, diags.get(1).message, "\"huge\"") != null);
+    try testing.expect(diags.get(0).fix != null);
+    try testing.expect(diags.get(1).fix == null);
+}
+
+test "SYN025: queue max with cancel-in-progress true is reported" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: deploy-production
+        \\  queue: max
+        \\  cancel-in-progress: true
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: job-deploy
+        \\      queue: max
+        \\      cancel-in-progress: true
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN025"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "cancel-in-progress") != null);
+    try testing.expect(diags.get(0).fix == null);
+}
+
+test "SYN025: documented queue values and expressions are clean" {
+    const source =
+        \\on: push
+        \\concurrency:
+        \\  group: ci
+        \\  queue: max
+        \\  cancel-in-progress: false
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: deploy
+        \\      queue: max
+        \\    steps:
+        \\      - run: echo
+        \\  b:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: pr
+        \\      queue: single
+        \\      cancel-in-progress: true
+        \\    steps:
+        \\      - run: echo
+        \\  c:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: maybe
+        \\      queue: ${{ inputs.queue }}
+        \\      cancel-in-progress: true
+        \\    steps:
+        \\      - run: echo
+        \\  d:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: expr-cancel
+        \\      queue: max
+        \\      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+        \\    steps:
+        \\      - run: echo
+        \\  e:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency: ${{ github.workflow }}-${{ github.ref }}
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN025: cancel-in-progress true without queue is the default single" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    concurrency:
+        \\      group: ci
+        \\      cancel-in-progress: true
+        \\    steps:
+        \\      - run: echo
+    ;
+
+    var diags = try runSyn025(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+fn runSyn024(source: []const u8) !DiagnosticList {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = DiagnosticList.init(testing.allocator);
+    for (wf.jobs) |*job| checkUndefinedStepControlRefs(job, &list);
+    return list;
+}
+
+test "SYN024: wait and cancel naming a missing step id are reported" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        run: echo hi
+        \\        background: true
+        \\      - wait: produer
+        \\      - cancel: monitrr
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&diags, "SYN024"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "did you mean \"producer\"") != null);
+    try testing.expect(diags.get(0).fix != null);
+}
+
+test "SYN024: wait targeting a defined step is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        run: echo hi
+        \\        background: true
+        \\      - wait: producer
+        \\      - wait: [producer]
+        \\      - wait-all:
+        \\      - cancel: producer
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN024: wait targeting a nested parallel step id is clean" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - parallel:
+        \\          - id: frontend
+        \\            run: echo hi
+        \\      - wait: frontend
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), diags.len());
+}
+
+test "SYN024: wait list reports only the missing id" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: producer
+        \\        run: echo hi
+        \\        background: true
+        \\      - wait: [producer, ghost]
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 1), test_support.countDiagnostics(&diags, "SYN024"));
+    try testing.expect(std.mem.find(u8, diags.get(0).message, "ghost") != null);
+}
+
+test "SYN024: expression and empty wait targets are skipped" {
+    const source =
+        \\on: push
+        \\jobs:
+        \\  verify:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - wait: ${{ inputs.step }}
+        \\      - wait: ""
+    ;
+
+    var diags = try runSyn024(source);
+    defer diags.deinit();
+
+    try testing.expectEqual(@as(usize, 0), test_support.countDiagnostics(&diags, "SYN024"));
 }
 
 fn runSyn017(source: []const u8) !DiagnosticList {

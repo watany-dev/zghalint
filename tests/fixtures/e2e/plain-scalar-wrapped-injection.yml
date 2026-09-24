@@ -1,0 +1,17 @@
+# zghalint:expect SEC002@16
+# zghalint:forbid EXPR001
+# #421: the same wrapping with an untrusted context. EXPR001 used to fire and
+# SEC002 stayed silent because the interpolation never closed.
+name: greet
+on:
+  issues:
+    types: [opened]
+permissions: {}
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Greet the author
+        run: echo "${{ github.event.issue.title
+          }}"

@@ -1,0 +1,19 @@
+# Called by sec010-secrets-inherit-local.yml. Not an e2e fixture itself
+# (the harness only scans the e2e directory, not subdirectories).
+name: deploy
+on:
+  workflow_call:
+    secrets:
+      npm_token:
+        required: true
+      api_key:
+        required: false
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Deploy
+        run: echo ok

@@ -30,14 +30,6 @@ pub const Options = struct {
     no_cache: bool = false,
 };
 
-/// The tag → commit oid answers this layer collected, re-exported so rules can
-/// reach them through the prefetch API without depending on the orchestrator.
-/// See `sha_pin.zig` for why a miss must never be read as "the tag is absent".
-pub const lookupTagOid = sha_pin.lookupTagOid;
-pub const setCachedTagOid = sha_pin.setCachedTagOid;
-pub const initTagOids = sha_pin.initTagOids;
-pub const deinitTagOids = sha_pin.deinitTagOids;
-
 /// Threaded through the prefetch pipeline so every stage can skip the work
 /// no rule asked for.
 const ActiveRules = struct {
@@ -75,7 +67,7 @@ pub fn prefetchAllWithOptions(
     workflows: []const Workflow,
     opts: Options,
 ) !void {
-    advisory.prefetch();
+    advisory.ensureLoaded();
 
     const active = ActiveRules.detect();
     if (!active.any()) return;
@@ -85,6 +77,7 @@ pub fn prefetchAllWithOptions(
     const scratch = scratch_arena.allocator();
 
     var ref_sets = try collectRefs(scratch, workflows);
+    if (active.tag_pin) try addPatchedTagRefs(scratch, &ref_sets);
 
     if (!opts.no_cache) {
         _ = applyDiskCache(scratch, &ref_sets, active);
@@ -187,31 +180,66 @@ fn collectRefs(allocator: Allocator, workflows: []const Workflow) !RefSets {
 
     for (workflows) |wf| {
         for (wf.jobs) |job| {
-            for (job.steps) |step| {
-                const action_ref = step.uses orelse continue;
-                if (action_ref.is_local or action_ref.is_docker) continue;
-                const owner = action_ref.owner orelse continue;
-                const repo = action_ref.repo orelse continue;
-                if (!engine.isValidGitHubComponent(owner)) continue;
-                if (!engine.isValidGitHubComponent(repo)) continue;
-
-                const repo_key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
-                if (!repos.contains(repo_key)) {
-                    try repos.put(allocator, repo_key, .{ .owner = owner, .repo = repo });
-                }
-
-                const ref = action_ref.ref orelse continue;
-                if (action_ref.is_pinned) {
-                    try putRefKey(allocator, &sha_refs, owner, repo, ref, ShaKey{ .owner = owner, .repo = repo, .sha = ref });
-                } else {
-                    if (!engine.isValidGitRef(ref)) continue;
-                    try putRefKey(allocator, &named_refs, owner, repo, ref, NamedKey{ .owner = owner, .repo = repo, .ref = ref });
-                }
-            }
+            try collectStepRefs(allocator, job.steps, &repos, &sha_refs, &named_refs);
         }
     }
 
     return .{ .repos = repos, .sha_refs = sha_refs, .named_refs = named_refs };
+}
+
+/// `--fix` already asks GraphQL for the tags a workflow names. SC003's SHA
+/// re-pin needs the *patched* tag, which is usually not one of those, so it
+/// is added here when that action is actually used.
+fn addPatchedTagRefs(allocator: Allocator, sets: *RefSets) !void {
+    for (advisory.loadedAdvisories()) |adv| {
+        const patched = adv.patched_version orelse continue;
+        if (!engine.isValidGitRef(patched)) continue;
+        const slash = std.mem.findScalar(u8, adv.action_slug, '/') orelse continue;
+        const owner = adv.action_slug[0..slash];
+        const repo = adv.action_slug[slash + 1 ..];
+        if (std.mem.findScalar(u8, repo, '/') != null) continue;
+        const repo_key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
+        if (!sets.repos.contains(repo_key)) continue;
+        try putRefKey(allocator, &sets.named_refs, owner, repo, patched, NamedKey{
+            .owner = owner,
+            .repo = repo,
+            .ref = patched,
+        });
+    }
+}
+
+fn collectStepRefs(
+    allocator: Allocator,
+    steps: []const workflow_types.Step,
+    repos: *RepoSet,
+    sha_refs: *ShaSet,
+    named_refs: *NamedSet,
+) !void {
+    for (steps) |step| {
+        if (step.uses) |action_ref| {
+            if (!action_ref.is_local and !action_ref.is_docker) {
+                if (action_ref.owner) |owner| {
+                    if (action_ref.repo) |repo| {
+                        if (engine.isValidGitHubComponent(owner) and engine.isValidGitHubComponent(repo)) {
+                            const repo_key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
+                            if (!repos.contains(repo_key)) {
+                                try repos.put(allocator, repo_key, .{ .owner = owner, .repo = repo });
+                            }
+
+                            if (action_ref.ref) |ref| {
+                                if (action_ref.is_pinned) {
+                                    try putRefKey(allocator, sha_refs, owner, repo, ref, ShaKey{ .owner = owner, .repo = repo, .sha = ref });
+                                } else if (engine.isValidGitRef(ref)) {
+                                    try putRefKey(allocator, named_refs, owner, repo, ref, NamedKey{ .owner = owner, .repo = repo, .ref = ref });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        try collectStepRefs(allocator, step.nestedSteps(), repos, sha_refs, named_refs);
+    }
 }
 
 /// Satisfied refs are removed from `sets` so the GraphQL / REST phase only
@@ -273,12 +301,7 @@ fn applyCacheEntry(
             var key_buf: [max_ref_key_len]u8 = undefined;
             const key = std.fmt.bufPrint(&key_buf, "{s}/{s}@{s}", .{ owner, repo, s.sha }) catch continue;
             if (sets.sha_refs.getPtr(key)) |_| {
-                const mapped: stale_refs.TagResolution = switch (s.resolution) {
-                    .has_tag => .has_tag,
-                    .no_tag => .no_tag,
-                    .unknown => .unknown,
-                };
-                stale_refs.setCachedTagResult(owner, repo, s.sha, mapped);
+                stale_refs.setCachedTagResult(owner, repo, s.sha, s.resolution);
                 // SC005 and SC008 share the (owner, repo, sha) tuple. A cache
                 // file written by a run with SC008 off carries no impostor
                 // verdict, so dropping the SHA here would keep it out of the
@@ -505,6 +528,10 @@ fn tryGraphQlBatch(
             // REST talks to the same rate-limited API, so falling back would
             // only add requests to a budget that just ran out (#222).
             error.RateLimited => return true,
+            // The transport is gone for the rest of the run; the REST
+            // fallback would fail the same way before sending anything
+            // (ADR 0016 D6).
+            error.NetworkUnreachable => return true,
             else => return false,
         };
 
@@ -640,12 +667,7 @@ fn applyResults(
         }
         if (active.stale) {
             for (res.sha_results) |sr| {
-                const mapped: stale_refs.TagResolution = switch (sr.resolution) {
-                    .has_tag => .has_tag,
-                    .no_tag => .no_tag,
-                    .unknown => .unknown,
-                };
-                stale_refs.setCachedTagResult(res.owner, res.repo, sr.sha, mapped);
+                stale_refs.setCachedTagResult(res.owner, res.repo, sr.sha, sr.resolution);
             }
         }
         if (active.needsNamedRefs()) {
@@ -678,7 +700,7 @@ fn applyResults(
 fn fetchRepos(scratch: Allocator, set: RepoSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
-        if (engine.isNetworkDeadlineExceeded()) return;
+        if (engine.isNetworkDeadlineExceeded() or http_client.isNetworkUnreachable()) return;
         const is_archived = rest_fallback.fetchArchiveStatus(scratch, key.owner, key.repo) catch continue;
         archived.setCachedResult(key.owner, key.repo, is_archived);
     }
@@ -712,7 +734,7 @@ fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
 
     var it = by_repo.iterator();
     while (it.next()) |entry| {
-        if (engine.isNetworkDeadlineExceeded()) return;
+        if (engine.isNetworkDeadlineExceeded() or http_client.isNetworkUnreachable()) return;
         const group = entry.value_ptr;
         const shas = group.shas.items;
 
@@ -731,7 +753,7 @@ fn fetchShaRefs(scratch: Allocator, set: ShaSet) void {
 fn fetchNamedRefs(scratch: Allocator, set: NamedSet) void {
     var it = set.valueIterator();
     while (it.next()) |key| {
-        if (engine.isNetworkDeadlineExceeded()) return;
+        if (engine.isNetworkDeadlineExceeded() or http_client.isNetworkUnreachable()) return;
         const status = rest_fallback.queryRefStatus(scratch, key.owner, key.repo, key.ref);
         refconfusion.setCachedRefResult(key.owner, key.repo, key.ref, status);
     }
@@ -1061,6 +1083,66 @@ test "prefetchAllWithOptions: deadline-expired short-circuits" {
     try prefetchAllWithOptions(testing.allocator, &wfs, .{ .no_cache = true });
 }
 
+test "tryGraphQlBatch: an unreachable network counts as handled so REST is skipped" {
+    archived.initArchived(testing.allocator, false);
+    defer archived.deinitArchived();
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    refconfusion.initRefConfusion(testing.allocator, false);
+    defer refconfusion.deinitRefConfusion();
+
+    var env = try test_support.EnvGuard.set(testing.allocator, "GITHUB_TOKEN", "ghp_test");
+    defer env.deinit();
+    engine.setNetworkDeadline(10 * std.time.ns_per_s);
+    defer engine.clearNetworkDeadline();
+    http_client.markNetworkUnreachable();
+    defer http_client.resetNetworkState();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const steps = [_]Step{.{ .uses = ActionRef.parse("actions/checkout@v4") }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    var sets = try collectRefs(alloc, &[_]Workflow{wf});
+    var pending = std.ArrayList(PendingCompare).empty;
+
+    const active = ActiveRules{ .archived = true, .stale = true, .refconf = true, .impostor = false };
+    try testing.expect(tryGraphQlBatch(alloc, &sets, active, &pending, null));
+    // Nothing was resolved: the refs are still waiting, which the REST
+    // fallback would otherwise pick up.
+    try testing.expectEqual(@as(usize, 1), sets.named_refs.count());
+}
+
+test "prefetchAllWithOptions: an unreachable network short-circuits every stage" {
+    archived.initArchived(testing.allocator, false);
+    defer archived.deinitArchived();
+    stale_refs.initStaleRefs(testing.allocator, false);
+    defer stale_refs.deinitStaleRefs();
+    refconfusion.initRefConfusion(testing.allocator, false);
+    defer refconfusion.deinitRefConfusion();
+
+    engine.setNetworkDeadline(10 * std.time.ns_per_s);
+    defer engine.clearNetworkDeadline();
+    http_client.markNetworkUnreachable();
+    defer http_client.resetNetworkState();
+
+    const sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@" ++ sha) },
+        .{ .uses = ActionRef.parse("actions/setup-node@v4") },
+    };
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = .{ .events = &.{} }, .jobs = &jobs };
+    const wfs = [_]Workflow{wf};
+
+    const t0 = std.Io.Clock.awake.now(runtime.io());
+    try prefetchAllWithOptions(testing.allocator, &wfs, .{ .no_cache = true });
+    const elapsed = std.Io.Clock.awake.now(runtime.io()).nanoseconds - t0.nanoseconds;
+    try testing.expect(elapsed < std.time.ns_per_s);
+}
+
 test "applyDiskCache: reads entries from XDG_CACHE_HOME and drops them from sets" {
     archived.initArchived(testing.allocator, false);
     defer archived.deinitArchived();
@@ -1153,7 +1235,7 @@ test "applyResults: persists repo state to the provided cache dir" {
     try testing.expect(!loaded.archived.?);
     try testing.expectEqual(@as(usize, 1), loaded.shas.len);
     try testing.expectEqualStrings(fake_sha, loaded.shas[0].sha);
-    try testing.expectEqual(graphql.ShaTagResolution.has_tag, loaded.shas[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.has_tag, loaded.shas[0].resolution);
     try testing.expectEqual(@as(usize, 1), loaded.named.len);
     try testing.expect(loaded.named[0].is_tag);
     try testing.expect(loaded.named[0].is_branch);
@@ -1318,7 +1400,7 @@ test "mergeEntries: fresh results win over the cached ones for the same key" {
     const merged = mergeEntries(disk_cache.ShaEntry, "sha", alloc, &old, &fresh);
     try testing.expectEqual(@as(usize, 2), merged.len);
     try testing.expectEqualStrings("a", merged[0].sha);
-    try testing.expectEqual(graphql.ShaTagResolution.no_tag, merged[0].resolution);
+    try testing.expectEqual(rest_fallback.TagResolution.no_tag, merged[0].resolution);
     try testing.expectEqualStrings("b", merged[1].sha);
 }
 

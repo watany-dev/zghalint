@@ -1,0 +1,18 @@
+# zghalint:expect SEC018 SEC001
+# zghalint:forbid SEC015
+# checkout v6 stores persisted credentials under $RUNNER_TEMP, so uploading
+# the workspace is not the artipacked leak. SEC018 still applies.
+name: ga9 v6 workspace upload
+on: push
+permissions:
+  contents: read
+jobs:
+  leak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workspace
+          path: dist

@@ -45,6 +45,8 @@ class Witness:
     flow: str
     expected_rule: str
     note: str = ""
+    #: `spec.ACTIONS` key when the property is about an action, else "".
+    action: str = ""
 
 
 class Model:
@@ -58,10 +60,12 @@ class Model:
         self.Ctx, self.ctxs = z3.EnumSort("Ctx", [c.path for c in spec.CONTEXTS])
         self.Sink, self.sinks = z3.EnumSort("Sink", spec.SINKS)
         self.Flow, self.flows = z3.EnumSort("Flow", spec.FLOWS)
+        self.Action, self.actions = z3.EnumSort("Action", spec.ACTIONS)
         self.t_of = dict(zip(spec.TRIGGERS, self.triggers, strict=True))
         self.c_of = {c.path: v for c, v in zip(spec.CONTEXTS, self.ctxs, strict=True)}
         self.s_of = dict(zip(spec.SINKS, self.sinks, strict=True))
         self.f_of = dict(zip(spec.FLOWS, self.flows, strict=True))
+        self.a_of = dict(zip(spec.ACTIONS, self.actions, strict=True))
         self.solver = z3.Solver()
         self._define_spec()
         self._define_impl()
@@ -96,6 +100,9 @@ class Model:
         self.free_text = self._define_unary(
             "free_text", self.c_of, lambda c: ctx_by_path[c].free_text
         )
+        self.fetch_only = self._define_unary(
+            "fetch_only", self.c_of, lambda c: ctx_by_path[c].fetch_only
+        )
         self.privileged = self._define_unary(
             "privileged", self.t_of, lambda t: t in spec.PRIVILEGED
         )
@@ -105,6 +112,21 @@ class Model:
         self.carries_fork_code = self._define_unary(
             "carries_fork_code", self.t_of, lambda t: t in spec.CARRIES_FORK_CODE
         )
+
+        code_inputs = {ci.key for ci in spec.CODE_EXECUTING_INPUTS}
+        outputs = {ao.key: ao for ao in spec.ACTION_OUTPUTS}
+        self.code_input = self._define_unary("code_input", self.a_of, lambda a: a in code_inputs)
+        self.untrusted_output = self._define_unary(
+            "untrusted_output", self.a_of, lambda a: a in outputs
+        )
+        # Where an action output comes from: the (trigger, payload field) the
+        # specification names for it. Total functions, so the actions that
+        # are not outputs map to arbitrary values the properties never read.
+        self.ao_trigger = z3.Function("ao_trigger", self.Action, self.Trigger)
+        self.ao_source = z3.Function("ao_source", self.Action, self.Ctx)
+        for key, ao in outputs.items():
+            self.solver.add(self.ao_trigger(self.a_of[key]) == self.t_of[ao.trigger])
+            self.solver.add(self.ao_source(self.a_of[key]) == self.c_of[ao.source])
 
     def _define_impl(self) -> None:
         im = self.im
@@ -154,27 +176,73 @@ class Model:
         )
         self.followed = self._define_unary("followed", self.f_of, lambda f: f in im.followed_flows)
 
+        # Probes for rules the specification asks for that have no table yet
+        # (`impl._probe_string_table`): false everywhere until the rule lands.
+        self.shell_fetch = self._define_tc(
+            "shell_fetch", lambda t, c: impl.matches_any_prefix(c, im.shell_fetch_contexts)
+        )
+        self.artifact_run_id = self._define_tc(
+            "artifact_run_id", lambda t, c: impl.matches_any_prefix(c, im.artifact_run_id_contexts)
+        )
+
+        def code_input_known(a: str) -> bool:
+            if a == spec.NO_ACTION:
+                return False
+            action, _, input_name = a.partition("#")
+            return any(
+                impl.matches_action(action, [known]) and input_name in inputs
+                for known, inputs in im.code_executing_inputs.items()
+            )
+
+        self.code_input_known = self._define_unary("code_input_known", self.a_of, code_input_known)
+        self.output_known = self._define_unary(
+            "output_known",
+            self.a_of,
+            lambda a: impl.matches_action(a.partition("#")[0], im.untrusted_output_actions),
+        )
+        self.sec025 = self._define_unary(
+            "sec025",
+            self.a_of,
+            lambda a: impl.matches_action(a.partition("#")[0], im.github_app_token_actions),
+        )
+
     def properties(self) -> list[tuple[str, str, z3.BoolRef, z3.BoolRef, str]]:
         """(name, expected rule, Unsafe, Covered, note) over free variables t, c, f."""
-        t, c, f = self.t, self.c, self.f
+        t, c, f, a = self.t, self.c, self.f, self.a
         S = self.s_of
         direct = f == self.f_of["direct"]
+        # Properties that are not about an action pin it to the placeholder
+        # so the enumeration does not repeat each tuple per action.
+        no_action = a == self.a_of[spec.NO_ACTION]
         # A number or a SHA is server-formatted and carries no shell
         # metacharacters; only text a human types is an injection vector.
         injectable = z3.And(z3.Or(self.external(c), self.dispatcher(c)), self.free_text(c))
+        # Code the attacker picked, fetched by a job that holds secrets.
+        picks_code = z3.And(
+            self.available(t, c),
+            self.privileged(t),
+            z3.Or(self.external(c), self.dispatcher(c)),
+            self.ref_shaped(c),
+        )
 
         return [
             (
                 "P1 script injection",
                 "SEC002",
-                z3.And(self.available(t, c), injectable, direct, self.sink == S["run"]),
+                z3.And(self.available(t, c), injectable, direct, self.sink == S["run"], no_action),
                 self.sec002(t, c),
                 "attacker-authored value interpolated into run:",
             ),
             (
                 "P2 GITHUB_ENV injection",
                 "SEC008",
-                z3.And(self.available(t, c), injectable, direct, self.sink == S["github_env"]),
+                z3.And(
+                    self.available(t, c),
+                    injectable,
+                    direct,
+                    self.sink == S["github_env"],
+                    no_action,
+                ),
                 self.sec008(t, c),
                 "attacker-authored value written to $GITHUB_ENV / $GITHUB_PATH",
             ),
@@ -189,6 +257,7 @@ class Model:
                     z3.Not(self.ref_shaped(c)),
                     direct,
                     self.sink == S["condition"],
+                    no_action,
                 ),
                 z3.Or(self.sec006(t, c), self.sec022(t, c)),
                 "free text an attacker writes decides an if: gate",
@@ -196,13 +265,14 @@ class Model:
             (
                 "P4 untrusted checkout",
                 "SEC005/SEC009/SEC021",
+                # `fetch_only` handles have no `with:` spelling under
+                # `actions/checkout`; P9 covers them.
                 z3.And(
-                    self.available(t, c),
-                    self.privileged(t),
-                    z3.Or(self.external(c), self.dispatcher(c)),
-                    self.ref_shaped(c),
+                    picks_code,
+                    z3.Not(self.fetch_only(c)),
                     direct,
                     self.sink == S["checkout_ref"],
+                    no_action,
                 ),
                 z3.Or(self.sec005(t, c), self.sec009(t, c), self.sec021(t, c)),
                 "privileged job checks out code the attacker picked",
@@ -213,14 +283,16 @@ class Model:
                 # A checkout-ref context that is also free text is injection
                 # inside run:. A number or SHA is not (P1); SEC021 may still
                 # own those for checkout without SEC002 treating them as taint.
-                z3.And(self.sec021(t, c), self.free_text(c), direct, self.sink == S["run"]),
+                z3.And(
+                    self.sec021(t, c), self.free_text(c), direct, self.sink == S["run"], no_action
+                ),
                 self.sec002(t, c),
                 "cross-rule consistency: SEC021 owns the context but SEC002 does not",
             ),
             (
                 "P6 SEC022 ⊆ SEC002",
                 "SEC002",
-                z3.And(self.sec022(t, c), direct, self.sink == S["run"]),
+                z3.And(self.sec022(t, c), direct, self.sink == S["run"], no_action),
                 self.sec002(t, c),
                 "cross-rule consistency: SEC022 owns the context but SEC002 does not",
             ),
@@ -236,6 +308,7 @@ class Model:
                     self.sink == S["run"],
                     direct,
                     c == self.c_of["github.event.pull_request.head.sha"],
+                    no_action,
                 ),
                 self.sec020(t),
                 "trigger reaches a self-hosted runner with a fork's code but SEC020 ignores it",
@@ -248,9 +321,82 @@ class Model:
                     c == self.c_of["github.event.comment.body"],
                     self.sink == S["run"],
                     self.sec002(t, c),
+                    no_action,
                 ),
                 self.followed(f),
                 "an indirection SEC002 does not follow between a known source and run:",
+            ),
+            # P9–P12 are the known vulnerability classes the checkout /
+            # injection rules do not reach through `actions/checkout` and
+            # `run:` alone (see docs/design/formal-rule-model.md §7).
+            (
+                "P9 shell fetch",
+                "SEC005/SEC009/SEC021",
+                # The same shape as P4 with `git` / `gh` doing the fetch. A
+                # free-text handle also trips SEC002 there, but SEC002's fix
+                # (bind it to env:) leaves the attacker's code checked out.
+                z3.And(picks_code, direct, self.sink == S["run_fetch"], no_action),
+                self.shell_fetch(t, c),
+                "privileged job fetches code the attacker picked with git / gh inside run:",
+            ),
+            (
+                "P10 artifact poisoning",
+                "SEC009",
+                # c is pinned: the run id is the only handle an artifact
+                # download takes, and only `workflow_run` carries it.
+                z3.And(
+                    self.available(t, c),
+                    self.privileged(t),
+                    self.external(c),
+                    c == self.c_of["github.event.workflow_run.id"],
+                    direct,
+                    self.sink == S["artifact_run_id"],
+                    no_action,
+                ),
+                self.artifact_run_id(t, c),
+                "the upstream (fork) run's artifact is downloaded by run id and used",
+            ),
+            (
+                "P11 code-executing input",
+                "SEC002",
+                # Pinned to one known-tainted (trigger, context) pair; what
+                # varies is the action whose input runs as code.
+                z3.And(
+                    t == self.t_of["issues"],
+                    c == self.c_of["github.event.issue.title"],
+                    self.sink == S["action_script"],
+                    direct,
+                    self.code_input(a),
+                ),
+                self.code_input_known(a),
+                "an action input executed as code that SEC002 does not scan",
+            ),
+            (
+                "P12 untrusted action output",
+                "SEC002",
+                z3.And(
+                    self.untrusted_output(a),
+                    t == self.ao_trigger(a),
+                    c == self.ao_source(a),
+                    self.sink == S["run"],
+                    f == self.f_of["action_output"],
+                ),
+                self.output_known(a),
+                "an action output derived from attacker content, interpolated into run:",
+            ),
+            (
+                "P13 github-app token",
+                "SEC025",
+                z3.And(
+                    a == self.a_of[spec.GITHUB_APP_TOKEN],
+                    direct,
+                    self.sink == S["app_token"],
+                    t == self.t_of["push"],
+                    c == self.c_of["github.event.commits.*.message"],
+                ),
+                self.sec025(a),
+                "create-github-app-token without permission-* inherits the installation's"
+                " permissions",
             ),
         ]
 
@@ -258,6 +404,7 @@ class Model:
         self.t = z3.Const("t", self.Trigger)
         self.c = z3.Const("c", self.Ctx)
         self.f = z3.Const("f", self.Flow)
+        self.a = z3.Const("a", self.Action)
         self.sink = z3.Const("sink", self.Sink)
         witnesses: list[Witness] = []
         for name, rule, unsafe, covered, note in self.properties():
@@ -270,11 +417,15 @@ class Model:
         self.solver.add(query)
         while self.solver.check() == z3.sat:
             m = self.solver.model()
-            t, c, f, s = (
-                m.eval(v, model_completion=True) for v in (self.t, self.c, self.f, self.sink)
+            t, c, f, s, a = (
+                m.eval(v, model_completion=True)
+                for v in (self.t, self.c, self.f, self.sink, self.a)
             )
-            out.append(Witness(name, str(t), str(c), str(s), str(f), rule, note))
-            self.solver.add(z3.Not(z3.And(self.t == t, self.c == c, self.f == f, self.sink == s)))
+            action = "" if str(a) == spec.NO_ACTION else str(a)
+            out.append(Witness(name, str(t), str(c), str(s), str(f), rule, note, action))
+            self.solver.add(
+                z3.Not(z3.And(self.t == t, self.c == c, self.f == f, self.sink == s, self.a == a))
+            )
         # The loop only ends on unsat or unknown; unknown would mean the
         # enumeration is incomplete, which must not pass as "no more gaps".
         assert self.solver.check() == z3.unsat, f"{name}: solver returned unknown"
@@ -283,7 +434,16 @@ class Model:
 
 
 def _sort_key(w: Witness) -> tuple:
-    return (w.property, w.trigger, w.context, w.flow)
+    # P10 sorts after P9, not after P1.
+    number = int(w.property.split(" ")[0][1:])
+    return (number, w.trigger, w.context, w.flow, w.action)
+
+
+def describe(w: Witness) -> str:
+    """`trigger  context [via flow] [action]`, the line both scripts print."""
+    flow = "" if w.flow == "direct" else f"  via {w.flow}"
+    action = f"  {w.action}" if w.action else ""
+    return f"{w.trigger:28} {w.context}{flow}{action}"
 
 
 def main() -> int:
@@ -293,8 +453,7 @@ def main() -> int:
         if w.property != current:
             current = w.property
             print(f"\n== {w.property}  (expected {w.expected_rule}: {w.note})")
-        flow = "" if w.flow == "direct" else f"  via {w.flow}"
-        print(f"  {w.trigger:28} {w.context}{flow}")
+        print(f"  {describe(w)}")
     print(f"\n{len(witnesses)} witnesses")
     return 0
 

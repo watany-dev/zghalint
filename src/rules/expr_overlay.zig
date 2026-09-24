@@ -100,14 +100,16 @@ const PropList = struct {
 };
 
 /// `steps` as seen from each step of one job: only ids declared earlier in
-/// the same job are in scope, which is what EXPR010 checks too.
+/// the same job are in scope, which is what EXPR010 checks too. Nested
+/// `parallel:` children of those earlier steps are in scope: the group has an
+/// implicit wait, so their outputs are available afterwards.
 ///
 /// The ids in scope at step `i` are a prefix of those in scope at `i + 1`, so
 /// one pass builds a single id list and every step's overlay is a prefix
 /// slice of it.
 pub const StepsOverlay = struct {
-    /// Indexed by step; null where the overlay could not be built and the
-    /// loose catalog entry applies.
+    /// Indexed by top-level step; null where the overlay could not be built
+    /// and the loose catalog entry applies.
     types: []const ?TypeRef,
 
     pub const none: StepsOverlay = .{ .types = &.{} };
@@ -121,24 +123,54 @@ pub const StepsOverlay = struct {
 pub fn buildSteps(alloc: std.mem.Allocator, steps: []const Step) StepsOverlay {
     const types = alloc.alloc(?TypeRef, steps.len) catch return .none;
     @memset(types, null);
-    const props = alloc.alloc(Prop, steps.len) catch return .none;
-    var seen: util.IgnoreCaseMap(void) = .empty;
-    defer seen.deinit(alloc);
+    var ids = StepIds{
+        .props = alloc.alloc(Prop, countStepTree(steps)) catch return .none,
+        .alloc = alloc,
+    };
+    defer ids.seen.deinit(alloc);
+    if (!util.reserve(&ids.seen, alloc, ids.props.len)) return .none;
 
-    var count: usize = 0;
-    var current = strictObject(alloc, props[0..0]);
-    for (steps, 0..) |step, index| {
+    var current = strictObject(alloc, ids.props[0..0]);
+    for (steps, 0..) |*step, index| {
         types[index] = current;
-        const id = step.id orelse continue;
-        if (id.len == 0) continue;
-        // Later duplicates lose, as in `PropList.put`.
-        const entry = seen.getOrPut(alloc, id) catch break;
-        if (entry.found_existing) continue;
-        props[count] = .{ .name = id, .ty = &step_result };
-        count += 1;
-        current = strictObject(alloc, props[0..count]);
+        const before = ids.count;
+        ids.add(step);
+        ids.addNested(step.nestedSteps());
+        if (ids.count != before) current = strictObject(alloc, ids.props[0..ids.count]);
     }
     return .{ .types = types };
+}
+
+/// The ids of a step tree in declaration order, each once: later duplicates
+/// lose, as in `PropList.put`. `props` is sized for the whole tree up front so
+/// that every prefix of it stays valid as an overlay.
+const StepIds = struct {
+    props: []Prop,
+    count: usize = 0,
+    seen: util.IgnoreCaseMap(void) = .empty,
+    alloc: std.mem.Allocator,
+
+    fn add(self: *StepIds, step: *const Step) void {
+        const id = step.id orelse return;
+        if (id.len == 0) return;
+        const entry = self.seen.getOrPutAssumeCapacity(id);
+        if (entry.found_existing) return;
+        self.props[self.count] = .{ .name = id, .ty = &step_result };
+        self.count += 1;
+    }
+
+    fn addNested(self: *StepIds, steps: []const Step) void {
+        for (steps) |*step| {
+            self.add(step);
+            self.addNested(step.nestedSteps());
+        }
+    }
+};
+
+fn countStepTree(steps: []const Step) usize {
+    var total = steps.len;
+    for (steps) |*step| total += countStepTree(step.nestedSteps());
+    return total;
 }
 
 /// A composite action's `inputs:` carry no `type:`, so every declared name is

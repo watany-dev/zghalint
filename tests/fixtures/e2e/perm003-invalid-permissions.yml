@@ -1,4 +1,4 @@
-# zghalint:expect PERM003@7 PERM003@8 PERM003@15
+# zghalint:expect PERM003@7 PERM003@8 PERM003@15 PERM003@18
 # zghalint:forbid PERM001
 name: invalid permissions
 on: [push]
@@ -15,6 +15,7 @@ jobs:
       isues: read
       artifact-metadata: read
       models: read
+      vulnerability-alerts: write
     steps:
       - name: Build
         run: echo build

@@ -5,6 +5,7 @@ const yaml = @import("../yaml/types.zig");
 const util = @import("../util.zig");
 const engine = @import("engine.zig");
 const expressions = @import("expressions.zig");
+const expr_catalog = @import("expr_catalog.zig");
 const spans = @import("spans.zig");
 const fix_builder = @import("../fix/builder.zig");
 const advisory = @import("advisory.zig");
@@ -13,12 +14,18 @@ const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
 const refconfusion = @import("refconfusion.zig");
 const sha_pin = @import("sha_pin.zig");
+const image_digest = @import("image_digest.zig");
+const called_workflow = @import("called_workflow.zig");
 const env_binding = @import("env_binding.zig");
 const config_mod = @import("../config.zig");
 const compromised_data = @import("data/compromised_actions.zig");
 const trusted_data = @import("data/trusted_actions.zig");
 const permissions = @import("permissions.zig");
 const runner = @import("runner.zig");
+const setup_node_cache = @import("setup_node_cache.zig");
+const checkout_capability = @import("checkout_capability.zig");
+const local_action = @import("local_action.zig");
+const runtime = @import("../runtime.zig");
 
 pub const Visibility = config_mod.Visibility;
 
@@ -308,7 +315,6 @@ const CacheSetupAction = struct {
 };
 
 const cache_setup_actions = [_]CacheSetupAction{
-    .{ .name = "actions/setup-node", .cache_input = "cache" },
     .{ .name = "actions/setup-python", .cache_input = "cache" },
     .{ .name = "actions/setup-java", .cache_input = "cache" },
     .{ .name = "actions/setup-go", .cache_input = "cache" },
@@ -426,18 +432,11 @@ fn walkJobTaint(
     job_table.tainted_env = job_env.slice();
 
     // Steps are visited in source order so a later step sees the taint the
-    // earlier ones produced. A step never taints itself.
+    // earlier ones produced. A step never taints itself. A `parallel:` group
+    // runs its children concurrently, so they share the incoming taint and
+    // only publish their outputs after the implicit wait.
     var tainted: TaintedNames = .{ .buf = undefined };
-    for (job.steps) |*step| {
-        var step_env = job_env.derive();
-        var table = job_table;
-        table.tainted_steps = tainted.slice();
-        addTaintedEnvKeys(&step_env, step.env, table);
-        table.tainted_env = step_env.slice();
-
-        if (list) |l| checkStepScriptInjection(step, table, l, env_binding.resolveShell(step, job, wf));
-        if (stepTaintsItsOutputs(step, table)) tainted.append(step.id.?);
-    }
+    walkTaintSteps(job.steps, job, job_env, job_table, &tainted, list, wf);
 
     // A step-scoped `env:` entry does not outlive its step, so the outputs are
     // resolved against the job scope.
@@ -448,6 +447,58 @@ fn walkJobTaint(
         if (hasUntrustedExpr(value, final)) return true;
     }
     return false;
+}
+
+fn walkTaintSteps(
+    steps: []const Step,
+    job: *const Job,
+    job_env: TaintedNames,
+    job_table: ContextTable,
+    tainted: *TaintedNames,
+    list: ?*DiagnosticList,
+    wf: *const Workflow,
+) void {
+    for (steps) |*step| {
+        var step_env = job_env.derive();
+        var table = job_table;
+        table.tainted_steps = tainted.slice();
+        addTaintedEnvKeys(&step_env, step.env, table);
+        table.tainted_env = step_env.slice();
+
+        if (list) |l| checkStepScriptInjection(step, table, l, env_binding.resolveShell(step, job, wf));
+
+        const children = step.nestedSteps();
+        if (children.len > 0) {
+            var group_tainted: TaintedNames = .{ .buf = undefined };
+            walkTaintGroup(children, job, job_env, table, &group_tainted, list, wf);
+            for (group_tainted.slice()) |id| tainted.append(id);
+        } else if (stepTaintsItsOutputs(step, table)) {
+            tainted.append(step.id.?);
+        }
+    }
+}
+
+fn walkTaintGroup(
+    steps: []const Step,
+    job: *const Job,
+    job_env: TaintedNames,
+    incoming: ContextTable,
+    group_tainted: *TaintedNames,
+    list: ?*DiagnosticList,
+    wf: *const Workflow,
+) void {
+    for (steps) |*step| {
+        var step_env = job_env.derive();
+        var table = incoming;
+        addTaintedEnvKeys(&step_env, step.env, table);
+        table.tainted_env = step_env.slice();
+
+        if (list) |l| checkStepScriptInjection(step, table, l, env_binding.resolveShell(step, job, wf));
+        if (stepTaintsItsOutputs(step, table)) group_tainted.append(step.id.?);
+
+        const nested = step.nestedSteps();
+        if (nested.len > 0) walkTaintGroup(nested, job, job_env, incoming, group_tainted, list, wf);
+    }
 }
 
 /// The `env:` keys of one mapping whose value interpolates an untrusted
@@ -482,20 +533,22 @@ fn checkStepScriptInjection(step: *const Step, table: ContextTable, list: *Diagn
         // One `Fix` per step, on the first diagnostic only: it rewrites every
         // offending expression at once, and `fix/engine.zig` would drop a
         // second fix covering the same bytes anyway (design doc §5).
-        const fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table));
+        const fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table, list.fixAllocator()));
         checkContextsInString(run_body, spans.runAnchor(step), table, "SEC002", .@"error", "script injection: untrusted context used in run: block", script_injection_fix_hint, list, fix);
     }
     checkScriptInputInjection(step, table, list);
+    checkLocalActionInputInjection(step, table, list);
 }
 
 /// Every untrusted `${{ ... }}` in the step's `run:`, which is exactly the set
 /// the env binding has to cover for the step to come out clean.
-fn taintedRunOccurrences(step: *const Step, table: ContextTable) env_binding.Occurrences {
+fn taintedRunOccurrences(step: *const Step, table: ContextTable, allocator: std.mem.Allocator) env_binding.Occurrences {
     var occs: env_binding.Occurrences = .{ .buf = undefined };
     const run_body = step.run orelse return occs;
     var it: ExprIter = .{ .s = run_body };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), table)) continue;
+        if (returnsBooleanBuiltin(allocator, e.inner)) continue;
         occs.append(.{ .offset = e.match.offset, .len = e.match.len });
     }
     return occs;
@@ -554,17 +607,41 @@ const TaintedNames = struct {
     }
 };
 
+/// `owner/repo` of actions whose outputs are derived from attacker-authored
+/// content (PR file names, head branch, a looked-up comment). SEC002 treats
+/// `steps.<id>.outputs.*` of a step that `uses:` one of these as untrusted
+/// (#535). The formal extractor reads this table as `untrusted_output_actions`.
+const untrusted_output_actions = [_][]const u8{
+    "tj-actions/changed-files",
+    "step-security/changed-files",
+    "jitterbit/get-changed-files",
+    "tj-actions/branch-names",
+    "peter-evans/find-comment",
+};
+
+fn stepProducesUntrustedActionOutput(step: *const Step) bool {
+    const ref = step.uses orelse return false;
+    for (untrusted_output_actions) |name| {
+        if (isNamedAction(ref, name)) return true;
+    }
+    return false;
+}
+
 /// A step taints its outputs when the command that writes `$GITHUB_OUTPUT`
 /// carries an untrusted value: interpolated on the same line, or read back from
 /// an `env:` entry that holds one. Binding to `env:` is what makes the capturing
 /// step itself safe, so the taint has to travel to whoever expands the output
 /// instead (#273).
 ///
+/// An action listed in `untrusted_output_actions` taints every output of that
+/// step: the value never appears as a `${{ github.* }}` context (#535).
+///
 /// Only the writing line is read, so a value the step captured for some other
 /// purpose does not taint an unrelated output. A write spread over several lines
 /// (a heredoc) is not followed.
 fn stepTaintsItsOutputs(step: *const Step, table: ContextTable) bool {
     if (step.id == null) return false;
+    if (stepProducesUntrustedActionOutput(step)) return true;
     const run_body = step.run orelse return false;
 
     var lines = std.mem.splitScalar(u8, run_body, '\n');
@@ -609,25 +686,153 @@ fn hasUntrustedExpr(s: []const u8, table: ContextTable) bool {
     return false;
 }
 
-/// SEC002 for action inputs executed as code: `actions/github-script` runs `with.script`
-/// as JavaScript, so it carries the same injection risk as `run:`.
+/// SEC002 for action inputs executed as code. Each row is an action that
+/// interpolates a `with:` value into a shell, JS, or interpreter; the same
+/// injection as `run:`. github-script's fix is JS (`process.env`); the
+/// others bind `$VAR` like `run:` except python, which has no shell spelling.
+const CodeExecutingInput = struct {
+    action: []const u8,
+    input: []const u8,
+    js: bool = false,
+    shell: ?env_binding.Shell = .posix,
+};
+
+const code_executing_inputs = [_]CodeExecutingInput{
+    .{ .action = "actions/github-script", .input = "script", .js = true, .shell = null },
+    .{ .action = "azure/cli", .input = "inlineScript" },
+    .{ .action = "azure/powershell", .input = "inlineScript", .shell = .pwsh },
+    .{ .action = "nick-fields/retry", .input = "command" },
+    .{ .action = "addnab/docker-run-action", .input = "run" },
+    .{ .action = "appleboy/ssh-action", .input = "script" },
+    .{ .action = "jannekem/run-python-script-action", .input = "script", .shell = null },
+};
+
 fn checkScriptInputInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
-    if (!isAction(ref, "actions/github-script")) return;
     const with_map = step.with orelse return;
-    const input = getWithInput(with_map, "script") orelse return;
-    checkContextsInString(input.value, withAnchor(step, input.key), table, "SEC002", .@"error", "script injection: untrusted context used in actions/github-script script: input", script_injection_fix_hint, list, null);
+    for (code_executing_inputs) |entry| {
+        if (!isNamedAction(ref, entry.action)) continue;
+        const input = getWithInput(with_map, entry.input) orelse return;
+        const occs = taintedScriptOccurrences(table, input.value, list.fixAllocator());
+        const fix = if (entry.js)
+            env_binding.buildScriptFix(list, step, input.key, input.value, &occs, script_env_binding_description)
+        else if (entry.shell) |sh|
+            env_binding.buildWithValueFix(list, step, input.key, input.value, sh, &occs, env_binding_description)
+        else
+            null;
+        checkContextsInString(
+            input.value,
+            withAnchor(step, input.key),
+            table,
+            "SEC002",
+            .@"error",
+            if (entry.js)
+                "script injection: untrusted context used in actions/github-script script: input"
+            else
+                "script injection: untrusted context used in a code-executing action input",
+            script_injection_fix_hint,
+            list,
+            fix,
+        );
+        return;
+    }
+}
+
+/// A local composite that interpolates `${{ inputs.<name> }}` in `run:` or a
+/// github-script `script:` is the same injection as writing that `with:` value
+/// into the caller's `run:`. Reported on the caller; remote actions are not
+/// opened (#536).
+fn checkLocalActionInputInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
+    const action = step.uses orelse return;
+    if (!action.is_local) return;
+    if (!local_action.isActive()) return;
+    const with_map = step.with orelse return;
+    const meta = switch (local_action.resolve(action.raw)) {
+        .found => |m| m,
+        else => return,
+    };
+    if (meta.script_bodies.len == 0) return;
+
+    var it = with_map.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const value = entry.value_ptr.*;
+        if (!interpolatesInput(meta.script_bodies, key)) continue;
+        checkContextsInString(
+            value,
+            withAnchor(step, key),
+            table,
+            "SEC002",
+            .@"error",
+            "script injection: untrusted context used in a local composite action input",
+            script_injection_fix_hint,
+            list,
+            null,
+        );
+    }
+}
+
+fn interpolatesInput(bodies: []const []const u8, name: []const u8) bool {
+    for (bodies) |body| {
+        var it: ExprIter = .{ .s = body };
+        while (it.next()) |e| {
+            if (exprReferencesInput(std.mem.trim(u8, e.inner, " \t\n\r"), name)) return true;
+        }
+    }
+    return false;
+}
+
+fn exprReferencesInput(expr: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (i < expr.len) {
+        if (expr[i] == '\'') {
+            i = skipStringLiteral(expr, i);
+            continue;
+        }
+        const starts_path = isIdentStart(expr[i]) and (i == 0 or !isIdentChar(expr[i - 1]));
+        if (!starts_path) {
+            i += 1;
+            continue;
+        }
+        const path = parseContextPath(expr, i);
+        if (path.len >= 2 and
+            segmentMatches(path.segments[0], "inputs") and
+            segmentMatches(path.segments[1], name)) return true;
+        i = if (path.end > i) path.end else i + 1;
+    }
+    return false;
+}
+
+const script_env_binding_description = "bind the expression to the step's env: and read it as process.env";
+
+fn taintedScriptOccurrences(
+    table: ContextTable,
+    script: []const u8,
+    allocator: std.mem.Allocator,
+) env_binding.Occurrences {
+    var occs: env_binding.Occurrences = .{ .buf = undefined };
+    var it: ExprIter = .{ .s = script };
+    while (it.next()) |e| {
+        if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), table)) continue;
+        if (returnsBooleanBuiltin(allocator, e.inner)) continue;
+        occs.append(.{ .offset = e.match.offset, .len = e.match.len });
+    }
+    return occs;
 }
 
 /// Match `owner/repo` against a marketplace action reference. A nested path is a
 /// different action, and GitHub resolves owner/repo case-insensitively.
-fn isAction(ref: ActionRef, comptime owner_repo: []const u8) bool {
-    const slash = comptime std.mem.findScalar(u8, owner_repo, '/').?;
+fn isNamedAction(ref: ActionRef, owner_repo: []const u8) bool {
+    const slash = std.mem.findScalar(u8, owner_repo, '/') orelse return false;
     const owner = ref.owner orelse return false;
     const repo = ref.repo orelse return false;
     return ref.path == null and
         std.ascii.eqlIgnoreCase(owner, owner_repo[0..slash]) and
         std.ascii.eqlIgnoreCase(repo, owner_repo[slash + 1 ..]);
+}
+
+fn isAction(ref: ActionRef, comptime owner_repo: []const u8) bool {
+    return isNamedAction(ref, owner_repo);
 }
 
 /// A `with:` entry as written: `key` is the scalar the source spells, so a
@@ -717,37 +922,69 @@ const privileged_pr_head_events = [_]EventType{
 };
 
 fn hasPrivilegedPRHeadTrigger(wf: *const Workflow) bool {
-    return privilegedPRHeadMessage(wf) != null;
+    return privilegedPRHeadMessageKind(wf, .exploit) != null;
 }
 
-/// The SEC005 message for the first such trigger the workflow declares, or
-/// null when it declares none. The trigger is named in the text so a
-/// `pull_request_review` finding does not read as if it were about
-/// `pull_request_target`.
-fn privilegedPRHeadMessage(wf: *const Workflow) ?[]const u8 {
+/// The SEC005 message for the first such trigger the workflow declares.
+/// The trigger is named in the text so a `pull_request_review` finding
+/// does not read as if it were about `pull_request_target`.
+const PrHeadKind = enum { exploit, refused, bypassed };
+
+fn privilegedPRHeadMessageKind(wf: *const Workflow, kind: PrHeadKind) ?[]const u8 {
     inline for (privileged_pr_head_events) |event| {
         if (wf.hasEvent(event)) {
-            return "dangerous: " ++ @tagName(event) ++ " workflow checks out PR head, allowing arbitrary code execution from forks";
+            return switch (kind) {
+                .exploit => "dangerous: " ++ @tagName(event) ++ " workflow checks out PR head, allowing arbitrary code execution from forks",
+                .refused => @tagName(event) ++ " workflow requests a fork PR checkout that this actions/checkout version refuses at runtime",
+                .bypassed => "dangerous: " ++ @tagName(event) ++ " workflow sets allow-unsafe-pr-checkout and checks out PR head, allowing arbitrary code execution from forks",
+            };
         }
     }
     return null;
 }
 
+/// The checkout action only refuses fork PR fetches on `pull_request_target`
+/// (and `workflow_run`, which SEC009 owns). `pull_request_review*` still
+/// executes the fetch, so a gate on the action is not a defense there.
+fn checkoutGateCoversPrivilegedPrHead(wf: *const Workflow) bool {
+    if (wf.hasEvent(.pull_request_review) or wf.hasEvent(.pull_request_review_comment)) return false;
+    return wf.hasEvent(.pull_request_target);
+}
+
 fn checkDangerousPRTarget(wf: *const Workflow, list: *DiagnosticList) void {
-    const message = privilegedPRHeadMessage(wf) orelse return;
+    if (!hasPrivilegedPRHeadTrigger(wf)) return;
+    const gate_covers = checkoutGateCoversPrivilegedPrHead(wf);
 
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            const input = checkoutCodeInput(step, isPRHeadValue) orelse continue;
-            if (forkGuarded(list.allocator, job, step, pull_request_head_anchors)) continue;
-            list.append(.{
-                .rule_id = "SEC005",
-                .severity = .@"error",
-                .message = message,
-                .span = withAnchor(step, input.key).whole(),
-                .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
-            }) catch return;
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            list: *DiagnosticList,
+            gate_covers: bool,
+            pub fn visit(self: @This(), step: *const Step) void {
+                if (checkoutCodeInput(step, isPRHeadValue)) |input| {
+                    if (forkGuarded(self.list.allocator, self.job, step, pull_request_head_anchors)) return;
+                    const kind: PrHeadKind = if (self.gate_covers) switch (checkout_capability.unsafePrCheckout(step)) {
+                        .blocked => .refused,
+                        .bypassed => .bypassed,
+                        .unknown => .exploit,
+                    } else .exploit;
+                    self.list.append(.{
+                        .rule_id = "SEC005",
+                        .severity = .@"error",
+                        .message = privilegedPRHeadMessageKind(self.wf, kind).?,
+                        .span = withAnchor(step, input.key).whole(),
+                        .fix_hint = switch (kind) {
+                            .refused => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
+                            .exploit, .bypassed => "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
+                        },
+                    }) catch return;
+                    return;
+                }
+                reportShellFetchIf(self.wf, self.job, step, .sec005, self.list);
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list, .gate_covers = gate_covers });
     }
 }
 
@@ -800,6 +1037,7 @@ fn isWorkflowRunValue(value: []const u8) bool {
         "github.event.workflow_run.head_",
         "github.event.workflow_run.display_title",
         "github.event.workflow_run.pull_requests",
+        "github.event.workflow_run.id",
     });
 }
 
@@ -811,6 +1049,170 @@ fn containsAnyMarker(value: []const u8, markers: []const []const u8) bool {
         if (std.mem.find(u8, value, marker) != null) return true;
     }
     return false;
+}
+
+/// Contexts a `git` / `gh` fetch inside `run:` may not take (#532). Prefix
+/// table so the formal extractor (`shell_fetch_contexts`) sees the same set
+/// the rules scan; trigger ownership still splits SEC005 / SEC009 / SEC021.
+const shell_fetch_contexts = [_][]const u8{
+    "github.event.pull_request.head",
+    "github.event.pull_request.merge_commit_sha",
+    "github.event.pull_request.number",
+    "github.event.number",
+    "github.head_ref",
+    "github.event.issue.number",
+    "github.event.workflow_run.id",
+    "github.event.workflow_run.head_branch",
+    "github.event.workflow_run.head_sha",
+    "github.event.workflow_run.head_repository",
+    "github.event.workflow_run.pull_requests",
+    "inputs",
+    "github.event.inputs",
+    "github.event.client_payload",
+};
+
+const shell_fetch_commands = [_][]const []const u8{
+    &.{ "git", "fetch" },
+    &.{ "git", "checkout" },
+    &.{ "git", "clone" },
+    &.{ "git", "pull" },
+    &.{ "gh", "pr", "checkout" },
+    &.{ "gh", "run", "download" },
+};
+
+const ShellFetchOwner = enum { sec005, sec009, sec021 };
+
+fn isShellBreak(c: u8) bool {
+    return switch (c) {
+        ' ', '\t', '\n', '\r', '"', '\'', '`', '|', '&', ';', '<', '>', '(', ')', '{', '}', '=', ',' => true,
+        else => false,
+    };
+}
+
+fn isShellWordAt(s: []const u8, i: usize, word: []const u8) bool {
+    if (i > 0 and !isShellBreak(s[i - 1])) return false;
+    if (!std.mem.startsWith(u8, s[i..], word)) return false;
+    const after = i + word.len;
+    return after >= s.len or isShellBreak(s[after]);
+}
+
+fn containsSequentialShellWords(s: []const u8, tokens: []const []const u8) bool {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        if (!isShellWordAt(s, i, tokens[0])) continue;
+        var j = i + tokens[0].len;
+        const rest = tokens[1..];
+        for (rest) |tok| {
+            const next = std.mem.findNonePos(u8, s, j, " \t") orelse break;
+            if (next == j) break;
+            if (!isShellWordAt(s, next, tok)) break;
+            j = next + tok.len;
+        } else return true;
+    }
+    return false;
+}
+
+fn isShellFetchCommand(run: []const u8) bool {
+    for (shell_fetch_commands) |tokens| {
+        if (containsSequentialShellWords(run, tokens)) return true;
+    }
+    return false;
+}
+
+fn envLookup(step: *const Step, job: *const Job, wf: *const Workflow, key: []const u8) ?[]const u8 {
+    const maps = [_]?workflow_types.StringMap{ step.env, job.env, wf.env };
+    for (maps) |maybe| {
+        const map = maybe orelse continue;
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, key)) return entry.value_ptr.*;
+        }
+    }
+    return null;
+}
+
+fn shellFetchUntrustedValue(run: []const u8, step: *const Step, job: *const Job, wf: *const Workflow) ?[]const u8 {
+    const prefixes: ContextTable = .{ .prefix = &shell_fetch_contexts };
+    if (hasUntrustedExpr(run, prefixes)) return run;
+
+    var names: TaintedNames = .{ .buf = undefined };
+    addTaintedEnvKeys(&names, wf.env, prefixes);
+    addTaintedEnvKeys(&names, job.env, prefixes);
+    addTaintedEnvKeys(&names, step.env, prefixes);
+    if (names.len == 0) return null;
+
+    if (hasUntrustedExpr(run, .{ .prefix = &.{}, .tainted_env = names.slice() })) {
+        for (names.slice()) |key| {
+            const one = [_][]const u8{key};
+            if (hasUntrustedExpr(run, .{ .prefix = &.{}, .tainted_env = &one })) return envLookup(step, job, wf, key);
+        }
+    }
+    for (names.slice()) |key| {
+        if (referencesShellVar(run, key)) return envLookup(step, job, wf, key);
+    }
+    return null;
+}
+
+fn shellFetchOwnedBySec021(wf: *const Workflow, value: []const u8) bool {
+    if (ownedByNeighbourRule(wf, value)) return false;
+    const contexts = untrustedRefContexts(wf);
+    if (containsUntrustedCheckoutContext(value, contexts.slice())) return true;
+    // `git fetch` of caller-supplied `inputs.*` picks the code even when
+    // #219 leaves the same value out of `actions/checkout` `with:` (#532).
+    if ((wf.hasEvent(.workflow_dispatch) or wf.hasEvent(.workflow_call)) and
+        hasUntrustedExpr(value, .{ .prefix = &bare_inputs_contexts })) return true;
+    return false;
+}
+
+fn reportShellFetchIf(
+    wf: *const Workflow,
+    job: *const Job,
+    step: *const Step,
+    owner: ShellFetchOwner,
+    list: *DiagnosticList,
+) void {
+    const run_body = step.run orelse return;
+    if (!isShellFetchCommand(run_body)) return;
+    const value = shellFetchUntrustedValue(run_body, step, job, wf) orelse return;
+    switch (owner) {
+        .sec005 => {
+            if (!isPRHeadValue(value)) return;
+            if (forkGuarded(list.allocator, job, step, pull_request_head_anchors)) return;
+            list.append(.{
+                .rule_id = "SEC005",
+                .severity = .@"error",
+                .message = privilegedPRHeadMessageKind(wf, .exploit).?,
+                .span = spans.runAnchor(step).whole(),
+                .fix_hint = "avoid checking out PR head in a workflow that runs with the base repository's privileges, or use a separate unprivileged workflow",
+            }) catch return;
+        },
+        .sec009 => {
+            if (!isWorkflowRunValue(value)) return;
+            if (forkGuarded(list.allocator, job, step, workflow_run_anchors)) return;
+            if (hasPrivilegedPRHeadTrigger(wf) and isPRHeadValue(value)) return;
+            list.append(.{
+                .rule_id = "SEC009",
+                .severity = .@"error",
+                .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                .span = spans.runAnchor(step).whole(),
+                .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+            }) catch return;
+        },
+        .sec021 => {
+            if (!shellFetchOwnedBySec021(wf, value)) return;
+            const chatops = std.mem.find(u8, value, "github.event.issue.number") != null;
+            list.append(.{
+                .rule_id = "SEC021",
+                .severity = .@"error",
+                .message = if (chatops)
+                    "a git/gh fetch in run: resolves its ref from the issue number, so the commenting user picks which pull request's code runs"
+                else
+                    "a git/gh fetch in run: resolves its ref from untrusted context, letting the triggering user pick the code that runs",
+                .span = spans.runAnchor(step).whole(),
+                .fix_hint = "check out a ref the repository controls, or validate the value against an allowlist before fetching it",
+            }) catch return;
+        },
+    }
 }
 
 /// SEC006 reports a weak gate, not code execution: the expression engine only
@@ -953,9 +1355,16 @@ fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) v
     const contexts = runTaintContexts(wf);
     const table: ContextTable = .{ .prefix = contexts.slice() };
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            checkGithubEnvInjection(step, table, list, env_binding.resolveShell(step, job, wf));
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            table: ContextTable,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                checkGithubEnvInjection(step, self.table, self.list, env_binding.resolveShell(step, self.job, self.wf));
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .table = table, .list = list });
     }
 }
 
@@ -977,7 +1386,7 @@ fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *Diagno
         .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
         // Binding the untrusted value to `env:` removes the interpolation the
         // write is built from; the write itself stays as the author wrote it.
-        .fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table)),
+        .fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table, list.fixAllocator())),
     }) catch return;
 }
 
@@ -1142,12 +1551,19 @@ fn ownedByNeighbourRule(wf: *const Workflow, value: []const u8) bool {
 
 fn checkUntrustedCheckoutRef(wf: *const Workflow, list: *DiagnosticList) void {
     const contexts = untrustedRefContexts(wf);
-    if (contexts.len == 0) return;
 
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            checkStepCheckoutRefs(wf, step, contexts.slice(), list);
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            contexts: []const []const u8,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                if (self.contexts.len > 0) checkStepCheckoutRefs(self.wf, step, self.contexts, self.list);
+                reportShellFetchIf(self.wf, self.job, step, .sec021, self.list);
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .contexts = contexts.slice(), .list = list });
     }
 }
 
@@ -1192,23 +1608,71 @@ fn checkWorkflowRunUntrustedCheckout(wf: *const Workflow, list: *DiagnosticList)
     if (!wf.hasEvent(.workflow_run)) return;
 
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            const input = checkoutCodeInput(step, isWorkflowRunValue) orelse continue;
-            if (forkGuarded(list.allocator, job, step, workflow_run_anchors)) continue;
-            // A workflow may declare both triggers, and a checkout may name
-            // both a PR head and a workflow_run ref. SEC005 is the more
-            // specific finding, so it owns the step: reporting both puts two
-            // diagnostics on one mistake (#224).
-            if (hasPrivilegedPRHeadTrigger(wf) and checkoutCodeInput(step, isPRHeadValue) != null) continue;
-            list.append(.{
-                .rule_id = "SEC009",
-                .severity = .@"error",
-                .message = "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
-                .span = withAnchor(step, input.key).whole(),
-                .fix_hint = "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
-            }) catch return;
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                if (checkoutCodeInput(step, isWorkflowRunValue)) |input| {
+                    if (forkGuarded(self.list.allocator, self.job, step, workflow_run_anchors)) return;
+                    if (hasPrivilegedPRHeadTrigger(self.wf) and checkoutCodeInput(step, isPRHeadValue) != null) return;
+                    const kind = checkout_capability.unsafePrCheckout(step);
+                    const message: []const u8 = switch (kind) {
+                        .blocked => "workflow_run job requests a checkout of a triggering-workflow ref that this actions/checkout version refuses for fork pull requests at runtime",
+                        .bypassed => "dangerous: workflow_run job sets allow-unsafe-pr-checkout and checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                        .unknown => "dangerous: workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution when the triggering workflow is influenced by untrusted code such as forks",
+                    };
+                    self.list.append(.{
+                        .rule_id = "SEC009",
+                        .severity = .@"error",
+                        .message = message,
+                        .span = withAnchor(step, input.key).whole(),
+                        .fix_hint = switch (kind) {
+                            .blocked => "this checkout fails at runtime for fork PRs; check out a ref the repository controls, or set allow-unsafe-pr-checkout: true only after reviewing the risks",
+                            .bypassed, .unknown => "if the triggering workflow may be influenced by untrusted code such as forks, do not check out refs from workflow_run; instead, perform the checkout in a separate pull_request workflow with minimal permissions and pass artifacts forward",
+                        },
+                    }) catch return;
+                    return;
+                }
+                reportShellFetchIf(self.wf, self.job, step, .sec009, self.list);
+                reportArtifactRunIdIf(self.job, step, self.list);
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list });
     }
+}
+
+/// Contexts an artifact download's `run-id` / `run_id` may not take (#533).
+const artifact_run_id_contexts = [_][]const u8{
+    "github.event.workflow_run.id",
+};
+
+const artifact_run_id_inputs = [_]struct { action: []const u8, input: []const u8 }{
+    .{ .action = "actions/download-artifact", .input = "run-id" },
+    .{ .action = "dawidd6/action-download-artifact", .input = "run_id" },
+};
+
+fn artifactRunIdInput(step: *const Step) ?WithInput {
+    const ref = step.uses orelse return null;
+    const with_map = step.with orelse return null;
+    for (artifact_run_id_inputs) |entry| {
+        if (!isNamedAction(ref, entry.action)) continue;
+        return getWithInput(with_map, entry.input);
+    }
+    return null;
+}
+
+fn reportArtifactRunIdIf(job: *const Job, step: *const Step, list: *DiagnosticList) void {
+    const input = artifactRunIdInput(step) orelse return;
+    if (!hasUntrustedExpr(input.value, .{ .prefix = &artifact_run_id_contexts })) return;
+    if (forkGuarded(list.allocator, job, step, workflow_run_anchors)) return;
+    list.append(.{
+        .rule_id = "SEC009",
+        .severity = .@"error",
+        .message = "dangerous: workflow_run job downloads an artifact from the triggering run, which may unpack attacker-produced files when that run was influenced by untrusted code such as forks",
+        .span = withAnchor(step, input.key).whole(),
+        .fix_hint = "treat the artifact as untrusted data and do not execute it, or gate the job on github.event.workflow_run.head_repository.full_name == github.repository so fork runs cannot reach this download",
+    }) catch return;
 }
 
 /// Attributes of the triggering run that a fork decides. A `workflow_run` job
@@ -1309,13 +1773,18 @@ fn checkWorkflowRunBranchGate(wf: *const Workflow, list: *DiagnosticList) void {
             if (!job_verified) reportWorkflowRunBranchGate(cond, ifAnchorJob(job), list);
         }
 
-        for (job.steps) |*step| {
-            const step_cond = step.if_condition orelse continue;
-            // A step only runs when its job's condition already passed, so a
-            // trust check on the job covers every step inside it.
-            if (job_verified or hasTrustAnchor(list.allocator, step_cond, workflow_run_anchors)) continue;
-            reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), list);
-        }
+        const Ctx = struct {
+            job_verified: bool,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                const step_cond = step.if_condition orelse return;
+                // A step only runs when its job's condition already passed, so a
+                // trust check on the job covers every step inside it.
+                if (self.job_verified or hasTrustAnchor(self.list.allocator, step_cond, workflow_run_anchors)) return;
+                reportWorkflowRunBranchGate(step_cond, ifAnchorStep(step), self.list);
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .job_verified = job_verified, .list = list });
     }
 }
 
@@ -1351,7 +1820,10 @@ fn conditionExpressionSource(cond: []const u8) []const u8 {
 fn anchorHolds(node: expressions.ExprNode, negated: bool, anchors: TrustAnchors) bool {
     switch (node.kind) {
         // `!fork` asserts what `fork == false` does.
-        .context_access => return negated and pathIsAnchor(parseContextPath(node.value, 0), anchors.fork_flag),
+        .context_access => {
+            const path = parseContextPath(node.value, 0);
+            return negated and pathIsAnchor(&path, anchors.fork_flag);
+        },
         .unary_op => {
             if (node.children.len != 1) return false;
             return anchorHolds(node.children[0], !negated, anchors);
@@ -1384,16 +1856,18 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
     if (ref.kind != .context_access) return false;
     const path = parseContextPath(ref.value, 0);
     // Comparing the gated subtree against itself asserts nothing about it.
-    if (other.kind == .context_access and
-        pathMatchesPattern(parseContextPath(other.value, 0), anchors.self_root)) return false;
+    if (other.kind == .context_access) {
+        const other_path = parseContextPath(other.value, 0);
+        if (pathMatchesPattern(&other_path, anchors.self_root)) return false;
+    }
 
     for (anchors.identity) |anchor| {
         // `head_repository.full_name != github.repository` selects the fork
         // runs instead of excluding them, so only the equality anchors.
-        if (pathIsAnchor(path, anchor)) return asserts_equal;
+        if (pathIsAnchor(&path, anchor)) return asserts_equal;
     }
 
-    if (pathIsAnchor(path, anchors.fork_flag)) {
+    if (pathIsAnchor(&path, anchors.fork_flag)) {
         if (other.kind != .boolean_literal) return false;
         // `fork == false` and `fork != true` both say the run is the base
         // repository's; the two inversions of those gate *for* forks.
@@ -1401,7 +1875,7 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
     }
 
     const event_context = anchors.event_context orelse return false;
-    if (!pathIsAnchor(path, event_context)) return false;
+    if (!pathIsAnchor(&path, event_context)) return false;
     // A fork cannot cause a `push` run in the base repository, so the branch
     // name in one is the base repository's. The compared literal is what makes
     // it an anchor, and a fork-reachable event makes it none.
@@ -1413,15 +1887,18 @@ fn isTrustAnchorOperand(ref: expressions.ExprNode, other: expressions.ExprNode, 
 /// where a prefix and a wildcard are the safe direction. Here they are not:
 /// `head_repository.owner.type` is `User` for every fork, and a bracket access
 /// parses to a wildcard whose name the linter does not know.
-fn pathIsAnchor(path: ContextPath, pattern: []const u8) bool {
+fn pathIsAnchor(path: *const ContextPath, pattern: []const u8) bool {
+    var start: usize = 0;
     var idx: usize = 0;
-    var it = std.mem.splitScalar(u8, pattern, '.');
-    while (it.next()) |pat_seg| : (idx += 1) {
+    while (true) {
         if (idx >= path.len) return false;
         if (std.mem.eql(u8, path.segments[idx], wildcard_segment)) return false;
-        if (!std.ascii.eqlIgnoreCase(path.segments[idx], pat_seg)) return false;
+        const dot = std.mem.findScalarPos(u8, pattern, start, '.') orelse pattern.len;
+        if (!std.ascii.eqlIgnoreCase(path.segments[idx], pattern[start..dot])) return false;
+        if (dot == pattern.len) return idx + 1 == path.len;
+        start = dot + 1;
+        idx += 1;
     }
-    return idx == path.len;
 }
 
 fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
@@ -1435,11 +1912,84 @@ fn checkSecretsInherit(job: *const Job, list: *DiagnosticList) void {
                     .message = "reusable workflow call uses 'secrets: inherit', which passes all secrets implicitly",
                     .span = job.span,
                     .fix_hint = "explicitly specify only the secrets the called workflow needs instead of using 'inherit'",
+                    .fix = buildSecretsInheritFix(list, job),
                 }) catch return;
             },
             .map => {},
         }
     }
+}
+
+/// GitHub secret names are `[A-Za-z_][A-Za-z0-9_]*`. Anything else cannot be
+/// written as an unquoted mapping key next to `${{ secrets.<name> }}`.
+fn isSecretYamlKey(name: []const u8) bool {
+    if (name.len == 0) return false;
+    switch (name[0]) {
+        'A'...'Z', 'a'...'z', '_' => {},
+        else => return false,
+    }
+    for (name[1..]) |c| {
+        switch (c) {
+            'A'...'Z', 'a'...'z', '0'...'9', '_' => {},
+            else => return false,
+        }
+    }
+    return true;
+}
+
+fn buildSecretsInheritFix(list: *DiagnosticList, job: *const Job) ?Fix {
+    const uses = job.uses orelse return null;
+    const span = job.secrets_inherit_span orelse return null;
+    if (job.job_indent == 0) return null;
+
+    var arena = std.heap.ArenaAllocator.init(list.allocator);
+    defer arena.deinit();
+    const called = called_workflow.load(arena.allocator(), uses) orelse return null;
+    if (called.secrets.len == 0) return null;
+
+    const child_indent: usize = job.job_indent - 1 + 2;
+    const prefix = ": ${{ secrets.";
+    const suffix = " }}";
+
+    var total: usize = 0;
+    for (called.secrets) |secret| {
+        if (!isSecretYamlKey(secret.name)) return null;
+        total += 1 + child_indent + secret.name.len + prefix.len + secret.name.len + suffix.len;
+    }
+
+    const alloc = list.fixAllocator();
+    const buf = alloc.alloc(u8, total) catch return null;
+    var i: usize = 0;
+    for (called.secrets) |secret| {
+        buf[i] = '\n';
+        i += 1;
+        @memset(buf[i..][0..child_indent], ' ');
+        i += child_indent;
+        @memcpy(buf[i..][0..secret.name.len], secret.name);
+        i += secret.name.len;
+        @memcpy(buf[i..][0..prefix.len], prefix);
+        i += prefix.len;
+        @memcpy(buf[i..][0..secret.name.len], secret.name);
+        i += secret.name.len;
+        @memcpy(buf[i..][0..suffix.len], suffix);
+        i += suffix.len;
+    }
+
+    // `secrets: inherit` is `": "` plus the value. Eating the space leaves
+    // `secrets:` as a block mapping parent instead of `secrets: `.
+    if (span.start_byte == 0) return null;
+    const edits = alloc.alloc(Edit, 1) catch return null;
+    edits[0] = .{
+        .start_byte = span.start_byte - 1,
+        .end_byte = span.end_byte,
+        .replacement = buf,
+        .expects = " inherit",
+    };
+    return .{
+        .description = "expand secrets: inherit into the called workflow's declared secrets",
+        .safety = .unsafe,
+        .edits = edits,
+    };
 }
 
 fn checkOverprovisionedSecrets(step: *const Step, list: *DiagnosticList) void {
@@ -1516,18 +2066,27 @@ fn checkHardcodedContainerCredentials(job: *const Job, list: *DiagnosticList) vo
     if (job.container) |container| {
         checkCredentialsForHardcoded(container.credentials, job.span, list);
     }
-    for (job.steps) |*step| {
-        const ref = step.uses orelse continue;
-        if (!ref.is_docker) continue;
-        if (isImagePinned(ref.raw)) continue;
-        list.append(.{
-            .rule_id = "SC001",
-            .severity = .warning,
-            .message = "container action image is not pinned to a SHA256 digest",
-            .span = step.uses_value_span orelse step.span,
-            .fix_hint = "pin the image using a digest reference, e.g. docker://image@sha256:abc123...",
-        }) catch return;
-    }
+    const Ctx = struct {
+        list: *DiagnosticList,
+        pub fn visit(self: @This(), step: *const Step) void {
+            const ref = step.uses orelse return;
+            if (!ref.is_docker) return;
+            if (isImagePinned(ref.raw)) return;
+            const meta: ?ScalarValueMeta = if (step.uses_value_span) |vs|
+                if (step.uses_value_style) |style| .{ .value_span = vs, .style = style } else null
+            else
+                null;
+            self.list.append(.{
+                .rule_id = "SC001",
+                .severity = .warning,
+                .message = "container action image is not pinned to a SHA256 digest",
+                .span = step.uses_value_span orelse step.span,
+                .fix_hint = "pin the image using a digest reference, e.g. docker://image@sha256:abc123...",
+                .fix = image_digest.buildPinFix(self.list, ref.raw, meta, step.uses_value_ends_line),
+            }) catch return;
+        }
+    };
+    workflow_types.walkSteps(job.steps, Ctx{ .list = list });
     for (job.services) |service| {
         checkCredentialsForHardcoded(service.credentials, job.span, list);
     }
@@ -1593,9 +2152,15 @@ fn exprIsNonTokenSecretRef(inner: []const u8) bool {
 /// the step runs under, which needs `runs-on` and both `defaults:` levels.
 fn checkSecretsOutsideEnvWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
-        for (job.steps) |*step| {
-            checkSecretsOutsideEnv(step, list, env_binding.resolveShell(step, job, wf));
-        }
+        const Ctx = struct {
+            wf: *const Workflow,
+            job: *const Job,
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                checkSecretsOutsideEnv(step, self.list, env_binding.resolveShell(step, self.job, self.wf));
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .list = list });
     }
 }
 
@@ -1769,16 +2334,63 @@ fn checkCachePoisoning(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         const job_at_risk = has_release_trigger or isDeployJob(job);
         if (!job_at_risk) continue;
+        if (!workflow_types.jobAllowsCache(wf, job)) continue;
 
-        for (job.steps) |*step| {
-            const hint = cachePoisoningHint(step) orelse continue;
-            list.append(.{
-                .rule_id = "SEC016",
-                .severity = .warning,
-                .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
-                .span = spans.usesSpan(step),
-                .fix_hint = hint,
-            }) catch return;
+        const Ctx = struct {
+            list: *DiagnosticList,
+            pub fn visit(self: @This(), step: *const Step) void {
+                const hint = cachePoisoningHint(step) orelse return;
+                self.list.append(.{
+                    .rule_id = "SEC016",
+                    .severity = .warning,
+                    .message = "cache usage in release/deploy workflow risks cache poisoning from less-privileged workflows",
+                    .span = spans.usesSpan(step),
+                    .fix_hint = hint,
+                }) catch return;
+            }
+        };
+        workflow_types.walkSteps(job.steps, Ctx{ .list = list });
+    }
+}
+
+/// Events whose default cache access is restore-only. An explicit
+/// `cache-mode: write` / `write-only` overrides that default and is what
+/// GitHub itself annotates as a poisoning risk.
+fn hasLowTrustCacheTrigger(wf: *const Workflow) bool {
+    return wf.hasEvent(.pull_request_target) or
+        wf.hasEvent(.issue_comment) or
+        wf.hasEvent(.workflow_run);
+}
+
+fn declaredModeGrantsWrite(mode: ?[]const u8) bool {
+    const raw = mode orelse return false;
+    const cap = workflow_types.CacheCapability.fromMode(raw) orelse return false;
+    return cap.can_save;
+}
+
+fn reportUntrustedCacheWrite(list: *DiagnosticList, mode: []const u8, span: ?Span) void {
+    list.append(.{
+        .rule_id = "SEC024",
+        .severity = .warning,
+        .message = std.fmt.allocPrint(
+            list.fixAllocator(),
+            "cache-mode \"{s}\" grants cache writes on a low-trust trigger; the default for these events is restore-only",
+            .{mode},
+        ) catch "cache-mode grants cache writes on a low-trust trigger",
+        .span = span orelse spans.workflow_head,
+        .fix_hint = "omit cache-mode to keep the restore-only default, or set 'cache-mode: read' / 'none'",
+    }) catch return;
+}
+
+fn checkUntrustedCacheWrite(wf: *const Workflow, list: *DiagnosticList) void {
+    if (!hasLowTrustCacheTrigger(wf)) return;
+
+    if (declaredModeGrantsWrite(wf.cache_mode)) {
+        reportUntrustedCacheWrite(list, wf.cache_mode.?, wf.cache_mode_span);
+    }
+    for (wf.jobs) |*job| {
+        if (declaredModeGrantsWrite(job.cache_mode)) {
+            reportUntrustedCacheWrite(list, job.cache_mode.?, job.cache_mode_span);
         }
     }
 }
@@ -1838,6 +2450,11 @@ fn cachePoisoningHint(step: *const Step) ?[]const u8 {
     if (isCacheAction(step)) return generic_cache_hint;
     const action_ref = step.uses orelse return null;
     const base = util.actionBaseName(action_ref.raw);
+    if (std.mem.eql(u8, base, "actions/setup-node")) {
+        if (!setup_node_cache.enabled(step)) return null;
+        if (setup_node_cache.usesAutoCache(step)) return setup_node_cache.auto_cache_hint;
+        return generic_cache_hint;
+    }
     for (cache_setup_actions) |setup| {
         if (!std.mem.eql(u8, base, setup.name)) continue;
         if (!setupCachingEnabled(step, setup)) return null;
@@ -1883,6 +2500,7 @@ fn checkConditionForBotActorCheck(cond: []const u8, anchor: Anchor, list: *Diagn
                 .severity = .warning,
                 .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
                 .span = anchor.whole(),
+                .fix = buildBotConditionFix(cond, anchor, list),
                 .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
             }) catch return;
         }
@@ -1896,8 +2514,57 @@ fn checkBotActorInString(s: []const u8, anchor: Anchor, list: *DiagnosticList) v
         .severity = .warning,
         .message = "spoofable bot check: github.actor can be impersonated by creating an account with the same name",
         .span = anchor.at(s, match.offset, match.len),
+        .fix = buildBotConditionFix(s, anchor, list),
         .fix_hint = "use github.event.sender.type == 'Bot' or GitHub's built-in Dependabot integration features instead",
     }) catch return;
+}
+
+fn buildBotConditionFix(cond: []const u8, anchor: Anchor, list: *DiagnosticList) ?Fix {
+    const token = anchor.scalar orelse return null;
+    const quote: []const u8 = switch (anchor.style) {
+        .plain => "",
+        .single_quoted => "'",
+        .double_quoted => "\"",
+        .literal, .folded => return null,
+    };
+    const alloc = list.fixAllocator();
+    // Scalar values retain YAML escapes; parse the expression after unescaping
+    // the surrounding single-quoted YAML scalar.
+    const decoded = if (anchor.style == .single_quoted)
+        std.mem.replaceOwned(u8, alloc, cond, "''", "'") catch return null
+    else
+        cond;
+    var parser = expressions.ExprParser.init(alloc, conditionExpressionSource(decoded));
+    const root = parser.parse() catch return null;
+    if (root.kind != .binary_op or root.children.len != 2) return null;
+    if (!std.mem.eql(u8, root.value, "==") and !std.mem.eql(u8, root.value, "!=")) return null;
+    const actor, const bot = if (root.children[0].kind == .context_access)
+        .{ root.children[0], root.children[1] }
+    else
+        .{ root.children[1], root.children[0] };
+    if (actor.kind != .context_access or bot.kind != .string_literal) return null;
+    if (!std.ascii.eqlIgnoreCase(actor.value, "github.actor") and
+        !std.ascii.eqlIgnoreCase(actor.value, "github.triggering_actor")) return null;
+    if (!std.mem.endsWith(u8, bot.value, "[bot]'")) return null;
+
+    const bot_literal: []const u8 = if (anchor.style == .single_quoted) "''Bot''" else "'Bot'";
+    const wrapped = std.mem.startsWith(u8, std.mem.trim(u8, decoded, " \t\r\n"), "${{");
+    const replacement = std.fmt.allocPrint(alloc, "{s}{s}github.event.sender.type {s} {s}{s}{s}", .{
+        quote, if (wrapped) "${{ " else "", root.value, bot_literal, if (wrapped) " }}" else "", quote,
+    }) catch return null;
+    const expected = std.mem.concat(alloc, u8, &.{ quote, cond, quote }) catch return null;
+    if (token.end_byte < token.start_byte or token.end_byte - token.start_byte != expected.len) return null;
+    const edits = alloc.dupe(Edit, &.{.{
+        .start_byte = token.start_byte,
+        .end_byte = token.end_byte,
+        .replacement = replacement,
+        .expects = expected,
+    }}) catch return null;
+    return .{
+        .description = "replace the named bot comparison with a generic sender type check",
+        .safety = .unsafe,
+        .edits = edits,
+    };
 }
 
 fn isActorBotExpr(inner: []const u8) bool {
@@ -1910,20 +2577,32 @@ fn containsActorBotCheck(expr: []const u8) bool {
     return std.mem.find(u8, expr, "[bot]") != null;
 }
 
+const ArtipackedUpload = struct {
+    any: bool = false,
+    runner_temp: bool = false,
+};
+
 fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
-    var has_upload_after = false;
-    var i = job.steps.len;
+    var upload = ArtipackedUpload{};
+    checkArtipackedSteps(job.steps, &upload, list);
+}
+
+fn checkArtipackedSteps(steps: []const Step, upload: *ArtipackedUpload, list: *DiagnosticList) void {
+    var i = steps.len;
     while (i > 0) {
         i -= 1;
-        const step = &job.steps[i];
+        const step = &steps[i];
+        checkArtipackedSteps(step.nestedSteps(), upload, list);
         if (step.uses) |ref| {
             if (isAction(ref, "actions/upload-artifact")) {
-                has_upload_after = true;
+                upload.any = true;
+                if (checkout_capability.uploadPathReachesRunnerTemp(step)) upload.runner_temp = true;
                 continue;
             }
 
-            if (has_upload_after and isAction(ref, "actions/checkout") and
-                classifyPersistCredentials(step) != .explicit_false)
+            if (isAction(ref, "actions/checkout") and
+                classifyPersistCredentials(step) != .explicit_false and
+                artipackedLeak(step, upload.*))
             {
                 var diag = Diagnostic{
                     .rule_id = "SEC015",
@@ -1941,6 +2620,13 @@ fn checkArtipacked(job: *const Job, list: *DiagnosticList) void {
             }
         }
     }
+}
+
+fn artipackedLeak(step: *const Step, upload: ArtipackedUpload) bool {
+    // v6+ stores the token under $RUNNER_TEMP. Uploading the workspace does
+    // not take that file unless `path:` names it.
+    if (checkout_capability.credentialsInRunnerTemp(step)) return upload.runner_temp;
+    return upload.any;
 }
 
 fn buildPersistCredentialsFalseFix(
@@ -1990,6 +2676,27 @@ fn classifyPersistCredentials(step: *const Step) PersistCredentialsState {
     return .not_set;
 }
 
+/// `owner` / `repositories` only pick which installation mints the token.
+/// The token still inherits that installation's full permission set unless a
+/// `permission-*` input is present (zizmor `github-app`, G29 / #552).
+fn checkGithubAppTokenUnscoped(step: *const Step, list: *DiagnosticList) void {
+    const ref = step.uses orelse return;
+    if (!isAction(ref, "actions/create-github-app-token")) return;
+    if (step.with) |with_map| {
+        for (with_map.keys()) |key| {
+            if (std.ascii.startsWithIgnoreCase(key, "permission-")) return;
+        }
+    }
+
+    list.append(.{
+        .rule_id = "SEC025",
+        .severity = .warning,
+        .message = "actions/create-github-app-token inherits the GitHub App installation's full permissions unless permission-* inputs scope the token",
+        .span = spans.usesSpan(step),
+        .fix_hint = "add permission-* inputs for the scopes this step needs (for example permission-issues: write); owner/repositories alone does not limit installation permissions",
+    }) catch return;
+}
+
 fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) void {
     const ref = step.uses orelse return;
     if (!isAction(ref, "actions/checkout")) return;
@@ -1997,7 +2704,7 @@ fn checkCheckoutPersistCredentials(step: *const Step, list: *DiagnosticList) voi
     const state = classifyPersistCredentials(step);
     if (state == .explicit_false) return;
 
-    const message_base = "actions/checkout persists GITHUB_TOKEN in .git/config by default; subsequent steps can read the token";
+    const message_base = "actions/checkout persists credentials by default; later steps can still use the token";
     const message = if (state == .explicit_true)
         message_base ++ " (explicitly set to true)"
     else
@@ -2096,6 +2803,16 @@ fn checkTyposquatAction(step: *const Step, list: *DiagnosticList) void {
     }
 }
 
+fn returnsBooleanBuiltin(allocator: std.mem.Allocator, expr: []const u8) bool {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var parser = expressions.ExprParser.init(arena.allocator(), expr);
+    const root = parser.parse() catch return false;
+    if (root.kind != .function_call) return false;
+    const sig = expr_catalog.lookupFunction(root.value) orelse return false;
+    return sig.ret.kind == .bool and sig.acceptsArgCount(root.children.len);
+}
+
 /// Every offending expression is reported separately: a single `run:` block can
 /// interpolate several untrusted values, and each one is its own injection
 /// point with its own source location.
@@ -2105,6 +2822,7 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, 
     var it: ExprIter = .{ .s = s };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
+        if (std.mem.eql(u8, rule_id, "SEC002") and returnsBooleanBuiltin(list.fixAllocator(), e.inner)) continue;
         list.append(.{
             .rule_id = rule_id,
             .severity = severity,
@@ -2143,7 +2861,7 @@ const ContextTable = struct {
     /// Ids of jobs whose `outputs:` export an untrusted value (#314).
     tainted_jobs: []const []const u8 = &.{},
 
-    fn matches(self: ContextTable, path: ContextPath) bool {
+    fn matches(self: ContextTable, path: *const ContextPath) bool {
         for (self.prefix) |ctx| {
             if (pathMatchesPattern(path, ctx)) return true;
         }
@@ -2157,7 +2875,7 @@ const ContextTable = struct {
 
     /// `env.<KEY>`. Reading the same value as `$KEY` is safe — the shell never
     /// parses it as code — so only the expression spelling is untrusted.
-    fn matchesTaintedEnv(self: ContextTable, path: ContextPath) bool {
+    fn matchesTaintedEnv(self: ContextTable, path: *const ContextPath) bool {
         if (self.tainted_env.len == 0) return false;
         if (path.len < 2) return false;
         if (!segmentMatches(path.segments[0], "env")) return false;
@@ -2170,7 +2888,7 @@ const ContextTable = struct {
     /// `needs.<job>.outputs.<name>`, with `<job>` a job that exported an
     /// untrusted value. As with a step output, the name below `outputs` is not
     /// looked at.
-    fn matchesTaintedJobOutput(self: ContextTable, path: ContextPath) bool {
+    fn matchesTaintedJobOutput(self: ContextTable, path: *const ContextPath) bool {
         if (self.tainted_jobs.len == 0) return false;
         if (path.len < 4) return false;
         if (!segmentMatches(path.segments[0], "needs")) return false;
@@ -2184,7 +2902,7 @@ const ContextTable = struct {
     /// `steps.<id>.outputs.<name>`, with `<id>` a step that wrote an untrusted
     /// value out. The name below `outputs` is not looked at: the step writes
     /// whatever it captured under a name of its own choosing.
-    fn matchesTaintedStepOutput(self: ContextTable, path: ContextPath) bool {
+    fn matchesTaintedStepOutput(self: ContextTable, path: *const ContextPath) bool {
         if (self.tainted_steps.len == 0) return false;
         if (path.len < 4) return false;
         if (!segmentMatches(path.segments[0], "steps")) return false;
@@ -2228,7 +2946,7 @@ fn containsAnyContext(expr: []const u8, contexts: ContextTable) bool {
         // A whole reference is consumed at once, so segments in the middle of
         // `steps.meta.outputs.github.head_ref` are never mistaken for a root.
         const path = parseContextPath(expr, i);
-        if (contexts.matches(path)) return true;
+        if (contexts.matches(&path)) return true;
         i = if (path.end > i) path.end else i + 1;
     }
     return false;
@@ -2283,20 +3001,24 @@ fn parseContextPath(expr: []const u8, start: usize) ContextPath {
 }
 
 /// The pattern only needs to be a prefix of the reference, because everything
-/// below an untrusted node is untrusted too.
-fn pathMatchesPattern(path: ContextPath, pattern: []const u8) bool {
+/// below an untrusted node is untrusted too. `ContextPath` is pointer-passed
+/// so the 16-segment buffer is not copied (#527).
+fn pathMatchesPattern(path: *const ContextPath, pattern: []const u8) bool {
     // Most references in a real workflow are `steps.*`, `matrix.*` or a
     // function name, and most patterns are `github.*`: comparing the first
-    // byte of the root rejects those pairs without splitting the pattern.
+    // byte of the root rejects those pairs without walking the pattern.
     if (path.len > 0 and path.segments[0].len > 0 and pattern.len > 0 and pattern[0] != '*' and
         std.ascii.toLower(path.segments[0][0]) != std.ascii.toLower(pattern[0])) return false;
-    var it = std.mem.splitScalar(u8, pattern, '.');
+    var start: usize = 0;
     var idx: usize = 0;
-    while (it.next()) |pat_seg| : (idx += 1) {
+    while (true) {
         if (idx >= path.len) return false;
-        if (!segmentMatches(path.segments[idx], pat_seg)) return false;
+        const dot = std.mem.findScalarPos(u8, pattern, start, '.') orelse pattern.len;
+        if (!segmentMatches(path.segments[idx], pattern[start..dot])) return false;
+        if (dot == pattern.len) return true;
+        start = dot + 1;
+        idx += 1;
     }
-    return true;
 }
 
 fn segmentMatches(ref_seg: []const u8, pat_seg: []const u8) bool {
@@ -2330,10 +3052,9 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SC001",
                     .severity = .warning,
                     .message = "container image is not pinned to a SHA256 digest",
-                    // `container.image` is parsed without a span; the job is the
-                    // narrowest location available.
-                    .span = job.span,
+                    .span = if (container.image_meta) |m| m.value_span else job.span,
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
+                    .fix = image_digest.buildPinFix(list, image, container.image_meta, container.image_ends_line),
                 }) catch return;
             }
         }
@@ -2345,10 +3066,9 @@ fn checkUnpinnedImages(job: *const Job, list: *DiagnosticList) void {
                     .rule_id = "SC001",
                     .severity = .warning,
                     .message = "service image is not pinned to a SHA256 digest",
-                    // `services.<id>.image` is parsed without a span; the job is
-                    // the narrowest location available.
-                    .span = job.span,
+                    .span = if (service.image_meta) |m| m.value_span else job.span,
                     .fix_hint = "pin the image using a digest reference, e.g. image@sha256:abc123...",
+                    .fix = image_digest.buildPinFix(list, image, service.image_meta, service.image_ends_line),
                 }) catch return;
             }
         }
@@ -2505,6 +3225,15 @@ fn skipBlanks(s: []const u8, i: usize) usize {
     return std.mem.findNonePos(u8, s, i, " \t\n") orelse s.len;
 }
 
+fn findWordPos(s: []const u8, start: usize, word: []const u8) ?usize {
+    var i = start;
+    while (std.mem.findPos(u8, s, i, word)) |j| {
+        if (isWordAt(s, j, word)) return j;
+        i = j + 1;
+    }
+    return null;
+}
+
 fn identRunLen(s: []const u8) usize {
     for (s, 0..) |c, i| {
         if (!isIdentChar(c)) return i;
@@ -2514,17 +3243,14 @@ fn identRunLen(s: []const u8) usize {
 
 fn containsBase64PipeExec(s: []const u8) bool {
     var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (!isWordAt(s, i, "base64")) continue;
-
-        var j = i + "base64".len;
+    while (findWordPos(s, i, "base64")) |hit| {
+        var j = hit + "base64".len;
         var has_decode = false;
         while (j < s.len and s[j] != '|') : (j += 1) {
             if (isTokenAt(s, j, "-d") or isTokenAt(s, j, "--decode")) has_decode = true;
         }
-        if (!has_decode or j >= s.len) continue;
-
-        if (startsAnyWordAt(s, skipBlanks(s, j + 1), &exec_targets)) return true;
+        if (has_decode and j < s.len and startsAnyWordAt(s, skipBlanks(s, j + 1), &exec_targets)) return true;
+        i = hit + "base64".len;
     }
     return false;
 }
@@ -2549,10 +3275,9 @@ fn skipBlanksAndJoins(s: []const u8, start: usize) usize {
 
 fn containsEvalVarExpansion(s: []const u8) bool {
     var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (!isWordAt(s, i, "eval")) continue;
-
-        var j = i + "eval".len;
+    while (findWordPos(s, i, "eval")) |hit| {
+        i = hit + "eval".len;
+        var j = i;
         if (j >= s.len or (s[j] != ' ' and s[j] != '\t')) continue;
         j = skipBlanksAndJoins(s, j);
         if (j >= s.len) continue;
@@ -2633,10 +3358,8 @@ fn matchingParen(s: []const u8, open: usize) ?usize {
 }
 
 fn containsDownloader(s: []const u8) bool {
-    for (0..s.len) |i| {
-        for (downloaders) |downloader| {
-            if (isWordAt(s, i, downloader)) return true;
-        }
+    for (downloaders) |downloader| {
+        if (findWordPos(s, 0, downloader) != null) return true;
     }
     return false;
 }
@@ -2648,19 +3371,25 @@ const downloaders = [_][]const u8{ "curl", "wget" };
 fn containsCurlWgetPipeShell(s: []const u8) bool {
     var seen_downloader = false;
     var i: usize = 0;
-    while (i < s.len) : (i += 1) {
-        if (s[i] == '|') {
-            if (seen_downloader and startsAnyWordAt(s, skipBlanks(s, i + 1), &shell_targets)) return true;
+    while (i < s.len) {
+        if (!seen_downloader) {
+            var hit: ?usize = null;
+            var word_len: usize = 0;
+            for (downloaders) |downloader| {
+                const pos = findWordPos(s, i, downloader) orelse continue;
+                if (hit == null or pos < hit.?) {
+                    hit = pos;
+                    word_len = downloader.len;
+                }
+            }
+            const at = hit orelse return false;
+            seen_downloader = true;
+            i = at + word_len;
             continue;
         }
-        if (seen_downloader) continue;
-        for (downloaders) |downloader| {
-            if (isWordAt(s, i, downloader)) {
-                seen_downloader = true;
-                i += downloader.len - 1;
-                break;
-            }
-        }
+        const pipe = std.mem.findScalarPos(u8, s, i, '|') orelse return false;
+        if (startsAnyWordAt(s, skipBlanks(s, pipe + 1), &shell_targets)) return true;
+        i = pipe + 1;
     }
     return false;
 }
@@ -2761,7 +3490,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC005",
         .name = "dangerous-pr-target",
-        .description = "pull_request_target with checkout of PR head is dangerous",
+        .description = "pull_request_target with checkout or a git/gh fetch of PR head is dangerous",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkDangerousPRTarget,
@@ -2794,7 +3523,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC009",
         .name = "workflow-run-untrusted-checkout",
-        .description = "workflow_run job checks out a ref from the triggering workflow, which may allow arbitrary code execution from forks",
+        .description = "workflow_run job checks out or git/gh-fetches a ref, or downloads an artifact from the triggering workflow, which may allow arbitrary code execution from forks",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkWorkflowRunUntrustedCheckout,
@@ -2802,7 +3531,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC021",
         .name = "untrusted-checkout-ref",
-        .description = "actions/checkout ref/repository resolved from untrusted context on dispatch, issue, comment or discussion triggers",
+        .description = "actions/checkout or a git/gh fetch in run: resolves its ref/repository from untrusted context on dispatch, issue, comment or discussion triggers",
         .severity = .@"error",
         .category = .security,
         .check_workflow = &checkUntrustedCheckoutRef,
@@ -2856,6 +3585,14 @@ pub const security_rules = [_]Rule{
         .check_workflow = &checkCachePoisoning,
     },
     .{
+        .id = "SEC024",
+        .name = "untrusted-cache-write",
+        .description = "Explicit cache-mode write on a low-trust trigger overrides the restore-only default",
+        .severity = .warning,
+        .category = .security,
+        .check_workflow = &checkUntrustedCacheWrite,
+    },
+    .{
         .id = "SEC014",
         .name = "bot-conditions",
         .description = "Bot account checks using github.actor are spoofable",
@@ -2875,7 +3612,7 @@ pub const security_rules = [_]Rule{
     .{
         .id = "SEC018",
         .name = "checkout-persist-credentials",
-        .description = "actions/checkout persists GITHUB_TOKEN in .git/config by default",
+        .description = "actions/checkout persists credentials by default so later steps can still use the token",
         .severity = .warning,
         .category = .security,
         .check_step = &checkCheckoutPersistCredentials,
@@ -2903,6 +3640,14 @@ pub const security_rules = [_]Rule{
         .severity = .info,
         .category = .security,
         .check_step = &checkTrustedPublishing,
+    },
+    .{
+        .id = "SEC025",
+        .name = "use-scoped-github-app-token",
+        .description = "actions/create-github-app-token without permission-* inputs inherits the installation's full permissions",
+        .severity = .warning,
+        .category = .security,
+        .check_step = &checkGithubAppTokenUnscoped,
     },
     .{
         .id = "SC002",
@@ -3114,6 +3859,20 @@ test "SEC002: untrusted contexts in run block" {
     }
 }
 
+test "SEC002: shell git checkout is not silenced by checkout@v7" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "persist-credentials", "false") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+        .{ .run = "git checkout ${{ github.head_ref }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
 test "SEC002: free text a fork owner or a commit author writes (#313)" {
     const bodies = [_][]const u8{
         "echo \"${{ github.event.pull_request.head.repo.description }}\"",
@@ -3164,11 +3923,143 @@ test "SEC002: script input is not checked outside github-script" {
     try testing.expect(!sec002UsesFires("actions/github-script@v7", "result-encoding", "${{ github.event.issue.title }}", null));
 }
 
+test "SEC002: code-executing action inputs beyond github-script (#534)" {
+    const expr = "echo \"${{ github.event.issue.title }}\"";
+    try testing.expect(sec002UsesFires("azure/cli@v1", "inlineScript", expr, null));
+    try testing.expect(sec002UsesFires("azure/powershell@v1", "inlineScript", expr, null));
+    try testing.expect(sec002UsesFires("nick-fields/retry@v2", "command", expr, null));
+    try testing.expect(sec002UsesFires("addnab/docker-run-action@v3", "run", expr, null));
+    try testing.expect(sec002UsesFires("appleboy/ssh-action@v1", "script", expr, null));
+    try testing.expect(sec002UsesFires("jannekem/run-python-script-action@v1", "script", expr, null));
+}
+
 test "SEC002: github-script script input via env (no false positive)" {
     var env: workflow_types.StringMap = .empty;
     defer env.deinit(testing.allocator);
     env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}") catch unreachable;
     try testing.expect(!sec002UsesFires("actions/github-script@v7", "script", "const title = process.env.TITLE;", env));
+}
+
+const echo_action_yml =
+    \\name: echo
+    \\inputs:
+    \\  title:
+    \\    required: true
+    \\runs:
+    \\  using: composite
+    \\  steps:
+    \\    - run: echo "${{ inputs.title }}"
+    \\      shell: bash
+    \\
+;
+
+const echo_github_script_yml =
+    \\name: echo
+    \\inputs:
+    \\  title:
+    \\    required: true
+    \\runs:
+    \\  using: composite
+    \\  steps:
+    \\    - uses: actions/github-script@v7
+    \\      with:
+    \\        script: console.log("${{ inputs.title }}")
+    \\
+;
+
+fn withLocalAction(dir: []const u8, manifest: []const u8) !testing.TmpDir {
+    var tmp = testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+    try tmp.dir.createDirPath(runtime.io(), dir);
+    const path = try std.fmt.allocPrint(testing.allocator, "{s}/action.yml", .{dir});
+    defer testing.allocator.free(path);
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = path, .data = manifest });
+    const abs = try tmp.dir.realPathFileAlloc(runtime.io(), ".", testing.allocator);
+    defer testing.allocator.free(abs);
+    local_action.init(testing.allocator, abs);
+    return tmp;
+}
+
+fn sec002LocalWithFires(title: []const u8) bool {
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "title", title) catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("./echo-action"), .with = with },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC002");
+}
+
+test "SEC002: untrusted with: interpolated by a local composite (#536)" {
+    var tmp = try withLocalAction("echo-action", echo_action_yml);
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: untrusted with: interpolated by a local github-script composite (#536)" {
+    var tmp = try withLocalAction("echo-action", echo_github_script_yml);
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: a trusted with: on a local composite is not injection (#536)" {
+    var tmp = try withLocalAction("echo-action", echo_action_yml);
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(!sec002LocalWithFires("hello"));
+    try testing.expect(!sec002LocalWithFires("${{ github.sha }}"));
+}
+
+test "SEC002: a local composite that does not interpolate the input is silent (#536)" {
+    var tmp = try withLocalAction("echo-action",
+        \\name: echo
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\  extra:
+        \\    required: false
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - run: echo "${{ inputs.extra }}"
+        \\      shell: bash
+        \\
+    );
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(!sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: a local node action does not follow with: into JS (#536)" {
+    var tmp = try withLocalAction("echo-action",
+        \\name: echo
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: node24
+        \\  main: index.js
+        \\
+    );
+    defer tmp.cleanup();
+    defer local_action.deinit();
+    try testing.expect(!sec002LocalWithFires("\"${{ github.event.comment.body }}\""));
+}
+
+test "SEC002: a remote action's with: is not opened (#536)" {
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    with.put(testing.allocator, "title", "\"${{ github.event.comment.body }}\"") catch unreachable;
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("some-org/echo-action@v1"), .with = with },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
 test "SEC002: trusted contexts in run block (no false positive)" {
@@ -3271,6 +4162,41 @@ test "SEC002: taint crosses the job boundary through outputs (#314)" {
     try testing.expect(hasDiagnostic(&list, "SEC002"));
 }
 
+test "SEC002: taint crosses two job hops through re-exported outputs (#564)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\on: issue_comment
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    outputs:
+        \\      body: ${{ steps.s.outputs.body }}
+        \\    steps:
+        \\      - id: s
+        \\        env:
+        \\          BODY: ${{ github.event.comment.body }}
+        \\        run: echo "body=$BODY" >> "$GITHUB_OUTPUT"
+        \\  b:
+        \\    needs: a
+        \\    runs-on: ubuntu-latest
+        \\    outputs:
+        \\      body: ${{ needs.a.outputs.body }}
+        \\    steps:
+        \\      - run: echo skip
+        \\  c:
+        \\    needs: b
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo "${{ needs.b.outputs.body }}"
+        \\
+    ;
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
 test "SEC002: an untainted job output leaves the consumer quiet (#314)" {
     var env: workflow_types.StringMap = .empty;
     defer env.deinit(testing.allocator);
@@ -3364,6 +4290,36 @@ test "SEC002: untrusted step that writes no output does not taint (no false posi
         .env = env,
         .run = "echo \"$TITLE\" > /tmp/title",
     });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: tj-actions/changed-files outputs are untrusted (#535)" {
+    const steps = [_]Step{
+        .{ .id = "s", .uses = ActionRef.parse("tj-actions/changed-files@v1") },
+        .{ .run = "echo \"${{ steps.s.outputs.all_changed_files }}\"" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: peter-evans/find-comment outputs are untrusted (#535)" {
+    const steps = [_]Step{
+        .{ .id = "s", .uses = ActionRef.parse("peter-evans/find-comment@v1") },
+        .{ .run = "echo \"${{ steps.s.outputs.comment-body }}\"" },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: an unrelated action's outputs stay trusted (#535)" {
+    const steps = [_]Step{
+        .{ .id = "s", .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "echo \"${{ steps.s.outputs.ref }}\"" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "j", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
@@ -3683,6 +4639,64 @@ test "SEC005: PR target with checkout of head" {
     var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC005"));
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "refuses at runtime") != null);
+}
+
+test "SEC005: PR target checkout@v7 without bypass describes runtime refusal" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "refuses at runtime") != null);
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") == null);
+}
+
+test "SEC005: allow-unsafe-pr-checkout true is a strong warning" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    with.put(testing.allocator, "allow-unsafe-pr-checkout", "true") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "allow-unsafe-pr-checkout") != null);
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+}
+
+test "SEC005: unresolved SHA keeps the exploit message" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"), .with = with },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+    try testing.expect(std.mem.find(u8, d.message, "refuses at runtime") == null);
+}
+
+test "SEC005: pull_request_review is not covered by the checkout gate" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(pr_review_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC005").?;
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
 }
 
 test "SEC005: PR target with checkout of head ref" {
@@ -3891,6 +4905,64 @@ test "SEC005: non-PR-target with checkout (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC005"));
 }
 
+test "SEC005: git fetch of PR head SHA (#532)" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "git fetch origin ${{ github.event.pull_request.head.sha }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git clone of PR head clone_url (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git clone ${{ github.event.pull_request.head.repo.clone_url }} src" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git fetch of PR head SHA via env var (#532)" {
+    var env: workflow_types.StringMap = .empty;
+    env.put(testing.allocator, "SHA", "${{ github.event.pull_request.head.sha }}") catch unreachable;
+    defer env.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .run = "git fetch origin $SHA && git checkout FETCH_HEAD", .env = env },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: echo of PR head SHA is not a fetch (#532)" {
+    const steps = [_]Step{
+        .{ .run = "echo ${{ github.event.pull_request.head.sha }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git checkout-index is not a fetch (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git checkout-index ${{ github.event.pull_request.head.sha }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
+test "SEC005: git and fetch in different commands is not a fetch (#532)" {
+    const steps = [_]Step{
+        .{ .run = "echo git && fetch origin ${{ github.event.pull_request.head.sha }}" },
+    };
+    var list = runJobOn(pr_target_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC005"));
+}
+
 test "SEC009: workflow_run with checkout of workflow_run head_sha" {
     var with: workflow_types.StringMap = .empty;
     with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
@@ -3906,8 +4978,38 @@ test "SEC009: workflow_run with checkout of workflow_run head_sha" {
             try testing.expect(d.severity == .@"error");
             try testing.expect(d.fix_hint != null);
             try testing.expect(d.fix_hint.?.len > 0);
+            try testing.expect(std.mem.find(u8, d.message, "refuses for fork pull requests") != null);
         }
     }
+}
+
+test "SEC009: allow-unsafe-pr-checkout true keeps the exploit message" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    with.put(testing.allocator, "allow-unsafe-pr-checkout", "true") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v7"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC009").?;
+    try testing.expect(std.mem.find(u8, d.message, "allow-unsafe-pr-checkout") != null);
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+}
+
+test "SEC009: unresolved SHA keeps the exploit message" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "ref", "${{ github.event.workflow_run.head_sha }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    const d = findDiagnostic(&list, "SEC009").?;
+    try testing.expect(std.mem.find(u8, d.message, "arbitrary code execution") != null);
+    try testing.expect(std.mem.find(u8, d.message, "refuses for fork pull requests") == null);
 }
 
 test "SEC009: workflow_run with checkout of workflow_run head_branch" {
@@ -3946,6 +5048,64 @@ test "SEC009: workflow_run without checkout (no false positive)" {
 test "SEC009: workflow_run checkout without ref (no false positive)" {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: git fetch of workflow_run head_sha (#532)" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v4") },
+        .{ .run = "git fetch origin ${{ github.event.workflow_run.head_sha }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: download-artifact run-id from workflow_run.id (#533)" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "name", "build") catch unreachable;
+    with.put(testing.allocator, "run-id", "${{ github.event.workflow_run.id }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/download-artifact@v4"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+    const d = findDiagnostic(&list, "SEC009").?;
+    try testing.expect(std.mem.find(u8, d.message, "artifact") != null);
+}
+
+test "SEC009: dawidd6 download-artifact run_id from workflow_run.id (#533)" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "run_id", "${{ github.event.workflow_run.id }}") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("dawidd6/action-download-artifact@v3"), .with = with },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: gh run download of workflow_run id (#532)" {
+    const steps = [_]Step{
+        .{ .run = "gh run download ${{ github.event.workflow_run.id }} -n build" },
+    };
+    var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC009"));
+}
+
+test "SEC009: download-artifact without run-id is not poisoning (#533)" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "name", "build") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/download-artifact@v4"), .with = with },
     };
     var list = runJobOn(workflow_run_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
     defer list.deinit();
@@ -4324,6 +5484,44 @@ test "SEC021: workflow_run defers to SEC009" {
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "SEC009"));
     try testing.expect(!hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: gh pr checkout of issue.number (#532)" {
+    const steps = [_]Step{
+        .{ .run = "gh pr checkout ${{ github.event.issue.number }}" },
+    };
+    var list = runJobOn(issue_comment_trigger, .{ .id = "chatops", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+    const d = findDiagnostic(&list, "SEC021").?;
+    try testing.expect(std.mem.find(u8, d.message, "issue number") != null);
+}
+
+test "SEC021: git fetch of workflow_dispatch inputs (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git fetch origin ${{ inputs.foo }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(workflow_dispatch_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: git fetch of workflow_call inputs (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git fetch origin ${{ inputs.foo }} && git checkout FETCH_HEAD" },
+    };
+    var list = runJobOn(workflow_call_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
+}
+
+test "SEC021: git clone of repository_dispatch client_payload (#532)" {
+    const steps = [_]Step{
+        .{ .run = "git clone https://github.com/${{ github.event.client_payload.foo }} src" },
+    };
+    var list = runJobOn(repository_dispatch_trigger, .{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC021"));
 }
 
 fn sec022JobCondition(cond: []const u8) ?Severity {
@@ -4956,6 +6154,164 @@ test "SEC010: no secrets in reusable workflow call (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC010"));
 }
 
+const sec010_caller =
+    \\name: t
+    \\on: push
+    \\jobs:
+    \\  call:
+    \\    uses: ./.github/workflows/reusable.yml
+    \\    secrets: inherit
+    \\
+;
+
+const sec010_callee =
+    \\on:
+    \\  workflow_call:
+    \\    secrets:
+    \\      npm_token:
+    \\        required: true
+    \\      api_key:
+    \\        required: false
+    \\jobs:
+    \\  deploy:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo ok
+    \\
+;
+
+fn sec010CalleeLookup(path: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, path, ".github/workflows/reusable.yml")) return null;
+    return sec010_callee;
+}
+
+fn sec010EmptyCalleeLookup(path: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, path, ".github/workflows/reusable.yml")) return null;
+    return
+    \\on:
+    \\  workflow_call:
+    \\jobs:
+    \\  deploy:
+    \\    runs-on: ubuntu-latest
+    \\    steps:
+    \\      - run: echo ok
+    \\
+    ;
+}
+
+test "SEC010: --fix-unsafe expands inherit into the local callee's declared secrets" {
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expect(std.mem.find(u8, result.content, "secrets: inherit") == null);
+    try testing.expect(std.mem.find(u8, result.content, "npm_token: ${{ secrets.npm_token }}") != null);
+    try testing.expect(std.mem.find(u8, result.content, "api_key: ${{ secrets.api_key }}") != null);
+}
+
+test "SEC010: --fix without unsafe leaves inherit alone" {
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sec010_caller, result.content);
+}
+
+test "SEC010: a remote callee gets the diagnostic without a fix" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: octo-org/example/.github/workflows/deploy.yml@main
+        \\    secrets: inherit
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC010: an unreadable local callee gets no fix" {
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/missing.yml
+        \\    secrets: inherit
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "SEC010: a callee with no declared secrets gets no fix" {
+    called_workflow.overrideSource(&sec010EmptyCalleeLookup);
+    defer called_workflow.overrideSource(null);
+
+    const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "SEC010: quoted inherit is not rewritten" {
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call:
+        \\    uses: ./.github/workflows/reusable.yml
+        \\    secrets: "inherit"
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
+test "SEC010: flow-style inherit is not rewritten" {
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  call: { uses: ./.github/workflows/reusable.yml, secrets: inherit }
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkSecretsInherit }, true);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
 test "SEC012: toJSON(secrets) in run block" {
     var list = runStep(.{ .run = "echo '${{ toJSON(secrets) }}'" });
     defer list.deinit();
@@ -5060,6 +6416,36 @@ test "multiple security rules fire together" {
     try testing.expect(hasDiagnostic(&list, "SEC007"));
 }
 
+test "SEC002: boolean builtins do not interpolate their untrusted arguments" {
+    try testing.expect(!sec002UsesFires("actions/github-script@v7", "script", "console.log(${{ contains(github.event.issue.title, 'fix') }});", null));
+    for ([_][]const u8{
+        "echo '${{ startsWith(github.event.issue.title, 'fix') }}'",
+        "echo '${{ endsWith(github.event.issue.title, 'fix') }}'",
+        "echo '${{ contains(github.event.issue.title, 'fix') }}'",
+    }) |run| {
+        var list = runStep(.{ .run = run });
+        defer list.deinit();
+        try testing.expect(!hasDiagnostic(&list, "SEC002"));
+    }
+}
+
+test "SEC002: boolean function suppression never hides a string-valued expression" {
+    for ([_][]const u8{
+        "echo '${{ github.event.issue.title }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') && github.event.issue.title }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') || github.event.issue.title }}'",
+        "echo '${{ format('{0}', github.event.issue.title) }}'",
+        "echo '${{ unknown(github.event.issue.title) }}'",
+        "echo '${{ startsWith(github.event.issue.title) }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') trailing }}'",
+        "echo '${{ startsWith(github.event.issue.title, 'fix') }} ${{ github.event.issue.title }}'",
+    }) |run| {
+        var list = runStep(.{ .run = run });
+        defer list.deinit();
+        try testing.expect(hasDiagnostic(&list, "SEC002"));
+    }
+}
+
 test "SEC014: github.actor == dependabot[bot] in step condition" {
     var list = runStep(.{ .run = "echo skip", .if_condition = "github.actor == 'dependabot[bot]'" });
     defer list.deinit();
@@ -5106,6 +6492,28 @@ test "SEC014: safe condition with github.ref (no false positive)" {
     var list = runStep(.{ .run = "echo test", .if_condition = "github.ref == 'refs/heads/main'" });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC014"));
+}
+
+test "SEC014: autofix refuses compound, unsupported, or unlocated conditions" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    for ([_][]const u8{
+        "github.actor == 'dependabot[bot]' && success()",
+        "github.actor == 'dependabot[bot]' || failure()",
+        "contains(github.actor, '[bot]')",
+        "github.actor == 'octocat'",
+        "github.actor == 'dependabot[bot]' + 1",
+        "${{ github.actor == 'dependabot[bot]' }} extra",
+    }) |cond| {
+        var token = Span.point(1, 1, 0);
+        token.end_byte = cond.len;
+        try testing.expect(buildBotConditionFix(cond, .{ .scalar = token, .fallback = token }, &list) == null);
+    }
+    const cond = "github.actor == 'dependabot[bot]'";
+    const point = Span.point(1, 1, 0);
+    try testing.expect(buildBotConditionFix(cond, .{ .fallback = point }, &list) == null);
+    try testing.expect(buildBotConditionFix(cond, .{ .scalar = point, .fallback = point }, &list) == null);
+    try testing.expect(buildBotConditionFix(cond, .{ .scalar = point, .fallback = point, .style = .folded }, &list) == null);
 }
 
 test "containsActorBotCheck detects actor with bot pattern" {
@@ -5360,6 +6768,38 @@ test "SEC016: setup-node without cache input in release (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC016"));
 }
 
+test "SEC016: setup-node auto-cache in release is a poisoning risk" {
+    const workspace = @import("../workspace.zig");
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@v5") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: unresolved setup-node SHA is not treated as auto-cache" {
+    const workspace = @import("../workspace.zig");
+    workspace.set(.{ .package_json_npm = true });
+    defer workspace.clear();
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
 test "SEC016: case-insensitive deploy job name" {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/cache@v3") },
@@ -5394,6 +6834,171 @@ test "SEC016: emits one diagnostic per offending step" {
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expectEqual(@as(usize, 2), countDiagnostics(&list, "SEC016"));
+}
+
+test "SEC016: cache-mode none suppresses even with actions/cache" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "none" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: cache-mode read still reports restore poisoning" {
+    var with: workflow_types.StringMap = .empty;
+    with.put(testing.allocator, "cache", "npm") catch unreachable;
+    defer with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/setup-node@v4"), .with = with },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "read" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: cache-mode write-only still reports save poisoning" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "write-only" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: job cache-mode none overrides workflow write" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "none" },
+    };
+    const wf = Workflow{
+        .name = "Release",
+        .on = release_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC016: unknown cache-mode is not treated as a disable" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/cache@v3") },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps, .permissions = Permissions{}, .cache_mode = "reed" },
+    };
+    const wf = Workflow{ .name = "Release", .on = release_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC016"));
+}
+
+test "SEC024: explicit write on pull_request_target is reported" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{
+        .name = "PR",
+        .on = pr_target_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+        .cache_mode_span = test_support.dummySpan(0, 5),
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: write-only on issue_comment is reported" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{}, .cache_mode = "write-only", .cache_mode_span = test_support.dummySpan(0, 5) },
+    };
+    const wf = Workflow{ .name = "comment", .on = issue_comment_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: omitted cache-mode on pull_request_target is silent" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "PR", .on = pr_target_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: explicit read on pull_request_target is silent" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{}, .cache_mode = "read" },
+    };
+    const wf = Workflow{ .name = "PR", .on = pr_target_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: explicit write on push is silent" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{
+        .name = "CI",
+        .on = push_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC024"));
+}
+
+test "SEC024: job-level write is reported when the workflow omits cache-mode" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{}, .cache_mode = "write", .cache_mode_span = test_support.dummySpan(0, 5) },
+        .{ .id = "other", .permissions = Permissions{} },
+    };
+    const wf = Workflow{ .name = "PR", .on = pr_target_trigger, .jobs = &jobs, .permissions = Permissions{} };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expectEqual(@as(usize, 1), countDiagnostics(&list, "SEC024"));
+}
+
+test "SEC024: workflow_run with write is reported" {
+    const jobs = [_]Job{
+        .{ .id = "build", .permissions = Permissions{} },
+    };
+    const wf = Workflow{
+        .name = "after",
+        .on = workflow_run_trigger,
+        .jobs = &jobs,
+        .permissions = Permissions{},
+        .cache_mode = "write",
+        .cache_mode_span = test_support.dummySpan(0, 5),
+    };
+    var list = runWorkflow(wf);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC024"));
 }
 
 test "SEC013: plaintext credentials in container" {
@@ -5600,6 +7205,116 @@ test "SC001: registry with digest is pinned (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SC001"));
 }
 
+const sc001_digest = "sha256:1c4eef651f65e2f7daee7ea7320b2504cd83545e8f5da6c45b8c4911eb1aea61";
+
+const sc001_container_source =
+    \\name: t
+    \\on: push
+    \\jobs:
+    \\  build:
+    \\    runs-on: ubuntu-latest
+    \\    container:
+    \\      image: alpine:3.19
+    \\    steps:
+    \\      - run: echo
+    \\
+;
+
+test "SC001: --fix pins container.image to the stored digest" {
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", sc001_digest);
+
+    const result = try test_support.lintAndFix(testing.allocator, sc001_container_source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.safe, result.first_safety.?);
+    try testing.expect(std.mem.find(u8, result.content, "image: alpine@" ++ sc001_digest ++ " # 3.19") != null);
+}
+
+test "SC001: --fix pins a scalar container: and a docker:// uses" {
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", sc001_digest);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container: alpine:3.19
+        \\    steps:
+        \\      - uses: docker://alpine:3.19
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+    try testing.expect(std.mem.find(u8, result.content, "container: alpine@" ++ sc001_digest ++ " # 3.19") != null);
+
+    const docker_result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkHardcodedContainerCredentials }, false);
+    defer docker_result.deinit(testing.allocator);
+    try testing.expect(std.mem.find(u8, docker_result.content, "uses: docker://alpine@" ++ sc001_digest ++ " # 3.19") != null);
+}
+
+test "SC001: --fix pins a service image" {
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "redis", "7", sc001_digest);
+
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    services:
+        \\      db:
+        \\        image: redis:7
+        \\    steps:
+        \\      - run: echo
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+    try testing.expect(std.mem.find(u8, result.content, "image: redis@" ++ sc001_digest ++ " # 7") != null);
+}
+
+test "SC001: without a known digest the diagnostic stands alone" {
+    image_digest.initDigests(testing.allocator, true, true);
+    defer image_digest.deinitDigests();
+    image_digest.setCachedDigest("docker.io", "alpine", "3.19", sc001_digest);
+
+    const result = try test_support.lintAndFix(testing.allocator, sc001_container_source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(sc001_container_source, result.content);
+}
+
+test "SC001: an unsupported registry is diagnosed without a fix" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    container:
+        \\      image: quay.io/foo/bar:1
+        \\    steps:
+        \\      - run: echo
+        \\
+    ;
+    image_digest.initDigests(testing.allocator, false, true);
+    defer image_digest.deinitDigests();
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .job = &checkUnpinnedImages }, false);
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
 test "isImagePinned: sha256 digest returns true" {
     try testing.expect(isImagePinned("node@sha256:a1b2c3d4e5f6"));
 }
@@ -5723,6 +7438,30 @@ test "SEC015: checkout + upload-artifact triggers rule" {
     const steps = [_]Step{
         .{ .uses = ActionRef.parse("actions/checkout@v4") },
         .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC015"));
+}
+
+test "SEC015: checkout@v6 workspace upload is not artipacked" {
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v6") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4") },
+    };
+    var list = runSteps(&steps);
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC015"));
+    try testing.expect(hasDiagnostic(&list, "SEC018"));
+}
+
+test "SEC015: checkout@v6 upload of runner.temp still fires" {
+    var upload_with: workflow_types.StringMap = .empty;
+    upload_with.put(testing.allocator, "path", "${{ runner.temp }}") catch unreachable;
+    defer upload_with.deinit(testing.allocator);
+    const steps = [_]Step{
+        .{ .uses = ActionRef.parse("actions/checkout@v6") },
+        .{ .uses = ActionRef.parse("actions/upload-artifact@v4"), .with = upload_with },
     };
     var list = runSteps(&steps);
     defer list.deinit();
@@ -7138,11 +8877,16 @@ test "ExprIter: a lone $ or } is stepped over, not treated as a delimiter" {
 }
 
 test "pathMatchesPattern: the root fast reject keeps case-insensitive and wildcard matches" {
-    try testing.expect(pathMatchesPattern(parseContextPath("GitHub.Event.Issue.Title", 0), "github.event.issue.title"));
-    try testing.expect(pathMatchesPattern(parseContextPath("github.event.commits[0].message", 0), "github.event.commits"));
-    try testing.expect(!pathMatchesPattern(parseContextPath("steps.meta.outputs.github", 0), "github.event"));
-    try testing.expect(!pathMatchesPattern(parseContextPath("hithub.event", 0), "github.event"));
-    try testing.expect(pathMatchesPattern(parseContextPath("matrix.os", 0), "*.os"));
+    const title = parseContextPath("GitHub.Event.Issue.Title", 0);
+    try testing.expect(pathMatchesPattern(&title, "github.event.issue.title"));
+    const indexed = parseContextPath("github.event.commits[0].message", 0);
+    try testing.expect(pathMatchesPattern(&indexed, "github.event.commits"));
+    const nested = parseContextPath("steps.meta.outputs.github", 0);
+    try testing.expect(!pathMatchesPattern(&nested, "github.event"));
+    const misspelled = parseContextPath("hithub.event", 0);
+    try testing.expect(!pathMatchesPattern(&misspelled, "github.event"));
+    const wildcard = parseContextPath("matrix.os", 0);
+    try testing.expect(pathMatchesPattern(&wildcard, "*.os"));
 }
 
 test "containsCurlWgetPipeShell: long input with many pipes stays linear" {
@@ -7887,6 +9631,85 @@ test "SEC002: an env: key with no value gets no fix" {
     try testing.expectEqualStrings(source, result.content);
 }
 
+test "SEC002: github-script script: binds a lone JS string to process.env" {
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = "${{ github.event.issue.title }}";
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.fix_count);
+    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
+    try testing.expectEqualStrings(
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - env:
+        \\          ISSUE_TITLE: ${{ github.event.issue.title }}
+        \\        uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = process.env.ISSUE_TITLE;
+        \\
+    , result.content);
+}
+
+test "SEC002: github-script script: a mixed JS string gets no fix" {
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = "prefix ${{ github.event.issue.title }}";
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC002: github-script script: a bare embedding gets no fix" {
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/github-script@v7
+        \\        with:
+        \\          script: |
+        \\            const title = ${{ github.event.issue.title }};
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
 test "SEC008: the untrusted value written to GITHUB_ENV is bound to env:" {
     const source =
         \\name: t
@@ -7989,5 +9812,109 @@ test "SEC019: secrets.GITHUB_TOKEN stays exempt" {
     defer result.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 0), result.diagnostic_count);
+    try testing.expectEqualStrings(source, result.content);
+}
+
+test "SEC025: unscoped app-id and private-key inherit installation permissions" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "app-id", "${{ secrets.APP_ID }}") catch unreachable;
+    with_map.put(testing.allocator, "private-key", "${{ secrets.PRIVATE_KEY }}") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC025"));
+    const diag = findDiagnostic(&list, "SEC025").?;
+    try testing.expect(diag.fix == null);
+    try testing.expect(diag.severity == .warning);
+}
+
+test "SEC025: missing with: still reports" {
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b"),
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: permission-* input silences the rule" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "app-id", "${{ secrets.APP_ID }}") catch unreachable;
+    with_map.put(testing.allocator, "private-key", "${{ secrets.PRIVATE_KEY }}") catch unreachable;
+    with_map.put(testing.allocator, "permission-issues", "write") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: permission-* is matched case-insensitively" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "Permission-Contents", "read") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("ACTIONS/create-github-app-token@v3"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: owner and repositories alone do not silence" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "owner", "${{ github.repository_owner }}") catch unreachable;
+    with_map.put(testing.allocator, "repositories", "repo1,repo2") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: a different action is not reported" {
+    var with_map: workflow_types.StringMap = .empty;
+    defer with_map.deinit(testing.allocator);
+    with_map.put(testing.allocator, "app-id", "1") catch unreachable;
+    var list = runStep(.{
+        .uses = ActionRef.parse("tibdex/github-app-token@v2"),
+        .with = with_map,
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: nested path is a different action" {
+    var list = runStep(.{
+        .uses = ActionRef.parse("actions/create-github-app-token/setup@v2"),
+    });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC025"));
+}
+
+test "SEC025: no autofix" {
+    const source =
+        \\name: t
+        \\on: push
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - uses: actions/create-github-app-token@v2
+        \\        with:
+        \\          app-id: ${{ secrets.APP_ID }}
+        \\          private-key: ${{ secrets.PRIVATE_KEY }}
+        \\
+    ;
+    const result = try test_support.lintAndFix(testing.allocator, source, .{ .step = &checkGithubAppTokenUnscoped }, true);
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
     try testing.expectEqualStrings(source, result.content);
 }

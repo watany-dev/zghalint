@@ -70,6 +70,9 @@ pub const Parser = struct {
     /// their item ranges span the commas, so a comment sitting between two
     /// items falls inside one of them.
     comments_seen: usize,
+    /// `<<` token spans collected while folding. Copied onto the document
+    /// root after parse so SYN026 can report them without re-walking copies.
+    merge_key_spans: std.ArrayList(Span) = .empty,
 
     pub const Failure = struct {
         span: Span,
@@ -110,7 +113,10 @@ pub const Parser = struct {
 
         const node = try self.parseNode(0);
         try self.rejectTrailingDocument();
-        return node;
+        if (node != .mapping) return node;
+        var root = node;
+        root.mapping.merge_key_spans = self.merge_key_spans.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
+        return root;
     }
 
     /// A workflow file holds exactly one YAML document; GitHub never runs a
@@ -278,18 +284,20 @@ pub const Parser = struct {
 
     /// Folds `<<:` sources into `entries`. Explicit keys win over merged ones
     /// and, among several sources, the earlier one wins — the YAML 1.1 merge
-    /// rule. Returns `entries` untouched when the mapping holds no merge key,
-    /// which is every mapping in a workflow that uses no anchors.
+    /// rule. Returns `entries` untouched when the mapping holds no merge key.
     fn applyMergeKeys(self: *Parser, entries: []MappingEntry) ParseError![]MappingEntry {
-        var has_merge = false;
+        var merge_count: usize = 0;
         for (entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, merge_key)) has_merge = true;
+            if (std.mem.eql(u8, entry.key.value, merge_key)) merge_count += 1;
         }
-        if (!has_merge) return entries;
+        if (merge_count == 0) return entries;
 
         var merged = std.ArrayList(MappingEntry).empty;
         for (entries) |entry| {
-            if (std.mem.eql(u8, entry.key.value, merge_key)) continue;
+            if (std.mem.eql(u8, entry.key.value, merge_key)) {
+                self.merge_key_spans.append(self.allocator, entry.key.span) catch return ParseError.OutOfMemory;
+                continue;
+            }
             merged.append(self.allocator, entry) catch return ParseError.OutOfMemory;
         }
 
@@ -306,7 +314,7 @@ pub const Parser = struct {
             }
         }
 
-        return merged.toOwnedSlice(self.allocator) catch ParseError.OutOfMemory;
+        return merged.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
     }
 
     fn mergeMappingInto(self: *Parser, merged: *std.ArrayList(MappingEntry), source: Mapping) ParseError!void {
@@ -402,7 +410,10 @@ pub const Parser = struct {
             self.spanFromToken(first_key_token);
         const owned_entries = try self.applyMergeKeys(parsed_entries);
 
-        return Node{ .mapping = .{ .entries = owned_entries, .span = span } };
+        return Node{ .mapping = .{
+            .entries = owned_entries,
+            .span = span,
+        } };
     }
 
     fn parseBlockSequence(self: *Parser) ParseError!Node {
@@ -536,7 +547,12 @@ pub const Parser = struct {
 
         const parsed_entries = entries.toOwnedSlice(self.allocator) catch return ParseError.OutOfMemory;
         const owned_entries = try self.applyMergeKeys(parsed_entries);
-        return Node{ .mapping = .{ .entries = owned_entries, .span = start_span, .close_byte = close_byte, .flow = true } };
+        return Node{ .mapping = .{
+            .entries = owned_entries,
+            .span = start_span,
+            .close_byte = close_byte,
+            .flow = true,
+        } };
     }
 
     fn parseFlowSequence(self: *Parser) ParseError!Node {
@@ -774,7 +790,7 @@ pub const Parser = struct {
     /// The `#` comment trailing the token on its own line, `#` and surrounding
     /// blanks stripped. Only a comment separated from the token by a blank is
     /// one: `a#b` is a single plain scalar in YAML, not a value and a comment.
-    fn tokenLineComment(self: *Parser, token: Token) ?[]const u8 {
+    fn tokenLineComment(self: *Parser, token: Token) ?struct { text: []const u8, start_byte: usize } {
         // A block scalar ends at the start of the line that closes it, so what
         // follows `end` is a separate line whose comment belongs to no scalar.
         if (std.mem.findScalar(u8, token.slice(self.source), '\n') != null) return null;
@@ -788,8 +804,11 @@ pub const Parser = struct {
         const start = i + 1;
         var end = start;
         while (end < self.source.len and self.source[end] != '\n' and self.source[end] != '\r') : (end += 1) {}
-        const text = std.mem.trim(u8, self.source[start..end], " \t");
-        return if (text.len == 0) null else text;
+        const region = self.source[start..end];
+        const text = std.mem.trim(u8, region, " \t");
+        if (text.len == 0) return null;
+        const start_byte = start + (@intFromPtr(text.ptr) - @intFromPtr(region.ptr));
+        return .{ .text = text, .start_byte = start_byte };
     }
 
     /// True when a quoted token never met its closing quote and so ran to the
@@ -815,7 +834,8 @@ pub const Parser = struct {
                 .style = if (raw[0] == '\'') .single_quoted else .double_quoted,
                 .span = self.spanFromToken(token),
                 .ends_line = ends_line,
-                .line_comment = line_comment,
+                .line_comment = if (line_comment) |c| c.text else null,
+                .line_comment_start_byte = if (line_comment) |c| c.start_byte else null,
                 .unterminated = quotedIsUnterminated(raw),
             };
         }
@@ -827,7 +847,8 @@ pub const Parser = struct {
                 .style = style,
                 .span = self.spanFromToken(token),
                 .ends_line = ends_line,
-                .line_comment = line_comment,
+                .line_comment = if (line_comment) |c| c.text else null,
+                .line_comment_start_byte = if (line_comment) |c| c.start_byte else null,
             };
         }
         return .{
@@ -835,7 +856,8 @@ pub const Parser = struct {
             .style = .plain,
             .span = self.spanFromToken(token),
             .ends_line = ends_line,
-            .line_comment = line_comment,
+            .line_comment = if (line_comment) |c| c.text else null,
+            .line_comment_start_byte = if (line_comment) |c| c.start_byte else null,
         };
     }
 
@@ -895,10 +917,7 @@ pub const Parser = struct {
             const is_block = (scalar.style == .literal or scalar.style == .folded) and at_line_start;
             var end_byte = scalar.span.end_byte;
             if (!is_block) {
-                while (end_byte < self.source.len and self.source[end_byte] != '\n') {
-                    end_byte += 1;
-                }
-                if (end_byte < self.source.len) end_byte += 1;
+                end_byte = self.scanLineEndInclusive(end_byte);
             }
             // Junk left on the value's line is normally contained by it, so the
             // newline ends the entry. A token that opens on the line and closes
@@ -911,7 +930,7 @@ pub const Parser = struct {
             // the alias line after the inserted `concurrency:` block, which
             // adopted it and turned a tolerated stray line into a parse error
             // (fuzz).
-            return self.extendAndNoteTail(end_byte, key.span.start_col, key.span.start_byte, tail);
+            return self.extendAndNoteTail(end_byte, key.span.start_col, value, tail);
         }
 
         // An empty or null value has no body: end at the key's own line. The
@@ -935,13 +954,31 @@ pub const Parser = struct {
         // so the nested end can land before the key. The entry still owns at
         // least its own line.
         const end = @max(key_line_end, nested);
-        return self.extendAndNoteTail(end, key.span.start_col, key.span.start_byte, tail);
+        return self.extendAndNoteTail(end, key.span.start_col, value, tail);
     }
 
-    fn extendAndNoteTail(self: *Parser, end_byte: usize, key_col: u32, key_start: usize, tail: ?*bool) ?usize {
-        const extended = self.extendOverIndentedTail(end_byte, key_col, key_start);
+    fn extendAndNoteTail(self: *Parser, end_byte: usize, key_col: u32, value: Node, tail: ?*bool) ?usize {
+        const extended = self.extendOverIndentedTail(end_byte, key_col, lastLineQuote(self, end_byte, value));
         if (tail) |t| t.* = (extended orelse end_byte + 1) > end_byte;
         return extended;
+    }
+
+    /// A block mapping/sequence with children already folded quotes into the
+    /// last child's extent. Re-lexing that last line from a closed start would
+    /// treat a closer (`'\n` after `  '`) as an opener and swallow the rest of
+    /// the file. Flow and scalars still drop tokens on their own last line
+    /// (`push: []'`), so those scan just that line — not the whole entry.
+    fn lastLineQuote(self: *Parser, end_byte: usize, value: Node) ?u8 {
+        if (end_byte == 0 or end_byte > self.source.len or self.source[end_byte - 1] != '\n') return null;
+        const rescan = switch (value) {
+            .mapping => |m| m.flow or m.entries.len == 0,
+            .sequence => |s| s.flow or s.items.len == 0,
+            else => true,
+        };
+        if (!rescan) return null;
+        const line = self.source[self.lineStartByte(end_byte - 1)..end_byte];
+        if (std.mem.indexOfAny(u8, line, "'\"") == null) return null;
+        return scanQuoteState(line, null);
     }
 
     /// The end of the line holding a flow collection's closing bracket. A flow
@@ -959,7 +996,7 @@ pub const Parser = struct {
     /// Lines the parser dropped still belong to the entry when they are
     /// indented past its key: a bare `7` under `on:` holds no node, but an
     /// insertion anchored before it lands inside the block all the same.
-    fn extendOverIndentedTail(self: *Parser, end_byte: usize, key_col: u32, key_start: usize) ?usize {
+    fn extendOverIndentedTail(self: *Parser, end_byte: usize, key_col: u32, quote_seed: ?u8) ?usize {
         if (key_col == 0) return end_byte;
         // Column arithmetic only describes a line boundary; mid-line the
         // leading run of spaces is not the line's indent.
@@ -967,11 +1004,7 @@ pub const Parser = struct {
         const key_indent = key_col - 1;
 
         var end = end_byte;
-        // A quote opened inside the entry is still open at `end_byte`: the
-        // parser drops a token the flow parser never claimed (`push: []'`), so
-        // starting the scan closed read the next line's column 0 as a boundary
-        // and `--fix` wrote the new key inside the quotes (fuzz).
-        var quote = self.quoteStateAt(key_start, end_byte);
+        var quote = quote_seed;
         // Where a run of comment lines began. A comment carries no indentation
         // of its own, so it neither ends the block nor joins it: the scan reads
         // past it, and keeps this boundary in case the block turns out to have
@@ -1001,20 +1034,6 @@ pub const Parser = struct {
         }
         // A quote that never closes leaves no boundary to trust.
         return if (quote == null) before_comments orelse end else null;
-    }
-
-    /// The quote state at `to`, starting closed at the beginning of the line
-    /// holding `from`.
-    fn quoteStateAt(self: *Parser, from: usize, to: usize) ?u8 {
-        if (to > self.source.len) return null;
-        var at = self.lineStartByte(from);
-        var quote: ?u8 = null;
-        while (at < to) {
-            const line_end = @min(self.scanLineEndInclusive(at), to);
-            quote = scanQuoteState(self.source[at..line_end], quote);
-            at = line_end;
-        }
-        return quote;
     }
 
     /// Whether a quoted scalar is still open at the end of `line`, given the
@@ -1156,10 +1175,9 @@ pub const Parser = struct {
     }
 
     fn scanLineEndInclusive(self: *Parser, start: usize) usize {
-        var end = start;
-        while (end < self.source.len and self.source[end] != '\n') end += 1;
-        if (end < self.source.len and self.source[end] == '\n') end += 1;
-        return end;
+        if (start >= self.source.len) return start;
+        const nl = std.mem.findScalarPos(u8, self.source, start, '\n') orelse return self.source.len;
+        return nl + 1;
     }
 
     fn lineIndentAt(self: *Parser, at: usize) u32 {
@@ -1170,11 +1188,10 @@ pub const Parser = struct {
     }
 
     fn lineStartByte(self: *Parser, byte_offset: usize) usize {
-        var start = byte_offset;
-        while (start > 0 and self.source[start - 1] != '\n') {
-            start -= 1;
-        }
-        return start;
+        if (byte_offset == 0) return 0;
+        const prefix = self.source[0..@min(byte_offset, self.source.len)];
+        if (std.mem.findScalarLast(u8, prefix, '\n')) |i| return i + 1;
+        return 0;
     }
 };
 
@@ -2143,9 +2160,11 @@ test "parse merges an anchored mapping through a merge key" {
     const root = try parser.parse();
     const jobs = root.mapping.get("jobs").?.mapping;
 
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.merge_key_spans.len);
     for ([_][]const u8{ "build", "test" }) |job_id| {
         const job = jobs.get(job_id).?.mapping;
         try std.testing.expect(job.get(merge_key) == null);
+        try std.testing.expectEqual(@as(usize, 0), job.merge_key_spans.len);
         try std.testing.expectEqualStrings("ubuntu-latest", job.getScalar("runs-on").?);
         try std.testing.expectEqualStrings("10", job.getScalar("timeout-minutes").?);
         try std.testing.expect(job.get("steps") != null);
@@ -2215,6 +2234,8 @@ test "parse applies several merge keys in order" {
 
     try std.testing.expectEqualStrings("1", job.getScalar("x").?);
     try std.testing.expectEqualStrings("3", job.getScalar("y").?);
+    try std.testing.expectEqual(@as(usize, 2), root.mapping.merge_key_spans.len);
+    try std.testing.expectEqual(@as(usize, 0), job.merge_key_spans.len);
 }
 
 test "parse merges an inline mapping given directly to a merge key" {

@@ -38,14 +38,19 @@ pub const Engine = struct {
                 check_fn(workflow, &list);
             }
 
+            // Most rules hook only workflow or job. Walking every step (and
+            // nested `parallel:` children) for a null `check_step` was the
+            // largest v0.0.1→HEAD instruction regression (#527).
+            if (rule.check_job == null and rule.check_step == null) continue;
+
             for (workflow.jobs) |*job| {
                 if (rule.check_job) |check_fn| {
                     check_fn(job, &list);
                 }
 
-                for (job.steps) |*step| {
-                    if (rule.check_step) |check_fn| {
-                        check_fn(step, &list);
+                if (rule.check_step) |check_fn| {
+                    for (job.steps) |*step| {
+                        runCheckStep(check_fn, step, &list);
                     }
                 }
             }
@@ -54,6 +59,15 @@ pub const Engine = struct {
         return list;
     }
 };
+
+fn runCheckStep(
+    check_fn: *const fn (*const Step, *DiagnosticList) void,
+    step: *const Step,
+    list: *DiagnosticList,
+) void {
+    check_fn(step, list);
+    for (step.nestedSteps()) |*child| runCheckStep(check_fn, child, list);
+}
 
 const stale_refs = @import("stale_refs.zig");
 const impostor = @import("impostor.zig");
@@ -86,6 +100,35 @@ pub fn postProcess(
     if (opts.drop_sec018) dropSec018CoveredByArtipacked(list);
 }
 
+fn walkStepsForSc005(
+    steps: []const Step,
+    allocator: std.mem.Allocator,
+    drop: *std.ArrayList(usize),
+    k_sc005: *usize,
+) void {
+    for (steps) |*step| {
+        defer walkStepsForSc005(step.nestedSteps(), allocator, drop, k_sc005);
+
+        const action_ref = step.uses orelse continue;
+        if (!action_ref.is_pinned) continue;
+        if (action_ref.is_local or action_ref.is_docker) continue;
+        const owner = action_ref.owner orelse continue;
+        const repo = action_ref.repo orelse continue;
+        const sha = action_ref.ref orelse continue;
+        if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) continue;
+        if (!isValidSha(sha)) continue;
+
+        // Did SC005 actually fire for this step?
+        const tag_res = stale_refs.lookupCachedTagResult(owner, repo, sha) orelse continue;
+        if (tag_res != .no_tag) continue;
+        defer k_sc005.* += 1;
+
+        if (impostor.shaIsCachedImpostor(owner, repo, sha)) {
+            drop.append(allocator, k_sc005.*) catch return;
+        }
+    }
+}
+
 fn dropSc005CoveredByImpostor(
     allocator: std.mem.Allocator,
     workflow: *const Workflow,
@@ -96,25 +139,7 @@ fn dropSc005CoveredByImpostor(
 
     var k_sc005: usize = 0;
     for (workflow.jobs) |*job| {
-        for (job.steps) |*step| {
-            const action_ref = step.uses orelse continue;
-            if (!action_ref.is_pinned) continue;
-            if (action_ref.is_local or action_ref.is_docker) continue;
-            const owner = action_ref.owner orelse continue;
-            const repo = action_ref.repo orelse continue;
-            const sha = action_ref.ref orelse continue;
-            if (!isValidGitHubComponent(owner) or !isValidGitHubComponent(repo)) continue;
-            if (!isValidSha(sha)) continue;
-
-            // Did SC005 actually fire for this step?
-            const tag_res = stale_refs.lookupCachedTagResult(owner, repo, sha) orelse continue;
-            if (tag_res != .no_tag) continue;
-            defer k_sc005 += 1;
-
-            if (impostor.shaIsCachedImpostor(owner, repo, sha)) {
-                drop.append(allocator, k_sc005) catch return;
-            }
-        }
+        walkStepsForSc005(job.steps, allocator, &drop, &k_sc005);
     }
 
     if (drop.items.len == 0) return;
@@ -192,33 +217,47 @@ pub fn clearNetworkDeadline() void {
     network_deadline_ns = null;
 }
 
+/// Upper bound for a single GitHub API request. The success path streams
+/// ~23 requests over one connection with none approaching this, and half of
+/// the 10 s overall deadline leaves room for a slow first connection
+/// (DNS + TCP + TLS + CONNECT). See `docs/adr/0016-*.md` D5.
+pub const request_budget_cap_ns: i128 = 5 * std.time.ns_per_s;
+
+/// Budget for the next single request: the smaller of the remaining overall
+/// deadline and `request_budget_cap_ns`. `.none` without an overall deadline.
+/// An exceeded deadline yields a zero duration so the caller times out at
+/// once instead of connecting.
+pub fn requestBudget() std.Io.Timeout {
+    const deadline = network_deadline_ns orelse return .none;
+    const now = std.Io.Clock.awake.now(runtime.io()).nanoseconds;
+    const remaining = @max(deadline - now, 0);
+    const budget = @min(remaining, request_budget_cap_ns);
+    return .{ .duration = .{ .raw = .fromNanoseconds(@intCast(budget)), .clock = .awake } };
+}
+
 /// Guards GitHub API URL path segments; the allowed character set is
 /// GitHub's naming rules for owners, repos, and refs.
 pub fn isValidGitHubComponent(s: []const u8) bool {
-    if (s.len == 0 or s.len > 255) return false;
-    for (s) |c| {
-        switch (c) {
-            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-' => {},
-            else => return false,
-        }
-    }
-    // "." and ".." would enable path traversal in the URL.
-    if (std.mem.eql(u8, s, ".") or std.mem.find(u8, s, "..") != null) return false;
-    return true;
+    return isValidGitPath(s, false);
 }
 
 /// Like isValidGitHubComponent but also allows '/' because branch refs
 /// (e.g. "feature/foo") contain it.
 pub fn isValidGitRef(s: []const u8) bool {
+    return isValidGitPath(s, true);
+}
+
+fn isValidGitPath(s: []const u8, comptime allow_slash: bool) bool {
     if (s.len == 0 or s.len > 255) return false;
     for (s) |c| {
         switch (c) {
-            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-', '/' => {},
+            'a'...'z', 'A'...'Z', '0'...'9', '.', '_', '-' => {},
+            '/' => if (!allow_slash) return false,
             else => return false,
         }
     }
-    // ".." is the only dot pattern that enables path traversal
     if (std.mem.find(u8, s, "..") != null) return false;
+    if (!allow_slash and std.mem.eql(u8, s, ".")) return false;
     return true;
 }
 
@@ -335,6 +374,24 @@ test "engine runs step-level rule" {
     try std.testing.expect(d.fix_hint != null);
 }
 
+test "engine runs step-level rule on nested parallel children" {
+    const engine = Engine.init(&test_rules);
+    const inner = [_]Step{
+        .{ .run = "echo ${{ github.event.issue.body }}" },
+    };
+    const steps = [_]Step{
+        .{ .control = .{ .parallel = &inner } },
+    };
+    const jobs = [_]Job{
+        .{ .id = "build", .steps = &steps },
+    };
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
+    var list = engine.run(std.testing.allocator, &wf);
+    defer list.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), test_support.countDiagnostics(&list, "TEST-STEP"));
+}
+
 test "engine returns all expected diagnostics" {
     const engine = Engine.init(&test_rules);
 
@@ -369,6 +426,32 @@ test "engine with empty workflow" {
 
     try std.testing.expectEqual(@as(usize, 1), list.len());
     try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
+}
+
+test "engine a workflow-only rule does not emit step diagnostics" {
+    const engine = Engine.init(test_rules[0..1]);
+    const inner = [_]Step{.{ .run = "echo hi" }};
+    const steps = [_]Step{.{ .control = .{ .parallel = &inner } }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
+    var list = engine.run(std.testing.allocator, &wf);
+    defer list.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-WF"));
+}
+
+test "engine a job-only rule still runs when steps are nested" {
+    const engine = Engine.init(test_rules[1..2]);
+    const inner = [_]Step{.{ .run = "echo hi" }};
+    const steps = [_]Step{.{ .control = .{ .parallel = &inner } }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps }};
+    const wf = Workflow{ .on = test_support.empty_trigger, .jobs = &jobs };
+    var list = engine.run(std.testing.allocator, &wf);
+    defer list.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), list.len());
+    try std.testing.expect(test_support.hasDiagnostic(&list, "TEST-JOB"));
 }
 
 test "isValidGitHubComponent: valid names" {
@@ -497,6 +580,41 @@ test "isNetworkDeadlineExceeded: past deadline returns true" {
     network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
     defer clearNetworkDeadline();
     try std.testing.expect(isNetworkDeadlineExceeded());
+}
+
+fn budgetNanoseconds(timeout: std.Io.Timeout) i128 {
+    return switch (timeout) {
+        .none => unreachable,
+        .duration => |d| d.raw.nanoseconds,
+        .deadline => unreachable,
+    };
+}
+
+test "requestBudget: no deadline set returns none" {
+    clearNetworkDeadline();
+    try std.testing.expectEqual(std.Io.Timeout.none, requestBudget());
+}
+
+test "requestBudget: long remaining deadline is capped" {
+    setNetworkDeadline(8 * std.time.ns_per_s);
+    defer clearNetworkDeadline();
+    const budget = budgetNanoseconds(requestBudget());
+    try std.testing.expect(budget <= request_budget_cap_ns);
+    try std.testing.expect(budget > request_budget_cap_ns - std.time.ns_per_s);
+}
+
+test "requestBudget: short remaining deadline is used as is" {
+    setNetworkDeadline(2 * std.time.ns_per_s);
+    defer clearNetworkDeadline();
+    const budget = budgetNanoseconds(requestBudget());
+    try std.testing.expect(budget <= 2 * std.time.ns_per_s);
+    try std.testing.expect(budget > std.time.ns_per_s);
+}
+
+test "requestBudget: exceeded deadline yields a zero budget" {
+    network_deadline_ns = std.Io.Clock.awake.now(runtime.io()).nanoseconds - 1;
+    defer clearNetworkDeadline();
+    try std.testing.expectEqual(@as(i128, 0), budgetNanoseconds(requestBudget()));
 }
 
 test "postProcess: drops SC005 when same step is impostor" {

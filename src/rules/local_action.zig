@@ -2,11 +2,12 @@
 //! reference and expose what it declares.
 //!
 //! The store is the only place that turns a local `uses:` into the referenced
-//! action's own metadata, so it hosts DEP004 (input validation) and the
-//! runtime table that BP003 consults for a deprecated `runs.using`. Both live
-//! here rather than in `action_metadata.zig` because that module sits above
-//! the step rules in the import graph (it drives composite step linting), and
-//! a shared table there would close the cycle.
+//! action's own metadata, so it hosts DEP004 (input validation), the runtime
+//! table that BP003 consults for a deprecated `runs.using`, and the composite
+//! `run:` / github-script bodies SEC002 reads for `inputs.*` interpolation
+//! (#536). They live here rather than in `action_metadata.zig` because that
+//! module sits above the step rules in the import graph (it drives composite
+//! step linting), and a shared table there would close the cycle.
 //!
 //! Everything is read from disk, so the store stays useful under
 //! `--quick` / `--offline`: those flags only disable network access.
@@ -27,15 +28,36 @@ const Rule = engine.Rule;
 const Step = engine.Step;
 const Node = yaml_types.Node;
 
-/// `runs.using` values GitHub has retired. Kept as data so a future runtime
-/// retirement is a one-line change instead of a new branch.
-pub const deprecated_runtimes = [_][]const u8{ "node12", "node16" };
+/// `runs.using` values this release reports as no longer running. `node20`
+/// joined ahead of its 2026-09-23 removal date: the tables switch at release
+/// time, not by the clock (`docs/adr/0018-runtime-retirement.md`).
+pub const retired_runtimes = [_][]const u8{ "node12", "node16", "node20" };
+
+/// Still accepted, but GitHub has announced removal. Empty until the next
+/// removal is dated; the tables are switched at release time, never by the
+/// clock (`docs/adr/0018-runtime-retirement.md`).
+pub const ending_runtimes = [_][]const u8{};
+
+/// ACT002 warns on both: retired runtimes and ones whose removal is dated.
+pub const deprecated_runtimes = retired_runtimes ++ ending_runtimes;
 
 /// What a deprecated runtime should migrate to.
 pub const recommended_runtime = "node24";
 
+pub fn isRetiredRuntime(using: []const u8) bool {
+    return containsRuntime(&retired_runtimes, using);
+}
+
+pub fn isEndingRuntime(using: []const u8) bool {
+    return containsRuntime(&ending_runtimes, using);
+}
+
 pub fn isDeprecatedRuntime(using: []const u8) bool {
-    for (deprecated_runtimes) |candidate| {
+    return containsRuntime(&deprecated_runtimes, using);
+}
+
+fn containsRuntime(list: []const []const u8, using: []const u8) bool {
+    for (list) |candidate| {
         if (std.mem.eql(u8, candidate, using)) return true;
     }
     return false;
@@ -52,6 +74,10 @@ pub const Input = struct {
 pub const Meta = struct {
     using: ?[]const u8 = null,
     inputs: []const Input = &.{},
+    /// Bodies of composite `run:` steps and `actions/github-script` `script:`
+    /// inputs. SEC002 scans these for `${{ inputs.<name> }}` (#536). Empty
+    /// when the action is not composite or has no such steps.
+    script_bodies: []const []const u8 = &.{},
 };
 
 pub const Resolution = union(enum) {
@@ -167,6 +193,13 @@ fn parseMeta(alloc: Allocator, source: []const u8) ?Meta {
             if (runs.mapping.get("using")) |using| {
                 if (using == .scalar) meta.using = using.scalar.value;
             }
+            if (isCompositeUsing(meta.using)) {
+                if (runs.mapping.get("steps")) |steps| {
+                    if (steps == .sequence) {
+                        meta.script_bodies = parseCompositeScriptBodies(alloc, steps.sequence);
+                    }
+                }
+            }
         }
     }
 
@@ -197,6 +230,55 @@ fn parseInputs(alloc: Allocator, m: yaml_types.Mapping) []const Input {
 
 fn isYamlTrue(value: []const u8) bool {
     return std.ascii.eqlIgnoreCase(value, "true");
+}
+
+fn isCompositeUsing(using: ?[]const u8) bool {
+    const value = using orelse return false;
+    return std.ascii.eqlIgnoreCase(value, "composite");
+}
+
+/// `run:` bodies and github-script `script:` inputs, in source order. Nested
+/// `uses: ./other` composites are not followed: SEC002's hop is one (#536).
+fn parseCompositeScriptBodies(alloc: Allocator, seq: yaml_types.Sequence) []const []const u8 {
+    var count: usize = 0;
+    for (seq.items) |item| {
+        if (compositeStepScriptBody(item) != null) count += 1;
+    }
+    if (count == 0) return &.{};
+    const out = alloc.alloc([]const u8, count) catch return &.{};
+    var i: usize = 0;
+    for (seq.items) |item| {
+        if (compositeStepScriptBody(item)) |body| {
+            out[i] = body;
+            i += 1;
+        }
+    }
+    return out;
+}
+
+fn compositeStepScriptBody(item: yaml_types.Node) ?[]const u8 {
+    const map = switch (item) {
+        .mapping => |m| m,
+        else => return null,
+    };
+    if (map.getScalar("run")) |run_body| return run_body;
+    const uses_raw = map.getScalar("uses") orelse return null;
+    if (!isGithubScriptRef(uses_raw)) return null;
+    const with_node = map.get("with") orelse return null;
+    const with_map = switch (with_node) {
+        .mapping => |m| m,
+        else => return null,
+    };
+    return with_map.getScalar("script");
+}
+
+fn isGithubScriptRef(raw: []const u8) bool {
+    const ref = workflow_types.ActionRef.parse(raw);
+    if (ref.path != null) return false;
+    const owner = ref.owner orelse return false;
+    const repo = ref.repo orelse return false;
+    return std.ascii.eqlIgnoreCase(owner, "actions") and
+        std.ascii.eqlIgnoreCase(repo, "github-script");
 }
 
 fn report(
@@ -237,7 +319,26 @@ pub fn checkStepAmongSteps(steps: []const Step, index: usize, list: *DiagnosticL
 }
 
 fn checkJobLocalActionInputs(job: *const engine.Job, list: *DiagnosticList) void {
-    for (job.steps, 0..) |_, index| checkStepAmongSteps(job.steps, index, list);
+    checkStepsLocalActionInputs(job.steps, list);
+}
+
+fn checkStepsLocalActionInputs(steps: []const Step, list: *DiagnosticList) void {
+    for (steps, 0..) |*step, index| {
+        checkLocalActionAgainstPriors(step, steps[0..index], list);
+        checkNestedLocalActionInputs(step.nestedSteps(), steps[0..index], list);
+    }
+}
+
+fn checkNestedLocalActionInputs(steps: []const Step, priors: []const Step, list: *DiagnosticList) void {
+    for (steps) |*step| {
+        checkLocalActionAgainstPriors(step, priors, list);
+        checkNestedLocalActionInputs(step.nestedSteps(), priors, list);
+    }
+}
+
+fn checkLocalActionAgainstPriors(step: *const Step, priors: []const Step, list: *DiagnosticList) void {
+    if (isCheckedOutInTree(priors, step)) return;
+    checkLocalActionInputs(step, list);
 }
 
 /// True when `steps[index]` uses a local action under a directory that an
@@ -245,30 +346,43 @@ fn checkJobLocalActionInputs(job: *const engine.Job, list: *DiagnosticList) void
 /// input — the pattern an action's own test workflow uses to check itself
 /// out beside the workflow. Nothing lives at that path in the repository as
 /// checked out here, so whatever DEP004 would read there is not the tree the
-/// runner sees.
+/// runner sees. Nested `parallel:` children of those earlier steps have
+/// already finished (implicit wait after the group).
 fn isCheckedOutAtRuntime(steps: []const Step, index: usize) bool {
-    const action = steps[index].uses orelse return false;
+    return isCheckedOutInTree(steps[0..index], &steps[index]);
+}
+
+fn isCheckedOutInTree(priors: []const Step, step: *const Step) bool {
+    const action = step.uses orelse return false;
     if (!action.is_local) return false;
     const rel = relativeDir(action.raw) orelse return false;
+    return checkoutCoversTree(priors, rel);
+}
 
-    for (steps[0..index]) |prior| {
-        const prior_action = prior.uses orelse continue;
-        if (!isCheckoutAction(prior_action)) continue;
-        const with = prior.with orelse continue;
-        const path = with.get("path") orelse continue;
-
-        // Only the part before the first `${{` is knowable here; the rest
-        // resolves on the runner, so everything under that prefix has to be
-        // treated as possibly created.
-        const expression = std.mem.find(u8, path, "${{");
-        const dir = normalizeCheckoutPath(path[0..(expression orelse path.len)]);
-        // A literal `path: .` checks the repository out over the workspace
-        // root, which is the tree already on disk here: no new directory
-        // appears, so the step is judged as usual.
-        if (dir.len == 0 and expression == null) continue;
-        if (dirContains(dir, rel)) return true;
+fn checkoutCoversTree(steps: []const Step, rel: []const u8) bool {
+    for (steps) |*prior| {
+        if (checkoutCovers(prior, rel)) return true;
+        if (checkoutCoversTree(prior.nestedSteps(), rel)) return true;
     }
     return false;
+}
+
+fn checkoutCovers(prior: *const Step, rel: []const u8) bool {
+    const prior_action = prior.uses orelse return false;
+    if (!isCheckoutAction(prior_action)) return false;
+    const with = prior.with orelse return false;
+    const path = with.get("path") orelse return false;
+
+    // Only the part before the first `${{` is knowable here; the rest
+    // resolves on the runner, so everything under that prefix has to be
+    // treated as possibly created.
+    const expression = std.mem.find(u8, path, "${{");
+    const dir = normalizeCheckoutPath(path[0..(expression orelse path.len)]);
+    // A literal `path: .` checks the repository out over the workspace
+    // root, which is the tree already on disk here: no new directory
+    // appears, so the step is judged as usual.
+    if (dir.len == 0 and expression == null) return false;
+    return dirContains(dir, rel);
 }
 
 fn isCheckoutAction(action: workflow_types.ActionRef) bool {
@@ -346,10 +460,17 @@ const test_support = @import("../test_support.zig");
 const ActionRef = workflow_types.ActionRef;
 const hasDiagnostic = test_support.hasDiagnostic;
 
-test "isDeprecatedRuntime recognises the retired Node runtimes" {
+test "isDeprecatedRuntime recognises retired and ending Node runtimes" {
+    try testing.expect(isRetiredRuntime("node12"));
+    try testing.expect(isRetiredRuntime("node16"));
+    try testing.expect(isRetiredRuntime("node20"));
+    try testing.expect(!isRetiredRuntime("node24"));
+    try testing.expect(!isEndingRuntime("node20"));
+    try testing.expect(!isEndingRuntime("node24"));
     try testing.expect(isDeprecatedRuntime("node12"));
     try testing.expect(isDeprecatedRuntime("node16"));
-    try testing.expect(!isDeprecatedRuntime("node20"));
+    try testing.expect(isDeprecatedRuntime("node20"));
+    try testing.expect(!isDeprecatedRuntime("node24"));
     try testing.expect(!isDeprecatedRuntime("composite"));
 }
 
@@ -474,6 +595,77 @@ test "DEP004: declared inputs are accepted" {
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "local action meta records composite run bodies (#536)" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write("echo-action/action.yml",
+        \\name: echo
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - run: echo "${{ inputs.title }}"
+        \\      shell: bash
+        \\
+    );
+
+    switch (resolve("./echo-action")) {
+        .found => |meta| {
+            try testing.expectEqual(@as(usize, 1), meta.script_bodies.len);
+            try testing.expect(std.mem.find(u8, meta.script_bodies[0], "inputs.title") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "local action meta records github-script bodies (#536)" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write("script-action/action.yml",
+        \\name: script
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: composite
+        \\  steps:
+        \\    - uses: actions/github-script@v7
+        \\      with:
+        \\        script: console.log("${{ inputs.title }}")
+        \\
+    );
+
+    switch (resolve("./script-action")) {
+        .found => |meta| {
+            try testing.expectEqual(@as(usize, 1), meta.script_bodies.len);
+            try testing.expect(std.mem.find(u8, meta.script_bodies[0], "inputs.title") != null);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "a node action has no script bodies (#536)" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+    try fx.write("js-action/action.yml",
+        \\name: js
+        \\inputs:
+        \\  title:
+        \\    required: true
+        \\runs:
+        \\  using: node24
+        \\  main: index.js
+        \\
+    );
+
+    switch (resolve("./js-action")) {
+        .found => |meta| try testing.expectEqual(@as(usize, 0), meta.script_bodies.len),
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "DEP004: required input without a default must be passed" {
@@ -846,4 +1038,64 @@ test "DEP004: with: is not checked against a tree the checkout replaces" {
     defer list.deinit();
 
     try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a checkout before parallel excuses a nested local uses" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+
+    const nested = [_]Step{
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    const steps = [_]Step{
+        try checkoutStep("action-under-test", &with),
+        .{ .control = .{ .parallel = &nested } },
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStepsLocalActionInputs(&steps, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a checkout inside an earlier parallel excuses a later local uses" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+
+    const nested = [_]Step{
+        try checkoutStep("action-under-test", &with),
+    };
+    const steps = [_]Step{
+        .{ .control = .{ .parallel = &nested } },
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStepsLocalActionInputs(&steps, &list);
+    try testing.expectEqual(@as(usize, 0), list.len());
+}
+
+test "DEP004: a sibling checkout inside parallel does not excuse the local uses" {
+    var fx = try Fixture.init();
+    defer fx.deinit();
+
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+
+    const nested = [_]Step{
+        try checkoutStep("action-under-test", &with),
+        .{ .uses = ActionRef.parse("./action-under-test") },
+    };
+    const steps = [_]Step{
+        .{ .control = .{ .parallel = &nested } },
+    };
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStepsLocalActionInputs(&steps, &list);
+    try testing.expectEqual(@as(usize, 1), list.len());
 }

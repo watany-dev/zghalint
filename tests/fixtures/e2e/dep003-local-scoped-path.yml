@@ -1,0 +1,10 @@
+# zghalint:forbid DEP003
+name: scoped-local-actions
+on: workflow_dispatch
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./tools/@scope/tool
+      - uses: $/tools/@scope/tool

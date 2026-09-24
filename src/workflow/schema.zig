@@ -12,6 +12,7 @@ pub const UnknownKey = struct {
 };
 
 pub const workflow_keys = [_][]const u8{
+    "cache-mode",
     "concurrency",
     "defaults",
     "env",
@@ -28,6 +29,7 @@ pub const workflow_keys = [_][]const u8{
 pub const workflow_on_key_alias = "true";
 
 pub const job_keys = [_][]const u8{
+    "cache-mode",
     "concurrency",
     "container",
     "continue-on-error",
@@ -50,7 +52,8 @@ pub const job_keys = [_][]const u8{
     "with",
 };
 
-pub const step_action_keys = [_][]const u8{
+const step_action_keys = [_][]const u8{
+    "background",
     "continue-on-error",
     "env",
     "id",
@@ -61,7 +64,8 @@ pub const step_action_keys = [_][]const u8{
     "with",
 };
 
-pub const step_run_keys = [_][]const u8{
+const step_run_keys = [_][]const u8{
+    "background",
     "continue-on-error",
     "env",
     "id",
@@ -73,16 +77,48 @@ pub const step_run_keys = [_][]const u8{
     "working-directory",
 };
 
-pub const step_all_keys = [_][]const u8{
+const step_wait_keys = [_][]const u8{
+    "continue-on-error",
+    "id",
+    "name",
+    "wait",
+};
+
+const step_wait_all_keys = [_][]const u8{
+    "continue-on-error",
+    "id",
+    "name",
+    "wait-all",
+};
+
+const step_cancel_keys = [_][]const u8{
+    "cancel",
+    "continue-on-error",
+    "id",
+    "name",
+};
+
+const step_parallel_keys = [_][]const u8{
+    "id",
+    "name",
+    "parallel",
+};
+
+const step_all_keys = [_][]const u8{
+    "background",
+    "cancel",
     "continue-on-error",
     "env",
     "id",
     "if",
     "name",
+    "parallel",
     "run",
     "shell",
     "timeout-minutes",
     "uses",
+    "wait",
+    "wait-all",
     "with",
     "working-directory",
 };
@@ -93,16 +129,22 @@ pub const strategy_keys = [_][]const u8{
     "max-parallel",
 };
 
-pub const defaults_keys = [_][]const u8{
+pub const concurrency_keys = [_][]const u8{
+    "cancel-in-progress",
+    "group",
+    "queue",
+};
+
+const defaults_keys = [_][]const u8{
     "run",
 };
 
-pub const defaults_run_keys = [_][]const u8{
+const defaults_run_keys = [_][]const u8{
     "shell",
     "working-directory",
 };
 
-pub const container_keys = [_][]const u8{
+const container_keys = [_][]const u8{
     "credentials",
     "env",
     "image",
@@ -111,7 +153,7 @@ pub const container_keys = [_][]const u8{
     "volumes",
 };
 
-pub const service_container_keys = [_][]const u8{
+const service_container_keys = [_][]const u8{
     "command",
     "credentials",
     "entrypoint",
@@ -122,7 +164,7 @@ pub const service_container_keys = [_][]const u8{
     "volumes",
 };
 
-pub fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
+fn isAllowedKey(key: []const u8, allowed: []const []const u8) bool {
     for (allowed) |candidate| {
         if (std.mem.eql(u8, key, candidate)) return true;
     }
@@ -185,6 +227,10 @@ pub fn rejectsValue(key: []const u8, value: yaml.Node) bool {
 }
 
 pub fn stepExpectedKeys(m: yaml.Mapping) []const []const u8 {
+    if (m.get("wait") != null) return &step_wait_keys;
+    if (m.get("wait-all") != null) return &step_wait_all_keys;
+    if (m.get("cancel") != null) return &step_cancel_keys;
+    if (m.get("parallel") != null) return &step_parallel_keys;
     const has_run = m.get("run") != null;
     const has_uses = m.get("uses") != null;
     if (has_run) return &step_run_keys;
@@ -231,6 +277,14 @@ pub const UnknownKeyCollector = struct {
         }
     }
 
+    pub fn checkConcurrency(self: *UnknownKeyCollector, node: yaml.Node) !void {
+        const m = switch (node) {
+            .mapping => |mp| mp,
+            else => return,
+        };
+        try self.checkMapping(m, "concurrency", &concurrency_keys, &.{});
+    }
+
     pub fn checkDefaults(self: *UnknownKeyCollector, node: yaml.Node) !void {
         const m = switch (node) {
             .mapping => |mp| mp,
@@ -266,8 +320,13 @@ test "schema key tables are sorted" {
         &job_keys,
         &step_action_keys,
         &step_run_keys,
+        &step_wait_keys,
+        &step_wait_all_keys,
+        &step_cancel_keys,
+        &step_parallel_keys,
         &step_all_keys,
         &strategy_keys,
+        &concurrency_keys,
         &defaults_keys,
         &defaults_run_keys,
         &container_keys,
@@ -283,6 +342,10 @@ test "schema key tables are sorted" {
 
 test "isAllowedKey exact match" {
     try std.testing.expect(isAllowedKey("runs-on", &job_keys));
+    try std.testing.expect(isAllowedKey("cache-mode", &workflow_keys));
+    try std.testing.expect(isAllowedKey("cache-mode", &job_keys));
+    try std.testing.expect(isAllowedKey("queue", &concurrency_keys));
+    try std.testing.expect(isAllowedKey("cancel-in-progress", &concurrency_keys));
     try std.testing.expect(!isAllowedKey("runs-on", &step_run_keys));
     try std.testing.expect(!isAllowedKey("Shell", &step_run_keys));
     try std.testing.expect(!isAllowedKey(workflow_on_key_alias, &workflow_keys));
@@ -307,4 +370,28 @@ test "stepExpectedKeys prefers run over uses" {
         try std.testing.expect(isAllowedKey(key, keys));
     }
     try std.testing.expect(!isAllowedKey("with", keys));
+}
+
+test "stepExpectedKeys accepts background on run and uses" {
+    var run_entries = [_]yaml.MappingEntry{
+        .{
+            .key = .{ .value = "run", .style = .plain, .span = yaml.Span.point(1, 1, 0) },
+            .value = .{ .scalar = .{ .value = "echo", .style = .plain, .span = yaml.Span.point(1, 1, 0) } },
+            .span = yaml.Span.point(1, 1, 0),
+        },
+    };
+    const run_keys = stepExpectedKeys(.{ .entries = &run_entries, .span = yaml.Span.point(1, 1, 0) });
+    try std.testing.expect(isAllowedKey("background", run_keys));
+
+    var wait_entries = [_]yaml.MappingEntry{
+        .{
+            .key = .{ .value = "wait", .style = .plain, .span = yaml.Span.point(1, 1, 0) },
+            .value = .{ .scalar = .{ .value = "producer", .style = .plain, .span = yaml.Span.point(1, 1, 0) } },
+            .span = yaml.Span.point(1, 1, 0),
+        },
+    };
+    const wait_keys = stepExpectedKeys(.{ .entries = &wait_entries, .span = yaml.Span.point(1, 1, 0) });
+    try std.testing.expect(isAllowedKey("wait", wait_keys));
+    try std.testing.expect(!isAllowedKey("if", wait_keys));
+    try std.testing.expect(!isAllowedKey("run", wait_keys));
 }

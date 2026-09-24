@@ -46,11 +46,101 @@ def on_block(trigger: str) -> str:
     return f"on: {trigger}\n"
 
 
+#: Directory name of the local composite action an `action_input` witness
+#: passes the value into (`uses: ./{LOCAL_ACTION}`).
+LOCAL_ACTION = "echo-action"
+LOCAL_ACTION_YML = (
+    "name: echo\n"
+    "inputs:\n"
+    "  title:\n"
+    "    required: true\n"
+    "runs:\n"
+    "  using: composite\n"
+    "  steps:\n"
+    '    - run: echo "${{ inputs.title }}"\n'
+    "      shell: bash\n"
+)
+
+
+def _action_output(w: model.Witness) -> spec.ActionOutput:
+    # P12 pins the action; P8 only pins the source context and takes any
+    # action that derives its output from it.
+    for ao in spec.ACTION_OUTPUTS:
+        if ao.key == w.action or (not w.action and ao.source == w.context):
+            return ao
+    raise LookupError(f"no ActionOutput for witness {w}")
+
+
 def workflow_for(w: model.Witness) -> str:
     expr = "${{ " + concrete(w.context) + " }}"
     head = on_block(w.trigger) + "jobs:\n"
     runs_on = "self-hosted" if w.property.startswith("P7") else "ubuntu-latest"
 
+    if w.sink == "run_fetch":
+        # The checkout itself is clean; only the shell command afterwards
+        # picks the attacker's ref, so SEC005 / SEC009 / SEC021 must read `run:`.
+        return head + (
+            "  j:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            f"      - run: {spec.fetch_command(w.context)}\n"
+            "      - run: npm install\n"
+        )
+    if w.sink == "artifact_run_id":
+        return head + (
+            "  j:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/download-artifact@v4\n"
+            "        with:\n"
+            "          name: build\n"
+            f"          run-id: {expr}\n"
+            "          github-token: ${{ github.token }}\n"
+            "      - run: bash ./build/deploy.sh\n"
+        )
+    if w.sink == "action_script":
+        action, _, input_name = w.action.partition("#")
+        return head + (
+            "  j:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            f"      - uses: {action}@v1\n"
+            "        with:\n"
+            f'          {input_name}: echo "{expr}"\n'
+        )
+    if w.sink == "app_token":
+        action, _, _ = w.action.partition("#")
+        return head + (
+            "  j:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            f"      - uses: {action}@v2\n"
+            "        with:\n"
+            "          app-id: ${{ vars.APP_ID }}\n"
+            "          private-key: ${{ secrets.APP_KEY }}\n"
+        )
+    if w.flow == "action_output":
+        ao = _action_output(w)
+        return head + (
+            "  j:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "      - id: s\n"
+            f"        uses: {ao.action}@v1\n"
+            f'      - run: echo "${{{{ steps.s.outputs.{ao.output} }}}}"\n'
+        )
+    if w.flow == "action_input":
+        return head + (
+            "  j:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            f"      - uses: ./{LOCAL_ACTION}\n"
+            "        with:\n"
+            f'          title: "{expr}"\n'
+        )
     if w.sink == "checkout_ref":
         return head + (
             "  j:\n"
@@ -105,6 +195,25 @@ def workflow_for(w: model.Witness) -> str:
             "    steps:\n"
             '      - run: echo "${{ needs.a.outputs.title }}"\n'
         )
+    if w.flow == "job_output_2hop":
+        return head + (
+            "  a:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    outputs:\n"
+            "      title: ${{ steps.s.outputs.title }}\n"
+            "    steps:\n" + capture + "  b:\n"
+            "    needs: a\n"
+            "    runs-on: ubuntu-latest\n"
+            "    outputs:\n"
+            "      title: ${{ needs.a.outputs.title }}\n"
+            "    steps:\n"
+            "      - run: echo skip\n"
+            "  c:\n"
+            "    needs: b\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            '      - run: echo "${{ needs.b.outputs.title }}"\n'
+        )
     if w.flow == "step_output":
         return head + (
             "  j:\n"
@@ -145,6 +254,11 @@ def confirm(witnesses: list[model.Witness], keep: Path | None) -> list[Outcome]:
     with tempfile.TemporaryDirectory() as tmp:
         base = keep or Path(tmp)
         base.mkdir(parents=True, exist_ok=True)
+        # The binary resolves `uses: ./...` only under a repository root, which
+        # it finds by a `.git` ancestor; an empty directory is enough.
+        (base / ".git").mkdir(exist_ok=True)
+        (base / LOCAL_ACTION).mkdir(exist_ok=True)
+        (base / LOCAL_ACTION / "action.yml").write_text(LOCAL_ACTION_YML)
         for i, w in enumerate(witnesses):
             path = base / f"{i:03}-{w.trigger}-{w.sink}-{w.flow}.yml"
             path.write_text(workflow_for(w))
@@ -180,9 +294,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n== {w.property}  (expected {w.expected_rule})")
         status = "CONFIRMED" if o.confirmed else "covered  "
         confirmed += o.confirmed
-        flow = "" if w.flow == "direct" else f" via {w.flow}"
         fired = ",".join(o.security_rules) or "-"
-        print(f"  {status} {w.trigger:28} {w.context}{flow:18}  fired: {fired}")
+        print(f"  {status} {model.describe(w):72}  fired: {fired}")
     print(f"\n{confirmed}/{len(outcomes)} witnesses confirmed against {BINARY.name}")
     return 0
 

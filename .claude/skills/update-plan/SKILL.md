@@ -1,11 +1,11 @@
 ---
-description: Validate and improve an implementation plan in plan mode by cross-checking with docs/design/*.md, docs/adr/*.md, docs/rules.md, and src/. Superset of update-design. Use in plan mode whenever the user requests an implementation plan for zghalint - invoke at the start of plan mode so the verification runs before finalizing the plan file, and re-invoke just before ExitPlanMode if the plan has materially changed. Trigger examples - entering plan mode for any zghalint feature work, "プランを作成", "実装計画", "plan this feature", "validate the plan", "整合性チェック".
+description: Validate and improve an implementation plan in plan mode by cross-checking with docs/design/*.md, docs/adr/*.md, docs/rules.md, and src/. Use in plan mode whenever the user requests an implementation plan for zghalint - invoke at the start of plan mode so the verification runs before finalizing the plan file, and re-invoke just before ExitPlanMode if the plan has materially changed. Trigger examples - entering plan mode for any zghalint feature work, "プランを作成", "実装計画", "plan this feature", "validate the plan", "整合性チェック".
 ---
 
 # update-plan
 
 プランモードで実装計画を完成させた直後、ユーザーに提示する直前に発動する統合検証・改善スキル。
-update-design の全機能（設計書品質評価）を内包しつつ、ADR・ルール一覧との横断的整合性チェックと、プラン自体の改善を行う。
+設計書の品質評価に加え、ADR・ルール一覧との横断的整合性チェックと、プラン自体の改善を行う。
 
 ## 発動タイミング
 
@@ -24,7 +24,7 @@ update-design の全機能（設計書品質評価）を内包しつつ、ADR・
 2. プランに関連する `docs/design/*.md`、`docs/adr/*.md`、`docs/rules.md` を読み込む
 3. プランが対象とするモジュールの `src/` 配下のソースコードを読み込む
 
-## Phase 2: 設計書品質評価（update-design 完全互換）
+## Phase 2: 設計書品質評価
 
 プランが関連する設計書を以下のカテゴリで評価する。
 

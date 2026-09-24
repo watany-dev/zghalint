@@ -16,10 +16,8 @@ const workflow_run_filters = &[_][]const u8{ "branches", "branches-ignore" };
 /// Every ref/path filter GitHub defines, which is exactly the set `push`
 /// accepts. Lets a caller tell a filter written under the wrong event apart
 /// from a key that is no filter at all.
-pub const filter_names = push_filters;
-
 pub fn isFilter(name: []const u8) bool {
-    for (filter_names) |filter| {
+    for (push_filters) |filter| {
         if (std.mem.eql(u8, filter, name)) return true;
     }
     return false;
