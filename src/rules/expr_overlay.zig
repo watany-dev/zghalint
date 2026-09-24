@@ -94,13 +94,6 @@ const PropList = struct {
         };
     }
 
-    /// Sizes both containers up front when the caller knows how many keys
-    /// are coming, so a long list does not grow (and rehash) in steps.
-    fn reserve(self: *PropList, count: usize) void {
-        self.items.ensureTotalCapacity(self.alloc, count) catch {};
-        _ = util.reserve(&self.positions, self.alloc, count);
-    }
-
     fn finish(self: *PropList) ?[]const Prop {
         return self.items.toOwnedSlice(self.alloc) catch null;
     }
@@ -265,7 +258,6 @@ pub fn buildNeeds(alloc: std.mem.Allocator, wf: *const Workflow, job: *const Job
     if (job.needs.len == 0) return null;
 
     var props = PropList{ .alloc = alloc };
-    props.reserve(job.needs.len);
     for (job.needs) |need| {
         props.put(need, needType(alloc, wf, need) orelse &opaque_need);
     }
@@ -295,10 +287,8 @@ fn needType(alloc: std.mem.Allocator, wf: *const Workflow, name: []const u8) ?Ty
 /// serves as a first guess and the scan only runs when that guess is not an
 /// exact match (a case-variant duplicate, SYN005).
 fn findJobExact(wf: *const Workflow, name: []const u8) ?*const Job {
-    if (wf.findJob(name)) |index| {
-        const guess = &wf.jobs[index];
-        if (std.mem.eql(u8, guess.id, name)) return guess;
-    } else return null;
+    const guess = &wf.jobs[wf.findJob(name) orelse return null];
+    if (std.mem.eql(u8, guess.id, name)) return guess;
     for (wf.jobs) |*candidate| {
         if (std.mem.eql(u8, candidate.id, name)) return candidate;
     }

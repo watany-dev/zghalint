@@ -77,10 +77,7 @@ fn appendUnique(
 ) void {
     const slot = set.getOrPut(alloc, name) catch return;
     if (slot.found_existing) return;
-    names.append(alloc, name) catch {
-        set.removeByPtr(slot.key_ptr);
-        return;
-    };
+    names.append(alloc, name) catch return;
 }
 
 const Resolver = struct {

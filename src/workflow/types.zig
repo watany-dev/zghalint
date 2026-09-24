@@ -748,10 +748,6 @@ pub const JobIndex = struct {
         }
         return .{ .by_id = by_id };
     }
-
-    pub fn find(self: *const JobIndex, id: []const u8) ?usize {
-        return self.by_id.get(id);
-    }
 };
 
 pub const Workflow = struct {
@@ -797,7 +793,7 @@ pub const Workflow = struct {
 
     /// Position of the first job whose ID matches `id` case-insensitively.
     pub fn findJob(self: *const Workflow, id: []const u8) ?usize {
-        if (self.job_index) |*index| return index.find(id);
+        if (self.job_index) |*index| return index.by_id.get(id);
         for (self.jobs, 0..) |*job, i| {
             if (std.ascii.eqlIgnoreCase(job.id, id)) return i;
         }

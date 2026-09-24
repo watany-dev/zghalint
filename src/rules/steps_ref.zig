@@ -71,11 +71,6 @@ const Resolver = struct {
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
 
-    /// Index of the first step declaring `id`.
-    fn find(self: Resolver, id: []const u8) ?usize {
-        return self.defined.get(id);
-    }
-
     /// The hook `expr_scan` calls for every context access it finds.
     pub fn checkPath(self: Resolver, path: []const u8, span: Span) void {
         checkStepPath(self, path, span);
@@ -177,7 +172,7 @@ fn checkStepPath(res: Resolver, path: []const u8, span: Span) void {
     const id_seg = iter.next() orelse return;
     const id = segmentName(id_seg) orelse return;
 
-    const target = res.find(id) orelse {
+    const target = res.defined.get(id) orelse {
         appendUnknownStep(res, path, id, span);
         return;
     };

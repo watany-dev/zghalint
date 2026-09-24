@@ -127,18 +127,15 @@ pub const Cursor = struct {
     /// it, and from the origin otherwise, so an out-of-order request is merely
     /// slower, never wrong.
     fn positionAt(self: *Cursor, offset: usize) Pos {
-        const from: Pos, const from_off: usize = if (self.pos) |pos|
-            if (self.offset <= offset) .{ pos, self.offset } else .{ self.origin(), 0 }
-        else
-            .{ self.origin(), 0 };
-        const pos = advance(from.line, from.col, self.value[from_off..offset]);
+        if (self.pos == null or self.offset > offset) {
+            self.pos = contentOrigin(self.anchor.scalar.?, self.anchor.style);
+            self.offset = 0;
+        }
+        const from = self.pos.?;
+        const pos = advance(from.line, from.col, self.value[self.offset..offset]);
         self.pos = pos;
         self.offset = offset;
         return pos;
-    }
-
-    fn origin(self: *const Cursor) Pos {
-        return contentOrigin(self.anchor.scalar.?, self.anchor.style);
     }
 };
 

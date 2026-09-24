@@ -559,35 +559,21 @@ const FixOutcome = struct {
     skipped: usize = 0,
 };
 
+const FixableByFile = std.StringHashMapUnmanaged(std.ArrayList(zghalint.Diagnostic));
+
 /// The fixable diagnostics of every file, grouped once so the fix loop does
-/// not rescan the whole list per file.
-const FixableByFile = struct {
-    groups: std.StringHashMapUnmanaged(std.ArrayList(zghalint.Diagnostic)) = .empty,
-
-    fn build(allocator: std.mem.Allocator, all_diags: *const zghalint.DiagnosticList) !FixableByFile {
-        var self: FixableByFile = .{};
-        errdefer self.deinit(allocator);
-        for (all_diags.items.items) |d| {
-            if (d.fix == null) continue;
-            const f = d.file orelse continue;
-            const entry = try self.groups.getOrPut(allocator, f);
-            if (!entry.found_existing) entry.value_ptr.* = .empty;
-            try entry.value_ptr.append(allocator, d);
-        }
-        return self;
+/// not rescan the whole list per file. Everything is allocated from `arena`.
+fn groupFixableByFile(arena: std.mem.Allocator, all_diags: *const zghalint.DiagnosticList) !FixableByFile {
+    var groups: FixableByFile = .empty;
+    for (all_diags.items.items) |d| {
+        if (d.fix == null) continue;
+        const f = d.file orelse continue;
+        const entry = try groups.getOrPut(arena, f);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        try entry.value_ptr.append(arena, d);
     }
-
-    fn get(self: *const FixableByFile, file_path: []const u8) []const zghalint.Diagnostic {
-        const group = self.groups.get(file_path) orelse return &.{};
-        return group.items;
-    }
-
-    fn deinit(self: *FixableByFile, allocator: std.mem.Allocator) void {
-        var it = self.groups.valueIterator();
-        while (it.next()) |group| group.deinit(allocator);
-        self.groups.deinit(allocator);
-    }
-};
+    return groups;
+}
 
 fn applyFixesForFile(
     allocator: std.mem.Allocator,
@@ -847,13 +833,15 @@ pub fn main(init: std.process.Init) !u8 {
         const include_unsafe = cli_args.fix_mode == .all;
         var total_fixed: usize = 0;
         var total_skipped: usize = 0;
-        var fixable = FixableByFile.build(allocator, &all_diags) catch {
+        var fix_arena = std.heap.ArenaAllocator.init(allocator);
+        defer fix_arena.deinit();
+        const fixable = groupFixableByFile(fix_arena.allocator(), &all_diags) catch {
             stderr.writeAll("error: out of memory\n") catch {};
             return 2;
         };
-        defer fixable.deinit(allocator);
         for (files) |file_path| {
-            const outcome = applyFixesForFile(allocator, file_path, fixable.get(file_path), include_unsafe) catch |err| {
+            const file_diags: []const zghalint.Diagnostic = if (fixable.get(file_path)) |group| group.items else &.{};
+            const outcome = applyFixesForFile(allocator, file_path, file_diags, include_unsafe) catch |err| {
                 stderr.print("error: failed to apply fixes to '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
                 had_fatal = true;
                 continue;

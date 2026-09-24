@@ -151,10 +151,7 @@ fn absorb(key: *Key, alloc: std.mem.Allocator, value: yaml_types.Node) void {
 fn appendUniqueProp(key: *Key, alloc: std.mem.Allocator, name: []const u8) void {
     const slot = key.prop_set.getOrPut(alloc, name) catch return;
     if (slot.found_existing) return;
-    key.props.append(alloc, name) catch {
-        key.prop_set.removeByPtr(slot.key_ptr);
-        return;
-    };
+    key.props.append(alloc, name) catch return;
 }
 
 const Resolver = struct {
