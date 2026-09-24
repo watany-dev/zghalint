@@ -64,7 +64,7 @@ fn strictObject(alloc: std.mem.Allocator, props: []const Prop) ?TypeRef {
 const PropList = struct {
     items: std.ArrayList(Prop) = .empty,
     /// Position in `items` of each name seen, so a repeat is found without
-    /// rescanning the list (a job with hundreds of `needs` made this O(n²)).
+    /// rescanning the list.
     positions: util.IgnoreCaseMap(usize) = .empty,
     alloc: std.mem.Allocator,
 
@@ -104,8 +104,7 @@ const PropList = struct {
 ///
 /// The ids in scope at step `i` are a prefix of those in scope at `i + 1`, so
 /// one pass builds a single id list and every step's overlay is a prefix
-/// slice of it. Building each step's list from scratch made a job with `n`
-/// id-bearing steps cost O(n³) comparisons.
+/// slice of it.
 pub const StepsOverlay = struct {
     /// Indexed by step; null where the overlay could not be built and the
     /// loose catalog entry applies.

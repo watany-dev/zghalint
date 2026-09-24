@@ -196,9 +196,8 @@ fn checkMapping(
 ) void {
     const report = !isSameEntries(mapping.entries, skip);
 
-    // Each key's first entry, so a repeat points back at it without a rescan
-    // of every earlier sibling on every entry. Short mappings, which is
-    // nearly all of them, are cheaper to scan than to hash.
+    // Short mappings, which is nearly all of them, are cheaper to scan than
+    // to hash.
     var first_by_key: util.IgnoreCaseMap(usize) = .empty;
     defer first_by_key.deinit(list.allocator);
     const seen: ?*util.IgnoreCaseMap(usize) = if (report and
@@ -378,8 +377,6 @@ const step_id_dup_fmt =
 
 fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs, 0..) |*job, i| {
-        // The index resolves to the first job with this ID, so every later
-        // occurrence points back at it.
         const first = wf.findJob(job.id) orelse continue;
         if (first == i) continue;
         const prior = &wf.jobs[first];
@@ -397,7 +394,6 @@ fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
 fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
     if (job.steps.len < 2) return;
 
-    // Each ID's first step, so every later occurrence points back at it.
     var first_by_id: util.IgnoreCaseMap(usize) = .empty;
     defer first_by_id.deinit(list.allocator);
     if (!util.reserve(&first_by_id, list.allocator, job.steps.len)) return;

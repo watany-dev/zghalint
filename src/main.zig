@@ -561,8 +561,7 @@ const FixOutcome = struct {
 
 const FixableByFile = std.StringHashMapUnmanaged(std.ArrayList(zghalint.Diagnostic));
 
-/// The fixable diagnostics of every file, grouped once so the fix loop does
-/// not rescan the whole list per file. Everything is allocated from `arena`.
+/// Grouped once so the fix loop does not rescan the whole list per file.
 fn groupFixableByFile(arena: std.mem.Allocator, all_diags: *const zghalint.DiagnosticList) !FixableByFile {
     var groups: FixableByFile = .empty;
     for (all_diags.items.items) |d| {

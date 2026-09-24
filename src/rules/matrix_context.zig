@@ -59,7 +59,6 @@ const Keys = struct {
     entries: []Key,
     /// The same names as a flat slice, for `util.didYouMean`.
     names: []const []const u8,
-    /// Name to its index in `entries`.
     positions: util.IgnoreCaseMap(usize),
 
     fn find(self: Keys, name: []const u8) ?*const Key {
@@ -74,8 +73,7 @@ const KeyList = struct {
     items: std.ArrayList(Key) = .empty,
     positions: util.IgnoreCaseMap(usize) = .empty,
 
-    /// The existing entry for `name`, or a fresh one appended in source
-    /// order. Null only when the entry could not be allocated.
+    /// Null only when the entry could not be allocated.
     fn upsert(self: *KeyList, alloc: std.mem.Allocator, name: []const u8) ?*Key {
         const slot = self.positions.getOrPut(alloc, name) catch return null;
         if (slot.found_existing) return &self.items.items[slot.value_ptr.*];

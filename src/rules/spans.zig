@@ -123,9 +123,8 @@ pub const Cursor = struct {
         };
     }
 
-    /// Walks forward from the remembered position when `offset` is at or past
-    /// it, and from the origin otherwise, so an out-of-order request is merely
-    /// slower, never wrong.
+    /// An out-of-order request restarts from the origin: merely slower, never
+    /// wrong.
     fn positionAt(self: *Cursor, offset: usize) Pos {
         if (self.pos == null or self.offset > offset) {
             self.pos = contentOrigin(self.anchor.scalar.?, self.anchor.style);

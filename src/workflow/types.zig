@@ -731,8 +731,8 @@ pub const Job = struct {
 };
 
 /// Job IDs by position, matched case-insensitively the way the runner
-/// resolves them. Every `needs` check looks jobs up by name, and scanning the
-/// job list for each entry made a dense dependency graph cost O(jobs × needs).
+/// resolves them. Every `needs` check looks jobs up by name, so a scan per
+/// entry would cost O(jobs × needs) on a dense dependency graph.
 pub const JobIndex = struct {
     by_id: util.IgnoreCaseMap(usize),
 

@@ -29,8 +29,8 @@ pub const Interface = struct {
 };
 
 /// Test seam: when set, sources come from memory instead of the filesystem, so
-/// the rules can be tested without laying out a repository on disk. Set it
-/// through `overrideSource`, which also drops what the cache read before.
+/// the rules can be tested without laying out a repository on disk. Private
+/// so a change goes through `overrideSource`, which keeps the cache consistent.
 var source_override: ?*const fn (path: []const u8) ?[]const u8 = null;
 
 pub fn overrideSource(lookup: ?*const fn (path: []const u8) ?[]const u8) void {
@@ -259,12 +259,10 @@ test "load reads each called workflow once while the cache is active" {
     try testing.expectEqualStrings("version", second.inputs[0].name);
     try testing.expectEqual(@as(usize, 1), counting_reads);
 
-    // A missing file is remembered as missing.
     try testing.expect(load(arena.allocator(), "./.github/workflows/missing.yml") == null);
     try testing.expect(load(arena.allocator(), "./.github/workflows/missing.yml") == null);
     try testing.expectEqual(@as(usize, 2), counting_reads);
 
-    // Changing the source drops what was read under the old one.
     overrideSource(&countingLookup);
     _ = load(arena.allocator(), "./.github/workflows/reusable.yml").?;
     try testing.expectEqual(@as(usize, 3), counting_reads);
