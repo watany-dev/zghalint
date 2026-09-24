@@ -19,11 +19,9 @@ const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml.Span;
 
-fn findJob(wf: *const Workflow, job_id: []const u8) ?usize {
-    for (wf.jobs, 0..) |*candidate, i| {
-        if (std.ascii.eqlIgnoreCase(candidate.id, job_id)) return i;
-    }
-    return null;
+/// Job IDs are matched case-insensitively, the way the runner resolves them.
+fn eqlId(a: []const u8, b: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(a, b);
 }
 
 /// The span to point a `needs` diagnostic at. `needs_spans` is parallel to
@@ -53,7 +51,7 @@ fn checkUndefinedNeeds(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs) |*job| {
         for (job.needs, 0..) |need, i| {
             if (!isCheckable(need)) continue;
-            if (findJob(wf, need) != null) continue;
+            if (wf.findJob(need) != null) continue;
             reportUndefined(wf, job, need, needsSpan(job, i), list);
         }
     }
@@ -146,7 +144,7 @@ const CycleWalk = struct {
                 const need = job.needs[frame.next_need];
                 frame.next_need += 1;
 
-                const target = findJob(self.wf, need) orelse continue;
+                const target = self.wf.findJob(need) orelse continue;
                 switch (self.color[target]) {
                     .gray => self.reportCycle(&stack, target),
                     .white => self.enter(alloc, &stack, target) catch return,

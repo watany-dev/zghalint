@@ -31,39 +31,67 @@ const Span = spans.Span;
 /// (DEP004 / DEP005 own that).
 const step_properties = [_][]const u8{ "outputs", "conclusion", "outcome" };
 
-const DefinedStep = struct {
-    id: []const u8,
-    /// Index of the *first* step carrying this id. Duplicate ids are SYN006's
-    /// finding; resolving to the earliest one keeps this rule from piling a
-    /// second, order-based complaint on top of it.
+/// Step id to the index of the *first* top-level step carrying it; a nested
+/// `parallel:` child is filed under its top-level parent. Duplicate ids are
+/// SYN006's finding; resolving to the earliest one keeps this rule from
+/// piling a second, order-based complaint on top of it. Ids match
+/// case-insensitively because GitHub resolves expression paths that way
+/// (`steps.Setup` reaches a step with `id: setup`).
+const DefinedSteps = util.IgnoreCaseMap(usize);
+
+/// Fills `defined`, and `ids` with the same ids in source order for the
+/// suggestions. False when either could not be completed: a partial table
+/// would report steps that exist as undefined.
+fn collectStepIds(
+    job: *const Job,
+    defined: *DefinedSteps,
+    ids: *std.ArrayList([]const u8),
+    alloc: std.mem.Allocator,
+) bool {
+    if (!util.reserve(defined, alloc, job.steps.len)) return false;
+    for (job.steps, 0..) |*step, index| {
+        if (!addDefinedStep(step.id, index, defined, ids, alloc)) return false;
+        if (!addNestedDefinedSteps(step.nestedSteps(), index, defined, ids, alloc)) return false;
+    }
+    return true;
+}
+
+fn addDefinedStep(
+    id: ?[]const u8,
     index: usize,
-};
-
-fn collectStepIds(job: *const Job, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
-    for (job.steps, 0..) |step, index| {
-        addDefinedStep(step.id, index, buf, alloc);
-        addNestedDefinedSteps(step.nestedSteps(), index, buf, alloc);
-    }
+    defined: *DefinedSteps,
+    ids: *std.ArrayList([]const u8),
+    alloc: std.mem.Allocator,
+) bool {
+    const step_id = id orelse return true;
+    if (step_id.len == 0) return true;
+    // Nested ids are not counted by the reservation, so the table may grow.
+    const slot = defined.getOrPut(alloc, step_id) catch return false;
+    if (slot.found_existing) return true;
+    slot.value_ptr.* = index;
+    ids.append(alloc, step_id) catch {
+        defined.removeByPtr(slot.key_ptr);
+        return false;
+    };
+    return true;
 }
 
-fn addDefinedStep(id: ?[]const u8, index: usize, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
-    const step_id = id orelse return;
-    if (step_id.len == 0) return;
-    for (buf.items) |seen| {
-        if (std.ascii.eqlIgnoreCase(seen.id, step_id)) return;
+fn addNestedDefinedSteps(
+    steps: []const Step,
+    index: usize,
+    defined: *DefinedSteps,
+    ids: *std.ArrayList([]const u8),
+    alloc: std.mem.Allocator,
+) bool {
+    for (steps) |*step| {
+        if (!addDefinedStep(step.id, index, defined, ids, alloc)) return false;
+        if (!addNestedDefinedSteps(step.nestedSteps(), index, defined, ids, alloc)) return false;
     }
-    buf.append(alloc, .{ .id = step_id, .index = index }) catch return;
-}
-
-fn addNestedDefinedSteps(steps: []const Step, index: usize, buf: *std.ArrayList(DefinedStep), alloc: std.mem.Allocator) void {
-    for (steps) |step| {
-        addDefinedStep(step.id, index, buf, alloc);
-        addNestedDefinedSteps(step.nestedSteps(), index, buf, alloc);
-    }
+    return true;
 }
 
 const Resolver = struct {
-    defined: []const DefinedStep,
+    defined: *const DefinedSteps,
     /// Suggestion candidates. A step declared later cannot be the intended
     /// target either, but it is still the likeliest typo source, so it stays
     /// in the list.
@@ -78,13 +106,6 @@ const Resolver = struct {
     /// diagnostic messages go to the list's own arena instead.
     alloc: std.mem.Allocator,
     list: *DiagnosticList,
-
-    fn find(self: Resolver, id: []const u8) ?DefinedStep {
-        for (self.defined) |candidate| {
-            if (std.ascii.eqlIgnoreCase(candidate.id, id)) return candidate;
-        }
-        return null;
-    }
 
     /// The hook `expr_scan` calls for every context access it finds.
     pub fn checkPath(self: Resolver, path: []const u8, loc: expr_scan.Loc) void {
@@ -177,11 +198,11 @@ fn checkStepPath(res: Resolver, path: []const u8, loc: expr_scan.Loc) void {
 
     const id = iter.nextName() orelse return;
 
-    const target = res.find(id) orelse {
+    const target = res.defined.get(id) orelse {
         appendUnknownStep(res, path, id, loc.resolve());
         return;
     };
-    if (target.index == res.current) {
+    if (target == res.current) {
         if (res.current_id) |own| {
             if (std.ascii.eqlIgnoreCase(own, id)) {
                 appendSelfReference(res, id, loc.resolve());
@@ -191,7 +212,7 @@ fn checkStepPath(res: Resolver, path: []const u8, loc: expr_scan.Loc) void {
         appendForwardReference(res, id, loc.resolve());
         return;
     }
-    if (target.index > res.current) {
+    if (target > res.current) {
         appendForwardReference(res, id, loc.resolve());
         return;
     }
@@ -212,17 +233,15 @@ pub fn checkJob(job: *const Job, list: *DiagnosticList) void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var defined: std.ArrayList(DefinedStep) = .empty;
-    collectStepIds(job, &defined, alloc);
-
+    var defined: DefinedSteps = .empty;
     var ids: std.ArrayList([]const u8) = .empty;
-    for (defined.items) |entry| ids.append(alloc, entry.id) catch return;
+    if (!collectStepIds(job, &defined, &ids, alloc)) return;
 
     // A job where no step carries an `id:` is not skipped: there every
     // `steps.<id>` reference is certainly undefined.
     for (job.steps, 0..) |*step, index| {
         scanStepTree(step, Resolver{
-            .defined = defined.items,
+            .defined = &defined,
             .ids = ids.items,
             .current = index,
             .alloc = alloc,

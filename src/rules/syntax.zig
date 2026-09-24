@@ -148,28 +148,45 @@ fn walkDuplicateKeys(
 }
 
 fn reportDuplicateKey(
-    earlier_entries: []const yaml_types.MappingEntry,
+    earlier: yaml_types.MappingEntry,
     entry: yaml_types.MappingEntry,
     section: []const u8,
     list: *DiagnosticList,
 ) void {
-    for (earlier_entries) |earlier| {
-        if (!std.ascii.eqlIgnoreCase(earlier.key.value, entry.key.value)) continue;
-        const message = std.fmt.allocPrint(
-            list.fixAllocator(),
-            "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
-            .{ entry.key.value, section, earlier.key.span.start_line, earlier.key.span.start_col },
-        ) catch return;
+    const message = std.fmt.allocPrint(
+        list.fixAllocator(),
+        "key \"{s}\" is duplicated in \"{s}\" section. previously defined at line:{d},col:{d}. note that this key is case insensitive",
+        .{ entry.key.value, section, earlier.key.span.start_line, earlier.key.span.start_col },
+    ) catch return;
 
-        list.append(.{
-            .rule_id = "SYN002",
-            .severity = .@"error",
-            .message = message,
-            .span = entry.key.span,
-            .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
-        }) catch return;
-        return;
+    list.append(.{
+        .rule_id = "SYN002",
+        .severity = .@"error",
+        .message = message,
+        .span = entry.key.span,
+        .fix_hint = "remove the duplicate key or rename it so keys are unique within the section",
+    }) catch return;
+}
+
+/// Index of the first earlier sibling whose key equals entry `i`'s, ignoring
+/// case. `seen` maps each key to its first index and is filled in as the
+/// walk goes; without it the earlier siblings are scanned instead.
+fn firstSameKey(
+    seen: ?*util.IgnoreCaseMap(usize),
+    entries: []const yaml_types.MappingEntry,
+    i: usize,
+) ?usize {
+    const key = entries[i].key.value;
+    if (seen) |map| {
+        const slot = map.getOrPutAssumeCapacity(key);
+        if (slot.found_existing) return slot.value_ptr.*;
+        slot.value_ptr.* = i;
+        return null;
     }
+    for (entries[0..i], 0..) |earlier, j| {
+        if (std.ascii.eqlIgnoreCase(earlier.key.value, key)) return j;
+    }
+    return null;
 }
 
 fn checkMapping(
@@ -179,8 +196,24 @@ fn checkMapping(
     list: *DiagnosticList,
 ) void {
     const report = !isSameEntries(mapping.entries, skip);
+
+    // Short mappings, which is nearly all of them, are cheaper to scan than
+    // to hash.
+    var first_by_key: util.IgnoreCaseMap(usize) = .empty;
+    defer first_by_key.deinit(list.allocator);
+    const seen: ?*util.IgnoreCaseMap(usize) = if (report and
+        mapping.entries.len >= 16 and
+        util.reserve(&first_by_key, list.allocator, mapping.entries.len))
+        &first_by_key
+    else
+        null;
+
     for (mapping.entries, 0..) |entry, i| {
-        if (report) reportDuplicateKey(mapping.entries[0..i], entry, section, list);
+        if (report) {
+            if (firstSameKey(seen, mapping.entries, i)) |first| {
+                reportDuplicateKey(mapping.entries[first], entry, section, list);
+            }
+        }
 
         const child_section = sectionForMappingChild(section, entry.key.value, entry.value);
         walkDuplicateKeys(entry.value, child_section, entry.key.value, skip, list);
@@ -345,33 +378,38 @@ const step_id_dup_fmt =
 
 fn checkDuplicateJobIds(wf: *const Workflow, list: *DiagnosticList) void {
     for (wf.jobs, 0..) |*job, i| {
-        for (wf.jobs[0..i]) |*prior| {
-            if (!std.ascii.eqlIgnoreCase(prior.id, job.id)) continue;
-            reportDuplicateId(
-                list,
-                job.id,
-                (prior.id_span orelse prior.span).start_line,
-                (job.id_span orelse job.span),
-                job_id_dup_fmt,
-                "use a unique job ID within the workflow",
-            );
-            break;
-        }
+        const first = wf.findJob(job.id) orelse continue;
+        if (first == i) continue;
+        const prior = &wf.jobs[first];
+        reportDuplicateId(
+            list,
+            job.id,
+            (prior.id_span orelse prior.span).start_line,
+            (job.id_span orelse job.span),
+            job_id_dup_fmt,
+            "use a unique job ID within the workflow",
+        );
     }
 }
 
 fn checkDuplicateStepIds(job: *const Job, list: *DiagnosticList) void {
-    var seen: std.ArrayList(*const Step) = .empty;
-    defer seen.deinit(list.allocator);
-    checkDuplicateStepIdsIn(job.steps, &seen, list);
+    if (job.steps.len == 0) return;
+
+    var first_by_id: util.IgnoreCaseMap(*const Step) = .empty;
+    defer first_by_id.deinit(list.allocator);
+    if (!util.reserve(&first_by_id, list.allocator, job.steps.len)) return;
+    checkDuplicateStepIdsIn(job.steps, &first_by_id, list);
 }
 
-fn checkDuplicateStepIdsIn(steps: []const Step, seen: *std.ArrayList(*const Step), list: *DiagnosticList) void {
+/// Nested `parallel:` children share the job's ID space, so one table covers
+/// the whole tree. It is sized for the top-level steps and grows for nested
+/// ones; a failed growth ends the check rather than reporting a half-seen tree.
+fn checkDuplicateStepIdsIn(steps: []const Step, first_by_id: *util.IgnoreCaseMap(*const Step), list: *DiagnosticList) void {
     for (steps) |*step| {
         if (step.id) |step_id| {
-            for (seen.items) |prior_step| {
-                const prior_id = prior_step.id orelse continue;
-                if (!std.ascii.eqlIgnoreCase(prior_id, step_id)) continue;
+            const slot = first_by_id.getOrPut(list.allocator, step_id) catch return;
+            if (slot.found_existing) {
+                const prior_step = slot.value_ptr.*;
                 reportDuplicateId(
                     list,
                     step_id,
@@ -380,11 +418,11 @@ fn checkDuplicateStepIdsIn(steps: []const Step, seen: *std.ArrayList(*const Step
                     step_id_dup_fmt,
                     "use a unique step ID within the job",
                 );
-                break;
+            } else {
+                slot.value_ptr.* = step;
             }
-            seen.append(list.allocator, step) catch return;
         }
-        checkDuplicateStepIdsIn(step.nestedSteps(), seen, list);
+        checkDuplicateStepIdsIn(step.nestedSteps(), first_by_id, list);
     }
 }
 
@@ -528,14 +566,17 @@ fn buildDuplicateNeedsFix(
 }
 
 fn checkDuplicateNeeds(job: *const Job, diag_list: *DiagnosticList) void {
+    if (job.needs.len < 2) return;
+    // Job IDs are case-insensitive in GitHub Actions. Report on the second
+    // occurrence only, so an ID repeated three or more times still yields a
+    // single diagnostic.
+    var seen_before: util.IgnoreCaseMap(usize) = .empty;
+    defer seen_before.deinit(diag_list.allocator);
+    if (!util.reserve(&seen_before, diag_list.allocator, job.needs.len)) return;
     for (job.needs, 0..) |dep, i| {
-        // Job IDs are case-insensitive in GitHub Actions. Report on the second
-        // occurrence only, so an ID repeated three or more times still yields
-        // a single diagnostic.
-        var prior: usize = 0;
-        for (job.needs[0..i]) |earlier| {
-            if (std.ascii.eqlIgnoreCase(earlier, dep)) prior += 1;
-        }
+        const entry = seen_before.getOrPutAssumeCapacity(dep);
+        const prior = if (entry.found_existing) entry.value_ptr.* else 0;
+        entry.value_ptr.* = prior + 1;
         if (prior != 1) continue;
 
         diag_list.append(.{

@@ -16,6 +16,7 @@ const t = @import("expr_type.zig");
 const yaml_types = @import("../yaml/types.zig");
 const workflow_types = @import("../workflow/types.zig");
 const type_validation = @import("../workflow/type_validation.zig");
+const util = @import("../util.zig");
 
 const Type = t.Type;
 const TypeRef = t.TypeRef;
@@ -58,27 +59,39 @@ fn strictObject(alloc: std.mem.Allocator, props: []const Prop) ?TypeRef {
 
 /// Later duplicates lose: a repeated key keeps the first type seen, matching
 /// the source-order dedup the EXPR010-EXPR014 collectors already do.
+///
+/// `alloc` is the caller's arena, so the position map is left to it.
 const PropList = struct {
     items: std.ArrayList(Prop) = .empty,
+    /// Position in `items` of each name seen, so a repeat is found without
+    /// rescanning the list.
+    positions: util.IgnoreCaseMap(usize) = .empty,
     alloc: std.mem.Allocator,
 
     fn put(self: *PropList, name: []const u8, ty: TypeRef) void {
-        for (self.items.items) |existing| {
-            if (std.ascii.eqlIgnoreCase(existing.name, name)) return;
-        }
-        self.items.append(self.alloc, .{ .name = name, .ty = ty }) catch return;
+        const entry = self.positions.getOrPut(self.alloc, name) catch return;
+        if (entry.found_existing) return;
+        self.appendNew(entry.value_ptr, name, ty);
     }
 
     /// Merges into an existing key instead of dropping it, for overlays whose
     /// value type is a union over several declarations (`matrix`).
     fn merge(self: *PropList, name: []const u8, ty: TypeRef) void {
-        for (self.items.items) |*existing| {
-            if (std.ascii.eqlIgnoreCase(existing.name, name)) {
-                existing.ty = t.merge(existing.ty, ty);
-                return;
-            }
+        const entry = self.positions.getOrPut(self.alloc, name) catch return;
+        if (entry.found_existing) {
+            const existing = &self.items.items[entry.value_ptr.*];
+            existing.ty = t.merge(existing.ty, ty);
+            return;
         }
-        self.items.append(self.alloc, .{ .name = name, .ty = ty }) catch return;
+        self.appendNew(entry.value_ptr, name, ty);
+    }
+
+    fn appendNew(self: *PropList, position: *usize, name: []const u8, ty: TypeRef) void {
+        position.* = self.items.items.len;
+        self.items.append(self.alloc, .{ .name = name, .ty = ty }) catch {
+            // Left in, the entry would send a later `merge` past the list.
+            _ = self.positions.remove(name);
+        };
     }
 
     fn finish(self: *PropList) ?[]const Prop {
@@ -86,30 +99,78 @@ const PropList = struct {
     }
 };
 
-/// `steps` as seen from `steps[index]`: only ids declared earlier in the same
-/// job are in scope, which is what EXPR010 checks too. Nested `parallel:`
-/// children of those earlier steps are in scope: the group has an implicit
-/// wait, so their outputs are available afterwards.
-pub fn buildSteps(alloc: std.mem.Allocator, steps: []const Step, index: usize) ?TypeRef {
-    var props = PropList{ .alloc = alloc };
-    for (steps[0..@min(index, steps.len)]) |step| {
-        addStepId(&props, &step);
-        addNestedStepIds(&props, step.nestedSteps());
+/// `steps` as seen from each step of one job: only ids declared earlier in
+/// the same job are in scope, which is what EXPR010 checks too. Nested
+/// `parallel:` children of those earlier steps are in scope: the group has an
+/// implicit wait, so their outputs are available afterwards.
+///
+/// The ids in scope at step `i` are a prefix of those in scope at `i + 1`, so
+/// one pass builds a single id list and every step's overlay is a prefix
+/// slice of it.
+pub const StepsOverlay = struct {
+    /// Indexed by top-level step; null where the overlay could not be built
+    /// and the loose catalog entry applies.
+    types: []const ?TypeRef,
+
+    pub const none: StepsOverlay = .{ .types = &.{} };
+
+    pub fn at(self: StepsOverlay, index: usize) ?TypeRef {
+        if (index >= self.types.len) return null;
+        return self.types[index];
     }
-    return strictObject(alloc, props.finish() orelse return null);
+};
+
+pub fn buildSteps(alloc: std.mem.Allocator, steps: []const Step) StepsOverlay {
+    const types = alloc.alloc(?TypeRef, steps.len) catch return .none;
+    @memset(types, null);
+    var ids = StepIds{
+        .props = alloc.alloc(Prop, countStepTree(steps)) catch return .none,
+        .alloc = alloc,
+    };
+    defer ids.seen.deinit(alloc);
+    if (!util.reserve(&ids.seen, alloc, ids.props.len)) return .none;
+
+    var current = strictObject(alloc, ids.props[0..0]);
+    for (steps, 0..) |*step, index| {
+        types[index] = current;
+        const before = ids.count;
+        ids.add(step);
+        ids.addNested(step.nestedSteps());
+        if (ids.count != before) current = strictObject(alloc, ids.props[0..ids.count]);
+    }
+    return .{ .types = types };
 }
 
-fn addStepId(props: *PropList, step: *const Step) void {
-    const id = step.id orelse return;
-    if (id.len == 0) return;
-    props.put(id, &step_result);
-}
+/// The ids of a step tree in declaration order, each once: later duplicates
+/// lose, as in `PropList.put`. `props` is sized for the whole tree up front so
+/// that every prefix of it stays valid as an overlay.
+const StepIds = struct {
+    props: []Prop,
+    count: usize = 0,
+    seen: util.IgnoreCaseMap(void) = .empty,
+    alloc: std.mem.Allocator,
 
-fn addNestedStepIds(props: *PropList, steps: []const Step) void {
-    for (steps) |*step| {
-        addStepId(props, step);
-        addNestedStepIds(props, step.nestedSteps());
+    fn add(self: *StepIds, step: *const Step) void {
+        const id = step.id orelse return;
+        if (id.len == 0) return;
+        const entry = self.seen.getOrPutAssumeCapacity(id);
+        if (entry.found_existing) return;
+        self.props[self.count] = .{ .name = id, .ty = &step_result };
+        self.count += 1;
     }
+
+    fn addNested(self: *StepIds, steps: []const Step) void {
+        for (steps) |*step| {
+            self.add(step);
+            self.addNested(step.nestedSteps());
+        }
+    }
+};
+
+fn countStepTree(steps: []const Step) usize {
+    var total = steps.len;
+    for (steps) |*step| total += countStepTree(step.nestedSteps());
+    return total;
 }
 
 /// A composite action's `inputs:` carry no `type:`, so every declared name is
@@ -237,20 +298,30 @@ pub fn buildNeeds(alloc: std.mem.Allocator, wf: *const Workflow, job: *const Job
 /// Null when the named job is absent (EXPR012's finding) or declares no
 /// outputs, so `<job>.outputs.<name>` keeps resolving to `any`.
 fn needType(alloc: std.mem.Allocator, wf: *const Workflow, name: []const u8) ?TypeRef {
+    const candidate = findJobExact(wf, name) orelse return null;
+    if (candidate.outputs.len == 0) return null;
+
+    var outputs = PropList{ .alloc = alloc };
+    for (candidate.outputs) |output| outputs.put(output.name, string);
+    const outputs_ty = strictObject(alloc, outputs.finish() orelse return null) orelse return null;
+
+    // The prop slice outlives this frame, so it has to come from the arena
+    // rather than from an anonymous array literal.
+    var props = PropList{ .alloc = alloc };
+    props.put("outputs", outputs_ty);
+    props.put("result", string);
+    return strictObject(alloc, props.finish() orelse return null);
+}
+
+/// The job whose ID is exactly `name`: a `needs` entry differing only in case
+/// stays opaque here. The workflow's index resolves case-insensitively, so it
+/// serves as a first guess and the scan only runs when that guess is not an
+/// exact match (a case-variant duplicate, SYN005).
+fn findJobExact(wf: *const Workflow, name: []const u8) ?*const Job {
+    const guess = &wf.jobs[wf.findJob(name) orelse return null];
+    if (std.mem.eql(u8, guess.id, name)) return guess;
     for (wf.jobs) |*candidate| {
-        if (!std.mem.eql(u8, candidate.id, name)) continue;
-        if (candidate.outputs.len == 0) return null;
-
-        var outputs = PropList{ .alloc = alloc };
-        for (candidate.outputs) |output| outputs.put(output.name, string);
-        const outputs_ty = strictObject(alloc, outputs.finish() orelse return null) orelse return null;
-
-        // The prop slice outlives this frame, so it has to come from the arena
-        // rather than from an anonymous array literal.
-        var props = PropList{ .alloc = alloc };
-        props.put("outputs", outputs_ty);
-        props.put("result", string);
-        return strictObject(alloc, props.finish() orelse return null);
+        if (std.mem.eql(u8, candidate.id, name)) return candidate;
     }
     return null;
 }
@@ -357,15 +428,45 @@ test "overlay: steps sees only ids declared earlier" {
     );
     const steps = wf.jobs[0].steps;
 
-    const at_first = expr_check.TypeEnv{ .steps = buildSteps(alloc, steps, 0) };
+    const overlay = buildSteps(alloc, steps);
+    const at_first = expr_check.TypeEnv{ .steps = overlay.at(0) };
     try testing.expectEqual(@as(usize, 0), at_first.steps.?.props.len);
 
-    const at_second = expr_check.TypeEnv{ .steps = buildSteps(alloc, steps, 1) };
+    const at_second = expr_check.TypeEnv{ .steps = overlay.at(1) };
     try testing.expectEqual(@as(usize, 1), at_second.steps.?.props.len);
     try expectKind(&at_second, "steps.setup.outcome", .string);
     try expectKind(&at_second, "steps.setup.outputs.anything", .any);
     // A step declared later is EXPR010's finding, not a type problem.
     try expectKind(&at_second, "steps.later.outcome", .any);
+}
+
+test "overlay: steps dedupes repeated ids case-insensitively and skips empty ones" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const wf = try parse(alloc,
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - id: setup
+        \\        run: echo hi
+        \\      - id: ""
+        \\        run: echo hi
+        \\      - id: SETUP
+        \\        run: echo hi
+        \\      - run: echo hi
+    );
+    const overlay = buildSteps(alloc, wf.jobs[0].steps);
+
+    try testing.expectEqual(@as(usize, 0), overlay.at(0).?.props.len);
+    try testing.expectEqual(@as(usize, 1), overlay.at(1).?.props.len);
+    try testing.expectEqual(@as(usize, 1), overlay.at(2).?.props.len);
+    try testing.expectEqual(@as(usize, 1), overlay.at(3).?.props.len);
+    try testing.expectEqualStrings("setup", overlay.at(3).?.props[0].name);
+    try testing.expectEqual(@as(?TypeRef, null), overlay.at(4));
+    try testing.expectEqual(@as(?TypeRef, null), StepsOverlay.none.at(0));
 }
 
 test "overlay: matrix axis values decide the key type" {

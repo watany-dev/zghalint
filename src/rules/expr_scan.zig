@@ -20,27 +20,31 @@ const Job = workflow_types.Job;
 const Step = workflow_types.Step;
 const Span = spans.Span;
 const Anchor = spans.Anchor;
+const Cursor = spans.Cursor;
 const ExprNode = expressions.ExprNode;
 
-/// Byte range of a path or call inside a scalar. `resolve` runs `Anchor.at`
-/// only for a finding (#527).
+/// Byte range of a path or call inside a scalar. `resolve` walks the scalar
+/// only for a finding (#527), and from the last resolved position rather than
+/// from the scalar's first byte, so a `run:` block with many findings is not
+/// re-counted for each of them. The cursor lives for the scan of its scalar,
+/// which is where the visitor is called.
 pub const Loc = struct {
-    anchor: Anchor,
-    text: []const u8,
+    cursor: *Cursor,
     offset: usize,
     len: usize,
 
     pub fn resolve(self: Loc) Span {
-        return self.anchor.at(self.text, self.offset, self.len);
+        return self.cursor.at(self.offset, self.len);
     }
 };
 
 fn Walk(comptime Visitor: type) type {
     return struct {
         visitor: Visitor,
-        text: []const u8,
-        anchor: Anchor,
-        /// Offset of the expression source inside `text`, so a node's
+        /// Positions inside the scalar holding the expression, shared across
+        /// every expression of that scalar so each one resolves from the last.
+        cursor: *Cursor,
+        /// Offset of the expression source inside the scalar, so a node's
         /// expression-relative byte range maps back to a file position.
         expr_offset: usize,
 
@@ -57,12 +61,7 @@ fn Walk(comptime Visitor: type) type {
         fn locOf(self: Self, node: *const ExprNode) Loc {
             const start = self.expr_offset + node.start_byte;
             const len = if (node.end_byte > node.start_byte) node.end_byte - node.start_byte else 0;
-            return .{
-                .anchor = self.anchor,
-                .text = self.text,
-                .offset = start,
-                .len = len,
-            };
+            return .{ .cursor = self.cursor, .offset = start, .len = len };
         }
 
         fn walk(self: Self, node: *const ExprNode) void {
@@ -86,13 +85,12 @@ fn Walk(comptime Visitor: type) type {
 }
 
 /// A parse failure is EXPR001's finding; the contextual rules stay silent on it.
-fn scanExpression(visitor: anytype, text: []const u8, anchor: Anchor, expr_offset: usize, expr: []const u8) void {
+fn scanExpression(visitor: anytype, cursor: *Cursor, expr_offset: usize, expr: []const u8) void {
     var parser = expressions.ExprParser.init(visitor.alloc, expr);
     const node = parser.parse() catch return;
     const walk = Walk(@TypeOf(visitor)){
         .visitor = visitor,
-        .text = text,
-        .anchor = anchor,
+        .cursor = cursor,
         .expr_offset = expr_offset,
     };
     walk.walk(&node);
@@ -100,6 +98,7 @@ fn scanExpression(visitor: anytype, text: []const u8, anchor: Anchor, expr_offse
 
 /// Scans every `${{ }}` block embedded in `text`.
 pub fn scanText(visitor: anytype, text: []const u8, anchor: Anchor) void {
+    var cursor = anchor.cursor(text);
     var pos: usize = 0;
     while (std.mem.find(u8, text[pos..], "${{")) |rel| {
         const expr_start = pos + rel + 3;
@@ -109,7 +108,7 @@ pub fn scanText(visitor: anytype, text: []const u8, anchor: Anchor) void {
 
         const leading = std.mem.findNone(u8, content, " \t\n\r") orelse continue;
         const trimmed = std.mem.trim(u8, content, " \t\n\r");
-        scanExpression(visitor, text, anchor, expr_start + leading, trimmed);
+        scanExpression(visitor, &cursor, expr_start + leading, trimmed);
     }
 }
 
@@ -129,7 +128,8 @@ pub fn scanCondition(
     }
     const leading = std.mem.findNone(u8, value, " \t\n\r") orelse return;
     const trimmed = std.mem.trim(u8, value, " \t\n\r");
-    scanExpression(visitor, value, anchor, leading, trimmed);
+    var cursor = anchor.cursor(value);
+    scanExpression(visitor, &cursor, leading, trimmed);
 }
 
 pub fn scanScalarMap(
@@ -201,12 +201,8 @@ test "Loc.resolve matches Anchor.at" {
         .end_byte = 115,
     };
     const value = "github.head_ref";
-    const loc = Loc{
-        .anchor = Anchor.fromMeta(.{ .value_span = token, .style = .plain }, Span.point(1, 1, 0)),
-        .text = value,
-        .offset = 7,
-        .len = 8,
-    };
+    var cursor = Anchor.fromMeta(.{ .value_span = token, .style = .plain }, Span.point(1, 1, 0)).cursor(value);
+    const loc = Loc{ .cursor = &cursor, .offset = 7, .len = 8 };
     const s = loc.resolve();
     try std.testing.expectEqual(@as(u32, 3), s.start_line);
     try std.testing.expectEqual(@as(u32, 16), s.start_col);

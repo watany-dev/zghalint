@@ -48,6 +48,7 @@ pub const rules = struct {
     pub const runner = @import("rules/runner.zig");
     pub const syntax = @import("rules/syntax.zig");
     pub const local_action = @import("rules/local_action.zig");
+    pub const called_workflow = @import("rules/called_workflow.zig");
 };
 
 pub const fix = struct {

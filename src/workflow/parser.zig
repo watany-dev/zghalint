@@ -228,6 +228,7 @@ pub fn parseWorkflowTracked(
         .on = trigger,
         .concurrency = concurrency,
         .jobs = jobs,
+        .job_index = try types.JobIndex.build(allocator, jobs),
         .cache_mode = cache_mode,
         .cache_mode_span = cache_mode_span,
         .type_mismatches = try type_mismatches.toOwnedSlice(allocator),

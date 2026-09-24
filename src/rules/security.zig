@@ -2818,6 +2818,7 @@ fn returnsBooleanBuiltin(allocator: std.mem.Allocator, expr: []const u8) bool {
 /// point with its own source location.
 fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, rule_id: []const u8, severity: Severity, message: []const u8, fix_hint: []const u8, list: *DiagnosticList, fix: ?Fix) void {
     var first = true;
+    var cursor = anchor.cursor(s);
     var it: ExprIter = .{ .s = s };
     while (it.next()) |e| {
         if (!containsAnyContext(std.mem.trim(u8, e.inner, " \t\n\r"), contexts)) continue;
@@ -2826,7 +2827,7 @@ fn checkContextsInString(s: []const u8, anchor: Anchor, contexts: ContextTable, 
             .rule_id = rule_id,
             .severity = severity,
             .message = message,
-            .span = anchor.at(s, e.match.offset, e.match.len),
+            .span = cursor.at(e.match.offset, e.match.len),
             .fix_hint = fix_hint,
             .fix = if (first) fix else null,
         }) catch return;
@@ -6199,8 +6200,8 @@ fn sec010EmptyCalleeLookup(path: []const u8) ?[]const u8 {
 }
 
 test "SEC010: --fix-unsafe expands inherit into the local callee's declared secrets" {
-    called_workflow.source_override = &sec010CalleeLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
 
     const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, true);
     defer result.deinit(testing.allocator);
@@ -6213,8 +6214,8 @@ test "SEC010: --fix-unsafe expands inherit into the local callee's declared secr
 }
 
 test "SEC010: --fix without unsafe leaves inherit alone" {
-    called_workflow.source_override = &sec010CalleeLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
 
     const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, false);
     defer result.deinit(testing.allocator);
@@ -6243,8 +6244,8 @@ test "SEC010: a remote callee gets the diagnostic without a fix" {
 }
 
 test "SEC010: an unreadable local callee gets no fix" {
-    called_workflow.source_override = &sec010CalleeLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\name: t
@@ -6263,8 +6264,8 @@ test "SEC010: an unreadable local callee gets no fix" {
 }
 
 test "SEC010: a callee with no declared secrets gets no fix" {
-    called_workflow.source_override = &sec010EmptyCalleeLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&sec010EmptyCalleeLookup);
+    defer called_workflow.overrideSource(null);
 
     const result = try test_support.lintAndFix(testing.allocator, sec010_caller, .{ .job = &checkSecretsInherit }, true);
     defer result.deinit(testing.allocator);
@@ -6274,8 +6275,8 @@ test "SEC010: a callee with no declared secrets gets no fix" {
 }
 
 test "SEC010: quoted inherit is not rewritten" {
-    called_workflow.source_override = &sec010CalleeLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\name: t
@@ -6294,8 +6295,8 @@ test "SEC010: quoted inherit is not rewritten" {
 }
 
 test "SEC010: flow-style inherit is not rewritten" {
-    called_workflow.source_override = &sec010CalleeLookup;
-    defer called_workflow.source_override = null;
+    called_workflow.overrideSource(&sec010CalleeLookup);
+    defer called_workflow.overrideSource(null);
 
     const source =
         \\name: t

@@ -1251,16 +1251,17 @@ pub fn findAndValidateExpressionsEnv(
     env: *const expr_check.TypeEnv,
     use: ExprUse,
 ) void {
+    var cursor = anchor.cursor(text);
     var pos: usize = 0;
     while (std.mem.find(u8, text[pos..], "${{")) |rel| {
-        const expr_start = pos + rel + 3;
+        const open = pos + rel;
+        const expr_start = open + 3;
         if (std.mem.find(u8, text[expr_start..], "}}")) |end_offset| {
             const expr_content = text[expr_start .. expr_start + end_offset];
             const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
             const leading_trim = std.mem.findNone(u8, expr_content, " \t\n\r") orelse 0;
             const expr_base_byte: ?usize = if (text_base_byte) |t| t + expr_start + leading_trim else null;
-            const match_len = expr_start + end_offset + 2 - (pos + rel);
-            const expr_span = anchor.at(text, pos + rel, match_len);
+            const expr_span = cursor.at(open, expr_start + end_offset + 2 - open);
             validateExpressionEnv(allocator, trimmed, expr_span, list, expr_base_byte, env, use);
             pos = expr_start + end_offset + 2;
         } else {
@@ -1268,7 +1269,7 @@ pub fn findAndValidateExpressionsEnv(
                 .rule_id = "EXPR001",
                 .severity = .@"error",
                 .message = "unclosed expression: missing }}",
-                .span = anchor.at(text, pos + rel, text.len - (pos + rel)),
+                .span = cursor.at(open, text.len - open),
             }) catch return;
             return;
         }
@@ -1280,6 +1281,7 @@ pub fn findAndValidateExpressionsEnv(
 /// `visitor` receives the trimmed expression and its span via
 /// `onExpression(expr, span)`. Unterminated `${{` is left to EXPR001.
 pub fn forEachExpression(text: []const u8, anchor: Anchor, visitor: anytype) void {
+    var cursor = anchor.cursor(text);
     var pos: usize = 0;
     while (std.mem.find(u8, text[pos..], "${{")) |rel| {
         const open = pos + rel;
@@ -1288,7 +1290,7 @@ pub fn forEachExpression(text: []const u8, anchor: Anchor, visitor: anytype) voi
         const expr_content = text[expr_start .. expr_start + end_offset];
         const trimmed = std.mem.trim(u8, expr_content, " \t\n\r");
         if (trimmed.len != 0) {
-            visitor.onExpression(trimmed, anchor.at(text, open, expr_start + end_offset + 2 - open));
+            visitor.onExpression(trimmed, cursor.at(open, expr_start + end_offset + 2 - open));
         }
         pos = expr_start + end_offset + 2;
     }
@@ -1595,8 +1597,9 @@ pub fn checkWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
         env.steps = null;
         checkJobEnv(job, list, &env);
 
+        const steps_overlay = expr_overlay.buildSteps(alloc, job.steps);
         for (job.steps, 0..) |*step, index| {
-            env.steps = expr_overlay.buildSteps(alloc, job.steps, index);
+            env.steps = steps_overlay.at(index);
             checkStepTree(step, list, &env);
         }
     }

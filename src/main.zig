@@ -434,7 +434,6 @@ fn lintDocumentFile(
 fn prefetchNetworkData(
     allocator: std.mem.Allocator,
     files: []const []const u8,
-    config: *const Config,
     no_cache: bool,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -445,7 +444,6 @@ fn prefetchNetworkData(
     defer workflows.deinit(scratch);
 
     for (files) |file_path| {
-        if (config.isIgnored(file_path)) continue;
         if (documentLintFn(file_path) != null) continue;
 
         const file = std.Io.Dir.cwd().openFile(runtime.io(), file_path, .{}) catch continue;
@@ -638,27 +636,30 @@ const FixOutcome = struct {
     skipped: usize = 0,
 };
 
+const FixableByFile = std.StringHashMapUnmanaged(std.ArrayList(zghalint.Diagnostic));
+
+/// Grouped once so the fix loop does not rescan the whole list per file.
+fn groupFixableByFile(arena: std.mem.Allocator, all_diags: *const zghalint.DiagnosticList) !FixableByFile {
+    var groups: FixableByFile = .empty;
+    for (all_diags.items.items) |d| {
+        if (d.fix == null) continue;
+        const f = d.file orelse continue;
+        const entry = try groups.getOrPut(arena, f);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        try entry.value_ptr.append(arena, d);
+    }
+    return groups;
+}
+
 fn applyFixesForFile(
     allocator: std.mem.Allocator,
     file_path: []const u8,
-    all_diags: *zghalint.DiagnosticList,
+    file_diags: []const zghalint.Diagnostic,
     include_unsafe: bool,
 ) !FixOutcome {
-    var file_diags = std.ArrayList(zghalint.Diagnostic).empty;
-    defer file_diags.deinit(allocator);
+    if (file_diags.len == 0) return .{};
 
-    for (all_diags.items.items) |d| {
-        if (d.fix != null) {
-            const f = d.file orelse continue;
-            if (std.mem.eql(u8, f, file_path)) {
-                try file_diags.append(allocator, d);
-            }
-        }
-    }
-
-    if (file_diags.items.len == 0) return .{};
-
-    const fixes = try zghalint.fix.collectFixes(allocator, file_diags.items, include_unsafe);
+    const fixes = try zghalint.fix.collectFixes(allocator, file_diags, include_unsafe);
     defer allocator.free(fixes);
 
     if (fixes.len == 0) return .{};
@@ -894,9 +895,13 @@ pub fn main(init: std.process.Init) !u8 {
         // `uses: ./path` against the repository root. Disk only, so this stays
         // active under --quick / --offline.
         zghalint.rules.local_action.init(allocator, root);
+        // RW002-RW005 read the called workflow of every `uses: ./...` job;
+        // the cache parses each called file once per run.
+        zghalint.rules.called_workflow.initCache(allocator);
     }
     defer zghalint.workspace.clear();
     defer zghalint.rules.local_action.deinit();
+    defer zghalint.rules.called_workflow.deinitCache();
 
     // RUNNER002 cannot enumerate a self-hosted fleet, so the user's own labels
     // come from `runner.labels` in .zghalint.yml.
@@ -938,7 +943,7 @@ pub fn main(init: std.process.Init) !u8 {
     // Batch all network-rule fetches before the lint pass so TLS/TCP
     // connections, advisories, and repo metadata are primed in the caches.
     if (!cli_args.offline and !cli_args.read_stdin) {
-        prefetchNetworkData(allocator, files, &config, cli_args.no_cache) catch {};
+        prefetchNetworkData(allocator, files, cli_args.no_cache) catch {};
     }
 
     var all_diags = zghalint.DiagnosticList.init(allocator);
@@ -951,7 +956,6 @@ pub fn main(init: std.process.Init) !u8 {
     var suppressed: usize = 0;
 
     for (files, 0..) |file_path, i| {
-        if (config.isIgnored(file_path)) continue;
         const file_index: u32 = @intCast(i + 1);
         const source_override: ?[]const u8 = if (cli_args.read_stdin) stdin_owned else null;
         const lint_result = if (documentLintFn(file_path)) |lint_fn|
@@ -969,9 +973,15 @@ pub fn main(init: std.process.Init) !u8 {
         const include_unsafe = cli_args.fix_mode == .all;
         var total_fixed: usize = 0;
         var total_skipped: usize = 0;
+        var fix_arena = std.heap.ArenaAllocator.init(allocator);
+        defer fix_arena.deinit();
+        const fixable = groupFixableByFile(fix_arena.allocator(), &all_diags) catch {
+            stderr.writeAll("error: out of memory\n") catch {};
+            return 2;
+        };
         for (files) |file_path| {
-            if (config.isIgnored(file_path)) continue;
-            const outcome = applyFixesForFile(allocator, file_path, &all_diags, include_unsafe) catch |err| {
+            const file_diags: []const zghalint.Diagnostic = if (fixable.get(file_path)) |group| group.items else &.{};
+            const outcome = applyFixesForFile(allocator, file_path, file_diags, include_unsafe) catch |err| {
                 stderr.print("error: failed to apply fixes to '{s}': {s}\n", .{ file_path, @errorName(err) }) catch {};
                 had_fatal = true;
                 continue;
