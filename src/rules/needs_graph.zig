@@ -19,11 +19,6 @@ const Job = engine.Job;
 const DiagnosticList = engine.DiagnosticList;
 const Span = yaml.Span;
 
-/// Job IDs are matched case-insensitively, the way the runner resolves them.
-fn eqlId(a: []const u8, b: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(a, b);
-}
-
 /// The span to point a `needs` diagnostic at. `needs_spans` is parallel to
 /// `needs` but empty when the parser captured no per-entry span, so the job
 /// itself stands in.
