@@ -90,8 +90,6 @@ The asset names are `zghalint-<os>-<arch>.tar.gz` (`.zip` on Windows).
 
 Requires zghalint on `PATH` (Homebrew, `install.sh`, aqua, or mise). The
 hook runs `--offline` so a commit does not wait on the GitHub API.
-`.pre-commit-hooks.yaml` is not in `v0.0.3`; until the next release, set
-`rev` to a commit on `main` that contains that file.
 
 ```yaml
 repos:
@@ -186,8 +184,6 @@ Pass `version` to download a specific release regardless of the ref:
 
 Write SARIF to a file with `output` and upload it for
 [GitHub Code Scanning](https://docs.github.com/en/code-security/code-scanning).
-`output` is not in the `v0.0.3` action; pin a commit that includes it, or
-the next release tag.
 
 ```yaml
 name: zghalint
