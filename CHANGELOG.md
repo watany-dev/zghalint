@@ -37,6 +37,9 @@ each ID means.
   (#613).
 - RW001 reports a `workflow_call` output with no `value:` (absent, empty or
   blank), at the output's name (#612).
+- BP007 reports a download piped to `python` / `perl` / `ruby` / `node` that
+  reads its program from stdin. `| python -m json.tool`, `| python -c ...`
+  and a script file argument stay quiet (#606).
 
 ### Fixed
 

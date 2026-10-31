@@ -3473,10 +3473,53 @@ fn containsCurlWgetPipeShell(s: []const u8) bool {
             continue;
         }
         const pipe = std.mem.findScalarPos(u8, s, i, '|') orelse return false;
-        if (startsAnyWordAt(s, skipBlanks(s, pipe + 1), &shell_targets)) return true;
+        const target = skipBlanks(s, pipe + 1);
+        if (startsAnyWordAt(s, target, &shell_targets)) return true;
+        if (interpreterReadsStdin(s, target)) return true;
         i = pipe + 1;
     }
     return false;
+}
+
+/// Interpreters that run a script fed on stdin when given none of their own
+/// (#606). `python` may carry a version suffix (`python3`, `python3.12`).
+const stdin_interpreters = [_][]const u8{ "python", "perl", "ruby", "node" };
+
+/// Short flags that hand the interpreter its program on the command line:
+/// `python -c` / `-m`, `perl -e` / `-E`, `ruby -e`, `node -e` / `-p`. With one
+/// of them, stdin is data, as in `| python -m json.tool`.
+const inline_program_flags = "cmeEp";
+
+fn interpreterNameLen(s: []const u8, i: usize) ?usize {
+    for (stdin_interpreters) |name| {
+        if (!std.mem.startsWith(u8, s[i..], name)) continue;
+        var end = i + name.len;
+        if (std.mem.eql(u8, name, "python")) {
+            while (end < s.len and (std.ascii.isDigit(s[end]) or s[end] == '.')) end += 1;
+        }
+        if (end < s.len and isIdentChar(s[end])) return null;
+        return end - i;
+    }
+    return null;
+}
+
+/// Whether the command at `i` is an interpreter whose arguments leave it
+/// reading its program from stdin: only flags, `-`, and none that supply the
+/// program inline. A positional argument is a script file.
+fn interpreterReadsStdin(s: []const u8, i: usize) bool {
+    const name_len = interpreterNameLen(s, i) orelse return false;
+    const end = std.mem.findAnyPos(u8, s, i, "\n;&|)") orelse s.len;
+    var args = std.mem.tokenizeAny(u8, s[i + name_len .. end], " \t");
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-")) continue;
+        if (arg[0] != '-') return false;
+        if (std.mem.startsWith(u8, arg, "--")) {
+            if (std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "--print")) return false;
+            continue;
+        }
+        if (std.mem.findAny(u8, arg[1..], inline_program_flags) != null) return false;
+    }
+    return true;
 }
 
 fn isAllUppercase(s: []const u8) bool {
@@ -8878,6 +8921,30 @@ test "BP007: curl piped to bash" {
     var list = runStep(.{ .run = "curl -s https://example.com/install.sh | bash" });
     defer list.deinit();
     try testing.expect(hasDiagnostic(&list, "BP007"));
+}
+
+fn bp007Fires(body: []const u8) bool {
+    var list = runStep(.{ .run = body });
+    defer list.deinit();
+    return hasDiagnostic(&list, "BP007");
+}
+
+test "BP007: a download piped to an interpreter reading stdin (#606)" {
+    try testing.expect(bp007Fires("curl https://example.com/install.py | python"));
+    try testing.expect(bp007Fires("curl -sSL https://example.com/i.py | python3 -"));
+    try testing.expect(bp007Fires("curl -sSL https://example.com/i.py | python3.12 -u -"));
+    try testing.expect(bp007Fires("wget -qO- https://example.com/i.pl | perl"));
+    try testing.expect(bp007Fires("curl -fsSL https://example.com/i.rb | ruby; echo done"));
+    try testing.expect(bp007Fires("curl -fsSL https://example.com/i.js | node"));
+}
+
+test "BP007: an interpreter given its own script reads the download as data (#606)" {
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | python -m json.tool"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | python3 -c 'import sys, json; print(json.load(sys.stdin))'"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | python3 parse.py"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | perl -ne 'print if /v/'"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | node -e 'process.stdin.pipe(process.stdout)'"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | pythonista"));
 }
 
 test "BP007: wget piped to sh" {

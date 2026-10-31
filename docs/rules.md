@@ -513,7 +513,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (`node12` / `node16` / `node20`, error), a runtime whose removal is announced but not yet in effect (warning), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
-| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
+| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh`, `curl \| python` / `perl` / `ruby` / `node` when the interpreter reads its program from stdin (not `-c` / `-m` / `-e` or a script file), and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
 | BP009 | prefer-self-repository | info | Job-level `uses: ./…` that names a workflow file in this repository can use `$/` instead. No autofix |
 
