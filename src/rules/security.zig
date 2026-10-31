@@ -9593,8 +9593,6 @@ fn envBindingFix(source: []const u8, check: test_support.Check) !test_support.Fi
 }
 
 test "SEC002: an expression wrapped across lines of a plain scalar gets no binding" {
-    // Copied into `env:` the continuation line sits shallower than the new
-    // entry and the YAML no longer parses.
     const source =
         \\name: t
         \\on: issues
