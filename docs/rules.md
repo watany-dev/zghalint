@@ -37,7 +37,7 @@ Detect security vulnerabilities in workflow definitions.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA |
+| SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA。reusable workflow を呼ぶジョブの `uses:` も対象（こちらは autofix なし） |
 | SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block, a code-executing action input (`actions/github-script` `script:`, `azure/cli` `inlineScript:`, and similar), or a local composite action's interpolated `with:` input risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |

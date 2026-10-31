@@ -340,15 +340,37 @@ const deploy_keywords = [_][]const u8{
     "prod",
 };
 
+fn needsShaPin(ref: ActionRef) bool {
+    return !ref.is_local and !ref.is_docker and !ref.is_pinned;
+}
+
+const unpinned_fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch";
+
+/// SEC001 for a job that calls a reusable workflow. The callee runs with the
+/// caller's permissions and, under `secrets: inherit`, its secrets, so a moving
+/// ref matters at least as much as it does for a step (#603). No fix: the tag
+/// store and the rewrite are built around a step's `uses:`.
+fn checkUnpinnedReusableWorkflow(job: *const Job, list: *DiagnosticList) void {
+    const raw = job.uses orelse return;
+    if (!needsShaPin(ActionRef.parse(raw))) return;
+    list.append(.{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = "reusable workflow reference is not pinned to a SHA",
+        .span = job.uses_value_span orelse job.span,
+        .fix_hint = unpinned_fix_hint,
+    }) catch return;
+}
+
 fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
     if (step.uses) |action_ref| {
-        if (!action_ref.is_local and !action_ref.is_docker and !action_ref.is_pinned) {
+        if (needsShaPin(action_ref)) {
             list.append(.{
                 .rule_id = "SEC001",
                 .severity = .warning,
                 .message = "action reference is not pinned to a SHA",
                 .span = spans.usesSpan(step),
-                .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
+                .fix_hint = unpinned_fix_hint,
                 // Safe: the rewrite pins to the very commit the tag resolved to
                 // when we asked, so the workflow keeps running the same code.
                 // `buildPinFix` returns null for every case where that does not
@@ -3487,6 +3509,7 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_step = &checkUnpinnedAction,
+        .check_job = &checkUnpinnedReusableWorkflow,
     },
     .{
         .id = "SEC002",
@@ -3858,6 +3881,23 @@ test "SEC001: docker action (no false positive)" {
     var list = runStep(.{ .uses = ActionRef.parse("docker://alpine:3.8") });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC001"));
+}
+
+fn sec001JobFires(uses: []const u8) bool {
+    var list = runJob(.{ .id = "call", .uses = uses, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC001");
+}
+
+test "SEC001: a reusable workflow called at a branch or tag (#603)" {
+    try testing.expect(sec001JobFires("example-org/shared/.github/workflows/build.yml@main"));
+    try testing.expect(sec001JobFires("example-org/shared/.github/workflows/build.yml@v1"));
+}
+
+test "SEC001: a reusable workflow pinned to a SHA, or local, stays quiet (#603)" {
+    try testing.expect(!sec001JobFires("example-org/shared/.github/workflows/build.yml@a5ac7e51b41094c92402da3b24376905380afc29"));
+    try testing.expect(!sec001JobFires("./.github/workflows/build.yml"));
+    try testing.expect(!sec001JobFires("$/.github/workflows/build.yml"));
 }
 
 fn sec002Fires(body: []const u8, env: ?workflow_types.StringMap) bool {
