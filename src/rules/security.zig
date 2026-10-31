@@ -2494,16 +2494,27 @@ fn containsAnyKeyword(s: []const u8) bool {
     return false;
 }
 
+/// `actions/cache/restore` is the restoring half on its own. `save` only
+/// writes, so it cannot bring a poisoned entry into this job.
 fn isCacheAction(step: *const Step) bool {
     const action_ref = step.uses orelse return false;
     const base = util.actionBaseName(action_ref.raw);
-    return std.mem.eql(u8, base, "actions/cache");
+    return std.mem.eql(u8, base, "actions/cache") or std.mem.eql(u8, base, "actions/cache/restore");
+}
+
+/// `lookup-only: true` checks that the key exists without restoring it, so no
+/// entry reaches the job (#605). An expression is decided at run time and
+/// may restore.
+fn isLookupOnly(step: *const Step) bool {
+    const with_map = step.with orelse return false;
+    const raw = with_map.get("lookup-only") orelse return false;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, raw, " \t\n\r"), "true");
 }
 
 const generic_cache_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope";
 
 fn cachePoisoningHint(step: *const Step) ?[]const u8 {
-    if (isCacheAction(step)) return generic_cache_hint;
+    if (isCacheAction(step)) return if (isLookupOnly(step)) null else generic_cache_hint;
     const action_ref = step.uses orelse return null;
     const base = util.actionBaseName(action_ref.raw);
     if (std.mem.eql(u8, base, "actions/setup-node")) {
@@ -6871,6 +6882,14 @@ test "SEC016: setup-buildx restores its binary from the cache by default (#604)"
     try testing.expect(sec016OnTagPush("docker/setup-buildx-action@v3", null, ""));
     try testing.expect(sec016OnTagPush("docker/setup-buildx-action@v3", "version", "latest"));
     try testing.expect(!sec016OnTagPush("docker/setup-buildx-action@v3", "cache-binary", "false"));
+}
+
+test "SEC016: actions/cache with lookup-only: true restores nothing (#605)" {
+    try testing.expect(!sec016OnTagPush("actions/cache@v4", "lookup-only", "true"));
+    try testing.expect(!sec016OnTagPush("actions/cache/restore@v4", "lookup-only", "True"));
+    try testing.expect(sec016OnTagPush("actions/cache@v4", "lookup-only", "false"));
+    // Decided at run time, so it may restore.
+    try testing.expect(sec016OnTagPush("actions/cache@v4", "lookup-only", "${{ inputs.dry }}"));
 }
 
 test "SEC016: opt-in setup action with cache disabled (no false positive)" {
