@@ -102,6 +102,20 @@ fn checkWorkflowCallInputs(wf: *const Workflow, list: *DiagnosticList) void {
                 .fix = buildMissingTypeFix(list, problem),
             }) catch return;
         }
+        for (event.workflow_call_outputs) |output| {
+            if (!output.value_missing) continue;
+            list.append(.{
+                .rule_id = "RW001",
+                .severity = .@"error",
+                .message = std.fmt.allocPrint(
+                    alloc,
+                    "workflow_call output \"{s}\" is missing required property \"value\"",
+                    .{output.name},
+                ) catch "workflow_call output is missing required property \"value\"",
+                .span = output.name_span,
+                .fix_hint = "set `value:` to an expression such as `${{ jobs.<job_id>.outputs.<name> }}`.",
+            }) catch return;
+        }
     }
 }
 
@@ -518,7 +532,7 @@ pub const rules = [_]Rule{
     .{
         .id = "RW001",
         .name = "workflow-call-inputs",
-        .description = "Validates workflow_call input definitions",
+        .description = "Validates workflow_call input and output definitions",
         .severity = .@"error",
         .category = .reusable_workflow,
         .check_workflow = checkWorkflowCallInputs,
@@ -590,6 +604,43 @@ test "RW001: invalid workflow_call inputs from issue example" {
 
     try testing.expectEqual(@as(usize, 3), diags.len());
     try testing.expect(test_support.hasDiagnostic(&diags, "RW001"));
+}
+
+fn rw001Messages(source: []const u8, out: *DiagnosticList) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const wf = try test_support.parseWorkflowSource(arena.allocator(), source);
+    checkWorkflowCallInputs(&wf, out);
+}
+
+test "RW001: a workflow_call output without value is reported at its name (#612)" {
+    var diags = DiagnosticList.init(testing.allocator);
+    defer diags.deinit();
+    try rw001Messages(
+        \\on:
+        \\  workflow_call:
+        \\    outputs:
+        \\      result:
+        \\        description: no value
+        \\      blank:
+        \\        value: ""
+        \\      bare:
+        \\      shorthand: ${{ jobs.build.outputs.x }}
+        \\      ok:
+        \\        value: ${{ jobs.build.outputs.x }}
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - run: echo ok
+        \\
+    , &diags);
+    try testing.expectEqual(@as(usize, 4), diags.len());
+    try testing.expectEqualStrings("workflow_call output \"result\" is missing required property \"value\"", diags.get(0).message);
+    try testing.expectEqual(@as(u32, 4), diags.get(0).span.start_line);
+    try testing.expectEqual(@as(u32, 7), diags.get(0).span.start_col);
+    try testing.expectEqualStrings("workflow_call output \"blank\" is missing required property \"value\"", diags.get(1).message);
+    try testing.expectEqualStrings("workflow_call output \"bare\" is missing required property \"value\"", diags.get(2).message);
 }
 
 test "RW001: valid workflow_call inputs produce no diagnostics" {

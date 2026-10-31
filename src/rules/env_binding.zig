@@ -1,4 +1,4 @@
-//! The one fix SEC002 / SEC008 / SEC019 share: bind an untrusted or secret
+//! The one fix SEC002 / SEC019 share: bind an untrusted or secret
 //! `${{ ... }}` in a step's `run:` to that step's `env:`, and read it back as a
 //! shell variable so the value never reaches the shell as code. SEC002's
 //! `github-script` `script:` path uses the same naming and env insertion, with
@@ -338,6 +338,9 @@ fn buildBodyFix(
         if (occ.offset + occ.len > body.len) return null;
         const expr = body[occ.offset .. occ.offset + occ.len];
         if (!std.mem.startsWith(u8, expr, "${{") or !std.mem.endsWith(u8, expr, "}}")) return null;
+        // Copied into `env:` as is, a continuation line sits shallower than
+        // the new entry and the YAML no longer parses.
+        if (std.mem.findScalar(u8, expr, '\n') != null) return null;
         const inner = expr[3 .. expr.len - 2];
 
         const state = quoteStateAt(body, occ.offset);

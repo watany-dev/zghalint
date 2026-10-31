@@ -1,0 +1,14 @@
+# bench:expect github-env-injection@14 zghalint=SEC008 zizmor=github-env actionlint=-
+name: github env injection through an env binding
+on: pull_request_target
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Persist the title into the environment
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: echo "TITLE=$TITLE" >> "$GITHUB_ENV"

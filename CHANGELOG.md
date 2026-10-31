@@ -13,6 +13,42 @@ each ID means.
 
 ## [Unreleased]
 
+### Added
+
+- SYN027 (`missing-required-section`, error): report a workflow with no
+  top-level `on` or `jobs` at `1:1`, and keep linting the rest of the file.
+  Before, the file stopped at "workflow parse error" and nothing else in it
+  was reported (#609).
+- SYN028 (`step-without-run-or-uses`, error): report a step with neither
+  `run` nor `uses`, in workflows and composite actions (#611).
+
+### Changed
+
+- SEC008 also reports a `run:` that writes `$GITHUB_ENV` / `$GITHUB_PATH`
+  while reading a shell variable bound to an untrusted context in `env:`
+  (step, job or workflow; composite actions too). SEC008 no longer offers a
+  `--fix-unsafe` rewrite: binding to `env:` is that very form (#602).
+- SEC001 reports a job that calls a reusable workflow at a tag or branch
+  (`uses: owner/repo/.github/workflows/<file>@<ref>`). No autofix (#603).
+- SEC016 treats `docker/setup-buildx-action` as caching by default
+  (`cache-binary`) and recognises `actions/cache/restore` (#604, #605).
+- PERM003 reports `id-token: read` and `models: write`, levels those scopes
+  do not accept. `models: write` is no longer also reported as PERM001
+  (#613).
+- RW001 reports a `workflow_call` output with no `value:` (absent, empty or
+  blank), at the output's name (#612).
+- BP007 reports a download piped to `python` / `perl` / `ruby` / `node` that
+  reads its program from stdin. `| python -m json.tool`, `| python -c ...`
+  and a script file argument stay quiet (#606).
+
+### Fixed
+
+- SEC016 no longer reports `actions/cache` with `lookup-only: true` (#605).
+- SEC002 / SEC008: an inner `env:` entry that redefines an outer tainted key
+  with a trusted value shadows it.
+- SEC002 `--fix-unsafe` no longer binds an expression a plain scalar wraps
+  across lines, which produced YAML that did not parse.
+
 ## [0.0.3] - 2026-09-24
 
 ### Added

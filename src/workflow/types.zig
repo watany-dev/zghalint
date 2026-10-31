@@ -135,10 +135,44 @@ pub const permission_scope_keys: []const []const u8 = blk: {
     break :blk &frozen;
 };
 
-/// `vulnerability-alerts` accepts `read` / `none` only (2026-09-03).
+/// Scopes that accept fewer levels than `read` / `write` / `none`. Checked
+/// against the GitHub Actions workflow syntax reference on 2026-10-31
+/// (`vulnerability-alerts` since 2026-09-03). The parser and the PERM003
+/// message both read this one table (#613).
+const RestrictedScope = struct {
+    scope: []const u8,
+    forbidden: PermissionLevel,
+    expected: []const u8,
+    hint: []const u8,
+};
+
+const restricted_permission_scopes = [_]RestrictedScope{
+    .{ .scope = "id-token", .forbidden = .read, .expected = "\"write\" or \"none\"", .hint = "use 'write' or 'none' as the permission level." },
+    .{ .scope = "models", .forbidden = .write, .expected = "\"read\" or \"none\"", .hint = "use 'read' or 'none' as the permission level." },
+    .{ .scope = "vulnerability-alerts", .forbidden = .write, .expected = "\"read\" or \"none\"", .hint = "use 'read' or 'none' as the permission level." },
+};
+
+fn restrictedScope(scope: []const u8) ?RestrictedScope {
+    for (restricted_permission_scopes) |r| {
+        if (std.mem.eql(u8, scope, r.scope)) return r;
+    }
+    return null;
+}
+
 pub fn isAllowedPermissionLevel(scope: []const u8, level: PermissionLevel) bool {
-    if (std.mem.eql(u8, scope, "vulnerability-alerts")) return level != .write;
-    return true;
+    const r = restrictedScope(scope) orelse return true;
+    return level != r.forbidden;
+}
+
+/// The levels `scope` accepts, quoted for a message.
+pub fn expectedPermissionLevels(scope: []const u8) []const u8 {
+    const r = restrictedScope(scope) orelse return "\"read\", \"write\" or \"none\"";
+    return r.expected;
+}
+
+pub fn permissionLevelHint(scope: []const u8) []const u8 {
+    const r = restrictedScope(scope) orelse return "use 'read', 'write' or 'none' as the permission level.";
+    return r.hint;
 }
 
 /// `cache-mode:` at workflow or job level (2026-09-10). Job overrides workflow.
@@ -357,6 +391,9 @@ pub const CallOutputDef = struct {
     /// Span and style of that scalar, so a diagnostic can point at the
     /// offending path inside the expression rather than at the whole entry.
     value_meta: ?ScalarValueMeta = null,
+    /// `value:` is absent, empty, or blank: the output is always empty for the
+    /// caller, and GitHub rejects the workflow (RW001, #612).
+    value_missing: bool = false,
 };
 
 pub const WorkflowCallInputProblemKind = enum {
@@ -729,6 +766,9 @@ pub const Step = struct {
     env_key_col: ?u32 = null,
     background: bool = false,
     control: ?StepControl = null,
+    /// No `run:` key, no `uses:` key and no control key: GitHub rejects the
+    /// step (SYN028, #611). A key with an empty value is SYN003's instead.
+    missing_run_and_uses: bool = false,
 
     pub fn kind(self: *const Step) StepKind {
         if (self.control) |c| return switch (c) {
@@ -897,6 +937,11 @@ pub const JobIndex = struct {
 pub const Workflow = struct {
     name: ?[]const u8 = null,
     on: Trigger,
+    /// The required top-level key is absent (SYN027). Parsing goes on with an
+    /// empty trigger list / job list so the rest of the file is still linted
+    /// (#609).
+    missing_on: bool = false,
+    missing_jobs: bool = false,
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
     /// `permissions:` entries rejected during parsing (PERM003).
@@ -1129,6 +1174,15 @@ test "jobAllowsCache: none is a disable, unknown is not" {
     try std.testing.expect(!jobAllowsCache(&wf, &jobs[0]));
     try std.testing.expect(jobAllowsCache(&wf, &jobs[1]));
     try std.testing.expect(jobAllowsCache(&wf, &jobs[2]));
+}
+
+test "id-token rejects read and models rejects write (#613)" {
+    try std.testing.expect(!isAllowedPermissionLevel("id-token", .read));
+    try std.testing.expect(isAllowedPermissionLevel("id-token", .write));
+    try std.testing.expect(isAllowedPermissionLevel("id-token", .none));
+    try std.testing.expect(!isAllowedPermissionLevel("models", .write));
+    try std.testing.expect(isAllowedPermissionLevel("models", .read));
+    try std.testing.expect(isAllowedPermissionLevel("models", .none));
 }
 
 test "vulnerability-alerts rejects write" {

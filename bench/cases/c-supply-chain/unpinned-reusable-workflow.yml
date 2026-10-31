@@ -1,0 +1,9 @@
+# bench:expect unpinned-action@7
+name: reusable pin
+on: push
+permissions: {}
+jobs:
+  call:
+    uses: example-org/shared-workflows/.github/workflows/build.yml@main
+    permissions:
+      contents: read

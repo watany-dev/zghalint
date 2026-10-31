@@ -1,0 +1,19 @@
+# bench:expect invalid-permission-level@11 zghalint=PERM003 zizmor=- actionlint=permissions
+# bench:expect invalid-permission-level@12 zghalint=PERM003 zizmor=- actionlint=permissions
+name: scope restricted levels
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  # id-token takes write / none, models takes read / none.
+  id-token: read
+  models: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Greet
+        run: echo hi

@@ -1,4 +1,4 @@
-# AF5: SEC002 / SEC008 / SEC019 env 束縛 autofix 設計書
+# AF5: SEC002 / SEC019 env 束縛 autofix 設計書
 
 ## 目的
 
@@ -21,8 +21,13 @@ script injection 系の定石の直し方は「untrusted な式を step の `env
 | ルール | 検出内容 |
 |---|---|
 | SEC002 script-injection | untrusted な context を `run:` またはコード実行系 action の input で使用 |
-| SEC008 github-env-injection | untrusted な入力を `GITHUB_ENV` / `GITHUB_PATH` へ書き込み |
+| ~~SEC008 github-env-injection~~ | #602 で外した。下の注を参照 |
 | SEC019 secrets-outside-env | secret を `env:` を経由せず `run:` / `with:` で直接使用 |
+
+SEC008 は当初の対象だったが、#602 で外した。束縛後の `run:` は
+`echo "TITLE=$PULL_REQUEST_TITLE" >> "$GITHUB_ENV"` になり、シェルが改行入りの
+値をそのまま書くので環境ファイル注入は残る。SEC008 は env 経由の形も検出する
+ようになり、この書き換えを修正として出さない。
 
 いずれも `Fix.safety` は `.unsafe`。挿入する env 変数名がワークフロー作者の命名と
 衝突しうること、`run:` の本文をシェルの構文レベルで書き換えることの両方が理由である。
@@ -165,9 +170,8 @@ fix では、片方だけ落ちると部分適用になる。したがって「�
 step 単位で 1 つの `Fix` にまとめる。診断は式ごとに出るので（SEC002）、
 **その step の最初の診断にだけ `Fix` を付け、残りには付けない。**
 
-SEC002 と SEC008 が同じ step で同時に発火した場合、2 つの `Fix` は同じ範囲を
-書き換えるので片方が丸ごと捨てられる。残ったほうは単独で完結しており、
-捨てられたほうの診断は次回実行で消えているので、結果は正しい。
+SEC002 と SEC008 が同じ step で同時に発火した場合、`Fix` を持つのは SEC002 だけ
+である（#602）。束縛後も SEC008 は env 経由の形として残る。
 
 ## 6. SEC015 / SEC018 との共存
 

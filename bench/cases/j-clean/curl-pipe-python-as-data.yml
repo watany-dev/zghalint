@@ -1,0 +1,18 @@
+# bench:forbid obfuscated-command
+name: download read as data by python
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Pretty-print a JSON response
+        run: curl -s https://api.example.com/v1/status | python -m json.tool
+      - name: Read one field
+        run: |
+          curl -s https://api.example.com/v1/status | python3 -c 'import json, sys; print(json.load(sys.stdin)["ok"])'
