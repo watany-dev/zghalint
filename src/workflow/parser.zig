@@ -508,13 +508,23 @@ fn parseWorkflowCallOutputs(allocator: std.mem.Allocator, node: Node) ParseError
         def.* = .{ .name = entry.key.value, .name_span = entry.key.span };
         const om = switch (entry.value) {
             .mapping => |om| om,
+            .null_value => {
+                def.value_missing = true;
+                continue;
+            },
             else => continue,
         };
-        switch (om.get("value") orelse continue) {
+        const value_node = om.get("value") orelse {
+            def.value_missing = true;
+            continue;
+        };
+        switch (value_node) {
             .scalar => |s| {
                 def.value = s.value;
                 def.value_meta = .{ .value_span = s.span, .style = s.style };
+                def.value_missing = std.mem.trim(u8, s.value, " \t\r\n").len == 0;
             },
+            .null_value => def.value_missing = true,
             else => {},
         }
     }

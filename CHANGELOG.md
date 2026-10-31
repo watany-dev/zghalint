@@ -33,6 +33,8 @@ each ID means.
 - PERM003 reports `id-token: read` and `models: write`, levels those scopes
   do not accept. `models: write` is no longer also reported as PERM001
   (#613).
+- RW001 reports a `workflow_call` output with no `value:` (absent, empty or
+  blank), at the output's name (#612).
 
 ### Fixed
 

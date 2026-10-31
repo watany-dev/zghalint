@@ -1459,7 +1459,7 @@ callers, and the calls made against it.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted (`--fix-unsafe` で `default:` から `type:` を推論して挿入) |
+| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted; or a `workflow_call` output has no `value` (`--fix-unsafe` で `default:` から `type:` を推論して挿入) |
 | RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
 | RW003 | workflow-call-input-values | error | A job calling a local reusable workflow passes an input it does not declare, or a value that does not match the declared type |
 | RW004 | workflow-call-secrets | error | A job calling a local reusable workflow omits one of its `required` secrets, or passes a secret it does not declare |
@@ -1494,6 +1494,10 @@ on a required input is never applied — so declaring both is always a mistake i
 one direction or the other. Fix by giving every input an explicit `type` of
 `string`, `number` or `boolean`, matching the `default` to it, and dropping
 either `required: true` or `default`.
+
+An entry under `workflow_call.outputs` must carry a `value:` as well. Without
+one (absent, empty or blank) the output is always empty for the caller, and
+GitHub rejects the workflow. RW001 reports it at the output's name (#612).
 
 ### RW002 workflow-call-required-inputs
 

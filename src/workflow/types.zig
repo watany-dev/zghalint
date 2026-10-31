@@ -380,6 +380,9 @@ pub const CallOutputDef = struct {
     /// Span and style of that scalar, so a diagnostic can point at the
     /// offending path inside the expression rather than at the whole entry.
     value_meta: ?ScalarValueMeta = null,
+    /// `value:` is absent, empty, or blank: the output is always empty for the
+    /// caller, and GitHub rejects the workflow (RW001, #612).
+    value_missing: bool = false,
 };
 
 pub const WorkflowCallInputProblemKind = enum {
