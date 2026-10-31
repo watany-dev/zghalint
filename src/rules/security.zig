@@ -3483,41 +3483,55 @@ fn containsCurlWgetPipeShell(s: []const u8) bool {
 
 /// Interpreters that run a script fed on stdin when given none of their own
 /// (#606). `python` may carry a version suffix (`python3`, `python3.12`).
-const stdin_interpreters = [_][]const u8{ "python", "perl", "ruby", "node" };
+///
+/// `inline` are the short flags that hand over the program on the command
+/// line (`python -c` / `-m`, `perl -e` / `-E`, `ruby -e`, `node -e` / `-p`):
+/// with one of them stdin is data, as in `| python -m json.tool`. `takes_value`
+/// are short flags whose value may follow as its own word (`-X utf8`).
+const StdinInterpreter = struct { name: []const u8, inline_flags: []const u8, takes_value: []const u8 };
 
-/// Short flags that hand the interpreter its program on the command line:
-/// `python -c` / `-m`, `perl -e` / `-E`, `ruby -e`, `node -e` / `-p`. With one
-/// of them, stdin is data, as in `| python -m json.tool`.
-const inline_program_flags = "cmeEp";
+const stdin_interpreters = [_]StdinInterpreter{
+    .{ .name = "python", .inline_flags = "cm", .takes_value = "WX" },
+    .{ .name = "perl", .inline_flags = "eE", .takes_value = "IMm" },
+    .{ .name = "ruby", .inline_flags = "e", .takes_value = "Ir" },
+    .{ .name = "node", .inline_flags = "ep", .takes_value = "r" },
+};
 
-fn interpreterNameLen(s: []const u8, i: usize) ?usize {
-    for (stdin_interpreters) |name| {
-        if (!std.mem.startsWith(u8, s[i..], name)) continue;
-        var end = i + name.len;
-        if (std.mem.eql(u8, name, "python")) {
+fn stdinInterpreterAt(s: []const u8, i: usize, len: *usize) ?StdinInterpreter {
+    for (stdin_interpreters) |interp| {
+        if (!std.mem.startsWith(u8, s[i..], interp.name)) continue;
+        var end = i + interp.name.len;
+        if (std.mem.eql(u8, interp.name, "python")) {
             while (end < s.len and (std.ascii.isDigit(s[end]) or s[end] == '.')) end += 1;
         }
-        if (end < s.len and isIdentChar(s[end])) return null;
-        return end - i;
+        // `ruby-lint` / `perl-tidy` are other commands.
+        if (end < s.len and (isIdentChar(s[end]) or s[end] == '-')) return null;
+        len.* = end - i;
+        return interp;
     }
     return null;
 }
 
 /// Whether the command at `i` is an interpreter whose arguments leave it
-/// reading its program from stdin: only flags, `-`, and none that supply the
-/// program inline. A positional argument is a script file.
+/// reading its program from stdin: flags that supply no program, then
+/// optionally `-`, after which the words are arguments to that program. Any
+/// other word first is a script file.
 fn interpreterReadsStdin(s: []const u8, i: usize) bool {
-    const name_len = interpreterNameLen(s, i) orelse return false;
+    var name_len: usize = 0;
+    const interp = stdinInterpreterAt(s, i, &name_len) orelse return false;
     const end = std.mem.findAnyPos(u8, s, i, "\n;&|)") orelse s.len;
     var args = std.mem.tokenizeAny(u8, s[i + name_len .. end], " \t");
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-")) continue;
+        if (std.mem.eql(u8, arg, "-")) return true;
         if (arg[0] != '-') return false;
         if (std.mem.startsWith(u8, arg, "--")) {
             if (std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "--print")) return false;
             continue;
         }
-        if (std.mem.findAny(u8, arg[1..], inline_program_flags) != null) return false;
+        const cluster = arg[1..];
+        if (std.mem.findAny(u8, cluster, interp.inline_flags) != null) return false;
+        // `-X utf8`: the value is the next word, not a script file.
+        if (cluster.len == 1 and std.mem.findScalar(u8, interp.takes_value, cluster[0]) != null) _ = args.next();
     }
     return true;
 }
@@ -8936,6 +8950,11 @@ test "BP007: a download piped to an interpreter reading stdin (#606)" {
     try testing.expect(bp007Fires("wget -qO- https://example.com/i.pl | perl"));
     try testing.expect(bp007Fires("curl -fsSL https://example.com/i.rb | ruby; echo done"));
     try testing.expect(bp007Fires("curl -fsSL https://example.com/i.js | node"));
+    // Words after `-` are arguments to the downloaded program.
+    try testing.expect(bp007Fires("curl -sSL https://install.example.org | python3 - --version 1.8.0"));
+    // `-E` is an inline-program flag for perl, not for python.
+    try testing.expect(bp007Fires("curl https://example.com/i.py | python -E"));
+    try testing.expect(bp007Fires("curl https://example.com/i.py | python3 -X utf8 -"));
 }
 
 test "BP007: an interpreter given its own script reads the download as data (#606)" {
@@ -8945,6 +8964,7 @@ test "BP007: an interpreter given its own script reads the download as data (#60
     try testing.expect(!bp007Fires("curl -s https://api.example.com/x | perl -ne 'print if /v/'"));
     try testing.expect(!bp007Fires("curl -s https://api.example.com/x | node -e 'process.stdin.pipe(process.stdout)'"));
     try testing.expect(!bp007Fires("curl -s https://api.example.com/x | pythonista"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | ruby-lint"));
 }
 
 test "BP007: wget piped to sh" {

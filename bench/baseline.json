@@ -420,6 +420,13 @@
       "line_matched": 0,
       "violations": 0
     },
+    "d-permissions-secrets/scope-restricted-levels.yml": {
+      "detected": 2,
+      "expected": 2,
+      "line_expected": 2,
+      "line_matched": 2,
+      "violations": 0
+    },
     "d-permissions-secrets/secret-in-run.yml": {
       "detected": 1,
       "expected": 1,
@@ -693,6 +700,20 @@
       "line_matched": 2,
       "violations": 0
     },
+    "f-syntax-schema/step-without-run-or-uses.action.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "f-syntax-schema/step-without-run-or-uses.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
     "f-syntax-schema/unknown-key-job-and-step.yml": {
       "detected": 2,
       "expected": 2,
@@ -784,6 +805,13 @@
       "line_matched": 2,
       "violations": 0
     },
+    "g-reusable/workflow-call-output-without-value.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
     "h-practices/cache-in-release-workflow.yml": {
       "detected": 1,
       "expected": 1,
@@ -792,6 +820,13 @@
       "violations": 0
     },
     "h-practices/cache-on-tag-push.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "h-practices/curl-pipe-python.yml": {
       "detected": 1,
       "expected": 1,
       "line_expected": 1,
@@ -995,6 +1030,13 @@
       "violations": 0
     },
     "j-clean/clean-release-publish.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/curl-pipe-python-as-data.yml": {
       "detected": 0,
       "expected": 0,
       "line_expected": 0,

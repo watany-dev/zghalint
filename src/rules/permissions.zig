@@ -80,7 +80,7 @@ const Placement = enum { workflow, job };
 ///
 /// Every other scope writes repository *metadata* — issues, pull requests,
 /// checks, statuses, discussions, projects, code-scanning alerts, attestations,
-/// artifact metadata, models, Pages deployments — or mints an OIDC token
+/// artifact metadata, Pages deployments — or mints an OIDC token
 /// (`id-token`). GitHub's own documented workflows require those at `write` and
 /// cannot ask for less: CodeQL needs `security-events: write`, trusted
 /// publishing needs `id-token: write`, `actions/deploy-pages` needs
@@ -211,11 +211,7 @@ fn reportPermissionProblems(
             .span = problem.span,
             .fix_hint = switch (problem.kind) {
                 .unknown_scope => "use one of the permission scopes GitHub Actions defines.",
-                .invalid_level => std.fmt.allocPrint(
-                    alloc,
-                    "use {s} as the permission level.",
-                    .{workflow_types.expectedPermissionLevels(problem.scope)},
-                ) catch "use a permission level this scope accepts.",
+                .invalid_level => workflow_types.permissionLevelHint(problem.scope),
                 .invalid_all => "use 'read-all' or 'write-all', or list scopes individually.",
             },
             .fix = unknownScopeFix(diag_list, problem),

@@ -625,6 +625,7 @@ test "RW001: a workflow_call output without value is reported at its name (#612)
         \\      blank:
         \\        value: ""
         \\      bare:
+        \\      shorthand: ${{ jobs.build.outputs.x }}
         \\      ok:
         \\        value: ${{ jobs.build.outputs.x }}
         \\jobs:
@@ -634,7 +635,7 @@ test "RW001: a workflow_call output without value is reported at its name (#612)
         \\      - run: echo ok
         \\
     , &diags);
-    try testing.expectEqual(@as(usize, 3), diags.len());
+    try testing.expectEqual(@as(usize, 4), diags.len());
     try testing.expectEqualStrings("workflow_call output \"result\" is missing required property \"value\"", diags.get(0).message);
     try testing.expectEqual(@as(u32, 4), diags.get(0).span.start_line);
     try testing.expectEqual(@as(u32, 7), diags.get(0).span.start_col);

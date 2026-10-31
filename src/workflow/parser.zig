@@ -506,13 +506,14 @@ fn parseWorkflowCallOutputs(allocator: std.mem.Allocator, node: Node) ParseError
     const outputs = try allocator.alloc(types.CallOutputDef, m.entries.len);
     for (m.entries, outputs) |entry, *def| {
         def.* = .{ .name = entry.key.value, .name_span = entry.key.span };
+        // A scalar or a sequence in place of the mapping is the
+        // `result: ${{ ... }}` shorthand GitHub rejects: there is no `value:`.
         const om = switch (entry.value) {
             .mapping => |om| om,
-            .null_value => {
+            else => {
                 def.value_missing = true;
                 continue;
             },
-            else => continue,
         };
         const value_node = om.get("value") orelse {
             def.value_missing = true;

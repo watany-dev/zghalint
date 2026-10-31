@@ -139,29 +139,40 @@ pub const permission_scope_keys: []const []const u8 = blk: {
 /// against the GitHub Actions workflow syntax reference on 2026-10-31
 /// (`vulnerability-alerts` since 2026-09-03). The parser and the PERM003
 /// message both read this one table (#613).
-const restricted_permission_scopes = [_]struct {
+const RestrictedScope = struct {
     scope: []const u8,
     forbidden: PermissionLevel,
     expected: []const u8,
-}{
-    .{ .scope = "id-token", .forbidden = .read, .expected = "\"write\" or \"none\"" },
-    .{ .scope = "models", .forbidden = .write, .expected = "\"read\" or \"none\"" },
-    .{ .scope = "vulnerability-alerts", .forbidden = .write, .expected = "\"read\" or \"none\"" },
+    hint: []const u8,
 };
 
-pub fn isAllowedPermissionLevel(scope: []const u8, level: PermissionLevel) bool {
+const restricted_permission_scopes = [_]RestrictedScope{
+    .{ .scope = "id-token", .forbidden = .read, .expected = "\"write\" or \"none\"", .hint = "use 'write' or 'none' as the permission level." },
+    .{ .scope = "models", .forbidden = .write, .expected = "\"read\" or \"none\"", .hint = "use 'read' or 'none' as the permission level." },
+    .{ .scope = "vulnerability-alerts", .forbidden = .write, .expected = "\"read\" or \"none\"", .hint = "use 'read' or 'none' as the permission level." },
+};
+
+fn restrictedScope(scope: []const u8) ?RestrictedScope {
     for (restricted_permission_scopes) |r| {
-        if (std.mem.eql(u8, scope, r.scope)) return level != r.forbidden;
+        if (std.mem.eql(u8, scope, r.scope)) return r;
     }
-    return true;
+    return null;
+}
+
+pub fn isAllowedPermissionLevel(scope: []const u8, level: PermissionLevel) bool {
+    const r = restrictedScope(scope) orelse return true;
+    return level != r.forbidden;
 }
 
 /// The levels `scope` accepts, quoted for a message.
 pub fn expectedPermissionLevels(scope: []const u8) []const u8 {
-    for (restricted_permission_scopes) |r| {
-        if (std.mem.eql(u8, scope, r.scope)) return r.expected;
-    }
-    return "\"read\", \"write\" or \"none\"";
+    const r = restrictedScope(scope) orelse return "\"read\", \"write\" or \"none\"";
+    return r.expected;
+}
+
+pub fn permissionLevelHint(scope: []const u8) []const u8 {
+    const r = restrictedScope(scope) orelse return "use 'read', 'write' or 'none' as the permission level.";
+    return r.hint;
 }
 
 /// `cache-mode:` at workflow or job level (2026-09-10). Job overrides workflow.
