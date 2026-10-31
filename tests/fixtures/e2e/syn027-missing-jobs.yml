@@ -1,0 +1,7 @@
+# zghalint:expect SYN027@1 SYN011 PERM003
+# #609: a workflow without `jobs` is still linted.
+on:
+  push:
+    branchs: [main]
+permissions:
+  contents: raed

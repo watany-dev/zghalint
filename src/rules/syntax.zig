@@ -58,10 +58,11 @@ fn checkStepEmptySections(step: *const Step, list: *DiagnosticList) void {
     checkEmptySections(step.empty_sections, list);
 }
 
-/// An emptied-out workflow that was never deleted is a finding of its own, but
-/// the workflow parser needs `on` and `jobs` and gives up on it, which would
-/// drop the file as unlintable. So SYN020 is reported from the YAML document,
-/// before the parse the CLI skips when this returns true.
+/// An emptied-out workflow that was never deleted is a finding of its own.
+/// Parsed as a workflow it would come out as two SYN027s for the missing `on`
+/// and `jobs`, which describe the same file less plainly. So SYN020 is
+/// reported from the YAML document, before the parse the CLI skips when this
+/// returns true.
 pub fn lintEmptyWorkflow(root: Node, list: *DiagnosticList) bool {
     const empty = switch (root) {
         .null_value => true,
@@ -83,6 +84,26 @@ pub fn lintEmptyWorkflow(root: Node, list: *DiagnosticList) bool {
         .fix_hint = "delete the file, or give it \"on\" and \"jobs\"",
     }) catch {};
     return true;
+}
+
+/// The workflow parser goes on with an empty trigger / job list when `on` or
+/// `jobs` is absent, so the rest of the file is still linted (#609). The file
+/// as a whole is what is wrong, so the finding sits on its first line.
+fn checkMissingRequiredSections(wf: *const Workflow, list: *DiagnosticList) void {
+    const sections = [_]struct { missing: bool, message: []const u8 }{
+        .{ .missing = wf.missing_on, .message = "\"on\" section is missing" },
+        .{ .missing = wf.missing_jobs, .message = "\"jobs\" section is missing" },
+    };
+    for (sections) |section| {
+        if (!section.missing) continue;
+        list.append(.{
+            .rule_id = "SYN027",
+            .severity = .@"error",
+            .message = section.message,
+            .span = Span.point(1, 1, 0),
+            .fix_hint = "a workflow needs both \"on\" and \"jobs\"",
+        }) catch return;
+    }
 }
 
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
@@ -1624,12 +1645,34 @@ pub const rules = [_]Rule{
         .category = .syntax,
         .check_workflow = &checkConcurrencyConfiguration,
     },
+    .{
+        .id = "SYN027",
+        .name = "missing-required-section",
+        .description = "the workflow has no \"on\" or no \"jobs\" section",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_workflow = &checkMissingRequiredSections,
+    },
 };
 
 const testing = std.testing;
 const test_support = @import("../test_support.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
+
+test "SYN027: a missing on or jobs is reported at 1:1 (#609)" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    try test_support.lintSource("permissions: {}\n", .{ .workflow = &checkMissingRequiredSections }, &list);
+    try testing.expectEqual(@as(usize, 2), list.len());
+    try testing.expectEqualStrings("\"on\" section is missing", list.get(0).message);
+    try testing.expectEqualStrings("\"jobs\" section is missing", list.get(1).message);
+    try testing.expectEqual(@as(u32, 1), list.get(0).span.start_line);
+}
+
+test "SYN027: a workflow with both sections, even empty, stays quiet (#609)" {
+    try test_support.expectNoDiagnostics("on: push\njobs: {}\n", .{ .workflow = &checkMissingRequiredSections });
+}
 
 fn runSyn001(source: []const u8, list: *DiagnosticList) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

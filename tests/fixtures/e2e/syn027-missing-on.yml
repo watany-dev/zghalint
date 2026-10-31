@@ -1,0 +1,12 @@
+# zghalint:expect SYN027@1 PERM003 SEC002
+# zghalint:forbid BP005
+# #609: a workflow without `on` is still linted. The trigger list is empty, so
+# nothing that keys off a trigger fires.
+permissions:
+  contents: raed
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ${{ github.event.issue.title }}

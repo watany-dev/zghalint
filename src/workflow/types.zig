@@ -897,6 +897,11 @@ pub const JobIndex = struct {
 pub const Workflow = struct {
     name: ?[]const u8 = null,
     on: Trigger,
+    /// The required top-level key is absent (SYN027). Parsing goes on with an
+    /// empty trigger list / job list so the rest of the file is still linted
+    /// (#609).
+    missing_on: bool = false,
+    missing_jobs: bool = false,
     permissions: ?Permissions = null,
     permissions_meta: ?PermissionsMeta = null,
     /// `permissions:` entries rejected during parsing (PERM003).

@@ -182,29 +182,27 @@ pub fn parseWorkflowTracked(
     var empty = std.ArrayList(types.EmptySection).empty;
     defer empty.deinit(allocator);
 
-    const on_node = root.get("on") orelse root.get("true") orelse {
-        ctx.note("on", null);
-        return error.MissingField;
-    };
-    try recordEmpty(&empty, allocator, "on", on_node);
-    try recordTriggerNestedEmpty(&empty, allocator, on_node);
-    const trigger = if (isEmptyContainer(on_node))
-        types.Trigger{ .events = &.{} }
-    else
-        parseTrigger(allocator, on_node) catch |err| {
-            ctx.note("on", on_node.getSpan());
-            return err;
-        };
+    // A missing `on` / `jobs` is a finding (SYN027), not a reason to drop the
+    // file: an injection in a half-written workflow is still an injection.
+    const on_node = root.get("on") orelse root.get("true");
+    var trigger = types.Trigger{ .events = &.{} };
+    if (on_node) |n| {
+        try recordEmpty(&empty, allocator, "on", n);
+        try recordTriggerNestedEmpty(&empty, allocator, n);
+        if (!isEmptyContainer(n)) {
+            trigger = parseTrigger(allocator, n) catch |err| {
+                ctx.note("on", n.getSpan());
+                return err;
+            };
+        }
+    }
 
-    const jobs_node = root.get("jobs") orelse {
-        ctx.note("jobs", null);
-        return error.MissingField;
-    };
-    try recordEmpty(&empty, allocator, "jobs", jobs_node);
-    const jobs = if (isEmptyContainer(jobs_node))
-        try allocator.alloc(types.Job, 0)
-    else
-        try parseJobs(&ctx, jobs_node);
+    const jobs_node = root.get("jobs");
+    var jobs: []const types.Job = &.{};
+    if (jobs_node) |n| {
+        try recordEmpty(&empty, allocator, "jobs", n);
+        if (!isEmptyContainer(n)) jobs = try parseJobs(&ctx, n);
+    }
 
     var concurrency: ?types.Concurrency = null;
     if (root.get("concurrency")) |n| {
@@ -226,6 +224,8 @@ pub fn parseWorkflowTracked(
     var workflow = types.Workflow{
         .name = root.getScalar("name"),
         .on = trigger,
+        .missing_on = on_node == null,
+        .missing_jobs = jobs_node == null,
         .concurrency = concurrency,
         .jobs = jobs,
         .job_index = try types.JobIndex.build(allocator, jobs),
@@ -2108,7 +2108,11 @@ test "parseWorkflow missing on" {
     };
 
     const root = mkMapping(&root_entries);
-    try testing.expectError(error.MissingField, parseWorkflow(arena.allocator(), root));
+    const wf = try parseWorkflow(arena.allocator(), root);
+    try testing.expect(wf.missing_on);
+    try testing.expect(!wf.missing_jobs);
+    try testing.expectEqual(@as(usize, 0), wf.on.events.len);
+    try testing.expectEqual(@as(usize, 1), wf.jobs.len);
 }
 
 test "parseWorkflow missing jobs" {
@@ -2120,7 +2124,11 @@ test "parseWorkflow missing jobs" {
     };
 
     const root = mkMapping(&root_entries);
-    try testing.expectError(error.MissingField, parseWorkflow(arena.allocator(), root));
+    const wf = try parseWorkflow(arena.allocator(), root);
+    try testing.expect(wf.missing_jobs);
+    try testing.expect(!wf.missing_on);
+    try testing.expectEqual(@as(usize, 0), wf.jobs.len);
+    try testing.expectEqual(@as(usize, 1), wf.on.events.len);
 }
 
 test "parseWorkflow not a mapping" {
@@ -4280,26 +4288,11 @@ test "parseWorkflowTracked reports the line of an invalid trigger" {
     try testing.expectEqual(@as(u32, 3), failure.span.?.start_line);
 }
 
-// A field that is absent has no node to point at, so the path alone is the
-// whole answer and the caller prints the error without a position.
-test "parseWorkflowTracked names a missing required field without a span" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const on = try parseFailure(arena.allocator(), "name: t\njobs: {}\n");
-    try testing.expectEqualStrings("on", on.path);
-    try testing.expect(on.span == null);
-
-    const jobs = try parseFailure(arena.allocator(), "name: t\non: push\n");
-    try testing.expectEqualStrings("jobs", jobs.path);
-    try testing.expect(jobs.span == null);
-}
-
 test "parseWorkflow still works without a failure sink" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    try testing.expectError(error.MissingField, parseWorkflow(arena.allocator(), mkMapping(&.{})));
+    try testing.expectError(error.InvalidValue, parseWorkflow(arena.allocator(), mkScalar("not a workflow")));
 }
 
 test "step: first key and env: insertion anchors are captured" {

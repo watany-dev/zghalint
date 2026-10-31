@@ -68,6 +68,8 @@ a `.fixed` / `.fixed-unsafe` sibling (`none` must not have one).
 | `sec002-repeated-on-event.yml` | #366 repro: `on:` naming the same event three times must not overflow the taint table |
 | `sec002-taint-one-hop.yml` | #314 repro: `env.<KEY>` and `needs.<job>.outputs.*` carry taint one hop |
 | `security-misc.yml` | SEC003 / SEC005 / SEC006 / SEC007 / SEC008 / SC002 |
+| `syn027-missing-on.yml` | #609: no `on`, and the file is still linted (PERM003 / SEC002) |
+| `syn027-missing-jobs.yml` | #609: no `jobs`, and the file is still linted (SYN011 / PERM003) |
 | `sc007-typosquat.yml` | #135: `actions/chekout` fires SC007; `myorg/chekout` and exact `actions/checkout` do not |
 | `sec006-condition-scope.yml` | #138 repro: ref/label routing in `if:` must not fire SEC006 |
 | `sec005-pr-target-head-repository.yml` | #218 repro: `pull_request_target` checkout of the PR head repository |
