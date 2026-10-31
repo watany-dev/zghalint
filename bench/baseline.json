@@ -315,6 +315,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "c-supply-chain/unpinned-reusable-workflow.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
     "c-supply-chain/unpinned-third-party-action.yml": {
       "detected": 2,
       "expected": 2,
@@ -358,6 +365,20 @@
       "violations": 0
     },
     "d-permissions-secrets/github-app-token-unscoped.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/github-env-injection-via-env.action.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
+    "d-permissions-secrets/github-env-injection-via-env.yml": {
       "detected": 1,
       "expected": 1,
       "line_expected": 1,
@@ -826,6 +847,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "h-practices/setup-buildx-default-cache-in-release.yml": {
+      "detected": 1,
+      "expected": 1,
+      "line_expected": 1,
+      "line_matched": 1,
+      "violations": 0
+    },
     "h-practices/setup-node-without-cache.yml": {
       "detected": 1,
       "expected": 1,
@@ -945,6 +973,13 @@
       "line_matched": 1,
       "violations": 0
     },
+    "j-clean/cache-lookup-only-in-release.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
     "j-clean/clean-ci-matrix.yml": {
       "detected": 0,
       "expected": 0,
@@ -967,6 +1002,13 @@
       "violations": 0
     },
     "j-clean/pinned-and-scoped.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/pinned-reusable-workflow.yml": {
       "detected": 0,
       "expected": 0,
       "line_expected": 0,
@@ -1002,6 +1044,13 @@
       "violations": 0
     },
     "j-clean/safe-untrusted-in-with.yml": {
+      "detected": 0,
+      "expected": 0,
+      "line_expected": 0,
+      "line_matched": 0,
+      "violations": 0
+    },
+    "j-clean/setup-buildx-no-cache-binary.yml": {
       "detected": 0,
       "expected": 0,
       "line_expected": 0,

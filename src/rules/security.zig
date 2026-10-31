@@ -536,11 +536,18 @@ fn walkTaintGroup(
 /// works — as long as the step reads it back as `$KEY`. Written as
 /// `${{ env.KEY }}` the value is spliced into the script before the shell ever
 /// runs, which is the injection the fix was meant to remove.
+///
+/// A key the inner scope redefines with a trusted value shadows the outer
+/// binding, so it leaves the set.
 fn addTaintedEnvKeys(out: *TaintedNames, env: ?workflow_types.StringMap, table: ContextTable) void {
     const map = env orelse return;
     var it = map.iterator();
     while (it.next()) |entry| {
-        if (hasUntrustedExpr(entry.value_ptr.*, table)) out.append(entry.key_ptr.*);
+        if (hasUntrustedExpr(entry.value_ptr.*, table)) {
+            out.append(entry.key_ptr.*);
+        } else {
+            out.remove(entry.key_ptr.*);
+        }
     }
 }
 
@@ -623,6 +630,15 @@ const TaintedNames = struct {
         if (self.contains(name)) return;
         self.buf[self.len] = name;
         self.len += 1;
+    }
+
+    fn remove(self: *TaintedNames, name: []const u8) void {
+        for (self.buf[0..self.len], 0..) |existing, i| {
+            if (!std.ascii.eqlIgnoreCase(existing, name)) continue;
+            std.mem.copyForwards([]const u8, self.buf[i .. self.len - 1], self.buf[i + 1 .. self.len]);
+            self.len -= 1;
+            return;
+        }
     }
 
     fn contains(self: *const TaintedNames, name: []const u8) bool {
@@ -1398,6 +1414,8 @@ fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) v
             job_env: *const TaintedNames,
             list: *DiagnosticList,
             pub fn visit(self: @This(), step: *const Step) void {
+                const run_body = step.run orelse return;
+                if (indexOfGithubEnvWrite(run_body) == null) return;
                 var step_env = self.job_env.derive();
                 addTaintedEnvKeys(&step_env, step.env, withTaintedEnv(self.base, self.job_env));
                 checkGithubEnvInjection(step, withTaintedEnv(self.base, &step_env), self.list);
@@ -4211,6 +4229,20 @@ test "SEC002: env.<KEY> bound to a trusted value stays quiet (#314)" {
     try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
 
+test "SEC002: a job env: redefining a workflow-level tainted key with a trusted value shadows it" {
+    var wf_env: workflow_types.StringMap = .empty;
+    defer wf_env.deinit(testing.allocator);
+    wf_env.put(testing.allocator, "BODY", "${{ github.event.issue.title }}") catch unreachable;
+    var job_env: workflow_types.StringMap = .empty;
+    defer job_env.deinit(testing.allocator);
+    job_env.put(testing.allocator, "BODY", "fixed") catch unreachable;
+    const steps = [_]Step{.{ .run = "echo \"${{ env.BODY }}\"" }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .env = job_env, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = wf_env, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
 test "SEC002: a workflow-level env entry taints every job (#314)" {
     var env: workflow_types.StringMap = .empty;
     defer env.deinit(testing.allocator);
@@ -6214,17 +6246,13 @@ test "SEC008: no run block (no false positive)" {
 
 const EnvScope = enum { step, job, workflow };
 
-fn sec008EnvList(scope: EnvScope, key: []const u8, value: []const u8, body: []const u8) DiagnosticList {
+fn sec008ViaEnv(scope: EnvScope, key: []const u8, value: []const u8, body: []const u8) bool {
     var env: workflow_types.StringMap = .empty;
     defer env.deinit(testing.allocator);
     env.put(testing.allocator, key, value) catch unreachable;
     const steps = [_]Step{.{ .env = if (scope == .step) env else null, .run = body }};
     const jobs = [_]Job{.{ .id = "build", .steps = &steps, .env = if (scope == .job) env else null, .permissions = Permissions{} }};
-    return runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = if (scope == .workflow) env else null, .permissions = Permissions{} });
-}
-
-fn sec008ViaEnv(scope: EnvScope, key: []const u8, value: []const u8, body: []const u8) bool {
-    var list = sec008EnvList(scope, key, value, body);
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = if (scope == .workflow) env else null, .permissions = Permissions{} });
     defer list.deinit();
     return hasDiagnostic(&list, "SEC008");
 }
@@ -6243,6 +6271,20 @@ test "SEC008: an env: entry that is trusted or unread stays quiet (#602)" {
     try testing.expect(!sec008ViaEnv(.step, "TITLE", "${{ github.event.pull_request.title }}", "echo \"X=1\" >> $GITHUB_ENV"));
     // `$TITLE_LEN` is a different variable.
     try testing.expect(!sec008ViaEnv(.step, "TITLE", "${{ github.event.pull_request.title }}", "echo \"X=$TITLE_LEN\" >> $GITHUB_ENV"));
+}
+
+test "SEC008: a step env: redefining an outer tainted key with a trusted value shadows it" {
+    var wf_env: workflow_types.StringMap = .empty;
+    defer wf_env.deinit(testing.allocator);
+    wf_env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}") catch unreachable;
+    var step_env: workflow_types.StringMap = .empty;
+    defer step_env.deinit(testing.allocator);
+    step_env.put(testing.allocator, "TITLE", "fixed") catch unreachable;
+    const steps = [_]Step{.{ .env = step_env, .run = "echo \"TITLE=$TITLE\" >> $GITHUB_ENV" }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = wf_env, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC008: the env: path is reported for composite steps too (#602)" {

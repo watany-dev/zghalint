@@ -1,4 +1,4 @@
-# AF5: SEC002 / SEC008 / SEC019 env 束縛 autofix 設計書
+# AF5: SEC002 / SEC019 env 束縛 autofix 設計書
 
 ## 目的
 
