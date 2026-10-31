@@ -331,6 +331,14 @@ const cache_setup_actions = [_]CacheSetupAction{
         .on_by_default = true,
         .disable_hint = "mlugg/setup-zig caches by default; set 'use-cache: false' in this release/deploy job, or build from a dedicated cache scope",
     },
+    // The cached object is the buildx binary itself, so a poisoned entry runs
+    // in the release job (#604).
+    .{
+        .name = "docker/setup-buildx-action",
+        .cache_input = "cache-binary",
+        .on_by_default = true,
+        .disable_hint = "docker/setup-buildx-action restores the buildx binary from the cache by default; set 'cache-binary: false' in this release/deploy job",
+    },
 };
 
 const deploy_keywords = [_][]const u8{
@@ -6846,6 +6854,23 @@ test "SEC016: setup-zig with use-cache false (no false positive)" {
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+fn sec016OnTagPush(uses: []const u8, key: ?[]const u8, value: []const u8) bool {
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    if (key) |k| with.put(testing.allocator, k, value) catch unreachable;
+    const steps = [_]Step{.{ .uses = ActionRef.parse(uses), .with = if (key != null) with else null }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "Release", .on = tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC016");
+}
+
+test "SEC016: setup-buildx restores its binary from the cache by default (#604)" {
+    try testing.expect(sec016OnTagPush("docker/setup-buildx-action@v3", null, ""));
+    try testing.expect(sec016OnTagPush("docker/setup-buildx-action@v3", "version", "latest"));
+    try testing.expect(!sec016OnTagPush("docker/setup-buildx-action@v3", "cache-binary", "false"));
 }
 
 test "SEC016: opt-in setup action with cache disabled (no false positive)" {

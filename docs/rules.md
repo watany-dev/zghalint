@@ -103,10 +103,10 @@ SEC002 は `run:` / コードとして実行される action 入力（`actions/g
 `release` / `publish` / `prod` を含むジョブだけを見る。`on: push` がブランチ
 だけで絞られている通常の CI は対象外。
 
-キャッシュしているステップの判定は `actions/cache` の明示利用に加えて、
-キャッシュ入力を持つ setup 系 action を見る。入力を書かなくても既定で
-キャッシュする `astral-sh/setup-uv` (`enable-cache`) と `mlugg/setup-zig`
-(`use-cache`) は、入力の省略そのものを指摘する。入力が書かれている場合は
+キャッシュしているステップの判定は `actions/cache` の明示利用に加えて、キャッシュ入力を持つ setup 系 action を見る。入力を書かなくても既定で
+キャッシュする `astral-sh/setup-uv` (`enable-cache`)、`mlugg/setup-zig`
+(`use-cache`)、`docker/setup-buildx-action` (`cache-binary`、buildx バイナリ
+そのものを復元する) は、入力の省略そのものを指摘する。入力が書かれている場合は
 値を opt-out として読み、`false` のときだけ沈黙する。
 `actions/setup-node` は `cache:` を指定したとき、または action が
 `package-manager-cache` を宣言していて `package.json` の
