@@ -106,6 +106,17 @@ fn checkMissingRequiredSections(wf: *const Workflow, list: *DiagnosticList) void
     }
 }
 
+pub fn checkStepHasRunOrUses(step: *const Step, list: *DiagnosticList) void {
+    if (!step.missing_run_and_uses) return;
+    list.append(.{
+        .rule_id = "SYN028",
+        .severity = .@"error",
+        .message = "step must run a script with \"run\" or an action with \"uses\"",
+        .span = step.span,
+        .fix_hint = "add a \"run\" or \"uses\" key to the step, or remove the step",
+    }) catch return;
+}
+
 fn checkDuplicateKeys(wf: *const Workflow, list: *DiagnosticList) void {
     const root = wf.yaml_root orelse return;
     walkDuplicateKeys(root, "workflow", null, workflowJobsEntries(root), list);
@@ -1646,6 +1657,14 @@ pub const rules = [_]Rule{
         .check_workflow = &checkConcurrencyConfiguration,
     },
     .{
+        .id = "SYN028",
+        .name = "step-without-run-or-uses",
+        .description = "a step has neither \"run\" nor \"uses\"",
+        .severity = .@"error",
+        .category = .syntax,
+        .check_step = &checkStepHasRunOrUses,
+    },
+    .{
         .id = "SYN027",
         .name = "missing-required-section",
         .description = "the workflow has no \"on\" or no \"jobs\" section",
@@ -1659,6 +1678,28 @@ const testing = std.testing;
 const test_support = @import("../test_support.zig");
 const yaml_parser = @import("../yaml/parser.zig");
 const EventConfig = workflow_types.EventConfig;
+
+test "SYN028: a step with neither run nor uses is reported at the step (#611)" {
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    try test_support.lintSource(
+        \\on: push
+        \\jobs:
+        \\  build:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: nothing here
+        \\        shell: bash
+        \\      - run: echo hi
+        \\      - uses: actions/checkout@v4
+        \\      - run:
+        \\      - wait-all: true
+        \\
+    , .{ .step = &checkStepHasRunOrUses }, &list);
+    try testing.expectEqual(@as(usize, 1), list.len());
+    try testing.expectEqual(@as(u32, 6), list.get(0).span.start_line);
+    try testing.expectEqual(@as(u32, 9), list.get(0).span.start_col);
+}
 
 test "SYN027: a missing on or jobs is reported at 1:1 (#609)" {
     var list = DiagnosticList.init(testing.allocator);

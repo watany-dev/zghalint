@@ -755,6 +755,9 @@ pub const Step = struct {
     env_key_col: ?u32 = null,
     background: bool = false,
     control: ?StepControl = null,
+    /// No `run:` key, no `uses:` key and no control key: GitHub rejects the
+    /// step (SYN028, #611). A key with an empty value is SYN003's instead.
+    missing_run_and_uses: bool = false,
 
     pub fn kind(self: *const Step) StepKind {
         if (self.control) |c| return switch (c) {

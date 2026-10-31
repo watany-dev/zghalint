@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **112 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **113 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -818,6 +818,7 @@ Validate the structural correctness of the workflow definition itself.
 | SYN025 | invalid-concurrency-configuration | error | `concurrency.queue` が `single` / `max` でない、または `queue: max` と `cancel-in-progress: true` が同時に指定されている |
 | SYN026 | unsupported-yaml-merge | error | GitHub Actions が受理しない YAML merge key `<<` が使われている |
 | SYN027 | missing-required-section | error | トップレベルの `on` または `jobs` が無い。`1:1` に報告し、空のトリガー / 空のジョブ列として残りの検査を続ける |
+| SYN028 | step-without-run-or-uses | error | ステップに `run` も `uses` も無い（`wait` / `cancel` / `parallel` などの制御ステップを除く）。composite action の `runs.steps` も対象。`run:` だけで値が無い場合は SYN003 の担当 |
 
 ### SYN001 unknown-key
 

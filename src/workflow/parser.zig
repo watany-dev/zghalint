@@ -1501,6 +1501,7 @@ fn parseStep(ctx: *ParseContext, node: Node) ParseError!types.Step {
         step.first_key_col = m.entries[0].key.span.start_col;
     }
     step.empty_sections = try empty.toOwnedSlice(ctx.allocator);
+    step.missing_run_and_uses = step.control == null and m.get("run") == null and m.get("uses") == null;
 
     if (ctx.unknown_collector) |c| try c.checkMapping(m, "step", schema.stepExpectedKeys(m), &.{});
 

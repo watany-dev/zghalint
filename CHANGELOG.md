@@ -19,6 +19,8 @@ each ID means.
   top-level `on` or `jobs` at `1:1`, and keep linting the rest of the file.
   Before, the file stopped at "workflow parse error" and nothing else in it
   was reported (#609).
+- SYN028 (`step-without-run-or-uses`, error): report a step with neither
+  `run` nor `uses`, in workflows and composite actions (#611).
 
 ### Changed
 

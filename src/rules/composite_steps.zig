@@ -20,6 +20,7 @@ const fix_builder = @import("../fix/builder.zig");
 const engine = @import("engine.zig");
 const best_practices = @import("best_practices.zig");
 const security = @import("security.zig");
+const syntax = @import("syntax.zig");
 const uses_rules = @import("uses.zig");
 const local_action = @import("local_action.zig");
 const popular_actions = @import("popular_actions.zig");
@@ -102,6 +103,7 @@ const composite_step_checks = [_]StepCheck{
     // loop below with the step list in hand.
     stepCheck(&popular_actions.rules, "DEP005"),
     stepCheck(&popular_actions.rules, "DEP006"),
+    stepCheck(&syntax.rules, "SYN028"),
 };
 
 comptime {
