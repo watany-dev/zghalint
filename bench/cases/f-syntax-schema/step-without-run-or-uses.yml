@@ -1,0 +1,17 @@
+# bench:expect missing-run-or-uses@16 zghalint=SYN028 zizmor=- actionlint=syntax-check
+# bench:skip zizmor run も uses も無いステップはスキーマ違反で、zizmor 1.31.1 は解析で落ちる
+name: step without run or uses
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Greet
+        run: echo hi
+      - name: nothing here
+        shell: bash

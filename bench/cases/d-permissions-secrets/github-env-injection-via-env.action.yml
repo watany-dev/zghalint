@@ -1,0 +1,11 @@
+# bench:expect github-env-injection@11 zghalint=SEC008 zizmor=github-env actionlint=-
+name: github env injection through an env binding
+description: composite version
+runs:
+  using: composite
+  steps:
+    - name: Persist the title into the environment
+      shell: bash
+      env:
+        TITLE: ${{ github.event.pull_request.title }}
+      run: echo "TITLE=$TITLE" >> "$GITHUB_ENV"

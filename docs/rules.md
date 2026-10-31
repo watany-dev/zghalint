@@ -1,6 +1,6 @@
 # Rules Reference
 
-zghalint includes **111 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
+zghalint includes **113 rules** across 11 categories to help you write secure, efficient, and maintainable GitHub Actions workflows.
 
 ## Severity Levels
 
@@ -37,14 +37,14 @@ Detect security vulnerabilities in workflow definitions.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA |
+| SEC001 | unpinned-action | warning | Action references should be pinned to a full SHA。reusable workflow を呼ぶジョブの `uses:` も対象（こちらは autofix なし） |
 | SEC002 | script-injection | error | Untrusted GitHub context used in `run:` block, a code-executing action input (`actions/github-script` `script:`, `azure/cli` `inlineScript:`, and similar), or a local composite action's interpolated `with:` input risks script injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数 / `process.env` として読む） |
 | SEC003 | hardcoded-secret | error | Hardcoded secrets should use GitHub Secrets |
 | SEC004 | excessive-permissions | warning | Avoid write-all permissions, specify only needed scopes |
 | SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout or a git/gh fetch of PR head is dangerous |
 | SEC006 | untrusted-input-condition | warning | Attacker-authored text used as a gate in an `if:` condition expression |
 | SEC007 | missing-permissions | info | Workflow should define top-level permissions |
-| SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数として読む） |
+| SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection。`env:` に束縛した汚染値をシェル変数として書く形も対象。autofix なし（`env:` への束縛は SEC002 の修正にはなるが、改行入りの値が書かれる点は変わらない） |
 | SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out or git/gh-fetches a ref, or downloads an artifact from the triggering workflow, which may allow arbitrary code execution from forks |
 | SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit`（ローカル呼び先が `workflow_call.secrets` を宣言しているときは `--fix-unsafe` で明示マップへ展開） |
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |
@@ -103,10 +103,13 @@ SEC002 は `run:` / コードとして実行される action 入力（`actions/g
 `release` / `publish` / `prod` を含むジョブだけを見る。`on: push` がブランチ
 だけで絞られている通常の CI は対象外。
 
-キャッシュしているステップの判定は `actions/cache` の明示利用に加えて、
-キャッシュ入力を持つ setup 系 action を見る。入力を書かなくても既定で
-キャッシュする `astral-sh/setup-uv` (`enable-cache`) と `mlugg/setup-zig`
-(`use-cache`) は、入力の省略そのものを指摘する。入力が書かれている場合は
+キャッシュしているステップの判定は `actions/cache` / `actions/cache/restore`
+の明示利用に加えて、キャッシュ入力を持つ setup 系 action を見る。
+`lookup-only: true` の `actions/cache` は存在確認だけで中身を復元しないので
+沈黙する（式で与えた場合は復元しうるので指摘する）。入力を書かなくても既定で
+キャッシュする `astral-sh/setup-uv` (`enable-cache`)、`mlugg/setup-zig`
+(`use-cache`)、`docker/setup-buildx-action` (`cache-binary`、buildx バイナリ
+そのものを復元する) は、入力の省略そのものを指摘する。入力が書かれている場合は
 値を opt-out として読み、`false` のときだけ沈黙する。
 `actions/setup-node` は `cache:` を指定したとき、または action が
 `package-manager-cache` を宣言していて `package.json` の
@@ -510,7 +513,7 @@ Enforce workflow best practices for maintainability and reliability.
 | BP003 | deprecated-action-version | info / warning / error | Using a known deprecated action version (warning), an action declaring a retired `runs.using` runtime (`node12` / `node16` / `node20`, error), a runtime whose removal is announced but not yet in effect (warning), or a major older than the newest one the metadata table knows (info) |
 | BP004 | cross-platform-shell | warning / error | Invalid or OS-unavailable `shell` name (error), or a run step without `shell` in a Windows-targeting job (warning) |
 | BP005 | push-without-concurrency | info | Push trigger without concurrency setting |
-| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh` and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
+| BP007 | obfuscation | warning | Obfuscated or indirect command execution patterns detected in `run:` block. Covers `curl \| sh`, `curl \| python` / `perl` / `ruby` / `node` when the interpreter reads its program from stdin (not `-c` / `-m` / `-e` or a script file), and the process-substitution form `bash <(curl ...)`. `$NAME = ...` at the start of a line is assignment (PowerShell), not a command |
 | BP008 | deprecated-workflow-command | error | Deprecated workflow command (`::set-output`, `::save-state`, `::set-env`, `::add-path`) used in `run:` (`--fix` で `$GITHUB_*` への追記に書き換え) |
 | BP009 | prefer-self-repository | info | Job-level `uses: ./…` that names a workflow file in this repository can use `$/` instead. No autofix |
 
@@ -583,8 +586,9 @@ write scope (`contents: read`, `read-all`, `{}`). The token is already
 minimized for every job. `write-all` or any `: write` at workflow level still
 warns, because those jobs should narrow the grant (#334).
 
-`permissions.vulnerability-alerts` accepts `read` / `none` only. `write` is
-PERM003, not a broad-write finding.
+Some scopes accept fewer levels, and the other one is PERM003 rather than a
+broad-write finding: `id-token` takes `write` / `none` (`read` is invalid),
+`models` and `vulnerability-alerts` take `read` / `none` (`write` is invalid).
 
 ## Expression Validation Rules (EXPR)
 
@@ -813,6 +817,8 @@ Validate the structural correctness of the workflow definition itself.
 | SYN024 | undefined-step-control-ref | error | `wait` / `cancel` がこのジョブに無い step id を指している（`--fix` で綴りを修正） |
 | SYN025 | invalid-concurrency-configuration | error | `concurrency.queue` が `single` / `max` でない、または `queue: max` と `cancel-in-progress: true` が同時に指定されている |
 | SYN026 | unsupported-yaml-merge | error | GitHub Actions が受理しない YAML merge key `<<` が使われている |
+| SYN027 | missing-required-section | error | トップレベルの `on` または `jobs` が無い。`1:1` に報告し、空のトリガー / 空のジョブ列として残りの検査を続ける |
+| SYN028 | step-without-run-or-uses | error | ステップに `run` も `uses` も無い（`wait` / `cancel` / `parallel` などの制御ステップを除く）。composite action の `runs.steps` も対象。`run:` だけで値が無い場合は SYN003 の担当 |
 
 ### SYN001 unknown-key
 
@@ -1454,7 +1460,7 @@ callers, and the calls made against it.
 
 | ID | Name | Severity | Description |
 |----|------|----------|-------------|
-| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted (`--fix-unsafe` で `default:` から `type:` を推論して挿入) |
+| RW001 | workflow-call-inputs | error | `workflow_call` input is missing `type`, declares a type outside `string`/`number`/`boolean`, has a `default` that does not match its type, or is both `required` and defaulted; or a `workflow_call` output has no `value` (`--fix-unsafe` で `default:` から `type:` を推論して挿入) |
 | RW002 | workflow-call-required-inputs | error | A job calling a local reusable workflow does not pass one of its `required` inputs |
 | RW003 | workflow-call-input-values | error | A job calling a local reusable workflow passes an input it does not declare, or a value that does not match the declared type |
 | RW004 | workflow-call-secrets | error | A job calling a local reusable workflow omits one of its `required` secrets, or passes a secret it does not declare |
@@ -1489,6 +1495,10 @@ on a required input is never applied — so declaring both is always a mistake i
 one direction or the other. Fix by giving every input an explicit `type` of
 `string`, `number` or `boolean`, matching the `default` to it, and dropping
 either `required: true` or `default`.
+
+An entry under `workflow_call.outputs` must carry a `value:` as well. Without
+one (absent, empty or blank) the output is always empty for the caller, and
+GitHub rejects the workflow. RW001 reports it at the output's name (#612).
 
 ### RW002 workflow-call-required-inputs
 

@@ -1,0 +1,12 @@
+# bench:forbid unpinned-action
+name: reusable pinned to a commit
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions: {}
+jobs:
+  call:
+    uses: example-org/shared-workflows/.github/workflows/build.yml@a5ac7e51b41094c92402da3b24376905380afc29 # v1.2.0
+    permissions:
+      contents: read

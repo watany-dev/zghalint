@@ -331,6 +331,14 @@ const cache_setup_actions = [_]CacheSetupAction{
         .on_by_default = true,
         .disable_hint = "mlugg/setup-zig caches by default; set 'use-cache: false' in this release/deploy job, or build from a dedicated cache scope",
     },
+    // The cached object is the buildx binary itself, so a poisoned entry runs
+    // in the release job (#604).
+    .{
+        .name = "docker/setup-buildx-action",
+        .cache_input = "cache-binary",
+        .on_by_default = true,
+        .disable_hint = "docker/setup-buildx-action restores the buildx binary from the cache by default; set 'cache-binary: false' in this release/deploy job",
+    },
 };
 
 const deploy_keywords = [_][]const u8{
@@ -340,15 +348,37 @@ const deploy_keywords = [_][]const u8{
     "prod",
 };
 
+fn needsShaPin(ref: ActionRef) bool {
+    return !ref.is_local and !ref.is_docker and !ref.is_pinned;
+}
+
+const unpinned_fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch";
+
+/// SEC001 for a job that calls a reusable workflow. The callee runs with the
+/// caller's permissions and, under `secrets: inherit`, its secrets, so a moving
+/// ref matters at least as much as it does for a step (#603). No fix: the tag
+/// store and the rewrite are built around a step's `uses:`.
+fn checkUnpinnedReusableWorkflow(job: *const Job, list: *DiagnosticList) void {
+    const raw = job.uses orelse return;
+    if (!needsShaPin(ActionRef.parse(raw))) return;
+    list.append(.{
+        .rule_id = "SEC001",
+        .severity = .warning,
+        .message = "reusable workflow reference is not pinned to a SHA",
+        .span = job.uses_value_span orelse job.span,
+        .fix_hint = unpinned_fix_hint,
+    }) catch return;
+}
+
 fn checkUnpinnedAction(step: *const Step, list: *DiagnosticList) void {
     if (step.uses) |action_ref| {
-        if (!action_ref.is_local and !action_ref.is_docker and !action_ref.is_pinned) {
+        if (needsShaPin(action_ref)) {
             list.append(.{
                 .rule_id = "SEC001",
                 .severity = .warning,
                 .message = "action reference is not pinned to a SHA",
                 .span = spans.usesSpan(step),
-                .fix_hint = "pin to a full 40-character commit SHA instead of a tag or branch",
+                .fix_hint = unpinned_fix_hint,
                 // Safe: the rewrite pins to the very commit the tag resolved to
                 // when we asked, so the workflow keeps running the same code.
                 // `buildPinFix` returns null for every case where that does not
@@ -506,11 +536,18 @@ fn walkTaintGroup(
 /// works — as long as the step reads it back as `$KEY`. Written as
 /// `${{ env.KEY }}` the value is spliced into the script before the shell ever
 /// runs, which is the injection the fix was meant to remove.
+///
+/// A key the inner scope redefines with a trusted value shadows the outer
+/// binding, so it leaves the set.
 fn addTaintedEnvKeys(out: *TaintedNames, env: ?workflow_types.StringMap, table: ContextTable) void {
     const map = env orelse return;
     var it = map.iterator();
     while (it.next()) |entry| {
-        if (hasUntrustedExpr(entry.value_ptr.*, table)) out.append(entry.key_ptr.*);
+        if (hasUntrustedExpr(entry.value_ptr.*, table)) {
+            out.append(entry.key_ptr.*);
+        } else {
+            out.remove(entry.key_ptr.*);
+        }
     }
 }
 
@@ -593,6 +630,15 @@ const TaintedNames = struct {
         if (self.contains(name)) return;
         self.buf[self.len] = name;
         self.len += 1;
+    }
+
+    fn remove(self: *TaintedNames, name: []const u8) void {
+        for (self.buf[0..self.len], 0..) |existing, i| {
+            if (!std.ascii.eqlIgnoreCase(existing, name)) continue;
+            std.mem.copyForwards([]const u8, self.buf[i .. self.len - 1], self.buf[i + 1 .. self.len]);
+            self.len -= 1;
+            return;
+        }
     }
 
     fn contains(self: *const TaintedNames, name: []const u8) bool {
@@ -1351,43 +1397,71 @@ fn indexOfWriteToVar(s: []const u8, targets: []const []const u8) ?usize {
 /// untrusted depends on the triggers, so a `client_payload` written to
 /// `$GITHUB_ENV` is reported exactly where `repository_dispatch` fills it
 /// (#312).
+///
+/// The `env:` scopes are threaded through as well. Binding the value to `env:`
+/// is the fix for SEC002, but the shell still writes it to the file, newlines
+/// and all, so `echo "X=$TITLE" >> "$GITHUB_ENV"` is the same injection (#602).
 fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     const contexts = runTaintContexts(wf);
-    const table: ContextTable = .{ .prefix = contexts.slice() };
+    const base: ContextTable = .{ .prefix = contexts.slice() };
+    var workflow_env: TaintedNames = .{ .buf = undefined };
+    addTaintedEnvKeys(&workflow_env, wf.env, base);
     for (wf.jobs) |*job| {
+        var job_env = workflow_env.derive();
+        addTaintedEnvKeys(&job_env, job.env, withTaintedEnv(base, &workflow_env));
         const Ctx = struct {
-            wf: *const Workflow,
-            job: *const Job,
-            table: ContextTable,
+            base: ContextTable,
+            job_env: *const TaintedNames,
             list: *DiagnosticList,
             pub fn visit(self: @This(), step: *const Step) void {
-                checkGithubEnvInjection(step, self.table, self.list, env_binding.resolveShell(step, self.job, self.wf));
+                const run_body = step.run orelse return;
+                if (indexOfGithubEnvWrite(run_body) == null) return;
+                var step_env = self.job_env.derive();
+                addTaintedEnvKeys(&step_env, step.env, withTaintedEnv(self.base, self.job_env));
+                checkGithubEnvInjection(step, withTaintedEnv(self.base, &step_env), self.list);
             }
         };
-        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .table = table, .list = list });
+        workflow_types.walkSteps(job.steps, Ctx{ .base = base, .job_env = &job_env, .list = list });
     }
+}
+
+fn withTaintedEnv(table: ContextTable, names: *const TaintedNames) ContextTable {
+    var out = table;
+    out.tainted_env = names.slice();
+    return out;
 }
 
 /// SEC008 for the steps of a composite action, which declare no triggers: the
 /// fixed table only.
 pub fn checkStandaloneGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
-    checkGithubEnvInjection(step, .{ .prefix = &run_dangerous_contexts }, list, env_binding.resolveShell(step, null, null));
+    const base: ContextTable = .{ .prefix = &run_dangerous_contexts };
+    var step_env: TaintedNames = .{ .buf = undefined };
+    addTaintedEnvKeys(&step_env, step.env, base);
+    checkGithubEnvInjection(step, withTaintedEnv(base, &step_env), list);
 }
 
-fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList, shell: ?env_binding.Shell) void {
+/// No fix. The env binding that clears SEC002 leaves this write as it was —
+/// it only moves the interpolation into the shell, which writes the same
+/// newline-carrying value — so offering it here made the diagnostic vanish
+/// with the hole intact (#602).
+fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
     const run_body = step.run orelse return;
     const write_offset = indexOfGithubEnvWrite(run_body) orelse return;
-    if (!hasUntrustedExpr(run_body, table)) return;
+    if (!hasUntrustedExpr(run_body, table) and !readsAnyShellVar(run_body, table.tainted_env)) return;
     list.append(.{
         .rule_id = "SEC008",
         .severity = .@"error",
         .message = "untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment variable injection",
         .span = spans.runAnchor(step).at(run_body, write_offset, 2),
-        .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
-        // Binding the untrusted value to `env:` removes the interpolation the
-        // write is built from; the write itself stays as the author wrote it.
-        .fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table, list.fixAllocator())),
+        .fix_hint = "validate the value or strip newlines from it before writing; binding it to env: alone does not prevent the injection",
     }) catch return;
+}
+
+fn readsAnyShellVar(run: []const u8, names: []const []const u8) bool {
+    for (names) |name| {
+        if (referencesShellVar(run, name)) return true;
+    }
+    return false;
 }
 
 /// Contexts an attacker fills in, per trigger that fills them: the dispatch
@@ -2438,16 +2512,27 @@ fn containsAnyKeyword(s: []const u8) bool {
     return false;
 }
 
+/// `actions/cache/restore` is the restoring half on its own. `save` only
+/// writes, so it cannot bring a poisoned entry into this job.
 fn isCacheAction(step: *const Step) bool {
     const action_ref = step.uses orelse return false;
     const base = util.actionBaseName(action_ref.raw);
-    return std.mem.eql(u8, base, "actions/cache");
+    return std.mem.eql(u8, base, "actions/cache") or std.mem.eql(u8, base, "actions/cache/restore");
+}
+
+/// `lookup-only: true` checks that the key exists without restoring it, so no
+/// entry reaches the job (#605). An expression is decided at run time and
+/// may restore.
+fn isLookupOnly(step: *const Step) bool {
+    const with_map = step.with orelse return false;
+    const raw = with_map.get("lookup-only") orelse return false;
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, raw, " \t\n\r"), "true");
 }
 
 const generic_cache_hint = "avoid using actions/cache or setup action caching in release/deploy workflows; build from scratch or use a dedicated cache scope";
 
 fn cachePoisoningHint(step: *const Step) ?[]const u8 {
-    if (isCacheAction(step)) return generic_cache_hint;
+    if (isCacheAction(step)) return if (isLookupOnly(step)) null else generic_cache_hint;
     const action_ref = step.uses orelse return null;
     const base = util.actionBaseName(action_ref.raw);
     if (std.mem.eql(u8, base, "actions/setup-node")) {
@@ -3388,10 +3473,67 @@ fn containsCurlWgetPipeShell(s: []const u8) bool {
             continue;
         }
         const pipe = std.mem.findScalarPos(u8, s, i, '|') orelse return false;
-        if (startsAnyWordAt(s, skipBlanks(s, pipe + 1), &shell_targets)) return true;
+        const target = skipBlanks(s, pipe + 1);
+        if (startsAnyWordAt(s, target, &shell_targets)) return true;
+        if (interpreterReadsStdin(s, target)) return true;
         i = pipe + 1;
     }
     return false;
+}
+
+/// Interpreters that run a script fed on stdin when given none of their own
+/// (#606). `python` may carry a version suffix (`python3`, `python3.12`).
+///
+/// `inline` are the short flags that hand over the program on the command
+/// line (`python -c` / `-m`, `perl -e` / `-E`, `ruby -e`, `node -e` / `-p`):
+/// with one of them stdin is data, as in `| python -m json.tool`. `takes_value`
+/// are short flags whose value may follow as its own word (`-X utf8`).
+const StdinInterpreter = struct { name: []const u8, inline_flags: []const u8, takes_value: []const u8 };
+
+const stdin_interpreters = [_]StdinInterpreter{
+    .{ .name = "python", .inline_flags = "cm", .takes_value = "WX" },
+    .{ .name = "perl", .inline_flags = "eE", .takes_value = "IMm" },
+    .{ .name = "ruby", .inline_flags = "e", .takes_value = "Ir" },
+    .{ .name = "node", .inline_flags = "ep", .takes_value = "r" },
+};
+
+fn stdinInterpreterAt(s: []const u8, i: usize, len: *usize) ?StdinInterpreter {
+    for (stdin_interpreters) |interp| {
+        if (!std.mem.startsWith(u8, s[i..], interp.name)) continue;
+        var end = i + interp.name.len;
+        if (std.mem.eql(u8, interp.name, "python")) {
+            while (end < s.len and (std.ascii.isDigit(s[end]) or s[end] == '.')) end += 1;
+        }
+        // `ruby-lint` / `perl-tidy` are other commands.
+        if (end < s.len and (isIdentChar(s[end]) or s[end] == '-')) return null;
+        len.* = end - i;
+        return interp;
+    }
+    return null;
+}
+
+/// Whether the command at `i` is an interpreter whose arguments leave it
+/// reading its program from stdin: flags that supply no program, then
+/// optionally `-`, after which the words are arguments to that program. Any
+/// other word first is a script file.
+fn interpreterReadsStdin(s: []const u8, i: usize) bool {
+    var name_len: usize = 0;
+    const interp = stdinInterpreterAt(s, i, &name_len) orelse return false;
+    const end = std.mem.findAnyPos(u8, s, i, "\n;&|)") orelse s.len;
+    var args = std.mem.tokenizeAny(u8, s[i + name_len .. end], " \t");
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "-")) return true;
+        if (arg[0] != '-') return false;
+        if (std.mem.startsWith(u8, arg, "--")) {
+            if (std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "--print")) return false;
+            continue;
+        }
+        const cluster = arg[1..];
+        if (std.mem.findAny(u8, cluster, interp.inline_flags) != null) return false;
+        // `-X utf8`: the value is the next word, not a script file.
+        if (cluster.len == 1 and std.mem.findScalar(u8, interp.takes_value, cluster[0]) != null) _ = args.next();
+    }
+    return true;
 }
 
 fn isAllUppercase(s: []const u8) bool {
@@ -3461,6 +3603,7 @@ pub const security_rules = [_]Rule{
         .severity = .warning,
         .category = .security,
         .check_step = &checkUnpinnedAction,
+        .check_job = &checkUnpinnedReusableWorkflow,
     },
     .{
         .id = "SEC002",
@@ -3834,6 +3977,23 @@ test "SEC001: docker action (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC001"));
 }
 
+fn sec001JobFires(uses: []const u8) bool {
+    var list = runJob(.{ .id = "call", .uses = uses, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC001");
+}
+
+test "SEC001: a reusable workflow called at a branch or tag (#603)" {
+    try testing.expect(sec001JobFires("example-org/shared/.github/workflows/build.yml@main"));
+    try testing.expect(sec001JobFires("example-org/shared/.github/workflows/build.yml@v1"));
+}
+
+test "SEC001: a reusable workflow pinned to a SHA, or local, stays quiet (#603)" {
+    try testing.expect(!sec001JobFires("example-org/shared/.github/workflows/build.yml@a5ac7e51b41094c92402da3b24376905380afc29"));
+    try testing.expect(!sec001JobFires("./.github/workflows/build.yml"));
+    try testing.expect(!sec001JobFires("$/.github/workflows/build.yml"));
+}
+
 fn sec002Fires(body: []const u8, env: ?workflow_types.StringMap) bool {
     var list = runStep(.{ .run = body, .env = env });
     defer list.deinit();
@@ -4122,6 +4282,20 @@ test "SEC002: env.<KEY> bound to a trusted value stays quiet (#314)" {
     env.put(testing.allocator, "SHA", "${{ github.sha }}") catch unreachable;
     const steps = [_]Step{.{ .env = env, .run = "echo \"${{ env.SHA }}\"" }};
     var list = runJob(.{ .id = "build", .steps = &steps, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC002"));
+}
+
+test "SEC002: a job env: redefining a workflow-level tainted key with a trusted value shadows it" {
+    var wf_env: workflow_types.StringMap = .empty;
+    defer wf_env.deinit(testing.allocator);
+    wf_env.put(testing.allocator, "BODY", "${{ github.event.issue.title }}") catch unreachable;
+    var job_env: workflow_types.StringMap = .empty;
+    defer job_env.deinit(testing.allocator);
+    job_env.put(testing.allocator, "BODY", "fixed") catch unreachable;
+    const steps = [_]Step{.{ .run = "echo \"${{ env.BODY }}\"" }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .env = job_env, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = wf_env, .permissions = Permissions{} });
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC002"));
 }
@@ -6127,6 +6301,59 @@ test "SEC008: no run block (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
+const EnvScope = enum { step, job, workflow };
+
+fn sec008ViaEnv(scope: EnvScope, key: []const u8, value: []const u8, body: []const u8) bool {
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, key, value) catch unreachable;
+    const steps = [_]Step{.{ .env = if (scope == .step) env else null, .run = body }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .env = if (scope == .job) env else null, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = if (scope == .workflow) env else null, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC008");
+}
+
+test "SEC008: an env: entry bound to an untrusted value and written to GITHUB_ENV (#602)" {
+    const title = "${{ github.event.pull_request.title }}";
+    try testing.expect(sec008ViaEnv(.step, "TITLE", title, "echo \"TITLE=$TITLE\" >> \"$GITHUB_ENV\""));
+    try testing.expect(sec008ViaEnv(.job, "TITLE", title, "echo \"TITLE=${TITLE}\" >> $GITHUB_ENV"));
+    try testing.expect(sec008ViaEnv(.workflow, "TITLE", title, "echo \"$TITLE\" >> $GITHUB_PATH"));
+    // `${{ env.TITLE }}` splices the same value into the script.
+    try testing.expect(sec008ViaEnv(.step, "TITLE", title, "echo \"TITLE=${{ env.TITLE }}\" >> $GITHUB_ENV"));
+}
+
+test "SEC008: an env: entry that is trusted or unread stays quiet (#602)" {
+    try testing.expect(!sec008ViaEnv(.step, "SHA", "${{ github.sha }}", "echo \"SHA=$SHA\" >> $GITHUB_ENV"));
+    try testing.expect(!sec008ViaEnv(.step, "TITLE", "${{ github.event.pull_request.title }}", "echo \"X=1\" >> $GITHUB_ENV"));
+    // `$TITLE_LEN` is a different variable.
+    try testing.expect(!sec008ViaEnv(.step, "TITLE", "${{ github.event.pull_request.title }}", "echo \"X=$TITLE_LEN\" >> $GITHUB_ENV"));
+}
+
+test "SEC008: a step env: redefining an outer tainted key with a trusted value shadows it" {
+    var wf_env: workflow_types.StringMap = .empty;
+    defer wf_env.deinit(testing.allocator);
+    wf_env.put(testing.allocator, "TITLE", "${{ github.event.issue.title }}") catch unreachable;
+    var step_env: workflow_types.StringMap = .empty;
+    defer step_env.deinit(testing.allocator);
+    step_env.put(testing.allocator, "TITLE", "fixed") catch unreachable;
+    const steps = [_]Step{.{ .env = step_env, .run = "echo \"TITLE=$TITLE\" >> $GITHUB_ENV" }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = wf_env, .permissions = Permissions{} });
+    defer list.deinit();
+    try testing.expect(!hasDiagnostic(&list, "SEC008"));
+}
+
+test "SEC008: the env: path is reported for composite steps too (#602)" {
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "TITLE", "${{ github.event.pull_request.title }}") catch unreachable;
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStandaloneGithubEnvInjection(&.{ .env = env, .run = "echo \"TITLE=$TITLE\" >> \"$GITHUB_ENV\"" }, &list);
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
 test "SEC008: safe context to GITHUB_ENV (no false positive)" {
     var list = runStep(.{ .run = "echo \"SHA=${{ github.sha }}\" >> $GITHUB_ENV" });
     defer list.deinit();
@@ -6737,6 +6964,31 @@ test "SEC016: setup-zig with use-cache false (no false positive)" {
     var list = runWorkflow(wf);
     defer list.deinit();
     try testing.expect(!hasDiagnostic(&list, "SEC016"));
+}
+
+fn sec016OnTagPush(uses: []const u8, key: ?[]const u8, value: []const u8) bool {
+    var with: workflow_types.StringMap = .empty;
+    defer with.deinit(testing.allocator);
+    if (key) |k| with.put(testing.allocator, k, value) catch unreachable;
+    const steps = [_]Step{.{ .uses = ActionRef.parse(uses), .with = if (key != null) with else null }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .permissions = Permissions{} }};
+    var list = runWorkflow(.{ .name = "Release", .on = tag_push_trigger, .jobs = &jobs, .permissions = Permissions{} });
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC016");
+}
+
+test "SEC016: setup-buildx restores its binary from the cache by default (#604)" {
+    try testing.expect(sec016OnTagPush("docker/setup-buildx-action@v3", null, ""));
+    try testing.expect(sec016OnTagPush("docker/setup-buildx-action@v3", "version", "latest"));
+    try testing.expect(!sec016OnTagPush("docker/setup-buildx-action@v3", "cache-binary", "false"));
+}
+
+test "SEC016: actions/cache with lookup-only: true restores nothing (#605)" {
+    try testing.expect(!sec016OnTagPush("actions/cache@v4", "lookup-only", "true"));
+    try testing.expect(!sec016OnTagPush("actions/cache/restore@v4", "lookup-only", "True"));
+    try testing.expect(sec016OnTagPush("actions/cache@v4", "lookup-only", "false"));
+    // Decided at run time, so it may restore.
+    try testing.expect(sec016OnTagPush("actions/cache@v4", "lookup-only", "${{ inputs.dry }}"));
 }
 
 test "SEC016: opt-in setup action with cache disabled (no false positive)" {
@@ -8685,6 +8937,36 @@ test "BP007: curl piped to bash" {
     try testing.expect(hasDiagnostic(&list, "BP007"));
 }
 
+fn bp007Fires(body: []const u8) bool {
+    var list = runStep(.{ .run = body });
+    defer list.deinit();
+    return hasDiagnostic(&list, "BP007");
+}
+
+test "BP007: a download piped to an interpreter reading stdin (#606)" {
+    try testing.expect(bp007Fires("curl https://example.com/install.py | python"));
+    try testing.expect(bp007Fires("curl -sSL https://example.com/i.py | python3 -"));
+    try testing.expect(bp007Fires("curl -sSL https://example.com/i.py | python3.12 -u -"));
+    try testing.expect(bp007Fires("wget -qO- https://example.com/i.pl | perl"));
+    try testing.expect(bp007Fires("curl -fsSL https://example.com/i.rb | ruby; echo done"));
+    try testing.expect(bp007Fires("curl -fsSL https://example.com/i.js | node"));
+    // Words after `-` are arguments to the downloaded program.
+    try testing.expect(bp007Fires("curl -sSL https://install.example.org | python3 - --version 1.8.0"));
+    // `-E` is an inline-program flag for perl, not for python.
+    try testing.expect(bp007Fires("curl https://example.com/i.py | python -E"));
+    try testing.expect(bp007Fires("curl https://example.com/i.py | python3 -X utf8 -"));
+}
+
+test "BP007: an interpreter given its own script reads the download as data (#606)" {
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | python -m json.tool"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | python3 -c 'import sys, json; print(json.load(sys.stdin))'"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | python3 parse.py"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | perl -ne 'print if /v/'"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | node -e 'process.stdin.pipe(process.stdout)'"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | pythonista"));
+    try testing.expect(!bp007Fires("curl -s https://api.example.com/x | ruby-lint"));
+}
+
 test "BP007: wget piped to sh" {
     var list = runStep(.{ .run = "wget -qO- https://example.com/setup.sh | sh" });
     defer list.deinit();
@@ -9397,6 +9679,26 @@ fn envBindingFix(source: []const u8, check: test_support.Check) !test_support.Fi
     return test_support.lintAndFix(testing.allocator, source, check, true);
 }
 
+test "SEC002: an expression wrapped across lines of a plain scalar gets no binding" {
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: greet
+        \\        run: echo "${{ github.event.issue.title
+        \\          }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
 test "SEC002: the untrusted expressions of a step are bound in one env: block" {
     const source =
         \\name: t
@@ -9710,7 +10012,7 @@ test "SEC002: github-script script: a bare embedding gets no fix" {
     try testing.expectEqualStrings(source, result.content);
 }
 
-test "SEC008: the untrusted value written to GITHUB_ENV is bound to env:" {
+test "SEC008: no fix, and SEC002's env binding leaves SEC008 standing (#602)" {
     const source =
         \\name: t
         \\on: pull_request
@@ -9722,24 +10024,19 @@ test "SEC008: the untrusted value written to GITHUB_ENV is bound to env:" {
         \\        run: echo "TITLE=${{ github.event.pull_request.title }}" >> "$GITHUB_ENV"
         \\
     ;
-    const result = try envBindingFix(source, .{ .workflow = &checkGithubEnvInjectionWorkflow });
-    defer result.deinit(testing.allocator);
+    const own = try envBindingFix(source, .{ .workflow = &checkGithubEnvInjectionWorkflow });
+    defer own.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), own.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), own.fix_count);
 
-    try testing.expectEqual(@as(usize, 1), result.fix_count);
-    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
-    try testing.expectEqualStrings(
-        \\name: t
-        \\on: pull_request
-        \\jobs:
-        \\  a:
-        \\    runs-on: ubuntu-latest
-        \\    steps:
-        \\      - env:
-        \\          PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
-        \\        name: write
-        \\        run: echo "TITLE=$PULL_REQUEST_TITLE" >> "$GITHUB_ENV"
-        \\
-    , result.content);
+    // The same step after `--fix-unsafe` applies SEC002's binding.
+    const bound = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer bound.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), bound.fix_count);
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    try test_support.lintSource(bound.content, .{ .workflow = &checkGithubEnvInjectionWorkflow }, &list);
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC019: a secret used in run: is bound to env:" {

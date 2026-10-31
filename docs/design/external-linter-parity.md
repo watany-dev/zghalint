@@ -743,6 +743,43 @@ PR #426 は G38 / G39 の bench ケースと本節の下書きだったが、コ
 (#424 / #425) の後に main から遅れて conflict したため close し、文書と
 回帰ケースをこちらで入れた。
 
+#### G40 (#602). SEC008 が `env:` 経由の `GITHUB_ENV` 書き込みを見逃す — 対応済み
+
+`bench/cases/d-permissions-secrets/github-env-injection-via-env.yml` と
+`.action.yml`。
+
+```yaml
+- env:
+    TITLE: ${{ github.event.pull_request.title }}
+  run: echo "TITLE=$TITLE" >> "$GITHUB_ENV"
+```
+
+SEC008 は `run:` 本文の `${{ }}` だけを見ていた。`env:` に束縛してシェル変数
+で書く形は、改行入りの値がそのまま環境ファイルに入るので注入は変わらない。
+zizmor は `github-env` を出す。SEC008 の `--fix-unsafe` は直書き形をまさに
+この形へ書き換えていたため、修正後に警告だけが消えていた。step / job /
+workflow の `env:` の汚染キーを `run:` が `$KEY` / `${KEY}` で読めば報告し、
+SEC008 自身の autofix は外した（SEC002 の束縛はそのまま。束縛後も SEC008 が
+残る）。読む位置は書き込み行に限らない。`TOKENLESS="$LABEL"` を経由して
+書く形があり、直書き形の判定もステップ全体で見ているため。
+
+#### G41 (#603). SEC001 が reusable workflow 呼び出しの未ピン ref を見逃す — 対応済み
+
+`bench/cases/c-supply-chain/unpinned-reusable-workflow.yml`。ジョブの
+`uses: owner/repo/.github/workflows/<file>@<ref>` にもステップと同じピン判定を
+掛ける。ローカル (`./` / `$/`) は対象外。SHA ピンの autofix はステップの
+`uses:` 前提のストアと書き換えなので、ジョブ側には付けていない。
+
+#### G42 (#604 / #605). SEC016 が buildx の `cache-binary` を見逃し、`lookup-only` で誤検出する — 対応済み
+
+`bench/cases/h-practices/setup-buildx-default-cache-in-release.yml`、
+`j-clean/setup-buildx-no-cache-binary.yml`、`j-clean/cache-lookup-only-in-release.yml`。
+`docker/setup-buildx-action` は `cache-binary` が既定で `true` で、buildx
+バイナリそのものを Actions キャッシュから復元する。既定でキャッシュする setup
+action の表に足した。逆に `actions/cache` の `lookup-only: true` は中身を
+復元しないので沈黙する（式なら報告）。復元だけを行う `actions/cache/restore`
+はそれまで認識していなかったので、同時に対象にした。
+
 ### 4.2 zghalint が拾えていて外部ツールが拾わないもの
 
 - `PERF001` — `ci.yml` の `actions/setup-python` にキャッシュ設定がない
@@ -1197,3 +1234,6 @@ C 群の FP 起票にはしない。
 - [x] G38 (#424): コンテキストパスの数値ブラケット (`[0]`) を式として受理する
 - [x] G39 (#425): ローカル `uses:` の `@` がパスセグメント先頭のときだけディレクトリ名として扱う
 - [x] B4 (#555): 週次 bench 1 周と doghooding D8。新規 G40 なし（G29 の再確認のみ）
+- [x] G40 (#602): SEC008 が `env:` 経由の書き込みを報告し、env 束縛の autofix を外す
+- [x] G41 (#603): SEC001 をジョブの reusable workflow 呼び出しにも掛ける
+- [x] G42 (#604 / #605): SEC016 に buildx の `cache-binary` を足し、`lookup-only: true` を除外する

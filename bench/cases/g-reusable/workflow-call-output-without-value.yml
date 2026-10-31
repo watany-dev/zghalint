@@ -1,0 +1,21 @@
+# bench:expect missing-output-value@12 zghalint=RW001 zizmor=- actionlint=syntax-check
+# bench:skip zizmor value の無い output はスキーマ違反で、zizmor 1.31.1 は解析で落ちる
+name: reusable without output value
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: the name to greet
+        type: string
+        required: true
+    outputs:
+      result:
+        description: no value
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Greet
+        run: echo hi
