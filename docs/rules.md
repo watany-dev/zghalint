@@ -44,7 +44,7 @@ Detect security vulnerabilities in workflow definitions.
 | SEC005 | dangerous-pr-target | error | `pull_request_target` with checkout or a git/gh fetch of PR head is dangerous |
 | SEC006 | untrusted-input-condition | warning | Attacker-authored text used as a gate in an `if:` condition expression |
 | SEC007 | missing-permissions | info | Workflow should define top-level permissions |
-| SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection（`--fix-unsafe` で式を step の `env:` に束縛してシェル変数として読む） |
+| SEC008 | github-env-injection | error | Untrusted input written to `GITHUB_ENV`/`GITHUB_PATH` risks environment injection。`env:` に束縛した汚染値をシェル変数として書く形も対象。autofix なし（`env:` への束縛は SEC002 の修正にはなるが、改行入りの値が書かれる点は変わらない） |
 | SEC009 | workflow-run-untrusted-checkout | error | `workflow_run` job checks out or git/gh-fetches a ref, or downloads an artifact from the triggering workflow, which may allow arbitrary code execution from forks |
 | SEC010 | secrets-inherit | warning | Reusable workflow calls should specify secrets explicitly instead of using `inherit`（ローカル呼び先が `workflow_call.secrets` を宣言しているときは `--fix-unsafe` で明示マップへ展開） |
 | SEC011 | overprovisioned-secrets | warning | Entire secrets context should not be exposed; reference individual secrets instead |

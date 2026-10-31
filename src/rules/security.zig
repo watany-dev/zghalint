@@ -1351,43 +1351,69 @@ fn indexOfWriteToVar(s: []const u8, targets: []const []const u8) ?usize {
 /// untrusted depends on the triggers, so a `client_payload` written to
 /// `$GITHUB_ENV` is reported exactly where `repository_dispatch` fills it
 /// (#312).
+///
+/// The `env:` scopes are threaded through as well. Binding the value to `env:`
+/// is the fix for SEC002, but the shell still writes it to the file, newlines
+/// and all, so `echo "X=$TITLE" >> "$GITHUB_ENV"` is the same injection (#602).
 fn checkGithubEnvInjectionWorkflow(wf: *const Workflow, list: *DiagnosticList) void {
     const contexts = runTaintContexts(wf);
-    const table: ContextTable = .{ .prefix = contexts.slice() };
+    const base: ContextTable = .{ .prefix = contexts.slice() };
+    var workflow_env: TaintedNames = .{ .buf = undefined };
+    addTaintedEnvKeys(&workflow_env, wf.env, base);
     for (wf.jobs) |*job| {
+        var job_env = workflow_env.derive();
+        addTaintedEnvKeys(&job_env, job.env, withTaintedEnv(base, &workflow_env));
         const Ctx = struct {
-            wf: *const Workflow,
-            job: *const Job,
-            table: ContextTable,
+            base: ContextTable,
+            job_env: *const TaintedNames,
             list: *DiagnosticList,
             pub fn visit(self: @This(), step: *const Step) void {
-                checkGithubEnvInjection(step, self.table, self.list, env_binding.resolveShell(step, self.job, self.wf));
+                var step_env = self.job_env.derive();
+                addTaintedEnvKeys(&step_env, step.env, withTaintedEnv(self.base, self.job_env));
+                checkGithubEnvInjection(step, withTaintedEnv(self.base, &step_env), self.list);
             }
         };
-        workflow_types.walkSteps(job.steps, Ctx{ .wf = wf, .job = job, .table = table, .list = list });
+        workflow_types.walkSteps(job.steps, Ctx{ .base = base, .job_env = &job_env, .list = list });
     }
+}
+
+fn withTaintedEnv(table: ContextTable, names: *const TaintedNames) ContextTable {
+    var out = table;
+    out.tainted_env = names.slice();
+    return out;
 }
 
 /// SEC008 for the steps of a composite action, which declare no triggers: the
 /// fixed table only.
 pub fn checkStandaloneGithubEnvInjection(step: *const Step, list: *DiagnosticList) void {
-    checkGithubEnvInjection(step, .{ .prefix = &run_dangerous_contexts }, list, env_binding.resolveShell(step, null, null));
+    const base: ContextTable = .{ .prefix = &run_dangerous_contexts };
+    var step_env: TaintedNames = .{ .buf = undefined };
+    addTaintedEnvKeys(&step_env, step.env, base);
+    checkGithubEnvInjection(step, withTaintedEnv(base, &step_env), list);
 }
 
-fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList, shell: ?env_binding.Shell) void {
+/// No fix. The env binding that clears SEC002 leaves this write as it was —
+/// it only moves the interpolation into the shell, which writes the same
+/// newline-carrying value — so offering it here made the diagnostic vanish
+/// with the hole intact (#602).
+fn checkGithubEnvInjection(step: *const Step, table: ContextTable, list: *DiagnosticList) void {
     const run_body = step.run orelse return;
     const write_offset = indexOfGithubEnvWrite(run_body) orelse return;
-    if (!hasUntrustedExpr(run_body, table)) return;
+    if (!hasUntrustedExpr(run_body, table) and !readsAnyShellVar(run_body, table.tainted_env)) return;
     list.append(.{
         .rule_id = "SEC008",
         .severity = .@"error",
         .message = "untrusted input written to GITHUB_ENV/GITHUB_PATH risks environment variable injection",
         .span = spans.runAnchor(step).at(run_body, write_offset, 2),
-        .fix_hint = "validate or sanitize the input, or use an intermediate env variable instead of writing directly to GITHUB_ENV/GITHUB_PATH",
-        // Binding the untrusted value to `env:` removes the interpolation the
-        // write is built from; the write itself stays as the author wrote it.
-        .fix = buildEnvBindingFix(list, step, shell, taintedRunOccurrences(step, table, list.fixAllocator())),
+        .fix_hint = "validate the value or strip newlines from it before writing; binding it to env: alone does not prevent the injection",
     }) catch return;
+}
+
+fn readsAnyShellVar(run: []const u8, names: []const []const u8) bool {
+    for (names) |name| {
+        if (referencesShellVar(run, name)) return true;
+    }
+    return false;
 }
 
 /// Contexts an attacker fills in, per trigger that fills them: the dispatch
@@ -6127,6 +6153,49 @@ test "SEC008: no run block (no false positive)" {
     try testing.expect(!hasDiagnostic(&list, "SEC008"));
 }
 
+const EnvScope = enum { step, job, workflow };
+
+fn sec008EnvList(scope: EnvScope, key: []const u8, value: []const u8, body: []const u8) DiagnosticList {
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, key, value) catch unreachable;
+    const steps = [_]Step{.{ .env = if (scope == .step) env else null, .run = body }};
+    const jobs = [_]Job{.{ .id = "build", .steps = &steps, .env = if (scope == .job) env else null, .permissions = Permissions{} }};
+    return runWorkflow(.{ .name = "CI", .on = empty_trigger, .jobs = &jobs, .env = if (scope == .workflow) env else null, .permissions = Permissions{} });
+}
+
+fn sec008ViaEnv(scope: EnvScope, key: []const u8, value: []const u8, body: []const u8) bool {
+    var list = sec008EnvList(scope, key, value, body);
+    defer list.deinit();
+    return hasDiagnostic(&list, "SEC008");
+}
+
+test "SEC008: an env: entry bound to an untrusted value and written to GITHUB_ENV (#602)" {
+    const title = "${{ github.event.pull_request.title }}";
+    try testing.expect(sec008ViaEnv(.step, "TITLE", title, "echo \"TITLE=$TITLE\" >> \"$GITHUB_ENV\""));
+    try testing.expect(sec008ViaEnv(.job, "TITLE", title, "echo \"TITLE=${TITLE}\" >> $GITHUB_ENV"));
+    try testing.expect(sec008ViaEnv(.workflow, "TITLE", title, "echo \"$TITLE\" >> $GITHUB_PATH"));
+    // `${{ env.TITLE }}` splices the same value into the script.
+    try testing.expect(sec008ViaEnv(.step, "TITLE", title, "echo \"TITLE=${{ env.TITLE }}\" >> $GITHUB_ENV"));
+}
+
+test "SEC008: an env: entry that is trusted or unread stays quiet (#602)" {
+    try testing.expect(!sec008ViaEnv(.step, "SHA", "${{ github.sha }}", "echo \"SHA=$SHA\" >> $GITHUB_ENV"));
+    try testing.expect(!sec008ViaEnv(.step, "TITLE", "${{ github.event.pull_request.title }}", "echo \"X=1\" >> $GITHUB_ENV"));
+    // `$TITLE_LEN` is a different variable.
+    try testing.expect(!sec008ViaEnv(.step, "TITLE", "${{ github.event.pull_request.title }}", "echo \"X=$TITLE_LEN\" >> $GITHUB_ENV"));
+}
+
+test "SEC008: the env: path is reported for composite steps too (#602)" {
+    var env: workflow_types.StringMap = .empty;
+    defer env.deinit(testing.allocator);
+    env.put(testing.allocator, "TITLE", "${{ github.event.pull_request.title }}") catch unreachable;
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    checkStandaloneGithubEnvInjection(&.{ .env = env, .run = "echo \"TITLE=$TITLE\" >> \"$GITHUB_ENV\"" }, &list);
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
+}
+
 test "SEC008: safe context to GITHUB_ENV (no false positive)" {
     var list = runStep(.{ .run = "echo \"SHA=${{ github.sha }}\" >> $GITHUB_ENV" });
     defer list.deinit();
@@ -9710,7 +9779,7 @@ test "SEC002: github-script script: a bare embedding gets no fix" {
     try testing.expectEqualStrings(source, result.content);
 }
 
-test "SEC008: the untrusted value written to GITHUB_ENV is bound to env:" {
+test "SEC008: no fix, and SEC002's env binding leaves SEC008 standing (#602)" {
     const source =
         \\name: t
         \\on: pull_request
@@ -9722,24 +9791,19 @@ test "SEC008: the untrusted value written to GITHUB_ENV is bound to env:" {
         \\        run: echo "TITLE=${{ github.event.pull_request.title }}" >> "$GITHUB_ENV"
         \\
     ;
-    const result = try envBindingFix(source, .{ .workflow = &checkGithubEnvInjectionWorkflow });
-    defer result.deinit(testing.allocator);
+    const own = try envBindingFix(source, .{ .workflow = &checkGithubEnvInjectionWorkflow });
+    defer own.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), own.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), own.fix_count);
 
-    try testing.expectEqual(@as(usize, 1), result.fix_count);
-    try testing.expectEqual(diagnostics.FixSafety.unsafe, result.first_safety.?);
-    try testing.expectEqualStrings(
-        \\name: t
-        \\on: pull_request
-        \\jobs:
-        \\  a:
-        \\    runs-on: ubuntu-latest
-        \\    steps:
-        \\      - env:
-        \\          PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
-        \\        name: write
-        \\        run: echo "TITLE=$PULL_REQUEST_TITLE" >> "$GITHUB_ENV"
-        \\
-    , result.content);
+    // The same step after `--fix-unsafe` applies SEC002's binding.
+    const bound = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer bound.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), bound.fix_count);
+    var list = DiagnosticList.init(testing.allocator);
+    defer list.deinit();
+    try test_support.lintSource(bound.content, .{ .workflow = &checkGithubEnvInjectionWorkflow }, &list);
+    try testing.expect(hasDiagnostic(&list, "SEC008"));
 }
 
 test "SEC019: a secret used in run: is bound to env:" {
