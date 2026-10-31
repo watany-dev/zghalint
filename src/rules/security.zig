@@ -9550,6 +9550,28 @@ fn envBindingFix(source: []const u8, check: test_support.Check) !test_support.Fi
     return test_support.lintAndFix(testing.allocator, source, check, true);
 }
 
+test "SEC002: an expression wrapped across lines of a plain scalar gets no binding" {
+    // Copied into `env:` the continuation line sits shallower than the new
+    // entry and the YAML no longer parses.
+    const source =
+        \\name: t
+        \\on: issues
+        \\jobs:
+        \\  a:
+        \\    runs-on: ubuntu-latest
+        \\    steps:
+        \\      - name: greet
+        \\        run: echo "${{ github.event.issue.title
+        \\          }}"
+        \\
+    ;
+    const result = try envBindingFix(source, .{ .workflow = &checkScriptInjection });
+    defer result.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.diagnostic_count);
+    try testing.expectEqual(@as(usize, 0), result.fix_count);
+}
+
 test "SEC002: the untrusted expressions of a step are bound in one env: block" {
     const source =
         \\name: t
