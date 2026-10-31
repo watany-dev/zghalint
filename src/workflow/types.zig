@@ -135,10 +135,33 @@ pub const permission_scope_keys: []const []const u8 = blk: {
     break :blk &frozen;
 };
 
-/// `vulnerability-alerts` accepts `read` / `none` only (2026-09-03).
+/// Scopes that accept fewer levels than `read` / `write` / `none`. Checked
+/// against the GitHub Actions workflow syntax reference on 2026-10-31
+/// (`vulnerability-alerts` since 2026-09-03). The parser and the PERM003
+/// message both read this one table (#613).
+const restricted_permission_scopes = [_]struct {
+    scope: []const u8,
+    forbidden: PermissionLevel,
+    expected: []const u8,
+}{
+    .{ .scope = "id-token", .forbidden = .read, .expected = "\"write\" or \"none\"" },
+    .{ .scope = "models", .forbidden = .write, .expected = "\"read\" or \"none\"" },
+    .{ .scope = "vulnerability-alerts", .forbidden = .write, .expected = "\"read\" or \"none\"" },
+};
+
 pub fn isAllowedPermissionLevel(scope: []const u8, level: PermissionLevel) bool {
-    if (std.mem.eql(u8, scope, "vulnerability-alerts")) return level != .write;
+    for (restricted_permission_scopes) |r| {
+        if (std.mem.eql(u8, scope, r.scope)) return level != r.forbidden;
+    }
     return true;
+}
+
+/// The levels `scope` accepts, quoted for a message.
+pub fn expectedPermissionLevels(scope: []const u8) []const u8 {
+    for (restricted_permission_scopes) |r| {
+        if (std.mem.eql(u8, scope, r.scope)) return r.expected;
+    }
+    return "\"read\", \"write\" or \"none\"";
 }
 
 /// `cache-mode:` at workflow or job level (2026-09-10). Job overrides workflow.
@@ -1134,6 +1157,15 @@ test "jobAllowsCache: none is a disable, unknown is not" {
     try std.testing.expect(!jobAllowsCache(&wf, &jobs[0]));
     try std.testing.expect(jobAllowsCache(&wf, &jobs[1]));
     try std.testing.expect(jobAllowsCache(&wf, &jobs[2]));
+}
+
+test "id-token rejects read and models rejects write (#613)" {
+    try std.testing.expect(!isAllowedPermissionLevel("id-token", .read));
+    try std.testing.expect(isAllowedPermissionLevel("id-token", .write));
+    try std.testing.expect(isAllowedPermissionLevel("id-token", .none));
+    try std.testing.expect(!isAllowedPermissionLevel("models", .write));
+    try std.testing.expect(isAllowedPermissionLevel("models", .read));
+    try std.testing.expect(isAllowedPermissionLevel("models", .none));
 }
 
 test "vulnerability-alerts rejects write" {

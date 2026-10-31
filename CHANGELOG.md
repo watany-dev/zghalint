@@ -30,6 +30,9 @@ each ID means.
   (`uses: owner/repo/.github/workflows/<file>@<ref>`). No autofix (#603).
 - SEC016 treats `docker/setup-buildx-action` as caching by default
   (`cache-binary`) and recognises `actions/cache/restore` (#604, #605).
+- PERM003 reports `id-token: read` and `models: write`, levels those scopes
+  do not accept. `models: write` is no longer also reported as PERM001
+  (#613).
 
 ### Fixed
 

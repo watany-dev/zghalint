@@ -586,8 +586,9 @@ write scope (`contents: read`, `read-all`, `{}`). The token is already
 minimized for every job. `write-all` or any `: write` at workflow level still
 warns, because those jobs should narrow the grant (#334).
 
-`permissions.vulnerability-alerts` accepts `read` / `none` only. `write` is
-PERM003, not a broad-write finding.
+Some scopes accept fewer levels, and the other one is PERM003 rather than a
+broad-write finding: `id-token` takes `write` / `none` (`read` is invalid),
+`models` and `vulnerability-alerts` take `read` / `none` (`write` is invalid).
 
 ## Expression Validation Rules (EXPR)
 
