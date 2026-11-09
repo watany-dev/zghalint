@@ -2,7 +2,7 @@
 # Hypothesis は生成戦略とシュリンク挙動がリリース間で変わるため、
 # `>=` のままだとコード変更なしに CI の結果が変わる。
 # 更新は Dependabot の pip エコシステム (.github/dependabot.yml) 経由。
-pytest==9.1.1
-hypothesis==6.170.11
+pytest==9.2.0
+hypothesis==6.170.14
 # scripts/gen-popular-actions.py, exercised by test_gen_popular_actions.py.
 pyyaml==6.0.3
